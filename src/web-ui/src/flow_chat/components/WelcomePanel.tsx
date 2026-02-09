@@ -26,6 +26,8 @@ interface WelcomePanelProps {
 
 // Session-level AI analysis failure flag to avoid repeated retries.
 let aiAnalysisFailedThisSession = false;
+const aiAnalysisCache = new Map<string, WorkStateAnalysis>();
+const aiAnalysisInFlight = new Map<string, Promise<WorkStateAnalysis | null>>();
 
 export const WelcomePanel: React.FC<WelcomePanelProps> = ({
   onQuickAction,
@@ -124,6 +126,7 @@ export const WelcomePanel: React.FC<WelcomePanelProps> = ({
 
   // Load AI enhancements asynchronously without blocking the static content.
   const loadAiEnhancements = useCallback(async () => {
+    const isAiEnabled = aiExperienceConfigService.isWelcomePanelAIAnalysisEnabled();
     try {
       if (aiAnalysisFailedThisSession) {
         setAiAnalysisCompleted(true);
@@ -131,7 +134,7 @@ export const WelcomePanel: React.FC<WelcomePanelProps> = ({
         return;
       }
 
-      if (!aiExperienceConfigService.isWelcomePanelAIAnalysisEnabled()) {
+      if (!isAiEnabled) {
         setAiAnalysisCompleted(true);
         startShowingDefaultIntents();
         return;
@@ -139,6 +142,8 @@ export const WelcomePanel: React.FC<WelcomePanelProps> = ({
 
       const workspace = await globalStateAPI.getCurrentWorkspace();
       const currentWorkspacePath = workspace?.rootPath;
+      const language = i18n.language?.startsWith('zh') ? 'Chinese' : 'English';
+      const cacheKey = currentWorkspacePath ? `${currentWorkspacePath}::${language}` : '';
 
       if (!currentWorkspacePath) {
         setAiAnalysisCompleted(true);
@@ -146,15 +151,41 @@ export const WelcomePanel: React.FC<WelcomePanelProps> = ({
         return;
       }
 
-      const isGitRepo = await gitAPI.isGitRepository(currentWorkspacePath);
-      if (!isGitRepo) {
+      const cachedAnalysis = aiAnalysisCache.get(cacheKey);
+      if (cachedAnalysis) {
+        setAnalysis(cachedAnalysis);
         setAiAnalysisCompleted(true);
         return;
       }
 
-      const language = i18n.language?.startsWith('zh') ? 'Chinese' : 'English';
-      const result = await startchatAgentAPI.quickAnalyzeWorkState(currentWorkspacePath, language);
-      
+      let inFlight = aiAnalysisInFlight.get(cacheKey);
+      if (!inFlight) {
+        inFlight = (async () => {
+          const isGitRepo = await gitAPI.isGitRepository(currentWorkspacePath);
+          if (!isGitRepo) {
+            return null;
+          }
+
+          return startchatAgentAPI.quickAnalyzeWorkState(currentWorkspacePath, language);
+        })();
+        aiAnalysisInFlight.set(cacheKey, inFlight);
+      }
+
+      let result: WorkStateAnalysis | null = null;
+      try {
+        result = await inFlight;
+      } finally {
+        if (aiAnalysisInFlight.get(cacheKey) === inFlight) {
+          aiAnalysisInFlight.delete(cacheKey);
+        }
+      }
+
+      if (!result) {
+        setAiAnalysisCompleted(true);
+        return;
+      }
+
+      aiAnalysisCache.set(cacheKey, result);
       setAnalysis(result);
       setAiAnalysisCompleted(true);
     } catch (err) {
