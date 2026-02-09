@@ -430,7 +430,7 @@ pub async fn open_workspace(
                     .await
                     .unwrap_or_else(|_| "zh-CN".to_string());
                 let _ = crate::macos_menubar::set_macos_menubar_with_mode(
-                    &app,
+                    &_app,
                     &language,
                     crate::macos_menubar::MenubarMode::Workspace,
                 );
@@ -471,7 +471,7 @@ pub async fn close_workspace(
                     .await
                     .unwrap_or_else(|_| "zh-CN".to_string());
                 let _ = crate::macos_menubar::set_macos_menubar_with_mode(
-                    &app,
+                    &_app,
                     &language,
                     crate::macos_menubar::MenubarMode::Startup,
                 );

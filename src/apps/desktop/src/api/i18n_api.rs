@@ -64,7 +64,11 @@ pub async fn i18n_set_language(
                 } else {
                     crate::macos_menubar::MenubarMode::Startup
                 };
-                let _ = crate::macos_menubar::set_macos_menubar_with_mode(&app, &request.language, mode);
+                let _ = crate::macos_menubar::set_macos_menubar_with_mode(
+                    &_app,
+                    &request.language,
+                    mode,
+                );
             }
             Ok(format!("Language switched to: {}", request.language))
         }
