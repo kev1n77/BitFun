@@ -48,9 +48,34 @@ BitFun is an Agentic Development Environment (ADE). While featuring a cutting-ed
 
 
 ## Quick Start
+
+### Use Directly
+
 Download the latest installer for the desktop app from [Release](https://github.com/GCWing/BitFun/releases). After installation, configure your model and you're ready to go.
 
 Other form factors are currently only specification drafts and not yet developed. If needed, please build from source.
+
+### Build from Source
+
+Make sure you have the following prerequisites installed:
+
+- Node.js (LTS recommended)
+- pnpm (run `corepack enable`)
+- Rust toolchain (install via [rustup](https://rustup.rs/))
+- [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for desktop development
+
+```bash
+# Install dependencies
+pnpm install
+
+# Run desktop app in development mode
+npm run desktop:dev
+
+# Build desktop app
+npm run desktop:build
+```
+
+For more details, see the [Contributing Guide](./CONTRIBUTING.md).
 
 ## Platform Support
 

@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.bitfun.desktop",
   "build": {
-    "beforeDevCommand": "cd ../.. && npm run dev:web",
+    "beforeDevCommand": "npm run dev:web",
     "devUrl": "http://localhost:1422",
-    "beforeBuildCommand": "cd ../.. && npm run build:web",
+    "beforeBuildCommand": "npm run build:web",
     "frontendDist": "../../../dist"
   },
   "bundle": {

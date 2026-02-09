@@ -110,7 +110,7 @@ async function main() {
   
   try {
     if (mode === 'desktop') {
-      await runCommand('cargo tauri dev', path.join(ROOT_DIR, 'src/apps/desktop'));
+      await runCommand('pnpm tauri dev', path.join(ROOT_DIR, 'src/apps/desktop'));
     } else {
       await runCommand('npx vite', path.join(ROOT_DIR, 'src/web-ui'));
     }

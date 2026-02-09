@@ -13,14 +13,14 @@
 ### 环境准备
 
 - Node.js（建议 LTS 版本）
-- npm
+- pnpm（执行 `corepack enable`）
 - Rust toolchain（通过 rustup 安装）
 - 桌面端开发需准备 Tauri 依赖
 
 ### 安装依赖
 
 ```bash
-npm install
+pnpm install
 ```
 
 ### 常用命令

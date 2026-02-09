@@ -13,14 +13,14 @@ Be respectful, kind, and constructive. We welcome contributors of all background
 ### Prerequisites
 
 - Node.js (LTS recommended)
-- npm
-- Rust toolchain (install via rustup)
-- Tauri dependencies for desktop development
+- pnpm (run `corepack enable`)
+- Rust toolchain (install via [rustup](https://rustup.rs/))
+- [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for desktop development
 
 ### Install dependencies
 
 ```bash
-npm install
+pnpm install
 ```
 
 ### Common commands

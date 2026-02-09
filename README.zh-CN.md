@@ -48,9 +48,34 @@ BitFun 是一款代理式开发环境（ADE，Agentic Development Environment）
 
 
 ## 快速开始
-桌面端程序在[Release](https://github.com/GCWing/BitFun/releases)处下载最新安装包，安装后配置模型即可开始使用。
+
+### 直接使用
+
+桌面端程序在 [Release](https://github.com/GCWing/BitFun/releases) 处下载最新安装包，安装后配置模型即可开始使用。
 
 其他形态暂时仅是规范雏形未完成开发，如有需要请从源码构建。
+
+### 从源码构建
+
+请确保已安装以下前置依赖：
+
+- Node.js（推荐 LTS 版本）
+- pnpm（执行 `corepack enable`）
+- Rust 工具链（通过 [rustup](https://rustup.rs/) 安装）
+- [Tauri 前置依赖](https://v2.tauri.app/start/prerequisites/)（桌面端开发需要）
+
+```bash
+# 安装依赖
+pnpm install
+
+# 以开发模式运行桌面端
+npm run desktop:dev
+
+# 构建桌面端
+npm run desktop:build
+```
+
+更多详情请参阅[贡献指南](./CONTRIBUTING_CN.md)。
 
 ## 平台支持
 
