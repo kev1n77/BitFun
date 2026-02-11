@@ -1,9 +1,9 @@
 [package]
 name = "bitfun-server"
-version = "0.1.0"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
 description = "BitFun Server - Web-based AI Code Assistant"
-authors = ["BitFun Team"]
-edition = "2021"
 
 [[bin]]
 name = "bitfun-server"

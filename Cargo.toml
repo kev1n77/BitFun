@@ -9,8 +9,13 @@ members = [
     "src/apps/server",
 ]
 
-
 resolver = "2"
+
+# Shared package metadata — single source of truth for version
+[workspace.package]
+version = "0.1.0" # x-release-please-version
+authors = ["BitFun Team"]
+edition = "2021"
 
 # Shared dependency versions to keep all crates aligned
 [workspace.dependencies]

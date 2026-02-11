@@ -1,9 +1,9 @@
 [package]
 name = "bitfun-desktop"
-version = "0.1.0"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
 description = "BitFun Desktop Application (Tauri)"
-authors = ["BitFun Team"]
-edition = "2021"
 
 [lib]
 name = "bitfun_desktop_lib"

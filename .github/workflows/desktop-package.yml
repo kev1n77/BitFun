@@ -1,31 +1,74 @@
 name: Desktop Package
 
 on:
+  # Triggered automatically when Release Please publishes a release
+  release:
+    types: [published]
+  # Manual trigger for ad-hoc builds
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
+    inputs:
+      tag_name:
+        description: "Tag name to build (e.g. v0.2.0). Leave empty to build from HEAD."
+        required: false
+        type: string
 
 permissions:
   contents: write
 
 jobs:
+  # ── Resolve version info ───────────────────────────────────────────
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      upload_to_release: ${{ steps.meta.outputs.upload_to_release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            TAG="${{ github.event.release.tag_name }}"
+            VERSION="${TAG#v}"
+            UPLOAD="true"
+          elif [[ -n "${{ inputs.tag_name }}" ]]; then
+            TAG="${{ inputs.tag_name }}"
+            VERSION="${TAG#v}"
+            UPLOAD="false"
+          else
+            VERSION="$(jq -r '.version' package.json)"
+            TAG="v${VERSION}"
+            UPLOAD="false"
+          fi
+
+          echo "version=$VERSION"       >> "$GITHUB_OUTPUT"
+          echo "release_tag=$TAG"        >> "$GITHUB_OUTPUT"
+          echo "upload_to_release=$UPLOAD" >> "$GITHUB_OUTPUT"
+
+  # ── Build per platform ─────────────────────────────────────────────
   package:
     name: Package (${{ matrix.platform.name }})
     runs-on: ${{ matrix.platform.os }}
+    needs: prepare
 
     strategy:
       fail-fast: false
       matrix:
         platform:
-          - os: macos-15-intel
-            name: macos-x64
-            target: x86_64-apple-darwin
-            build_command: pnpm desktop:build:x86_64
           - os: macos-15
             name: macos-arm64
             target: aarch64-apple-darwin
             build_command: pnpm build:web && cd src/apps/desktop && pnpm tauri build --target aarch64-apple-darwin --bundles dmg
+          - os: macos-15-intel
+            name: macos-x64
+            target: x86_64-apple-darwin
+            build_command: pnpm desktop:build:x86_64
           - os: windows-latest
             name: windows-x64
             target: x86_64-pc-windows-msvc
@@ -34,6 +77,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_tag }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -52,8 +97,7 @@ jobs:
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: |
-            . -> target
+          shared-key: "package-${{ matrix.platform.name }}"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -64,24 +108,25 @@ jobs:
       - name: Upload bundles
         uses: actions/upload-artifact@v4
         with:
-          name: bitfun-${{ matrix.platform.name }}-bundle
+          name: bitfun-${{ needs.prepare.outputs.release_tag }}-${{ matrix.platform.name }}-bundle
           if-no-files-found: error
           path: |
             target/*/release/bundle
             target/release/bundle
             src/apps/desktop/target/release/bundle
 
-  release:
-    name: Create GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: package
+  # ── Upload assets to GitHub Release ────────────────────────────────
+  upload-release-assets:
+    name: Upload Release Assets
+    needs: [prepare, package]
+    if: needs.prepare.outputs.upload_to_release == 'true'
     runs-on: ubuntu-latest
 
     steps:
       - name: Download bundled artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: bitfun-*-bundle
+          pattern: bitfun-${{ needs.prepare.outputs.release_tag }}-*-bundle
           path: release-assets
           merge-multiple: true
 
@@ -90,14 +135,11 @@ jobs:
           echo "Release assets:"
           find release-assets -type f | sort
 
-      - name: Publish release
+      - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          generate_release_notes: true
+          tag_name: ${{ needs.prepare.outputs.release_tag }}
           files: |
             release-assets/**/*.dmg
             release-assets/**/*setup.exe
-          overwrite_files: true
           fail_on_unmatched_files: true

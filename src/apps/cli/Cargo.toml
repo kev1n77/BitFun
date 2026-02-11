@@ -1,9 +1,9 @@
 [package]
 name = "bitfun-cli"
-version = "0.1.0"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
 description = "BitFun CLI - Terminal User Interface"
-authors = ["BitFun Team"]
-edition = "2021"
 
 [[bin]]
 name = "bitfun-cli"

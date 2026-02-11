@@ -1,9 +1,9 @@
 [package]
 name = "bitfun-core"
-version = "0.1.0"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
 description = "BitFun Core Library - Platform-agnostic business logic"
-authors = ["BitFun Team"]
-edition = "2021"
 
 [lib]
 name = "bitfun_core"
