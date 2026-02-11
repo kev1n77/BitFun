@@ -72,7 +72,7 @@ impl ProjectContextService {
                 .enabled_documents
                 .get(&imported_doc.id)
                 .copied()
-                .unwrap_or(true);
+                .unwrap_or(false);
 
             statuses.push(ContextDocumentStatus {
                 id: imported_doc.id.clone(),
@@ -105,7 +105,7 @@ impl ProjectContextService {
                 .enabled_documents
                 .get(doc.id)
                 .copied()
-                .unwrap_or(true)
+                .unwrap_or(doc.default_enabled)
         } else {
             false
         };
@@ -192,7 +192,8 @@ impl ProjectContextService {
 
         debug!("Created document: path={:?}", full_path);
 
-        self.toggle_document(workspace, doc_id, true).await?;
+        self.toggle_document(workspace, doc_id, doc.default_enabled)
+            .await?;
 
         Ok(full_path)
     }
@@ -316,7 +317,8 @@ impl ProjectContextService {
 
         debug!("Generated document: path={:?}", full_path);
 
-        self.toggle_document(workspace, doc_id, true).await?;
+        self.toggle_document(workspace, doc_id, doc.default_enabled)
+            .await?;
 
         unregister_generation(doc_id).await;
 

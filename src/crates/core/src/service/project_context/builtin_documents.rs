@@ -33,6 +33,12 @@ pub struct BuiltinDocument {
     pub priority: DocumentPriority,
     /// Possible file paths (in priority order)
     pub possible_paths: &'static [&'static str],
+    /// Whether the document is enabled by default when it exists
+    ///
+    /// Only core AI agent instruction files (AGENTS.md, CLAUDE.md,
+    /// copilot-instructions.md) default to `true`; other documents
+    /// require the user to opt-in explicitly.
+    pub default_enabled: bool,
 }
 
 /// Built-in category ID list
@@ -51,6 +57,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
         default_template: AGENTS_MD_TEMPLATE,
         priority: DocumentPriority::High,
         possible_paths: &["AGENTS.md"],
+        default_enabled: true,
     },
     BuiltinDocument {
         id: "claude-md",
@@ -61,6 +68,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
         default_template: CLAUDE_MD_TEMPLATE,
         priority: DocumentPriority::High,
         possible_paths: &["CLAUDE.md"],
+        default_enabled: true,
     },
     BuiltinDocument {
         id: "readme-md",
@@ -71,6 +79,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
         default_template: "",
         priority: DocumentPriority::High,
         possible_paths: &["README.md"],
+        default_enabled: false,
     },
     BuiltinDocument {
         id: "copilot-instructions-md",
@@ -81,6 +90,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
         default_template: COPILOT_INSTRUCTIONS_MD_TEMPLATE,
         priority: DocumentPriority::Low,
         possible_paths: &[".github/copilot-instructions.md"],
+        default_enabled: true,
     },
     BuiltinDocument {
         id: "editorconfig",
@@ -91,6 +101,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
         default_template: EDITORCONFIG_TEMPLATE,
         priority: DocumentPriority::High,
         possible_paths: &[".editorconfig"],
+        default_enabled: false,
     },
     BuiltinDocument {
         id: "eslint",
@@ -113,6 +124,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
             ".eslintrc.yml",
             ".eslintrc.json",
         ],
+        default_enabled: false,
     },
     BuiltinDocument {
         id: "prettier",
@@ -142,6 +154,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
             "prettier.config.cts",
             ".prettierrc.toml",
         ],
+        default_enabled: false,
     },
     BuiltinDocument {
         id: "rustfmt",
@@ -152,6 +165,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
         default_template: RUSTFMT_TEMPLATE,
         priority: DocumentPriority::Medium,
         possible_paths: &["rustfmt.toml", ".rustfmt.toml"],
+        default_enabled: false,
     },
     BuiltinDocument {
         id: "biome",
@@ -162,6 +176,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
         default_template: BIOME_TEMPLATE,
         priority: DocumentPriority::Low,
         possible_paths: &["biome.json", "biome.jsonc"],
+        default_enabled: false,
     },
     BuiltinDocument {
         id: "pylint",
@@ -172,6 +187,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
         default_template: PYLINT_TEMPLATE,
         priority: DocumentPriority::Low,
         possible_paths: &[".pylintrc", "pylintrc", "pyproject.toml"],
+        default_enabled: false,
     },
     BuiltinDocument {
         id: "architecture-md",
@@ -186,6 +202,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
             "docs/ARCHITECTURE.md",
             "doc/ARCHITECTURE.md",
         ],
+        default_enabled: false,
     },
     BuiltinDocument {
         id: "api-design-md",
@@ -196,6 +213,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
         default_template: API_DESIGN_MD_TEMPLATE,
         priority: DocumentPriority::High,
         possible_paths: &["API-DESIGN.md", "docs/API-DESIGN.md", "API.md"],
+        default_enabled: false,
     },
     BuiltinDocument {
         id: "design-system-md",
@@ -206,6 +224,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
         default_template: DESIGN_SYSTEM_MD_TEMPLATE,
         priority: DocumentPriority::Medium,
         possible_paths: &["DESIGN-SYSTEM.md", "docs/DESIGN-SYSTEM.md"],
+        default_enabled: false,
     },
     BuiltinDocument {
         id: "database-design-md",
@@ -220,6 +239,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
             "docs/DATABASE-DESIGN.md",
             "DATABASE.md",
         ],
+        default_enabled: false,
     },
     BuiltinDocument {
         id: "codeowners",
@@ -230,6 +250,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
         default_template: "",
         priority: DocumentPriority::High,
         possible_paths: &["CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"],
+        default_enabled: false,
     },
     BuiltinDocument {
         id: "contributing-md",
@@ -240,6 +261,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
         default_template: "",
         priority: DocumentPriority::High,
         possible_paths: &["CONTRIBUTING.md", ".github/CONTRIBUTING.md"],
+        default_enabled: false,
     },
     BuiltinDocument {
         id: "code-of-conduct-md",
@@ -250,6 +272,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
         default_template: "",
         priority: DocumentPriority::Medium,
         possible_paths: &["CODE_OF_CONDUCT.md", ".github/CODE_OF_CONDUCT.md"],
+        default_enabled: false,
     },
     BuiltinDocument {
         id: "security-md",
@@ -260,6 +283,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
         default_template: "",
         priority: DocumentPriority::Medium,
         possible_paths: &["SECURITY.md", ".github/SECURITY.md"],
+        default_enabled: false,
     },
     BuiltinDocument {
         id: "pr-template",
@@ -273,6 +297,7 @@ pub static BUILTIN_DOCUMENTS: &[BuiltinDocument] = &[
             "PULL_REQUEST_TEMPLATE.md",
             ".github/PULL_REQUEST_TEMPLATE.md",
         ],
+        default_enabled: false,
     },
 ];
 
