@@ -75,6 +75,10 @@
     "advancedShow": "Show advanced settings",
     "advancedHide": "Hide advanced settings",
     "providers": {
+      "inner": {
+        "name": "Inner",
+        "description": "Internal Network Model"
+      },
       "openbitfun": {
         "name": "OpenBitFun",
         "description": "OpenBitFun Model Platform"
