@@ -75,6 +75,10 @@
     "advancedShow": "Show advanced settings",
     "advancedHide": "Hide advanced settings",
     "providers": {
+      "inner": {
+        "name": "中软",
+        "description": "内网模型"
+      },
       "openbitfun": {
         "name": "OpenBitFun",
         "description": "OpenBitFun 大模型平台"
