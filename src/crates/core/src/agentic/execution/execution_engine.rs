@@ -1142,8 +1142,6 @@ impl ExecutionEngine {
                 "Edit",
                 "Write",
                 "Delete",
-                "WebFetch",
-                "WebSearch",
                 "TodoWrite",
                 "Skill",
                 "Log",
