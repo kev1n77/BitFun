@@ -219,7 +219,8 @@ const PersistentFooterActions: React.FC = () => {
                   className={`bitfun-nav-panel__footer-menu${menuClosing ? ' is-closing' : ''}`}
                   role="menu"
                 >
-                  <Tooltip
+                  {/* Remote Control Entry - Hidden (keep SSH Remote visible in MainNav) */}
+                  {/* <Tooltip
                     content={t('header.remoteConnectRequiresWorkspace')}
                     placement="right"
                     disabled={hasWorkspace}
@@ -235,7 +236,7 @@ const PersistentFooterActions: React.FC = () => {
                       <span>{t('header.remoteConnect')}</span>
                     </button>
                   </Tooltip>
-                  <div className="bitfun-nav-panel__footer-menu-divider" />
+                  <div className="bitfun-nav-panel__footer-menu-divider" /> */}
                   <button
                     type="button"
                     className="bitfun-nav-panel__footer-menu-item"
