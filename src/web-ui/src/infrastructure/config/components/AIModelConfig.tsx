@@ -291,7 +291,7 @@ const AIModelConfig: React.FC = () => {
   };
   
   // Provider options with translations (must be at top level, before any conditional returns)
-  const providerOrder = ['openbitfun', 'zhipu', 'qwen', 'deepseek', 'volcengine', 'minimax', 'moonshot', 'gemini', 'anthropic'];
+  const providerOrder = ['inner'];
   const providers = useMemo(() => {
     const sorted = Object.values(PROVIDER_TEMPLATES).sort((a, b) => {
       const indexA = providerOrder.indexOf(a.id);
