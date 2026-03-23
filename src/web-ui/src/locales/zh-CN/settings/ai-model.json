@@ -64,6 +64,10 @@
     "formatHint": "已根据提供商自动选择，通常无需修改"
   },
   "providers": {
+    "inner": {
+      "name": "中软",
+      "description": "内网模型"
+    },
     "openbitfun": {
       "name": "OpenBitFun",
       "description": "OpenBitFun 大模型平台"
