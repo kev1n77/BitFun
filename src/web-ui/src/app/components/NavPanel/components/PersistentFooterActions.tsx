@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { Settings, Info, MoreVertical, PictureInPicture2, SquareTerminal, Smartphone, Globe, Network, Layers, BarChart3 } from 'lucide-react';
+import { Settings, Info, MoreVertical, PictureInPicture2, SquareTerminal, Network, Layers, BarChart3 } from 'lucide-react';
 import { Tooltip, Modal } from '@/component-library';
 import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
 import { useSceneManager } from '../../../hooks/useSceneManager';
@@ -7,8 +7,6 @@ import { useNavSceneStore } from '../../../stores/navSceneStore';
 import { useSceneStore } from '../../../stores/sceneStore';
 import { useCanvasStore } from '@/app/components/panels/content-canvas/stores';
 import { useToolbarModeContext } from '@/flow_chat/components/toolbar-mode/ToolbarModeContext';
-import { useCurrentWorkspace } from '@/infrastructure/contexts/WorkspaceContext';
-import { useNotification } from '@/shared/notification-system';
 import NotificationButton from '../../TitleBar/NotificationButton';
 import { AboutDialog } from '../../AboutDialog';
 import { RemoteConnectDialog } from '../../RemoteConnectDialog';
@@ -38,8 +36,6 @@ const PersistentFooterActions: React.FC = () => {
     return activeTab?.content.type === 'mermaid-editor';
   });
   const { enableToolbarMode } = useToolbarModeContext();
-  const { hasWorkspace } = useCurrentWorkspace();
-  const { warning } = useNotification();
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuClosing, setMenuClosing] = useState(false);
@@ -78,23 +74,6 @@ const PersistentFooterActions: React.FC = () => {
     }
     openNavScene('shell');
   }, [closeNavScene, navSceneId, openNavScene, showSceneNav]);
-
-  const handleOpenBrowser = useCallback(() => {
-    if (activeTabId === 'session') {
-      // Open browser as a panel in the AuxPane (right side of chat)
-      window.dispatchEvent(new CustomEvent('agent-create-tab', {
-        detail: {
-          type: 'browser',
-          title: t('scenes.browser'),
-          checkDuplicate: true,
-          duplicateCheckKey: 'browser-panel',
-          replaceExisting: false,
-        },
-      }));
-    } else {
-      openScene('browser');
-    }
-  }, [activeTabId, openScene, t]);
 
   const handleOpenMermaidEditor = useCallback(() => {
     const title = t('scenes.mermaidEditor');
@@ -143,23 +122,6 @@ const PersistentFooterActions: React.FC = () => {
     closeMenu();
     enableToolbarMode();
   };
-
-  const handleRemoteConnect = useCallback(async () => {
-    if (!hasWorkspace) {
-      warning(t('header.remoteConnectRequiresWorkspace'));
-      return;
-    }
-
-    closeMenu();
-
-    if (hasAgreedRemoteDisclaimer || getRemoteConnectDisclaimerAgreed()) {
-      setHasAgreedRemoteDisclaimer(true);
-      setShowRemoteConnect(true);
-      return;
-    }
-
-    setShowRemoteDisclaimer(true);
-  }, [hasWorkspace, warning, t, closeMenu, hasAgreedRemoteDisclaimer]);
 
   const handleAgreeDisclaimer = useCallback(() => {
     setRemoteConnectDisclaimerAgreed();
@@ -287,7 +249,8 @@ const PersistentFooterActions: React.FC = () => {
                     role="menu"
                     aria-label={t('nav.multimodalTools')}
                   >
-                    <button
+                    {/* Browser button - Hidden */}
+                    {/* <button
                       type="button"
                       className={`bitfun-nav-panel__footer-multimodal-item${isBrowserActive ? ' is-active' : ''}`}
                       role="menuitem"
@@ -296,7 +259,7 @@ const PersistentFooterActions: React.FC = () => {
                     >
                       <Globe size={13} className="bitfun-nav-panel__footer-multimodal-item-icon" />
                       <span className="bitfun-nav-panel__footer-multimodal-item-label">{t('scenes.browser')}</span>
-                    </button>
+                    </button> */}
 
                     <button
                       type="button"
