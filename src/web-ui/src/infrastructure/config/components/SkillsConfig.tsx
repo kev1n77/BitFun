@@ -562,7 +562,8 @@ const SkillsConfig: React.FC = () => {
       <ConfigPageHeader title={t('title')} subtitle={t('subtitle')} />
 
       <ConfigPageContent>
-        <ConfigPageSection
+        {/* Skill Market Section - Hidden */}
+        {/* <ConfigPageSection
           title={t('market.title')}
           description={t('market.subtitle')}
           extra={(
@@ -588,7 +589,7 @@ const SkillsConfig: React.FC = () => {
             />
           </div>
           {renderMarketList()}
-        </ConfigPageSection>
+        </ConfigPageSection> */}
 
         <ConfigPageSection
           title={t('filters.user', { defaultValue: 'User Skills' })}

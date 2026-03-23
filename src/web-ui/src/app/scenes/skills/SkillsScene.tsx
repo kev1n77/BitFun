@@ -267,7 +267,8 @@ const SkillsScene: React.FC = () => {
           ) : null}
         </GalleryZone>
 
-        <GalleryZone
+        {/* Skill Market Zone - Hidden */}
+        {/* <GalleryZone
           id="skills-market-zone"
           title={t('market.title')}
           subtitle={(
@@ -341,7 +342,7 @@ const SkillsScene: React.FC = () => {
               </button>
             </div>
           ) : null}
-        </GalleryZone>
+        </GalleryZone> */}
       </div>
 
       <GalleryDetailModal
