@@ -41,7 +41,7 @@
   },
   "providers": {
     "inner": {
-      "name": "Inner",
+      "name": "中软",
       "description": "内网模型"
     },
     "openbitfun": {
