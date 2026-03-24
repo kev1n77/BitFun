@@ -60,6 +60,9 @@ pub(crate) fn apply_openai_compatible_reasoning_fields(
         ReasoningMode::Default => {}
         ReasoningMode::Enabled => {
             request_body["thinking"] = serde_json::json!({ "type": "enabled" });
+            // Prevent some OpenAI-compatible gateways from injecting "minimal",
+            // which breaks vLLM-backed reasoning requests.
+            request_body["reasoning_effort"] = serde_json::json!("high");
         }
         ReasoningMode::Disabled => {
             request_body["thinking"] = serde_json::json!({ "type": "disabled" });
