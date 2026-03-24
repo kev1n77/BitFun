@@ -60,7 +60,7 @@ export function getModelDisplayName(config: ProviderConfigLike): string {
 export const PROVIDER_TEMPLATES: Record<string, ProviderTemplate> = {
   inner: {
     id: 'inner',
-    name: 'Inner',
+    name: 'Central Software Institute',
     baseUrl: 'http://7.242.99.159:8888/v1',
     format: 'openai',
     models: [],
