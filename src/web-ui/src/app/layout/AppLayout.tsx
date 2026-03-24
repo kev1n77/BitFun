@@ -56,6 +56,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
 
   const { state, switchLeftPanelTab, toggleLeftPanel, toggleRightPanel } = useApp();
   const activeSceneId = useSceneStore(s => s.activeTabId);
+  const resetToWelcomeOnly = useSceneStore(s => s.resetToWelcomeOnly);
   const isAgentScene = activeSceneId === 'session';
   const isWelcomeScene = activeSceneId === 'welcome';
 
@@ -75,6 +76,14 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
       autoOpenAttemptedRef.current = true;
     }
   }, [hasWorkspace, loading, recentWorkspaces, openWorkspace]);
+
+  // No open workspace: show Welcome only (drop companion session tab and other scenes).
+  useEffect(() => {
+    if (loading) return;
+    if (!hasWorkspace) {
+      resetToWelcomeOnly();
+    }
+  }, [hasWorkspace, loading, resetToWelcomeOnly]);
 
   // Dialog state (previously in TitleBar)
   const [showNewProjectDialog, setShowNewProjectDialog] = useState(false);
@@ -179,7 +188,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
 
         const initializationPreferredMode =
           currentWorkspace.workspaceKind === WorkspaceKind.Assistant
-            ? 'Claw'
+            ? explicitPreferredMode || 'agentic'
             : explicitPreferredMode;
 
         const flowChatManager = FlowChatManager.getInstance();
@@ -196,7 +205,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
         if (!hasHistoricalSessions || !flowChatStore.getState().activeSessionId) {
           const initialSessionMode =
             currentWorkspace.workspaceKind === WorkspaceKind.Assistant
-              ? 'Claw'
+              ? explicitPreferredMode || 'agentic'
               : explicitPreferredMode || 'agentic';
           sessionId = await flowChatManager.createChatSession({}, initialSessionMode);
         }
