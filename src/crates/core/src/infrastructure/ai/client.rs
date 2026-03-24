@@ -454,6 +454,12 @@ impl AIClient {
             serde_json::json!({ "type": "disabled" })
         };
         request_body["thinking"] = thinking_value;
+        
+        // For OpenAI-compatible APIs with thinking enabled, add reasoning_effort to prevent
+        // litellm from injecting "minimal" which is not supported by vLLM backend
+        if enable && api_format.eq_ignore_ascii_case("openai") {
+            request_body["reasoning_effort"] = serde_json::json!("high");
+        }
     }
 
     /// Whether to append the `tool_stream` request field.
