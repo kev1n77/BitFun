@@ -1385,38 +1385,44 @@ impl WorkspaceService {
     }
 
     async fn ensure_assistant_workspaces(&self) -> BitFunResult<()> {
-        let descriptors = self.discover_assistant_workspaces().await?;
-        let mut has_current_workspace = self.get_current_workspace().await.is_some();
-        let has_opened_remote = {
-            let manager = self.manager.read().await;
-            manager
-                .get_opened_workspace_infos()
-                .iter()
-                .any(|w| w.workspace_kind == WorkspaceKind::Remote)
-        };
+        // Disabled: Skip assistant workspace auto-discovery and activation on startup
+        return Ok(());
 
-        for descriptor in descriptors {
-            // If a remote workspace tab exists but nothing is current yet (e.g. pending SSH
-            // reconnect), do not auto-activate the default assistant workspace — that would look
-            // like a spurious new local workspace.
-            let should_activate = !has_current_workspace
-                && !has_opened_remote
-                && descriptor.assistant_id.is_none();
-            let options = WorkspaceCreateOptions {
-                auto_set_current: should_activate,
-                add_to_recent: false,
-                workspace_kind: WorkspaceKind::Assistant,
-                assistant_id: descriptor.assistant_id.clone(),
-                display_name: Some(descriptor.display_name.clone()),
-                ..Default::default()
+        #[allow(unreachable_code)]
+        {
+            let descriptors = self.discover_assistant_workspaces().await?;
+            let mut has_current_workspace = self.get_current_workspace().await.is_some();
+            let has_opened_remote = {
+                let manager = self.manager.read().await;
+                manager
+                    .get_opened_workspace_infos()
+                    .iter()
+                    .any(|w| w.workspace_kind == WorkspaceKind::Remote)
             };
 
-            self.open_workspace_with_options(descriptor.path, options)
-                .await?;
-            has_current_workspace = true;
-        }
+            for descriptor in descriptors {
+                // If a remote workspace tab exists but nothing is current yet (e.g. pending SSH
+                // reconnect), do not auto-activate the default assistant workspace — that would look
+                // like a spurious new local workspace.
+                let should_activate = !has_current_workspace
+                    && !has_opened_remote
+                    && descriptor.assistant_id.is_none();
+                let options = WorkspaceCreateOptions {
+                    auto_set_current: should_activate,
+                    add_to_recent: false,
+                    workspace_kind: WorkspaceKind::Assistant,
+                    assistant_id: descriptor.assistant_id.clone(),
+                    display_name: Some(descriptor.display_name.clone()),
+                    ..Default::default()
+                };
 
-        Ok(())
+                self.open_workspace_with_options(descriptor.path, options)
+                    .await?;
+                has_current_workspace = true;
+            }
+
+            Ok(())
+        }
     }
 
     /// Saves workspace data manually (public API).
