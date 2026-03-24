@@ -41,7 +41,7 @@
   },
   "providers": {
     "inner": {
-      "name": "Inner",
+      "name": "Central Software Institute",
       "description": "Internal Network Model"
     },
     "openbitfun": {
