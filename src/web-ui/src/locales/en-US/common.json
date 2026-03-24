@@ -461,11 +461,11 @@
   "about": {
     "close": "Close",
     "copy": "Copy",
-    "version": "Version {{version}}",
+    "customVersion": "Central Software Institute Trial Edition",
     "buildDate": "Build Date",
-    "commit": "Commit",
-    "branch": "Branch",
-    "copyright": "© 2025 BitFun. All rights reserved."
+    "supportPrefix": "Technical support provided by ",
+    "supportLab": "IDE Lab",
+    "supportSuffix": ""
   },
   "actions": {
     "confirm": "Confirm",
