@@ -457,11 +457,11 @@
   "about": {
     "close": "关闭",
     "copy": "复制",
-    "version": "版本 {{version}}",
-    "buildDate": "构建日期",
-    "commit": "提交",
-    "branch": "分支",
-    "copyright": "© 2025 BitFun. All rights reserved."
+    "customVersion": "中软试用专供版本",
+    "buildDate": "构建时间",
+    "supportPrefix": "由 ",
+    "supportLab": "软件IDE实验室",
+    "supportSuffix": " 提供技术支持"
   },
   "actions": {
     "confirm": "确认",
