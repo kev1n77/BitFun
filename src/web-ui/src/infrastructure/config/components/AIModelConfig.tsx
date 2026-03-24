@@ -1925,6 +1925,10 @@ const AIModelConfig: React.FC = () => {
                           ...prev,
                           provider,
                           request_url: resolveRequestUrl(prev?.base_url || '', provider, prev?.model_name || ''),
+                          inline_think_in_text:
+                            provider === 'openai' || provider === 'anthropic'
+                              ? (prev?.inline_think_in_text ?? true)
+                              : false,
                         }));
                       }} placeholder={t('form.providerPlaceholder')} options={requestFormatOptions} size="small" />
                     </ConfigPageRow>
