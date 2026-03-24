@@ -275,11 +275,6 @@ const MainNav: React.FC<MainNavProps> = ({
       setSelectedAssistantWorkspaceId(targetAssistantWorkspace.id);
     }
 
-    if (!isAssistantWorkspaceActive && targetAssistantWorkspace) {
-      void setActiveWorkspace(targetAssistantWorkspace.id).catch(error => {
-        log.warn('Failed to activate default assistant workspace', { error });
-      });
-    }
     setMyAgentView('agents');
     switchLeftPanelTab('agents');
     openScene('my-agent');
@@ -288,7 +283,6 @@ const MainNav: React.FC<MainNavProps> = ({
     defaultAssistantWorkspace,
     isAssistantWorkspaceActive,
     openScene,
-    setActiveWorkspace,
     setMyAgentView,
     setSelectedAssistantWorkspaceId,
     switchLeftPanelTab,

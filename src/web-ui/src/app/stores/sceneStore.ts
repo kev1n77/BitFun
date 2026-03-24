@@ -77,6 +77,8 @@ interface SceneState {
   closeScene:   (id: SceneTabId) => void;
   goBack:       () => void;
   goForward:    () => void;
+  /** Replace all tabs with Welcome only (e.g. when no workspace is open). */
+  resetToWelcomeOnly: () => void;
 }
 
 function buildDefaultTabs(): SceneTab[] {
@@ -256,6 +258,16 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         return;
       }
     }
+  },
+
+  resetToWelcomeOnly: () => {
+    const now = Date.now();
+    set({
+      openTabs: [buildSceneTab(WELCOME_SCENE_ID, now)],
+      activeTabId: WELCOME_SCENE_ID,
+      navHistory: [WELCOME_SCENE_ID],
+      navCursor: 0,
+    });
   },
 }));
 
