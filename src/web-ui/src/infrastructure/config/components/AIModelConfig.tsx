@@ -631,7 +631,7 @@ const AIModelConfig: React.FC = () => {
       recommended_for: config.recommended_for || [],
       metadata: config.metadata || {},
       reasoning_mode: config.reasoning_mode ?? getEffectiveReasoningMode(config),
-      inline_think_in_text: config.inline_think_in_text ?? false,
+      inline_think_in_text: config.inline_think_in_text ?? true,
       reasoning_effort: config.reasoning_effort,
       thinking_budget_tokens: config.thinking_budget_tokens,
       custom_headers: config.custom_headers,
@@ -647,7 +647,7 @@ const AIModelConfig: React.FC = () => {
     base_url: config.base_url,
     api_key: config.api_key,
     model_name: config.model_name,
-    inline_think_in_text: config.inline_think_in_text ?? false,
+    inline_think_in_text: config.inline_think_in_text ?? true,
     skip_ssl_verify: config.skip_ssl_verify ?? false,
     custom_headers_mode: config.custom_headers_mode || null,
     custom_headers: config.custom_headers || null,
@@ -757,7 +757,7 @@ const AIModelConfig: React.FC = () => {
       capabilities: ['text_chat', 'function_calling'],
       recommended_for: [],
       metadata: {},
-      inline_think_in_text: false,
+      inline_think_in_text: true,
     });
     setSelectedModelDrafts(
       configuredProviderModels.length > 0
@@ -794,7 +794,7 @@ const AIModelConfig: React.FC = () => {
       capabilities: ['text_chat'],
       recommended_for: [],
       metadata: {},
-      inline_think_in_text: false,
+      inline_think_in_text: true,
     });
     setSelectedModelDrafts([]);
     setShowAdvancedSettings(false);  
@@ -825,7 +825,7 @@ const AIModelConfig: React.FC = () => {
       capabilities: config.capabilities || getCapabilitiesByCategory(config.category || 'general_chat'),
       recommended_for: config.recommended_for || [],
       metadata: config.metadata || {},
-      inline_think_in_text: config.inline_think_in_text ?? false,
+      inline_think_in_text: config.inline_think_in_text ?? true,
       custom_headers: config.custom_headers,
       custom_headers_mode: config.custom_headers_mode,
       skip_ssl_verify: config.skip_ssl_verify ?? false,
@@ -918,7 +918,7 @@ const AIModelConfig: React.FC = () => {
           recommended_for: editingConfig.recommended_for || [],
           metadata: editingConfig.metadata,
           reasoning_mode: draft.reasoningMode,
-          inline_think_in_text: editingConfig.inline_think_in_text ?? false,
+          inline_think_in_text: editingConfig.inline_think_in_text ?? true,
           reasoning_effort: draft.reasoningEffort,
           thinking_budget_tokens: draft.thinkingBudgetTokens,
           custom_headers: editingConfig.custom_headers,
@@ -1767,7 +1767,7 @@ const AIModelConfig: React.FC = () => {
                           ...prev,
                           provider,
                           request_url: resolveRequestUrl(prev?.base_url || '', provider, prev?.model_name || ''),
-                          inline_think_in_text: provider === 'openai' ? (prev?.inline_think_in_text ?? false) : false,
+                          inline_think_in_text: provider === 'openai' ? (prev?.inline_think_in_text ?? true) : false,
                         }));
                       }} placeholder={t('form.providerPlaceholder')} options={requestFormatOptions} size="small" />
                     </ConfigPageRow>
@@ -1847,7 +1847,7 @@ const AIModelConfig: React.FC = () => {
                     className="bitfun-ai-model-config__toggle-row"
                   >
                     <Switch
-                      checked={editingConfig.inline_think_in_text ?? false}
+                      checked={editingConfig.inline_think_in_text ?? true}
                       onChange={(e) => setEditingConfig(prev => ({ ...prev, inline_think_in_text: e.target.checked }))}
                       size="small"
                     />
