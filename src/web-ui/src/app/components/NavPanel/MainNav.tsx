@@ -266,12 +266,31 @@ const MainNav: React.FC<MainNavProps> = ({
   }, [isAgentsActive, isSkillsActive]);
 
   const handleOpenProfile = useCallback(() => {
+    const targetAssistantWorkspace =
+      isAssistantWorkspaceActive && currentWorkspace?.workspaceKind === WorkspaceKind.Assistant
+        ? currentWorkspace
+        : defaultAssistantWorkspace;
+
+    if (targetAssistantWorkspace?.id) {
+      setSelectedAssistantWorkspaceId(targetAssistantWorkspace.id);
+    }
+
+    if (!isAssistantWorkspaceActive && targetAssistantWorkspace) {
+      void setActiveWorkspace(targetAssistantWorkspace.id).catch(error => {
+        log.warn('Failed to activate default assistant workspace', { error });
+      });
+    }
     setMyAgentView('agents');
     switchLeftPanelTab('agents');
     openScene('my-agent');
   }, [
+    currentWorkspace,
+    defaultAssistantWorkspace,
+    isAssistantWorkspaceActive,
     openScene,
+    setActiveWorkspace,
     setMyAgentView,
+    setSelectedAssistantWorkspaceId,
     switchLeftPanelTab,
   ]);
 
