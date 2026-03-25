@@ -116,6 +116,11 @@ impl PendingToolCall {
         self.raw_arguments.push_str(arguments_chunk);
     }
 
+    pub fn replace_arguments(&mut self, arguments_chunk: &str) {
+        self.raw_arguments.clear();
+        self.raw_arguments.push_str(arguments_chunk);
+    }
+
     pub fn finalize(&mut self, boundary: ToolCallBoundary) -> Option<FinalizedToolCall> {
         if !self.has_pending() {
             return None;
@@ -212,5 +217,40 @@ mod tests {
 
         assert_eq!(map.get("a"), Some(&json!(1)));
         assert_eq!(map.get("b"), Some(&json!("x")));
+    }
+
+    #[test]
+    fn replace_arguments_discards_previous_partial_json() {
+        let mut pending = PendingToolCall::default();
+        pending.start_new("call_1".to_string(), Some("tool_a".to_string()));
+        pending.append_arguments("{\"file_path\":\"D:/Projects");
+
+        pending.replace_arguments("{\"file_path\":\"D:/Projects\",\"content\":\"ok\"}");
+
+        let finalized = pending
+            .finalize(ToolCallBoundary::FinishReason)
+            .expect("finalized tool");
+
+        assert_eq!(
+            finalized.arguments,
+            json!({"file_path": "D:/Projects", "content": "ok"})
+        );
+        assert!(!finalized.is_error);
+    }
+
+    #[test]
+    fn replace_arguments_keeps_latest_snapshot_only() {
+        let mut pending = PendingToolCall::default();
+        pending.start_new("call_1".to_string(), Some("tool_a".to_string()));
+        pending.append_arguments("{\"a\":1");
+        pending.replace_arguments("{\"a\":1}");
+        pending.replace_arguments("{\"a\":2}");
+
+        let finalized = pending
+            .finalize(ToolCallBoundary::FinishReason)
+            .expect("finalized tool");
+
+        assert_eq!(finalized.arguments, json!({"a": 2}));
+        assert!(!finalized.is_error);
     }
 }

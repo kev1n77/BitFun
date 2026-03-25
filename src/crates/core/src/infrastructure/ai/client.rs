@@ -1839,6 +1839,7 @@ impl AIClient {
                             id,
                             name,
                             arguments,
+                            ..
                         } = tool_call;
 
                         if let Some(tool_call_id) = id {
