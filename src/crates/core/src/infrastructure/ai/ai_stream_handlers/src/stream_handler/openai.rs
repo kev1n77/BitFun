@@ -1,5 +1,5 @@
 use super::stream_stats::StreamStats;
-use crate::types::openai::OpenAISSEData;
+use crate::types::openai::{OpenAISSEData, OpenAIToolCallArgumentsNormalizer};
 use crate::types::unified::{UnifiedResponse, UnifiedTokenUsage};
 use anyhow::{anyhow, Result};
 use eventsource_stream::Eventsource;
@@ -323,6 +323,7 @@ impl OpenAIInlineThinkParser {
 
 #[derive(Debug)]
 struct OpenAIResponseNormalizer {
+    tool_arguments_normalizer: OpenAIToolCallArgumentsNormalizer,
     tool_call_filter: OpenAIToolCallFilter,
     inline_think_parser: OpenAIInlineThinkParser,
 }
@@ -330,9 +331,14 @@ struct OpenAIResponseNormalizer {
 impl OpenAIResponseNormalizer {
     fn new(inline_think_in_text: bool) -> Self {
         Self {
+            tool_arguments_normalizer: OpenAIToolCallArgumentsNormalizer::default(),
             tool_call_filter: OpenAIToolCallFilter::default(),
             inline_think_parser: OpenAIInlineThinkParser::new(inline_think_in_text),
         }
+    }
+
+    fn normalize_sse_data(&mut self, sse_data: &mut OpenAISSEData) {
+        sse_data.normalize_tool_call_arguments(&mut self.tool_arguments_normalizer);
     }
 
     fn normalize_response(&mut self, response: UnifiedResponse) -> Vec<UnifiedResponse> {
@@ -481,7 +487,7 @@ pub async fn handle_openai_stream(
         }
 
         stats.increment("chunk:chat_completion");
-        let sse_data: OpenAISSEData = match serde_json::from_value(event_json) {
+        let mut sse_data: OpenAISSEData = match serde_json::from_value(event_json) {
             Ok(event) => event,
             Err(e) => {
                 let error_msg = format!("SSE data schema error: {}, data: {}", e, &raw);
@@ -501,6 +507,8 @@ pub async fn handle_openai_stream(
                 tool_call_count
             );
         }
+
+        normalizer.normalize_sse_data(&mut sse_data);
 
         let has_empty_choices = sse_data.is_choices_empty();
         let unified_responses = sse_data.into_unified_responses();
@@ -616,6 +624,7 @@ mod tests {
                 id: Some("call_1".to_string()),
                 name: Some("read_file".to_string()),
                 arguments: Some("{\"path\":\"a.txt\"}".to_string()),
+                arguments_is_snapshot: false,
             }),
             ..Default::default()
         };
@@ -624,6 +633,7 @@ mod tests {
                 id: Some("call_1".to_string()),
                 name: None,
                 arguments: Some(String::new()),
+                arguments_is_snapshot: false,
             }),
             ..Default::default()
         };
@@ -641,6 +651,7 @@ mod tests {
                 id: Some("call_1".to_string()),
                 name: Some("read_file".to_string()),
                 arguments: Some("{\"path\":\"a.txt\"}".to_string()),
+                arguments_is_snapshot: false,
             }),
             ..Default::default()
         };
@@ -649,6 +660,7 @@ mod tests {
                 id: Some("call_1".to_string()),
                 name: None,
                 arguments: None,
+                arguments_is_snapshot: false,
             }),
             finish_reason: Some("tool_calls".to_string()),
             ..Default::default()

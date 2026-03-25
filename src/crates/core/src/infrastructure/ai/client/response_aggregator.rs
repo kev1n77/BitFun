@@ -47,6 +47,7 @@ pub(crate) async fn aggregate_stream_response(
                         id,
                         name,
                         arguments,
+                        ..
                     } = tool_call;
 
                     if let Some(tool_call_id) = id {
