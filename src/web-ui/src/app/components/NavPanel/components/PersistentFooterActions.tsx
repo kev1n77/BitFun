@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { Settings, Info, MoreVertical, PictureInPicture2, SquareTerminal, Network, Layers, BarChart3 } from 'lucide-react';
+import { Settings, Info, MoreVertical, PictureInPicture2, SquareTerminal, Globe, Network, Layers, BarChart3 } from 'lucide-react';
 import { Tooltip, Modal } from '@/component-library';
 import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
 import { useSceneManager } from '../../../hooks/useSceneManager';
@@ -74,6 +74,22 @@ const PersistentFooterActions: React.FC = () => {
     }
     openNavScene('shell');
   }, [closeNavScene, navSceneId, openNavScene, showSceneNav]);
+
+  const handleOpenBrowser = useCallback(() => {
+    if (activeTabId === 'session') {
+      window.dispatchEvent(new CustomEvent('agent-create-tab', {
+        detail: {
+          type: 'browser',
+          title: t('scenes.browser'),
+          checkDuplicate: true,
+          duplicateCheckKey: 'browser-panel',
+          replaceExisting: false,
+        },
+      }));
+    } else {
+      openScene('browser');
+    }
+  }, [activeTabId, openScene, t]);
 
   const handleOpenMermaidEditor = useCallback(() => {
     const title = t('scenes.mermaidEditor');
