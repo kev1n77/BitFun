@@ -210,8 +210,7 @@ const PersistentFooterActions: React.FC = () => {
                     role="menu"
                     aria-label={t('nav.multimodalTools')}
                   >
-                    {/* Browser button - Hidden */}
-                    {/* <button
+                    <button
                       type="button"
                       className={`bitfun-nav-panel__footer-multimodal-item${isBrowserActive ? ' is-active' : ''}`}
                       role="menuitem"
@@ -220,7 +219,7 @@ const PersistentFooterActions: React.FC = () => {
                     >
                       <Globe size={13} className="bitfun-nav-panel__footer-multimodal-item-icon" />
                       <span className="bitfun-nav-panel__footer-multimodal-item-label">{t('scenes.browser')}</span>
-                    </button> */}
+                    </button>
 
                     <button
                       type="button"
