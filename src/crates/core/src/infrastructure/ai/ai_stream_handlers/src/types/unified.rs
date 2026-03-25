@@ -1,11 +1,17 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnifiedToolCall {
     pub id: Option<String>,
     pub name: Option<String>,
     pub arguments: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub arguments_is_snapshot: bool,
 }
 
 /// Unified AI response format
