@@ -133,6 +133,11 @@ impl ToolCallBuffer {
         self.json_checker.append(s);
     }
 
+    fn replace(&mut self, s: &str) {
+        self.json_checker.reset();
+        self.json_checker.append(s);
+    }
+
     fn is_valid(&self) -> bool {
         self.json_checker.is_valid()
     }
@@ -461,8 +466,15 @@ impl StreamProcessor {
         ctx: &mut StreamContext,
         tool_call: ai_stream_handlers::UnifiedToolCall,
     ) {
+        let ai_stream_handlers::UnifiedToolCall {
+            id,
+            name,
+            arguments,
+            arguments_is_snapshot,
+        } = tool_call;
+
         // Handle tool ID and name
-        if let Some(tool_id) = tool_call.id {
+        if let Some(tool_id) = id {
             if !tool_id.is_empty() {
                 ctx.has_effective_output = true;
                 // Some providers repeat the tool id on every delta; only treat a new id as a new tool call.
@@ -472,7 +484,7 @@ impl StreamProcessor {
                     ctx.force_finish_tool_call_buffer();
 
                     // Normally tool_name should not be empty
-                    let tool_name = tool_call.name.unwrap_or_default();
+                    let tool_name = name.clone().unwrap_or_default();
                     debug!("Tool detected: {}", tool_name);
                     ctx.tool_call_buffer.tool_id = tool_id.clone();
                     ctx.tool_call_buffer.tool_name = tool_name.clone();
@@ -496,17 +508,21 @@ impl StreamProcessor {
                         .await;
                 } else if ctx.tool_call_buffer.tool_name.is_empty() {
                     // Best-effort: keep name if provider repeats it.
-                    ctx.tool_call_buffer.tool_name = tool_call.name.unwrap_or_default();
+                    ctx.tool_call_buffer.tool_name = name.clone().unwrap_or_default();
                 }
             }
         }
 
         // Handle tool parameters
-        if let Some(tool_call_arguments) = tool_call.arguments {
+        if let Some(tool_call_arguments) = arguments {
             // Empty tool_id indicates abnormal premature closure, stop processing subsequent data for this tool_call
             if !ctx.tool_call_buffer.tool_id.is_empty() {
                 ctx.has_effective_output = true;
-                ctx.tool_call_buffer.append(&tool_call_arguments);
+                if arguments_is_snapshot {
+                    ctx.tool_call_buffer.replace(&tool_call_arguments);
+                } else {
+                    ctx.tool_call_buffer.append(&tool_call_arguments);
+                }
 
                 // Send partial parameters event
                 let _ = self
@@ -809,5 +825,36 @@ impl StreamProcessor {
         self.log_stream_result(&ctx);
 
         Ok(ctx.into_result())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ToolCallBuffer;
+
+    #[test]
+    fn tool_call_buffer_replace_discards_previous_partial_json() {
+        let mut buffer = ToolCallBuffer::new();
+        buffer.append("{\"file_path\":\"D:/Projects");
+        assert!(!buffer.is_valid());
+
+        buffer.replace("{\"file_path\": \"D:/Projects\", \"content\": \"ok\"}");
+
+        assert!(buffer.is_valid());
+        assert_eq!(
+            buffer.json_checker.get_buffer(),
+            "{\"file_path\": \"D:/Projects\", \"content\": \"ok\"}"
+        );
+    }
+
+    #[test]
+    fn tool_call_buffer_replace_keeps_latest_snapshot_only() {
+        let mut buffer = ToolCallBuffer::new();
+        buffer.append("{\"a\":1");
+        buffer.replace("{\"a\": 1}");
+        buffer.replace("{\"a\": 2}");
+
+        assert!(buffer.is_valid());
+        assert_eq!(buffer.json_checker.get_buffer(), "{\"a\": 2}");
     }
 }
