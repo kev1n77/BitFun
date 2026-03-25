@@ -8,7 +8,7 @@ import { validateUrl, checkConnectivity } from './browserUrlCheck';
 import './BrowserScene.scss';
 
 const log = createLogger('BrowserScene');
-const DEFAULT_URL = 'https://openbitfun.com/';
+const DEFAULT_URL = 'http://bitfun.rnd.huawei.com';
 const BROWSER_HOLDER_WINDOW_LABEL = 'embedded-browser-holder-window';
 
 function isTauriEnvironment(): boolean {
