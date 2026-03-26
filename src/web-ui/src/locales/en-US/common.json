@@ -100,9 +100,9 @@
       "assistantSessions": "Assistant Sessions"
     },
     "search": {
-      "triggerPlaceholder": "Search workspaces, assistants, sessions...",
+      "triggerPlaceholder": "Search workspaces, sessions...",
       "triggerTooltip": "Search (Ctrl+K)",
-      "inputPlaceholder": "Search workspaces, assistants, sessions...",
+      "inputPlaceholder": "Search workspaces, sessions...",
       "groupWorkspaces": "Open Workspaces",
       "groupAssistants": "Assistants",
       "groupSessions": "All Sessions",
@@ -127,6 +127,7 @@
     },
     "shell": {
       "title": "Shell",
+      "homeLabel": "home",
       "views": {
         "manual": "Mine",
         "agent": "Agent"

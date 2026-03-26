@@ -1,13 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { FolderOpen, User, MessageSquare } from 'lucide-react';
+import { FolderOpen, MessageSquare } from 'lucide-react';
 import { Search } from '@/component-library';
 import { useI18n } from '@/infrastructure/i18n';
 import { useWorkspaceContext } from '@/infrastructure/contexts/WorkspaceContext';
-import { useSceneManager } from '@/app/hooks/useSceneManager';
-import { useApp } from '@/app/hooks/useApp';
-import { useMyAgentStore } from '@/app/scenes/my-agent/myAgentStore';
-import { useNurseryStore } from '@/app/scenes/profile/nurseryStore';
 import { flowChatStore } from '@/flow_chat/store/FlowChatStore';
 import { openMainSession } from '@/flow_chat/services/openBtwSession';
 import type { FlowChatState, Session } from '@/flow_chat/types/flow-chat';
@@ -20,7 +16,7 @@ interface NavSearchDialogProps {
   onClose: () => void;
 }
 
-type ResultKind = 'workspace' | 'assistant' | 'session';
+type ResultKind = 'workspace' | 'session';
 
 interface SearchResultItem {
   kind: ResultKind;
@@ -42,11 +38,7 @@ const matchesQuery = (query: string, ...fields: (string | undefined | null)[]): 
 
 const NavSearchDialog: React.FC<NavSearchDialogProps> = ({ open, onClose }) => {
   const { t } = useI18n('common');
-  const { openedWorkspacesList, assistantWorkspacesList, setActiveWorkspace } = useWorkspaceContext();
-  const { openScene } = useSceneManager();
-  const { switchLeftPanelTab } = useApp();
-  const setSelectedAssistantWorkspaceId = useMyAgentStore(s => s.setSelectedAssistantWorkspaceId);
-  const openNurseryAssistant = useNurseryStore(s => s.openAssistant);
+  const { openedWorkspacesList, setActiveWorkspace } = useWorkspaceContext();
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const [flowChatState, setFlowChatState] = useState<FlowChatState>(() => flowChatStore.getState());
@@ -95,10 +87,6 @@ const NavSearchDialog: React.FC<NavSearchDialogProps> = ({ open, onClose }) => {
       for (const w of projectWorkspaces.slice(0, MAX_PER_GROUP)) {
         items.push({ kind: 'workspace', id: w.id, label: w.name, sublabel: w.rootPath });
       }
-      for (const w of assistantWorkspacesList.slice(0, MAX_PER_GROUP)) {
-        const displayName = w.identity?.name?.trim() || w.name;
-        items.push({ kind: 'assistant', id: w.id, label: displayName, sublabel: w.description });
-      }
       return items;
     }
 
@@ -107,14 +95,6 @@ const NavSearchDialog: React.FC<NavSearchDialogProps> = ({ open, onClose }) => {
       .slice(0, MAX_PER_GROUP);
     for (const w of filteredWorkspaces) {
       items.push({ kind: 'workspace', id: w.id, label: w.name, sublabel: w.rootPath });
-    }
-
-    const filteredAssistants = assistantWorkspacesList
-      .filter(w => matchesQuery(q, w.name, w.identity?.name, w.description))
-      .slice(0, MAX_PER_GROUP);
-    for (const w of filteredAssistants) {
-      const displayName = w.identity?.name?.trim() || w.name;
-      items.push({ kind: 'assistant', id: w.id, label: displayName, sublabel: w.description });
     }
 
     const filteredSessions = allSessions
@@ -131,7 +111,7 @@ const NavSearchDialog: React.FC<NavSearchDialogProps> = ({ open, onClose }) => {
     }
 
     return items;
-  }, [query, projectWorkspaces, assistantWorkspacesList, allSessions, t]);
+  }, [query, projectWorkspaces, allSessions, t]);
 
   useEffect(() => {
     setActiveIndex(0);
@@ -141,19 +121,13 @@ const NavSearchDialog: React.FC<NavSearchDialogProps> = ({ open, onClose }) => {
     onClose();
     if (item.kind === 'workspace') {
       await setActiveWorkspace(item.id);
-    } else if (item.kind === 'assistant') {
-      setSelectedAssistantWorkspaceId(item.id);
-      openNurseryAssistant(item.id);
-      await setActiveWorkspace(item.id).catch(() => {});
-      switchLeftPanelTab('profile');
-      openScene('assistant');
     } else if (item.kind === 'session') {
       await openMainSession(item.id, {
         workspaceId: item.workspaceId,
         activateWorkspace: item.workspaceId ? setActiveWorkspace : undefined,
       });
     }
-  }, [onClose, setActiveWorkspace, setSelectedAssistantWorkspaceId, openNurseryAssistant, switchLeftPanelTab, openScene]);
+  }, [onClose, setActiveWorkspace]);
 
   // Passed to Search component's onKeyDown — called before its built-in handling.
   // Use e.preventDefault() to suppress Search's own Enter/Escape logic when needed.
@@ -187,7 +161,6 @@ const NavSearchDialog: React.FC<NavSearchDialogProps> = ({ open, onClose }) => {
   if (!open) return null;
 
   const workspaceItems = results.filter(r => r.kind === 'workspace');
-  const assistantItems = results.filter(r => r.kind === 'assistant');
   const sessionItems = results.filter(r => r.kind === 'session');
 
   let globalIndex = 0;
@@ -249,7 +222,6 @@ const NavSearchDialog: React.FC<NavSearchDialogProps> = ({ open, onClose }) => {
           ) : (
             <>
               {renderGroup(t('nav.search.groupWorkspaces'), workspaceItems, () => <FolderOpen size={14} />)}
-              {renderGroup(t('nav.search.groupAssistants'), assistantItems, () => <User size={14} />)}
               {renderGroup(t('nav.search.groupSessions'), sessionItems, () => <MessageSquare size={14} />)}
             </>
           )}

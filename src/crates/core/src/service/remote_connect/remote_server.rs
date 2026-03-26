@@ -2544,50 +2544,24 @@ impl RemoteServer {
                 workspace_path: requested_ws_path,
             } => {
                 let agent = resolve_agent_type(agent_type.as_deref());
-                let is_claw = agent == "Claw";
+                if agent.eq_ignore_ascii_case("Claw") {
+                    return RemoteResponse::Error {
+                        message: "Claw sessions are disabled".to_string(),
+                    };
+                }
 
                 let session_name = custom_name
                     .as_deref()
                     .filter(|n| !n.is_empty())
                     .unwrap_or(match agent {
                         "Cowork" => "Remote Cowork Session",
-                        "Claw" => "Remote Claw Session",
                         _ => "Remote Code Session",
                     });
 
-                let binding_ws_str = if is_claw {
-                    // For Claw sessions, get or create default assistant workspace
-                    use crate::service::workspace::get_global_workspace_service;
-
-                    let ws_service = match get_global_workspace_service() {
-                        Some(s) => s,
-                        None => {
-                            return RemoteResponse::Error {
-                                message: "Workspace service not available".to_string(),
-                            };
-                        }
-                    };
-
-                    let workspaces = ws_service.get_assistant_workspaces().await;
-                    if let Some(default_ws) = workspaces.into_iter().find(|w| w.assistant_id.is_none()) {
-                        Some(default_ws.root_path.to_string_lossy().to_string())
-                    } else {
-                        match ws_service.create_assistant_workspace(None).await {
-                            Ok(ws_info) => Some(ws_info.root_path.to_string_lossy().to_string()),
-                            Err(e) => {
-                                return RemoteResponse::Error {
-                                    message: format!("Failed to create assistant workspace: {}", e),
-                                };
-                            }
-                        }
-                    }
-                } else {
-                    // For Code/Cowork sessions, use provided workspace
-                    requested_ws_path
-                        .as_deref()
-                        .filter(|path| !path.is_empty())
-                        .map(ToOwned::to_owned)
-                };
+                let binding_ws_str = requested_ws_path
+                    .as_deref()
+                    .filter(|path| !path.is_empty())
+                    .map(ToOwned::to_owned);
 
                 debug!(
                     "Remote CreateSession: agent={}, requested_ws={:?}, binding_ws={:?}",
@@ -2596,11 +2570,7 @@ impl RemoteServer {
 
                 let Some(binding_ws_str) = binding_ws_str else {
                     return RemoteResponse::Error {
-                        message: if is_claw {
-                            "Failed to get or create assistant workspace".to_string()
-                        } else {
-                            "workspace_path is required for CreateSession".to_string()
-                        },
+                        message: "workspace_path is required for CreateSession".to_string(),
                     };
                 };
 

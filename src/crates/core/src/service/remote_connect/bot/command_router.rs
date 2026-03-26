@@ -27,15 +27,15 @@ impl BotLanguage {
     }
 }
 
-/// Display mode for bot sessions - Professional or Assistant
+/// Display mode for bot sessions.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum BotDisplayMode {
     /// Professional mode: can create Code/Cowork sessions
     #[serde(rename = "pro")]
-    Pro,
-    /// Assistant mode: can create Claw sessions
-    #[serde(rename = "assistant")]
     #[default]
+    Pro,
+    /// Legacy assistant mode kept for compatibility.
+    #[serde(rename = "assistant")]
     Assistant,
 }
 
@@ -46,7 +46,7 @@ pub struct BotChatState {
     pub current_workspace: Option<String>,
     pub current_assistant: Option<String>,
     pub current_session_id: Option<String>,
-    /// Display mode: Professional (Pro) or Assistant
+    /// Display mode. Assistant is globally disabled.
     #[serde(default)]
     pub display_mode: BotDisplayMode,
     #[serde(skip)]
@@ -71,7 +71,7 @@ impl BotChatState {
             current_workspace: None,
             current_assistant: None,
             current_session_id: None,
-            display_mode: BotDisplayMode::Assistant,
+            display_mode: BotDisplayMode::Pro,
             pending_action: None,
             pending_files: std::collections::HashMap::new(),
             last_menu_commands: Vec::new(),
@@ -313,28 +313,22 @@ pub fn help_message(language: BotLanguage) -> &'static str {
         "\
 可用命令：
 /switch_workspace - 列出并切换工作区（专业模式）
-/switch_assistant - 列出并切换助理（助理模式）
-/pro - 切换到专业模式（可创建 Code/Cowork 会话）
-/assistant - 切换到助理模式（可创建助理会话）
+/pro - 切换到专业模式（Code/Cowork）
 /verbose - 开启详细模式（显示任务执行过程）
 /concise - 开启简洁模式（仅显示最终结果）
 /new_code_session - 创建新的编码会话（专业模式）
 /new_cowork_session - 创建新的协作会话（专业模式）
-/new_claw_session - 创建新的助理会话（助理模式）
 /cancel_task - 取消当前任务
 /help - 显示帮助信息"
     } else {
         "\
 Available commands:
 /switch_workspace - List and switch workspaces (Expert mode)
-/switch_assistant - List and switch assistants (Assistant mode)
-/pro - Switch to Expert mode (can create Code/Cowork sessions)
-/assistant - Switch to Assistant mode (can create Claw sessions)
+/pro - Switch to Expert mode (Code/Cowork)
 /verbose - Enable verbose mode (show task execution progress)
 /concise - Enable concise mode (only show final results)
 /new_code_session - Create a new coding session (Expert mode)
 /new_cowork_session - Create a new cowork session (Expert mode)
-/new_claw_session - Create a new claw session (Assistant mode)
 /cancel_task - Cancel the current task
 /help - Show this help message"
     }
@@ -500,8 +494,15 @@ pub async fn bootstrap_im_chat_after_pairing(state: &mut BotChatState) -> String
 /// Mark chat paired, run assistant/session bootstrap, return first user-visible message + main menu actions.
 pub async fn complete_im_bot_pairing(state: &mut BotChatState) -> HandleResult {
     state.paired = true;
+    state.display_mode = BotDisplayMode::Pro;
+    state.current_assistant = None;
+    state.current_session_id = None;
     let language = current_bot_language().await;
-    let note = bootstrap_im_chat_after_pairing(state).await;
+    let note = if language.is_chinese() {
+        "Pairing completed. Use a regular workspace with /switch_workspace, /new_code_session, or /new_cowork_session.".to_string()
+    } else {
+        "Pairing completed. Use a regular workspace with /switch_workspace, /new_code_session, or /new_cowork_session.".to_string()
+    };
     let reply = format!("{}\n\n{}", paired_success_message(language), note);
     let actions = main_menu_actions(language, state.display_mode);
     state.last_menu_commands = actions.iter().map(|a| a.command.clone()).collect();
@@ -609,6 +610,9 @@ fn other_label(language: BotLanguage) -> &'static str {
 }
 
 pub fn main_menu_actions(language: BotLanguage, display_mode: BotDisplayMode) -> Vec<BotAction> {
+    if display_mode != BotDisplayMode::Pro {
+        return pro_mode_actions(language);
+    }
     let is_pro = display_mode == BotDisplayMode::Pro;
 
     if is_pro {
@@ -616,20 +620,12 @@ pub fn main_menu_actions(language: BotLanguage, display_mode: BotDisplayMode) ->
         vec![
             BotAction::primary(label_switch_workspace(language), "/switch_workspace"),
             BotAction::secondary(label_resume_session(language), "/resume_session"),
-            BotAction::secondary(label_switch_assistant_mode(language), "/assistant"),
             BotAction::secondary(label_new_code_session(language), "/new_code_session"),
             BotAction::secondary(label_new_cowork_session(language), "/new_cowork_session"),
             BotAction::secondary(label_help(language), "/help"),
         ]
     } else {
-        // Assistant mode: show assistant switch (not workspace)
-        vec![
-            BotAction::primary(label_switch_assistant(language), "/switch_assistant"),
-            BotAction::secondary(label_resume_session(language), "/resume_session"),
-            BotAction::secondary(label_switch_pro_mode(language), "/pro"),
-            BotAction::secondary(label_new_claw_session(language), "/new_claw_session"),
-            BotAction::secondary(label_help(language), "/help"),
-        ]
+        pro_mode_actions(language)
     }
 }
 
@@ -638,18 +634,12 @@ fn pro_mode_actions(language: BotLanguage) -> Vec<BotAction> {
         BotAction::primary(label_new_code_session(language), "/new_code_session"),
         BotAction::secondary(label_new_cowork_session(language), "/new_cowork_session"),
         BotAction::secondary(label_switch_workspace(language), "/switch_workspace"),
-        BotAction::secondary(label_switch_assistant_mode(language), "/assistant"),
         BotAction::secondary(label_help(language), "/help"),
     ]
 }
 
 fn assistant_mode_actions(language: BotLanguage) -> Vec<BotAction> {
-    vec![
-        BotAction::primary(label_new_claw_session(language), "/new_claw_session"),
-        BotAction::secondary(label_switch_assistant(language), "/switch_assistant"),
-        BotAction::secondary(label_switch_pro_mode(language), "/pro"),
-        BotAction::secondary(label_help(language), "/help"),
-    ]
+    pro_mode_actions(language)
 }
 
 fn workspace_required_actions(language: BotLanguage) -> Vec<BotAction> {
@@ -659,14 +649,26 @@ fn workspace_required_actions(language: BotLanguage) -> Vec<BotAction> {
     )]
 }
 
+fn assistant_features_disabled(language: BotLanguage) -> HandleResult {
+    HandleResult {
+        reply: if language.is_chinese() {
+            "Assistant/Claw features are disabled. Use a regular workspace instead.".to_string()
+        } else {
+            "Assistant/Claw features are disabled. Use a regular workspace instead.".to_string()
+        },
+        actions: workspace_required_actions(language),
+        forward_to_session: None,
+    }
+}
+
 fn assistant_required_actions(language: BotLanguage) -> Vec<BotAction> {
-    vec![BotAction::primary(
-        label_switch_assistant(language),
-        "/switch_assistant",
-    )]
+    workspace_required_actions(language)
 }
 
 fn session_entry_actions(language: BotLanguage, display_mode: BotDisplayMode) -> Vec<BotAction> {
+    if display_mode != BotDisplayMode::Pro {
+        return pro_mode_actions(language);
+    }
     let is_pro = display_mode == BotDisplayMode::Pro;
     if is_pro {
         vec![
@@ -674,37 +676,27 @@ fn session_entry_actions(language: BotLanguage, display_mode: BotDisplayMode) ->
             BotAction::secondary(label_new_code_session(language), "/new_code_session"),
             BotAction::secondary(label_new_cowork_session(language), "/new_cowork_session"),
             BotAction::secondary(label_switch_workspace(language), "/switch_workspace"),
-            BotAction::secondary(label_switch_assistant_mode(language), "/assistant"),
             BotAction::secondary(label_help(language), "/help"),
         ]
     } else {
-        vec![
-            BotAction::primary(label_resume_session(language), "/resume_session"),
-            BotAction::secondary(label_new_claw_session(language), "/new_claw_session"),
-            BotAction::secondary(label_switch_assistant(language), "/switch_assistant"),
-            BotAction::secondary(label_switch_pro_mode(language), "/pro"),
-            BotAction::secondary(label_help(language), "/help"),
-        ]
+        pro_mode_actions(language)
     }
 }
 
 fn new_session_actions(language: BotLanguage, display_mode: BotDisplayMode) -> Vec<BotAction> {
+    if display_mode != BotDisplayMode::Pro {
+        return pro_mode_actions(language);
+    }
     let is_pro = display_mode == BotDisplayMode::Pro;
     if is_pro {
         vec![
             BotAction::primary(label_new_code_session(language), "/new_code_session"),
             BotAction::secondary(label_new_cowork_session(language), "/new_cowork_session"),
             BotAction::secondary(label_switch_workspace(language), "/switch_workspace"),
-            BotAction::secondary(label_switch_assistant_mode(language), "/assistant"),
             BotAction::secondary(label_help(language), "/help"),
         ]
     } else {
-        vec![
-            BotAction::primary(label_new_claw_session(language), "/new_claw_session"),
-            BotAction::secondary(label_switch_assistant(language), "/switch_assistant"),
-            BotAction::secondary(label_switch_pro_mode(language), "/pro"),
-            BotAction::secondary(label_help(language), "/help"),
-        ]
+        pro_mode_actions(language)
     }
 }
 
@@ -735,6 +727,10 @@ async fn dispatch_im_bot_command_inner(
     image_contexts: Vec<crate::agentic::image_analysis::ImageContextData>,
 ) -> HandleResult {
     let language = current_bot_language().await;
+    if state.display_mode != BotDisplayMode::Pro {
+        state.display_mode = BotDisplayMode::Pro;
+        state.current_assistant = None;
+    }
     match cmd {
         BotCommand::Start | BotCommand::Help => {
             if state.paired {
@@ -754,6 +750,8 @@ async fn dispatch_im_bot_command_inner(
         BotCommand::SwitchMode(new_mode) => {
             if !state.paired {
                 not_paired(language)
+            } else if new_mode != BotDisplayMode::Pro {
+                assistant_features_disabled(language)
             } else {
                 state.display_mode = new_mode;
                 let mode_name = if new_mode == BotDisplayMode::Pro {
@@ -818,7 +816,7 @@ async fn dispatch_im_bot_command_inner(
             if !state.paired {
                 return not_paired(language);
             }
-            handle_switch_assistant(state).await
+            assistant_features_disabled(language)
         }
         BotCommand::ResumeSession => {
             if !state.paired {
@@ -865,12 +863,7 @@ async fn dispatch_im_bot_command_inner(
             if !state.paired {
                 return not_paired(language);
             }
-            // Claw session only available in Assistant mode
-            if state.display_mode != BotDisplayMode::Assistant {
-                return wrong_mode_for_assistant(language);
-            }
-            // Claw sessions don't need workspace
-            handle_new_session(state, "Claw").await
+            assistant_features_disabled(language)
         }
         BotCommand::CancelTask(turn_id) => {
             if !state.paired {
@@ -940,7 +933,9 @@ fn need_workspace(language: BotLanguage) -> HandleResult {
     }
 }
 
+#[allow(unreachable_code)]
 fn need_assistant(language: BotLanguage) -> HandleResult {
+    return assistant_features_disabled(language);
     HandleResult {
         reply: if language.is_chinese() {
             "尚未选择助理。请先使用 /switch_assistant。".to_string()
@@ -964,7 +959,9 @@ fn wrong_mode_for_pro(language: BotLanguage) -> HandleResult {
     }
 }
 
+#[allow(unreachable_code)]
 fn wrong_mode_for_assistant(language: BotLanguage) -> HandleResult {
+    return assistant_features_disabled(language);
     HandleResult {
         reply: if language.is_chinese() {
             "该会话只能在助理模式下创建。请先发送 /assistant 切换到助理模式。".to_string()
@@ -1428,6 +1425,9 @@ async fn handle_new_session(state: &mut BotChatState, agent_type: &str) -> Handl
 
     let language = current_bot_language().await;
     let is_claw = agent_type == "Claw";
+    if is_claw {
+        return assistant_features_disabled(language);
+    }
 
     let coordinator = match get_global_coordinator() {
         Some(c) => c,
