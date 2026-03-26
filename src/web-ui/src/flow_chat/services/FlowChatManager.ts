@@ -42,6 +42,10 @@ import {
 
 const log = createLogger('FlowChatManager');
 
+const isClawSessionMode = (mode?: string): boolean => {
+  return (mode || '').trim().toLowerCase() === 'claw';
+};
+
 export class FlowChatManager {
   private static instance: FlowChatManager;
   private context: FlowChatContext;
@@ -111,7 +115,9 @@ export class FlowChatManager {
       };
 
       const state = this.context.flowChatStore.getState();
-      const workspaceSessions = Array.from(state.sessions.values()).filter(sessionMatchesWorkspace);
+      const workspaceSessions = Array.from(state.sessions.values()).filter(
+        session => sessionMatchesWorkspace(session) && !isClawSessionMode(session.mode)
+      );
       const hasHistoricalSessions = workspaceSessions.length > 0;
       const activeSession = state.activeSessionId
         ? state.sessions.get(state.activeSessionId) ?? null

@@ -202,9 +202,8 @@ const WorkspaceItem: React.FC<WorkspaceItemProps> = ({
       await resetAssistantWorkspace(workspace.id);
       await flowChatManager.resetWorkspaceSessions(workspace, {
         reinitialize: isActive,
-        preferredMode: 'Claw',
-        ensureAssistantBootstrap:
-          isActive && workspace.workspaceKind === WorkspaceKind.Assistant,
+        preferredMode: undefined,
+        ensureAssistantBootstrap: false,
       });
       notificationService.success(t('nav.workspaces.workspaceReset'), { duration: 2500 });
     } catch (error) {
@@ -247,7 +246,9 @@ const WorkspaceItem: React.FC<WorkspaceItemProps> = ({
 
   const handleCreateSession = useCallback(async (mode?: 'agentic' | 'Cowork' | 'Claw') => {
     setMenuOpen(false);
-    const resolvedMode = mode ?? (workspace.workspaceKind === WorkspaceKind.Assistant ? 'Claw' : undefined);
+    const resolvedMode = mode === 'Claw'
+      ? undefined
+      : mode;
     try {
       const reusableId = findReusableEmptySessionId(workspace, resolvedMode);
       if (reusableId) {

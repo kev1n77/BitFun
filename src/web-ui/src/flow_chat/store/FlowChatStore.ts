@@ -37,6 +37,10 @@ import { sessionMatchesWorkspace } from '../utils/workspaceScope';
 
 const log = createLogger('FlowChatStore');
 
+const isClawAgentType = (agentType?: string | null): boolean => {
+  return (agentType || '').trim().toLowerCase() === 'claw';
+};
+
 export class FlowChatStore {
   private static instance: FlowChatStore;
   private state: FlowChatState;
@@ -201,6 +205,10 @@ export class FlowChatStore {
     remoteConnectionId?: string,
     remoteSshHost?: string
   ): void {
+    if (isClawAgentType(mode)) {
+      return;
+    }
+
     import('../state-machine').then(({ stateMachineManager }) => {
       stateMachineManager.getOrCreate(sessionId);
     });
@@ -254,6 +262,10 @@ export class FlowChatStore {
     remoteConnectionId?: string,
     remoteSshHost?: string
   ): void {
+    if (isClawAgentType(mode)) {
+      return;
+    }
+
     import('../state-machine').then(({ stateMachineManager }) => {
       stateMachineManager.getOrCreate(sessionId);
     });
@@ -1466,6 +1478,9 @@ export class FlowChatStore {
         if (existingSession) {
           return;
         }
+        if (isClawAgentType(metadata.agentType)) {
+          return;
+        }
         
         let maxContextTokens = 128128;
         try {
@@ -1565,6 +1580,11 @@ export class FlowChatStore {
     remoteSshHost?: string
   ): Promise<void> {
     try {
+      const session = this.state.sessions.get(sessionId);
+      if (isClawAgentType(session?.mode)) {
+        throw new Error('Claw sessions are disabled');
+      }
+
       const { stateMachineManager } = await import('../state-machine');
       stateMachineManager.getOrCreate(sessionId);
       
@@ -1587,11 +1607,11 @@ export class FlowChatStore {
       const dialogTurns = this.convertToDialogTurns(turns);
       
       this.setState(prev => {
-        const session = prev.sessions.get(sessionId);
-        if (!session) return prev;
+        const currentSession = prev.sessions.get(sessionId);
+        if (!currentSession) return prev;
         
         const updatedSession = {
-          ...session,
+          ...currentSession,
           dialogTurns,
           isHistorical: false,
         };

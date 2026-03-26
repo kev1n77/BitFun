@@ -2,28 +2,19 @@ import { flowChatStore } from '@/flow_chat/store/FlowChatStore';
 import type { Session } from '@/flow_chat/types/flow-chat';
 import { WorkspaceKind, isRemoteWorkspace, type WorkspaceInfo } from '@/shared/types';
 
-type SessionDisplayBucket = 'code' | 'cowork' | 'claw';
+type SessionDisplayBucket = 'code' | 'cowork';
 
 function normalizeAgentModeForWorkspace(mode: string | undefined, workspace: WorkspaceInfo): string {
-  if (workspace.workspaceKind === WorkspaceKind.Assistant) {
-    return 'Claw';
-  }
   return mode || 'agentic';
 }
 
 function sessionDisplayBucket(sessionMode: string | undefined, workspace: WorkspaceInfo): SessionDisplayBucket {
-  if (workspace.workspaceKind === WorkspaceKind.Assistant) {
-    return 'claw';
-  }
   if (!sessionMode) {
     return 'code';
   }
   const normalized = sessionMode.toLowerCase();
   if (normalized === 'cowork') {
     return 'cowork';
-  }
-  if (normalized === 'claw') {
-    return 'claw';
   }
   return 'code';
 }
@@ -67,7 +58,7 @@ function isEmptyReusableSession(session: Session, workspace: WorkspaceInfo, buck
 
 /**
  * If the workspace already has a main session with no dialog turns for the same UI mode
- * (Code / Cowork / Claw), return its id so callers can switch instead of creating another.
+ * (Code / Cowork), return its id so callers can switch instead of creating another.
  */
 export function findReusableEmptySessionId(
   workspace: WorkspaceInfo,
