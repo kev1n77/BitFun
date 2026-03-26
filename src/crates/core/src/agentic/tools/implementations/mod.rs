@@ -33,7 +33,6 @@ pub mod task_tool;
 pub mod terminal_control_tool;
 pub mod todo_write_tool;
 pub mod util;
-pub mod web_tools;
 
 pub use ask_user_question_tool::AskUserQuestionTool;
 pub use bash_tool::BashTool;
@@ -63,4 +62,3 @@ pub use skill_tool::SkillTool;
 pub use task_tool::TaskTool;
 pub use terminal_control_tool::TerminalControlTool;
 pub use todo_write_tool::TodoWriteTool;
-pub use web_tools::{WebFetchTool, WebSearchTool};
