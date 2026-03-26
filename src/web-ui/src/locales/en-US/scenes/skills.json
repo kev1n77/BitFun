@@ -24,7 +24,7 @@
   "page": {
     "title": "Skills",
     "subtitle": "Manage installed skills and discover reusable skills from the external marketplace.",
-    "searchPlaceholder": "Search installed and marketplace skills..."
+    "searchPlaceholder": "Search skills..."
   },
   "installed": {
     "titleAll": "Installed Skills",

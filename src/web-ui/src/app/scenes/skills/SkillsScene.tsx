@@ -20,6 +20,7 @@ import type { SkillInfo, SkillLevel, SkillMarketItem } from '@/infrastructure/co
 import { workspaceAPI } from '@/infrastructure/api';
 import { workspaceManager } from '@/infrastructure/services/business/workspaceManager';
 import { useNotification } from '@/shared/notification-system';
+import { APP_FEATURES } from '@/shared/constants';
 import { isRemoteWorkspace } from '@/shared/types';
 import { createLogger } from '@/shared/utils/logger';
 import { getCardGradient } from '@/shared/utils/cardGradients';
@@ -39,6 +40,7 @@ const INSTALLED_PAGE_SIZE = 10;
 const SkillsScene: React.FC = () => {
   const { t } = useTranslation('scenes/skills');
   const notification = useNotification();
+  const skillMarketEnabled = APP_FEATURES.SKILL_MARKET;
   const {
     searchDraft,
     marketQuery,
@@ -70,6 +72,7 @@ const SkillsScene: React.FC = () => {
   );
 
   const market = useSkillMarket({
+    enabled: skillMarketEnabled,
     searchQuery: marketQuery,
     installedSkillNames,
     pageSize: 6,
@@ -146,35 +149,44 @@ const SkillsScene: React.FC = () => {
     </div>
   );
 
+  const sceneHeader = (
+    <>
+      <div className="skills-split__left-title-row">
+        <div className="skills-split__left-identity">
+          <h1 className="skills-split__title">{skillMarketEnabled ? t('page.title') : t('installed.titleAll')}</h1>
+          <p className="skills-split__subtitle">
+            {skillMarketEnabled ? t('page.subtitle') : t('installed.subtitleAll')}
+          </p>
+        </div>
+      </div>
+
+      <div className="skills-split__toolbar">
+        <Search
+          className="skills-split__search"
+          value={searchDraft}
+          onChange={setSearchDraft}
+          onSearch={skillMarketEnabled ? submitMarketQuery : undefined}
+          onClear={skillMarketEnabled ? submitMarketQuery : undefined}
+          placeholder={skillMarketEnabled ? t('page.searchPlaceholder') : t('toolbar.searchPlaceholder')}
+          size="large"
+          clearable
+          enterToSearch
+        />
+      </div>
+    </>
+  );
+
   return (
     <div className="bitfun-skills-scene">
       {/* ── Two-column split layout ── */}
-      <div className="skills-split">
+      <div className={`skills-split${skillMarketEnabled ? '' : ' skills-split--market-disabled'}`}>
 
         {/* ══ LEFT: market skills ══ */}
-        <div className="skills-split__left">
+        {skillMarketEnabled && (
+          <div className="skills-split__left">
           {/* Sticky header */}
           <div className="skills-split__left-header">
-            <div className="skills-split__left-title-row">
-              <div className="skills-split__left-identity">
-                <h1 className="skills-split__title">{t('page.title')}</h1>
-                <p className="skills-split__subtitle">{t('page.subtitle')}</p>
-              </div>
-            </div>
-
-            <div className="skills-split__toolbar">
-              <Search
-                className="skills-split__search"
-                value={searchDraft}
-                onChange={setSearchDraft}
-                onSearch={submitMarketQuery}
-                onClear={submitMarketQuery}
-                placeholder={t('page.searchPlaceholder')}
-                size="large"
-                clearable
-                enterToSearch
-              />
-            </div>
+            {sceneHeader}
           </div>
 
           {/* Market body — fixed display, no scroll */}
@@ -287,9 +299,15 @@ const SkillsScene: React.FC = () => {
             )}
           </div>
         </div>
+        )}
 
         {/* ══ RIGHT: installed skills ══ */}
         <div className="skills-split__right">
+          {!skillMarketEnabled && (
+            <div className="skills-split__left-header">
+              {sceneHeader}
+            </div>
+          )}
           <div className="skills-split__right-frame">
             {/* Right header */}
             <div className="skills-split__right-header">
