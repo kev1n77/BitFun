@@ -11,8 +11,6 @@
 - TerminalCard: 终端命令执行展示
 - TaskCard: AI 任务执行展示
 - TodoCard: 任务列表与状态展示
-- WebSearchCard: 网页搜索与抓取展示
-
 ## 使用方式
 
 ```tsx
