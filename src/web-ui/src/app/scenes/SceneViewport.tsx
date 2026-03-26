@@ -120,8 +120,6 @@ function renderScene(id: SceneTabId, workspacePath?: string, isEntering?: boolea
       return <BrowserScene />;
     case 'mermaid':
       return <MermaidEditorScene />;
-    case 'assistant':
-      return <AssistantScene workspacePath={workspacePath} />;
     case 'insights':
       return <InsightsScene />;
     case 'shell':

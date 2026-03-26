@@ -140,9 +140,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       modeState.available.filter(mode =>
         mode.enabled &&
         mode.id !== 'Cowork' &&
-        (isAssistantWorkspace || mode.id !== 'Claw')
+        mode.id !== 'Claw'
       ),
-    [isAssistantWorkspace, modeState.available]
+    [modeState.available]
   );
 
   /** Code session: only Plan and debug are optional on top of default agentic */
@@ -495,12 +495,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, [effectiveTargetSessionId]);
 
   React.useEffect(() => {
-    if (!isAssistantWorkspace || modeState.current === 'Claw') {
+    if (modeState.current !== 'Claw') {
       return;
     }
 
-    dispatchMode({ type: 'SET_CURRENT_MODE', payload: 'Claw' });
-  }, [isAssistantWorkspace, modeState.current]);
+    dispatchMode({ type: 'SET_CURRENT_MODE', payload: 'agentic' });
+  }, [modeState.current]);
 
   React.useEffect(() => {
     const queuedInput = stateMachine?.context?.queuedInput;

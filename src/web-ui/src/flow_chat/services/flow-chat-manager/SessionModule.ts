@@ -16,21 +16,23 @@ import { touchSessionActivity, cleanupSaveState } from './PersistenceModule';
 const log = createLogger('SessionModule');
 const pendingSessionCreations = new Map<string, Promise<string>>();
 
-type SessionDisplayMode = 'code' | 'cowork' | 'claw';
+type SessionDisplayMode = 'code' | 'cowork';
 
 const isAssistantWorkspace = (workspace?: WorkspaceInfo | null): boolean => {
   return workspace?.workspaceKind === WorkspaceKind.Assistant;
+};
+
+const isClawMode = (mode?: string): boolean => {
+  return (mode || '').trim().toLowerCase() === 'claw';
 };
 
 const normalizeSessionDisplayMode = (
   mode?: string,
   workspace?: WorkspaceInfo | null
 ): SessionDisplayMode => {
-  if (isAssistantWorkspace(workspace)) return 'claw';
   if (!mode) return 'code';
   const normalizedMode = mode.toLowerCase();
   if (normalizedMode === 'cowork') return 'cowork';
-  if (normalizedMode === 'claw') return 'claw';
   return 'code';
 };
 
@@ -50,7 +52,7 @@ const resolveSessionWorkspacePath = (
   // currentWorkspacePath stays null while global workspace already has rootPath.
   const current = workspaceManager.getState().currentWorkspace;
   const root = current?.rootPath?.trim();
-  if (!root) {
+  if (!root || current?.workspaceKind === WorkspaceKind.Assistant) {
     return null;
   }
   return current?.workspaceKind === WorkspaceKind.Remote
@@ -102,9 +104,6 @@ const resolveAgentType = (
   requestedMode: string | undefined,
   workspace: WorkspaceInfo | null
 ): string => {
-  if (isAssistantWorkspace(workspace)) {
-    return 'Claw';
-  }
   return requestedMode || 'agentic';
 };
 
@@ -160,11 +159,18 @@ export async function createChatSession(
   mode?: string
 ): Promise<string> {
   try {
+    if (isClawMode(mode)) {
+      throw new Error('Claw sessions are disabled');
+    }
+
     const workspacePath = resolveSessionWorkspacePath(context, config);
     const workspace = resolveSessionWorkspace(context, config);
 
     if (!workspacePath) {
       throw new Error('Workspace path is required to create a session');
+    }
+    if (isAssistantWorkspace(workspace)) {
+      throw new Error('Open or add a project workspace first');
     }
     const remoteConnectionId =
       workspace?.workspaceKind === WorkspaceKind.Remote ? workspace.connectionId : undefined;
@@ -191,9 +197,7 @@ export async function createChatSession(
     const sessionName =
       sessionMode === 'cowork'
         ? i18nService.t('flow-chat:session.newCoworkWithIndex', { count: sameModeCount })
-        : sessionMode === 'claw'
-          ? i18nService.t('flow-chat:session.newClawWithIndex', { count: sameModeCount })
-          : i18nService.t('flow-chat:session.newCodeWithIndex', { count: sameModeCount });
+        : i18nService.t('flow-chat:session.newCodeWithIndex', { count: sameModeCount });
     
     const maxContextTokens = await getModelMaxTokens(config.modelName);
 
@@ -258,6 +262,9 @@ export async function switchChatSession(
 ): Promise<void> {
   try {
     const session = context.flowChatStore.getState().sessions.get(sessionId);
+    if (isClawMode(session?.mode)) {
+      throw new Error('Claw sessions are disabled');
+    }
     
     if (session?.isHistorical) {
       try {
@@ -378,6 +385,9 @@ export async function ensureBackendSession(
   if (!session) {
     throw new Error(`Session does not exist: ${sessionId}`);
   }
+  if (isClawMode(session.mode)) {
+    throw new Error('Claw sessions are disabled');
+  }
 
   const workspacePath = requireSessionWorkspacePath(session.workspacePath, sessionId);
 
@@ -448,6 +458,9 @@ export async function retryCreateBackendSession(
   const session = context.flowChatStore.getState().sessions.get(sessionId);
   if (!session) {
     throw new Error(`Session does not exist: ${sessionId}`);
+  }
+  if (isClawMode(session.mode)) {
+    throw new Error('Claw sessions are disabled');
   }
 
   const workspacePath = requireSessionWorkspacePath(session.workspacePath, sessionId);
