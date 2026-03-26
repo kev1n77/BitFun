@@ -222,8 +222,6 @@ impl GeminiMessageConverter {
 
     fn native_tool_name(tool_name: &str) -> Option<&'static str> {
         match tool_name {
-            "WebSearch" | "googleSearch" | "GoogleSearch" => Some("googleSearch"),
-            "WebFetch" | "urlContext" | "UrlContext" | "URLContext" => Some("urlContext"),
             "googleSearchRetrieval" | "GoogleSearchRetrieval" => Some("googleSearchRetrieval"),
             "codeExecution" | "CodeExecution" => Some("codeExecution"),
             _ => None,
@@ -232,8 +230,6 @@ impl GeminiMessageConverter {
 
     fn native_tool_fallback_name(native_name: &str) -> &'static str {
         match native_name {
-            "googleSearch" => "WebSearch",
-            "urlContext" => "WebFetch",
             "googleSearchRetrieval" => "googleSearchRetrieval",
             "codeExecution" => "codeExecution",
             _ => "unknown_native_tool",
@@ -242,8 +238,6 @@ impl GeminiMessageConverter {
 
     fn native_tool_fallback_description(native_name: &str) -> &'static str {
         match native_name {
-            "googleSearch" => "Search the web for up-to-date information.",
-            "urlContext" => "Fetch content from a URL for context.",
             "googleSearchRetrieval" => "Retrieve grounded results from Google Search.",
             "codeExecution" => "Execute model-generated code and return the result.",
             _ => "Gemini native tool fallback.",
@@ -252,7 +246,7 @@ impl GeminiMessageConverter {
 
     fn native_tool_fallback_schema(native_name: &str) -> Value {
         match native_name {
-            "googleSearch" | "googleSearchRetrieval" => json!({
+            "googleSearchRetrieval" => json!({
                 "type": "object",
                 "properties": {
                     "query": {
@@ -260,15 +254,6 @@ impl GeminiMessageConverter {
                     }
                 },
                 "required": ["query"]
-            }),
-            "urlContext" => json!({
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                    }
-                },
-                "required": ["url"]
             }),
             "codeExecution" => json!({
                 "type": "object",
@@ -840,9 +825,9 @@ mod tests {
     }
 
     #[test]
-    fn maps_web_search_to_native_google_search_tool() {
+    fn maps_google_search_retrieval_to_native_tool() {
         let tools = Some(vec![ToolDefinition {
-            name: "WebSearch".to_string(),
+            name: "googleSearchRetrieval".to_string(),
             description: "Search the web".to_string(),
             parameters: json!({
                 "type": "object",
@@ -855,7 +840,7 @@ mod tests {
 
         let converted = GeminiMessageConverter::convert_tools(tools).expect("converted tools");
         assert_eq!(converted.len(), 1);
-        assert_eq!(converted[0]["googleSearch"], json!({}));
+        assert_eq!(converted[0]["googleSearchRetrieval"], json!({}));
         assert!(converted[0].get("functionDeclarations").is_none());
     }
 
@@ -863,7 +848,7 @@ mod tests {
     fn falls_back_to_function_declarations_when_native_and_custom_tools_mix() {
         let tools = Some(vec![
             ToolDefinition {
-                name: "WebSearch".to_string(),
+                name: "googleSearchRetrieval".to_string(),
                 description: "Search the web".to_string(),
                 parameters: json!({
                     "type": "object",
@@ -887,33 +872,14 @@ mod tests {
 
         let converted = GeminiMessageConverter::convert_tools(tools).expect("converted tools");
         assert_eq!(converted.len(), 1);
-        assert!(converted[0].get("googleSearch").is_none());
+        assert!(converted[0].get("googleSearchRetrieval").is_none());
         assert_eq!(
             converted[0]["functionDeclarations"][0]["name"],
             json!("get_weather")
         );
         assert_eq!(
             converted[0]["functionDeclarations"][1]["name"],
-            json!("WebSearch")
+            json!("googleSearchRetrieval")
         );
-    }
-
-    #[test]
-    fn maps_web_fetch_to_native_url_context_tool() {
-        let tools = Some(vec![ToolDefinition {
-            name: "WebFetch".to_string(),
-            description: "Fetch a URL".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "url": { "type": "string" }
-                },
-                "required": ["url"]
-            }),
-        }]);
-
-        let converted = GeminiMessageConverter::convert_tools(tools).expect("converted tools");
-        assert_eq!(converted.len(), 1);
-        assert_eq!(converted[0]["urlContext"], json!({}));
     }
 }
