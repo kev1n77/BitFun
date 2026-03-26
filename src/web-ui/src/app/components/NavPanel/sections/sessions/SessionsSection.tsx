@@ -7,7 +7,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Pencil, Trash2, Check, X, Bot, Code2, ClipboardList, Panda, MoreHorizontal, Loader2 } from 'lucide-react';
+import { Pencil, Trash2, Check, X, Code2, ClipboardList, MoreHorizontal, Loader2 } from 'lucide-react';
 import { IconButton, Input, Tooltip } from '@/component-library';
 import { useI18n } from '@/infrastructure/i18n';
 import { flowChatStore } from '../../../../../flow_chat/store/FlowChatStore';
@@ -38,12 +38,11 @@ const SESSIONS_LEVEL_1 = 10;
 const log = createLogger('SessionsSection');
 const AGENT_SCENE: SceneTabId = 'session';
 
-type SessionMode = 'code' | 'cowork' | 'claw';
+type SessionMode = 'code' | 'cowork';
 
 const resolveSessionModeType = (session: Session): SessionMode => {
   const normalizedMode = session.mode?.toLowerCase();
   if (normalizedMode === 'cowork') return 'cowork';
-  if (normalizedMode === 'claw') return 'claw';
   return 'code';
 };
 
@@ -149,6 +148,9 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
     () =>
       Array.from(flowChatState.sessions.values())
         .filter((s: Session) => {
+          if (s.mode?.toLowerCase() === 'claw') {
+            return false;
+          }
           if (workspacePath) {
             return sessionBelongsToWorkspaceNavRow(s, workspacePath, remoteConnectionId, remoteSshHost);
           }
@@ -263,9 +265,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
       const label =
         mode === 'cowork'
           ? t('nav.sessions.newCoworkSession')
-          : mode === 'claw'
-            ? t('nav.sessions.newClawSession')
-            : t('nav.sessions.newCodeSession');
+          : t('nav.sessions.newCodeSession');
       return `${label} ${matched[1]}`;
     },
     [t]
@@ -385,11 +385,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
           const SessionIcon =
             sessionModeKey === 'cowork'
               ? ClipboardList
-              : sessionModeKey === 'claw'
-                ? showAssistantInTooltip
-                  ? Panda
-                  : Bot
-                : Code2;
+              : Code2;
           const isRunning = runningSessionIds.has(session.sessionId);
           const isRowActive = activeBtwSessionData?.childSessionId
             ? session.sessionId === activeBtwSessionData.childSessionId
@@ -423,9 +419,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
                       'bitfun-nav-panel__inline-item-icon',
                       sessionModeKey === 'cowork'
                         ? 'is-cowork'
-                        : sessionModeKey === 'claw'
-                          ? 'is-claw'
-                          : 'is-code',
+                        : 'is-code',
                     ].join(' ')}
                   />
                 )

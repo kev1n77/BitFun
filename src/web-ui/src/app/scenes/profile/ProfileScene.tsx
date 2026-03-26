@@ -1,5 +1,4 @@
 import React from 'react';
-import { NurseryView } from './views';
 import './ProfileScene.scss';
 
 interface ProfileSceneProps {
@@ -9,7 +8,9 @@ interface ProfileSceneProps {
 
 const ProfileScene: React.FC<ProfileSceneProps> = () => (
   <div className="bitfun-profile-scene">
-    <NurseryView />
+    <div className="bitfun-scene-viewport__clip bitfun-scene-viewport__clip--empty">
+      <p className="bitfun-scene-viewport__empty-hint">This area is unavailable.</p>
+    </div>
   </div>
 );
 

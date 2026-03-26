@@ -7,13 +7,15 @@ import { createLogger } from '@/shared/utils/logger';
 
 const log = createLogger('WorkspaceProvider');
 
+const isVisibleWorkspace = (
+  workspace: WorkspaceInfo | null | undefined
+): workspace is WorkspaceInfo => {
+  return !!workspace && workspace.workspaceKind !== WorkspaceKind.Assistant;
+};
+
 const getWorkspaceDisplayName = (workspace: WorkspaceInfo | null): string => {
   if (!workspace) {
     return '';
-  }
-
-  if (workspace.workspaceKind === WorkspaceKind.Assistant) {
-    return workspace.identity?.name?.trim() || workspace.name;
   }
 
   return workspace.name;
@@ -158,24 +160,25 @@ export const WorkspaceProvider: React.FC<WorkspaceProviderProps> = ({ children }
     return await workspaceManager.refreshRecentWorkspaces();
   }, []);
 
-  const activeWorkspace = state.currentWorkspace;
+  const activeWorkspace = isVisibleWorkspace(state.currentWorkspace)
+    ? state.currentWorkspace
+    : null;
   const openedWorkspacesList = useMemo(
-    () => Array.from(state.openedWorkspaces.values()),
+    () => Array.from(state.openedWorkspaces.values()).filter(isVisibleWorkspace),
     [state.openedWorkspaces]
   );
-  const normalWorkspacesList = useMemo(
-    () =>
-      openedWorkspacesList.filter(
-        workspace => workspace.workspaceKind !== WorkspaceKind.Assistant
-      ),
+  const openedWorkspaces = useMemo(
+    () => new Map(openedWorkspacesList.map(workspace => [workspace.id, workspace])),
     [openedWorkspacesList]
   );
+  const normalWorkspacesList = openedWorkspacesList;
   const assistantWorkspacesList = useMemo(
-    () =>
-      openedWorkspacesList.filter(
-        workspace => workspace.workspaceKind === WorkspaceKind.Assistant
-      ),
-    [openedWorkspacesList]
+    () => [],
+    []
+  );
+  const recentWorkspaces = useMemo(
+    () => state.recentWorkspaces.filter(isVisibleWorkspace),
+    [state.recentWorkspaces]
   );
   const hasWorkspace = !!activeWorkspace;
   const workspaceName = getWorkspaceDisplayName(activeWorkspace);
@@ -183,6 +186,15 @@ export const WorkspaceProvider: React.FC<WorkspaceProviderProps> = ({ children }
 
   const contextValue: WorkspaceContextValue = {
     ...state,
+    currentWorkspace: activeWorkspace,
+    openedWorkspaces,
+    activeWorkspaceId: activeWorkspace?.id ?? null,
+    lastUsedWorkspaceId:
+      activeWorkspace?.id ||
+      recentWorkspaces[0]?.id ||
+      openedWorkspacesList[0]?.id ||
+      null,
+    recentWorkspaces,
     activeWorkspace,
     openedWorkspacesList,
     normalWorkspacesList,
