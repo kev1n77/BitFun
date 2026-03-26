@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { Settings, Info, MoreVertical, PictureInPicture2, SquareTerminal, Network, Layers, BarChart3 } from 'lucide-react';
+import { Settings, Info, MoreVertical, PictureInPicture2, SquareTerminal, Globe, Network, Layers, BarChart3 } from 'lucide-react';
 import { Tooltip } from '@/component-library';
 import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
 import { useSceneManager } from '../../../hooks/useSceneManager';
@@ -20,6 +20,10 @@ const PersistentFooterActions: React.FC = () => {
   const openNavScene = useNavSceneStore((s) => s.openNavScene);
   const closeNavScene = useNavSceneStore((s) => s.closeNavScene);
 
+  const isBrowserPanelActiveInCanvas = useCanvasStore((s) => {
+    const activeTab = s.primaryGroup.tabs.find((t) => t.id === s.primaryGroup.activeTabId);
+    return activeTab?.content.type === 'browser';
+  });
   const isMermaidPanelActiveInCanvas = useCanvasStore((s) => {
     const activeTab = s.primaryGroup.tabs.find((t) => t.id === s.primaryGroup.activeTabId);
     return activeTab?.content.type === 'mermaid-editor';
@@ -60,6 +64,22 @@ const PersistentFooterActions: React.FC = () => {
     }
     openNavScene('shell');
   }, [closeNavScene, navSceneId, openNavScene, showSceneNav]);
+
+  const handleOpenBrowser = useCallback(() => {
+    if (activeTabId === 'session') {
+      window.dispatchEvent(new CustomEvent('agent-create-tab', {
+        detail: {
+          type: 'browser',
+          title: t('scenes.browser'),
+          checkDuplicate: true,
+          duplicateCheckKey: 'browser-panel',
+          replaceExisting: false,
+        },
+      }));
+    } else {
+      openScene('browser');
+    }
+  }, [activeTabId, openScene, t]);
 
   const handleOpenMermaidEditor = useCallback(() => {
     const title = t('scenes.mermaidEditor');
@@ -188,8 +208,9 @@ const PersistentFooterActions: React.FC = () => {
           onMouseLeave={handleMultimodalLeave}
         >
           {(() => {
+            const isBrowserActive = activeTabId === 'browser' || (activeTabId === 'session' && isBrowserPanelActiveInCanvas);
             const isMermaidActive = activeTabId === 'mermaid' || (activeTabId === 'session' && isMermaidPanelActiveInCanvas);
-            const isAnyActive = isMermaidActive;
+            const isAnyActive = isBrowserActive || isMermaidActive;
             return (
               <>
                 <Tooltip content={t('nav.multimodalTools')} placement="right" disabled={multimodalOpen}>
