@@ -23,7 +23,6 @@ import { CodeEditor } from '@components/CodeEditor';
 import { StreamText } from '@components/StreamText';
 import { TodoWriteDisplay } from '@/flow_chat/tool-cards/TodoWriteDisplay';
 import { TaskToolDisplay } from '@/flow_chat/tool-cards/TaskToolDisplay';
-import { WebSearchCard as RealWebSearchCard } from '@/flow_chat/tool-cards/WebSearchCard';
 import { ReadFileDisplay } from '@/flow_chat/tool-cards/ReadFileDisplay';
 import { GrepSearchDisplay } from '@/flow_chat/tool-cards/GrepSearchDisplay';
 import { GlobSearchDisplay } from '@/flow_chat/tool-cards/GlobSearchDisplay';
@@ -1386,63 +1385,6 @@ console.log(user.greet());`);
                 'completed'
               )}
               config={TOOL_CARD_CONFIGS['TodoWrite']}
-              sessionId="preview-session"
-            />
-          </div>
-        ),
-      },
-      {
-        id: 'web-search-card',
-        name: 'WebSearch - 搜索结果卡片',
-        description: '网络搜索结果和URL展示',
-        category: 'flowchat-cards',
-        component: () => (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '20px' }}>
-            <h3 style={{ color: '#ffffff', marginBottom: '8px' }}>网页搜索 - 结果</h3>
-            <RealWebSearchCard
-              toolItem={createMockToolItem('WebSearch',
-                { query: 'React Hooks 教程' },
-                {
-                  results: [
-                    {
-                      title: 'React Hooks 指南',
-                      url: 'https://react.dev/hooks',
-                      snippet: '学习 React Hooks 的基础用法与最佳实践...'
-                    }
-                  ]
-                },
-                'completed'
-              )}
-              config={TOOL_CARD_CONFIGS['WebSearch']}
-              sessionId="preview-session"
-            />
-
-            <h3 style={{ color: '#ffffff', marginTop: '16px', marginBottom: '8px' }}>多结果 - 网页搜索</h3>
-            <RealWebSearchCard
-              toolItem={createMockToolItem('WebSearch',
-                { query: 'TypeScript best practices' },
-                {
-                  results: [
-                    {
-                      title: 'TypeScript Best Practices',
-                      url: 'https://www.typescriptlang.org/docs/handbook/declaration-files/do-s-and-don-ts.html',
-                      snippet: 'This guide covers the best practices for writing TypeScript code...'
-                    },
-                    {
-                      title: 'TypeScript Deep Dive',
-                      url: 'https://basarat.gitbook.io/typescript/',
-                      snippet: 'A comprehensive guide to TypeScript...'
-                    },
-                    {
-                      title: 'Clean Code with TypeScript',
-                      url: 'https://github.com/labs42io/clean-code-typescript',
-                      snippet: "Software engineering principles, from Robert C. Martin's book..."
-                    }
-                  ]
-                },
-                'completed'
-              )}
-              config={TOOL_CARD_CONFIGS['WebSearch']}
               sessionId="preview-session"
             />
           </div>
