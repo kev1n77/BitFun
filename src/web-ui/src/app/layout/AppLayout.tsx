@@ -12,7 +12,6 @@ import React, { useState, useCallback, useEffect, useMemo, useRef, useContext } 
 import { open } from '@tauri-apps/plugin-dialog';
 import { useWorkspaceContext } from '../../infrastructure/contexts/WorkspaceContext';
 import { useWindowControls } from '../hooks/useWindowControls';
-import { useAssistantBootstrap } from '../hooks/useAssistantBootstrap';
 import { useApp } from '../hooks/useApp';
 import { useSceneStore } from '../stores/sceneStore';
 
@@ -57,7 +56,6 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
       : 'local';
 
   const { isToolbarMode } = useToolbarModeContext();
-  const { ensureForWorkspace: ensureAssistantBootstrapForWorkspace } = useAssistantBootstrap();
 
   const { handleMinimize, handleMaximize, handleClose, isMaximized } =
     useWindowControls({ isToolbarMode });
@@ -165,21 +163,18 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
       // Always initialize FlowChat so historical sessions list even when SSH is not connected yet.
       try {
         const explicitPreferredMode =
-          sessionStorage.getItem('bitfun:flowchat:preferredMode') ||
-          undefined;
+          (() => {
+            const stored = sessionStorage.getItem('bitfun:flowchat:preferredMode') || undefined;
+            return stored?.trim().toLowerCase() === 'claw' ? undefined : stored;
+          })();
         if (explicitPreferredMode) {
           sessionStorage.removeItem('bitfun:flowchat:preferredMode');
         }
 
-        const initializationPreferredMode =
-          currentWorkspace.workspaceKind === WorkspaceKind.Assistant
-            ? 'Claw'
-            : explicitPreferredMode;
-
         const flowChatManager = FlowChatManager.getInstance();
         const hasHistoricalSessions = await flowChatManager.initialize(
           currentWorkspace.rootPath,
-          initializationPreferredMode,
+          explicitPreferredMode,
           currentWorkspace.workspaceKind === WorkspaceKind.Remote
             ? currentWorkspace.connectionId
             : undefined,
@@ -190,17 +185,8 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
 
         let sessionId: string | undefined;
         const { flowChatStore } = await import('@/flow_chat/store/FlowChatStore');
-        if (!hasHistoricalSessions) {
-          const initialSessionMode =
-            currentWorkspace.workspaceKind === WorkspaceKind.Assistant
-              ? 'Claw'
-              : explicitPreferredMode || 'agentic';
-          sessionId = await flowChatManager.createChatSession({}, initialSessionMode);
-        }
-
-        const activeSessionId = sessionId || flowChatStore.getState().activeSessionId;
-        if (currentWorkspace.workspaceKind === WorkspaceKind.Assistant && activeSessionId) {
-          ensureAssistantBootstrapForWorkspace(currentWorkspace, activeSessionId);
+        if (!hasHistoricalSessions || !flowChatStore.getState().activeSessionId) {
+          sessionId = await flowChatManager.createChatSession({}, explicitPreferredMode || 'agentic');
         }
 
         const pendingDescription = sessionStorage.getItem('pendingProjectDescription');
@@ -260,7 +246,6 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
     currentWorkspace?.connectionId,
     currentWorkspace?.sshHost,
     remoteSshFlowChatKey,
-    ensureAssistantBootstrapForWorkspace,
     t,
   ]);
 
