@@ -3,13 +3,11 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  Download,
   FolderOpen,
   Package,
   Plus,
   Puzzle,
   Sparkles,
-  Store,
   Trash2,
   TrendingUp,
 } from 'lucide-react';
@@ -25,14 +23,11 @@ import { createLogger } from '@/shared/utils/logger';
 import { getCardGradient } from '@/shared/utils/cardGradients';
 import { useInstalledSkills } from './hooks/useInstalledSkills';
 import { useSkillMarket } from './hooks/useSkillMarket';
-import SkillCard from './components/SkillCard';
 import './SkillsScene.scss';
 import { useSkillsSceneStore } from './skillsSceneStore';
 import { useGallerySceneAutoRefresh } from '@/app/hooks/useGallerySceneAutoRefresh';
 
 const log = createLogger('SkillsScene');
-
-const SKILLS_SOURCE_URL = 'https://skills.sh';
 
 const INSTALLED_PAGE_SIZE = 10;
 
@@ -134,163 +129,37 @@ const SkillsScene: React.FC = () => {
     setInstalledListPage((p) => Math.min(p, Math.max(0, installedTotalPages - 1)));
   }, [installedTotalPages]);
 
-  const marketSkeletonGrid = (keyPrefix: string) => (
-    <div className="skills-split__skeleton-grid" aria-busy="true" aria-label={t('list.loading')}>
-      {Array.from({ length: 6 }).map((_, i) => (
-        <div
-          key={`${keyPrefix}-${i}`}
-          className="skills-split__skeleton-card"
-          style={{ '--card-index': i } as React.CSSProperties}
-        />
-      ))}
-    </div>
-  );
-
   return (
     <div className="bitfun-skills-scene">
       {/* ── Two-column split layout ── */}
       <div className="skills-split">
 
-        {/* ══ LEFT: market skills ══ */}
-        <div className="skills-split__left">
-          {/* Sticky header */}
-          <div className="skills-split__left-header">
-            <div className="skills-split__left-title-row">
-              <div className="skills-split__left-identity">
-                <h1 className="skills-split__title">{t('page.title')}</h1>
-                <p className="skills-split__subtitle">{t('page.subtitle')}</p>
-              </div>
-            </div>
-
-            <div className="skills-split__toolbar">
-              <Search
-                className="skills-split__search"
-                value={searchDraft}
-                onChange={setSearchDraft}
-                onSearch={submitMarketQuery}
-                onClear={submitMarketQuery}
-                placeholder={t('page.searchPlaceholder')}
-                size="large"
-                clearable
-                enterToSearch
-              />
-            </div>
-          </div>
-
-          {/* Market body — fixed display, no scroll */}
-          <div className="skills-split__left-body">
-            <div className="skills-split__section-head">
-              <span className="skills-split__section-title">{t('market.title')}</span>
-              <span className="skills-split__section-sub">
-                {t('market.subtitlePrefix')}
-                {' '}
-                <a href={SKILLS_SOURCE_URL} target="_blank" rel="noreferrer">skills.sh</a>
-                {t('market.subtitleSuffix')}
-              </span>
-            </div>
-
-            {/* Market loading — skeleton grid */}
-            {market.marketLoading && marketSkeletonGrid('mkt-init')}
-
-            {/* Market error */}
-            {!market.marketLoading && market.marketError && (
-              <div className="skills-split__empty skills-split__empty--error">
-                <Store size={28} strokeWidth={1.5} />
-                <span>{market.marketError}</span>
-              </div>
-            )}
-
-            {/* Pagination fetch — same skeleton as initial load */}
-            {!market.marketLoading && !market.marketError && market.loadingMore && marketSkeletonGrid('mkt-page')}
-
-            {/* Market empty */}
-            {!market.marketLoading && !market.marketError && !market.loadingMore && market.marketSkills.length === 0 && (
-              <div className="skills-split__empty">
-                <Store size={28} strokeWidth={1.5} />
-                <span>{marketQuery ? t('market.empty.noMatch') : t('market.empty.noSkills')}</span>
-              </div>
-            )}
-
-            {/* Market cards grid — 3×2, 6 per page */}
-            {!market.marketLoading && !market.marketError && !market.loadingMore && market.marketSkills.length > 0 && (
-              <div className="skills-split__market-grid">
-                {market.marketSkills.map((skill, index) => {
-                  const isInstalled = installedSkillNames.has(skill.name);
-                  const isDownloading = market.downloadingPackage === skill.installId;
-                  return (
-                    <SkillCard
-                      key={skill.installId}
-                      name={skill.name}
-                      description={skill.description}
-                      index={index}
-                      accentSeed={skill.installId}
-                      iconKind="market"
-                      badges={isInstalled ? (
-                        <Badge variant="success">
-                          <CheckCircle2 size={11} />
-                          {t('market.item.installed')}
-                        </Badge>
-                      ) : null}
-                      meta={(
-                        <span className="bitfun-skills-scene__market-meta">
-                          <TrendingUp size={12} />
-                          {skill.installs ?? 0}
-                        </span>
-                      )}
-                      actions={[
-                        {
-                          id: 'download',
-                          icon: isInstalled ? <CheckCircle2 size={13} /> : <Download size={13} />,
-                          ariaLabel: isInstalled ? t('market.item.installed') : t('market.item.downloadProject'),
-                          title: isDownloading
-                            ? t('market.item.downloading')
-                            : (isInstalled ? t('market.item.installedTooltip') : t('market.item.downloadProject')),
-                          disabled: isDownloading || !market.hasWorkspace || isInstalled,
-                          tone: isInstalled ? 'success' : 'primary',
-                          onClick: () => market.handleDownload(skill),
-                        },
-                      ]}
-                      onOpenDetails={() => setSelectedDetail({ type: 'market', skill })}
-                    />
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Pagination */}
-            {!market.marketLoading && !market.marketError && (market.totalPages > 1 || market.hasMore) && (
-              <div className="skills-split__pagination">
-                <button
-                  type="button"
-                  className="skills-split__page-btn"
-                  onClick={market.goToPrevPage}
-                  disabled={market.currentPage === 0 || market.loadingMore}
-                  aria-label={t('market.pagination.prev')}
-                >
-                  <ChevronLeft size={14} />
-                </button>
-                <span className="skills-split__page-info">
-                  {market.hasMore
-                    ? t('market.pagination.infoMore', { current: market.currentPage + 1 })
-                    : t('market.pagination.info', { current: market.currentPage + 1, total: market.totalPages })}
-                </span>
-                <button
-                  type="button"
-                  className="skills-split__page-btn"
-                  onClick={() => void market.goToNextPage()}
-                  disabled={(!market.hasMore && market.currentPage >= market.totalPages - 1) || market.loadingMore}
-                  aria-label={t('market.pagination.next')}
-                >
-                  <ChevronRight size={14} />
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* ══ RIGHT: installed skills ══ */}
+        {/* ══ Installed skills (skill market hidden) ══ */}
         <div className="skills-split__right">
           <div className="skills-split__right-frame">
+            <div className="skills-split__left-header">
+              <div className="skills-split__left-title-row">
+                <div className="skills-split__left-identity">
+                  <h1 className="skills-split__title">{t('page.title')}</h1>
+                  <p className="skills-split__subtitle">{t('page.subtitle')}</p>
+                </div>
+              </div>
+
+              <div className="skills-split__toolbar">
+                <Search
+                  className="skills-split__search"
+                  value={searchDraft}
+                  onChange={setSearchDraft}
+                  onSearch={submitMarketQuery}
+                  onClear={submitMarketQuery}
+                  placeholder={t('page.searchPlaceholder')}
+                  size="large"
+                  clearable
+                  enterToSearch
+                />
+              </div>
+            </div>
+
             {/* Right header */}
             <div className="skills-split__right-header">
               <span className="skills-split__right-title">{t('installed.titleAll')}</span>
