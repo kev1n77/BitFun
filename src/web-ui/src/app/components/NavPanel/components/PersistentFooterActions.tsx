@@ -1,22 +1,14 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { Settings, Info, MoreVertical, PictureInPicture2, SquareTerminal, Smartphone, Globe, Network, Layers, BarChart3 } from 'lucide-react';
-import { Tooltip, Modal } from '@/component-library';
+import { Settings, Info, MoreVertical, PictureInPicture2, SquareTerminal, Globe, Network, Layers, BarChart3 } from 'lucide-react';
+import { Tooltip } from '@/component-library';
 import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
 import { useSceneManager } from '../../../hooks/useSceneManager';
 import { useNavSceneStore } from '../../../stores/navSceneStore';
 import { useSceneStore } from '../../../stores/sceneStore';
 import { useCanvasStore } from '@/app/components/panels/content-canvas/stores';
 import { useToolbarModeContext } from '@/flow_chat/components/toolbar-mode/ToolbarModeContext';
-import { useCurrentWorkspace } from '@/infrastructure/contexts/WorkspaceContext';
-import { useNotification } from '@/shared/notification-system';
 import NotificationButton from '../../TitleBar/NotificationButton';
 import { AboutDialog } from '../../AboutDialog';
-import { RemoteConnectDialog } from '../../RemoteConnectDialog';
-import {
-  getRemoteConnectDisclaimerAgreed,
-  setRemoteConnectDisclaimerAgreed,
-  RemoteConnectDisclaimerContent,
-} from '../../RemoteConnectDialog/RemoteConnectDisclaimer';
 import { MERMAID_INTERACTIVE_EXAMPLE } from '@/flow_chat/constants/mermaidExamples';
 
 const PersistentFooterActions: React.FC = () => {
@@ -38,17 +30,12 @@ const PersistentFooterActions: React.FC = () => {
     return activeTab?.content.type === 'mermaid-editor';
   });
   const { enableToolbarMode } = useToolbarModeContext();
-  const { hasWorkspace } = useCurrentWorkspace();
-  const { warning } = useNotification();
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuClosing, setMenuClosing] = useState(false);
   const [multimodalOpen, setMultimodalOpen] = useState(false);
   const multimodalHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showAbout, setShowAbout] = useState(false);
-  const [showRemoteConnect, setShowRemoteConnect] = useState(false);
-  const [showRemoteDisclaimer, setShowRemoteDisclaimer] = useState(false);
-  const [hasAgreedRemoteDisclaimer, setHasAgreedRemoteDisclaimer] = useState<boolean>(() => getRemoteConnectDisclaimerAgreed());
 
   const closeMenu = useCallback(() => {
     setMenuClosing(true);
@@ -144,30 +131,6 @@ const PersistentFooterActions: React.FC = () => {
     enableToolbarMode();
   };
 
-  const handleRemoteConnect = useCallback(async () => {
-    if (!hasWorkspace) {
-      warning(t('header.remoteConnectRequiresWorkspace'));
-      return;
-    }
-
-    closeMenu();
-
-    if (hasAgreedRemoteDisclaimer || getRemoteConnectDisclaimerAgreed()) {
-      setHasAgreedRemoteDisclaimer(true);
-      setShowRemoteConnect(true);
-      return;
-    }
-
-    setShowRemoteDisclaimer(true);
-  }, [hasWorkspace, warning, t, closeMenu, hasAgreedRemoteDisclaimer]);
-
-  const handleAgreeDisclaimer = useCallback(() => {
-    setRemoteConnectDisclaimerAgreed();
-    setHasAgreedRemoteDisclaimer(true);
-    setShowRemoteDisclaimer(false);
-    setShowRemoteConnect(true);
-  }, []);
-
   return (
     <>
       <div className="bitfun-nav-panel__footer">
@@ -196,23 +159,7 @@ const PersistentFooterActions: React.FC = () => {
                   role="menu"
                 >
                   {/* Remote Control Entry - Hidden (keep SSH Remote visible in MainNav) */}
-                  {/* <Tooltip
-                    content={t('header.remoteConnectRequiresWorkspace')}
-                    placement="right"
-                    disabled={hasWorkspace}
-                  >
-                    <button
-                      type="button"
-                      className={`bitfun-nav-panel__footer-menu-item${!hasWorkspace ? ' is-disabled' : ''}`}
-                      role="menuitem"
-                      aria-disabled={!hasWorkspace}
-                      onClick={handleRemoteConnect}
-                    >
-                      <Smartphone size={14} />
-                      <span>{t('header.remoteConnect')}</span>
-                    </button>
-                  </Tooltip>
-                  <div className="bitfun-nav-panel__footer-menu-divider" /> */}
+                  {/* Remote control menu entry hidden */}
                   <button
                     type="button"
                     className="bitfun-nav-panel__footer-menu-item"
@@ -332,21 +279,6 @@ const PersistentFooterActions: React.FC = () => {
         </div>
       </div>
       <AboutDialog isOpen={showAbout} onClose={() => setShowAbout(false)} />
-      <RemoteConnectDialog isOpen={showRemoteConnect} onClose={() => setShowRemoteConnect(false)} />
-      <Modal
-        isOpen={showRemoteDisclaimer}
-        onClose={() => setShowRemoteDisclaimer(false)}
-        title={t('remoteConnect.disclaimerTitle')}
-        showCloseButton
-        size="large"
-        contentInset
-      >
-        <RemoteConnectDisclaimerContent
-          agreed={hasAgreedRemoteDisclaimer}
-          onClose={() => setShowRemoteDisclaimer(false)}
-          onAgree={handleAgreeDisclaimer}
-        />
-      </Modal>
     </>
   );
 };
