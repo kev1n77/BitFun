@@ -10,6 +10,7 @@ import { configAPI } from '../../api/service-api/ConfigAPI';
 import type { SkillInfo, SkillLevel, SkillMarketItem, SkillValidationResult } from '../types';
 import { open } from '@tauri-apps/plugin-dialog';
 import { createLogger } from '@/shared/utils/logger';
+import { APP_FEATURES } from '@/shared/constants';
 import './SkillsConfig.scss';
 
 const log = createLogger('SkillsConfig');
@@ -88,7 +89,13 @@ const SkillsConfig: React.FC = () => {
   }, []);
 
   useEffect(() => { loadSkills(); }, [loadSkills]);
-  useEffect(() => { loadMarketSkills(); }, [loadMarketSkills]);
+  useEffect(() => {
+    if (!APP_FEATURES.SKILL_MARKET) {
+      return;
+    }
+
+    void loadMarketSkills();
+  }, [loadMarketSkills]);
 
   const validatePath = useCallback(async (path: string) => {
     if (!path.trim()) { setValidationResult(null); return; }
@@ -542,33 +549,35 @@ const SkillsConfig: React.FC = () => {
       <ConfigPageHeader title={t('title')} subtitle={t('subtitle')} />
 
       <ConfigPageContent>
-        <ConfigPageSection
-          title={t('market.title')}
-          description={t('market.subtitle')}
-          extra={(
-            <IconButton
-              variant="ghost"
-              size="small"
-              onClick={() => loadMarketSkills(marketKeyword)}
-              tooltip={t('market.refreshTooltip')}
-            >
-              <RefreshCw size={16} />
-            </IconButton>
-          )}
-        >
-          <div className="bitfun-skills-config__market-toolbar">
-            <Search
-              placeholder={t('market.searchPlaceholder')}
-              value={marketKeyword}
-              onChange={(value) => setMarketKeyword(value)}
-              onSearch={handleMarketSearch}
-              showSearchButton
-              clearable
-              size="small"
-            />
-          </div>
-          {renderMarketList()}
-        </ConfigPageSection>
+        {APP_FEATURES.SKILL_MARKET && (
+          <ConfigPageSection
+            title={t('market.title')}
+            description={t('market.subtitle')}
+            extra={(
+              <IconButton
+                variant="ghost"
+                size="small"
+                onClick={() => loadMarketSkills(marketKeyword)}
+                tooltip={t('market.refreshTooltip')}
+              >
+                <RefreshCw size={16} />
+              </IconButton>
+            )}
+          >
+            <div className="bitfun-skills-config__market-toolbar">
+              <Search
+                placeholder={t('market.searchPlaceholder')}
+                value={marketKeyword}
+                onChange={(value) => setMarketKeyword(value)}
+                onSearch={handleMarketSearch}
+                showSearchButton
+                clearable
+                size="small"
+              />
+            </div>
+            {renderMarketList()}
+          </ConfigPageSection>
+        )}
 
         <ConfigPageSection
           title={t('filters.user', { defaultValue: 'User Skills' })}
