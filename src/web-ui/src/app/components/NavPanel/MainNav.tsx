@@ -5,7 +5,6 @@
  *   1. Workspace file search
  *   2. Top: New sessions | Assistant | Extensions (expand → Agents | Skills)
  *   3. Assistant sessions, Workspace
- *   4. Bottom: MiniApp
  *
  * When a scene-nav transition is active (`isDeparting=true`), items receive
  * positional CSS classes for the split-open animation effect.
@@ -20,12 +19,10 @@ import { useSceneManager } from '../../hooks/useSceneManager';
 import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
 import type { SceneTabId } from '../SceneBar/types';
 import SectionHeader from './components/SectionHeader';
-import MiniAppEntry from './components/MiniAppEntry';
 import WorkspaceListSection from './sections/workspaces/WorkspaceListSection';
 import SessionsSection from './sections/sessions/SessionsSection';
 import { useSceneStore } from '../../stores/sceneStore';
 import { useMyAgentStore } from '../../scenes/my-agent/myAgentStore';
-import { useMiniAppCatalogSync } from '../../scenes/miniapps/hooks/useMiniAppCatalogSync';
 import { flowChatStore } from '@/flow_chat/store/FlowChatStore';
 import { flowChatManager } from '@/flow_chat/services/FlowChatManager';
 import { workspaceManager } from '@/infrastructure/services/business/workspaceManager';
@@ -56,8 +53,6 @@ const MainNav: React.FC<MainNavProps> = ({
   isDeparting: _isDeparting = false,
   anchorNavSceneId: _anchorNavSceneId = null,
 }) => {
-  useMiniAppCatalogSync();
-
   const sshRemote = useSSHRemoteContext();
   const [isSSHConnectionDialogOpen, setIsSSHConnectionDialogOpen] = useState(false);
 
@@ -81,11 +76,6 @@ const MainNav: React.FC<MainNavProps> = ({
     switchWorkspace,
     setActiveWorkspace,
   } = useWorkspaceContext();
-
-  const activeMiniAppId = useMemo(
-    () => (typeof activeTabId === 'string' && activeTabId.startsWith('miniapp:') ? activeTabId.slice('miniapp:'.length) : null),
-    [activeTabId]
-  );
 
   // Section expand state
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
@@ -608,18 +598,6 @@ const MainNav: React.FC<MainNavProps> = ({
           </div>
         </div>
 
-      </div>
-
-      {/* ── Bottom: MiniApp ───────────────────────── */}
-      <div className="bitfun-nav-panel__bottom-bar">
-        <div className="bitfun-nav-panel__miniapp-footer">
-          <MiniAppEntry
-            isActive={activeTabId === 'miniapps' || !!activeMiniAppId}
-            activeMiniAppId={activeMiniAppId}
-            onOpenMiniApps={() => openScene('miniapps')}
-            onOpenMiniApp={(appId) => openScene(`miniapp:${appId}`)}
-          />
-        </div>
       </div>
 
       {workspaceMenuPortal}
