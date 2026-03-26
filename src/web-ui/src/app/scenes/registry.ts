@@ -19,7 +19,6 @@ import {
   Boxes,
   Globe,
   Network,
-  User,
   BarChart3,
   ExternalLink,
 } from 'lucide-react';
@@ -129,15 +128,6 @@ export const SCENE_TAB_REGISTRY: SceneTabDef[] = [
     label: 'Mermaid',
     labelKey: 'scenes.mermaidEditor',
     Icon: Network,
-    pinned: false,
-    singleton: true,
-    defaultOpen: false,
-  },
-  {
-    id: 'assistant' as SceneTabId,
-    label: 'Assistant',
-    labelKey: 'scenes.assistant',
-    Icon: User,
     pinned: false,
     singleton: true,
     defaultOpen: false,

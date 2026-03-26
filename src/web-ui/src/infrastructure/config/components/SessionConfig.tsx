@@ -34,6 +34,7 @@ import './DebugConfig.scss';
 const log = createLogger('SessionConfig');
 
 const IS_TAURI_DESKTOP = typeof window !== 'undefined' && '__TAURI__' in window;
+const SHOW_COMPUTER_USE_SECTION = false;
 
 const AGENT_SESSION_TITLE = 'session-title-func-agent';
 
@@ -580,6 +581,7 @@ const SessionConfig: React.FC = () => {
         </ConfigPageSection>
 
         {/* ── Computer use (desktop) ─────────────────────────────── */}
+        {SHOW_COMPUTER_USE_SECTION ? (
         <ConfigPageSection
           title={t('computerUse.sectionTitle')}
           description={
@@ -689,6 +691,7 @@ const SessionConfig: React.FC = () => {
             </>
           ) : null}
         </ConfigPageSection>
+        ) : null}
 
         {/* ── Browser control (CDP) ──────────────────────────────── */}
         <ConfigPageSection

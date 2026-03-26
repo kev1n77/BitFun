@@ -70,6 +70,7 @@ const ShellNav: React.FC = () => {
 
   const visibleEntries = navView === 'agent' ? agentEntries : manualEntries;
   const hasMultipleWorkspaces = openedWorkspacesList.length > 1;
+  const shellWorkspaceLabel = workspaceName || t('nav.shell.homeLabel');
   const hasVisibleContent = visibleEntries.length > 0;
   const {
     menuOpen,
@@ -254,7 +255,7 @@ const ShellNav: React.FC = () => {
         <div className="bitfun-shell-nav__title-group">
           <span className="bitfun-shell-nav__title">{t('nav.shell.title')}</span>
           <ShellNavWorkspaceSwitcher
-            workspaceName={workspaceName}
+            workspaceName={shellWorkspaceLabel}
             hasMultipleWorkspaces={hasMultipleWorkspaces}
             workspaceMenuOpen={workspaceMenuOpen}
             workspaceMenuPosition={workspaceMenuPosition}

@@ -39,10 +39,10 @@ const PENDING_INVALID_LIMIT: u8 = 3;
 pub enum BotDisplayMode {
     /// Expert mode: can create Code / Cowork sessions on real workspaces.
     #[serde(rename = "pro")]
-    Pro,
-    /// Default assistant mode: Claw sessions on the assistant workspace.
-    #[serde(rename = "assistant")]
     #[default]
+    Pro,
+    /// Legacy assistant mode kept for compatibility. Assistant/Claw flows are disabled.
+    #[serde(rename = "assistant")]
     Assistant,
 }
 
@@ -92,7 +92,7 @@ impl BotChatState {
             current_assistant: None,
             current_assistant_name: None,
             current_session_id: None,
-            display_mode: BotDisplayMode::Assistant,
+            display_mode: BotDisplayMode::Pro,
             pending_action: None,
             pending_expires_at: 0,
             pending_invalid_count: 0,
@@ -416,6 +416,23 @@ pub fn welcome_message(language: BotLanguage) -> &'static str {
     strings_for(language).welcome
 }
 
+fn assistant_features_disabled_message(language: BotLanguage) -> &'static str {
+    if language.is_chinese() {
+        "Assistant/Claw 功能已禁用。请改用普通工作区。"
+    } else {
+        "Assistant/Claw features are disabled. Use a regular workspace instead."
+    }
+}
+
+fn normalize_disabled_assistant_state(state: &mut BotChatState) {
+    if state.display_mode != BotDisplayMode::Pro {
+        state.display_mode = BotDisplayMode::Pro;
+        state.current_assistant = None;
+        state.current_assistant_name = None;
+        state.current_session_id = None;
+    }
+}
+
 // ── MenuView -> HandleResult helpers ───────────────────────────────
 
 fn result_from_menu(state: &mut BotChatState, view: MenuView) -> HandleResult {
@@ -548,11 +565,6 @@ fn main_menu_view(state: &BotChatState, s: &'static BotStrings) -> MenuView {
 
 fn settings_menu_view(verbose: bool, state: &BotChatState, s: &'static BotStrings) -> MenuView {
     let mut items: Vec<MenuItem> = Vec::new();
-    if state.display_mode == BotDisplayMode::Pro {
-        items.push(MenuItem::default(s.item_switch_to_assistant, "/assistant"));
-    } else {
-        items.push(MenuItem::default(s.item_switch_to_expert, "/expert"));
-    }
     if verbose {
         items.push(MenuItem::default(s.item_verbose_off, "/concise"));
     } else {
@@ -562,11 +574,7 @@ fn settings_menu_view(verbose: bool, state: &BotChatState, s: &'static BotString
     items.push(MenuItem::default(s.item_back, "/menu"));
     let body = format!(
         "{} · {}: {}",
-        if state.display_mode == BotDisplayMode::Pro {
-            s.mode_expert
-        } else {
-            s.mode_assistant
-        },
+        s.mode_expert,
         s.verbose_label,
         if verbose {
             s.verbose_status_on
@@ -618,65 +626,19 @@ fn confirm_mode_switch_view(
 
 // ── Public entry points ────────────────────────────────────────────
 
-/// IM pairing bootstrap: assistant mode + default assistant workspace + new
-/// Claw session.  Mutates `state.display_mode/current_assistant/
-/// current_session_id` on success.
+/// IM pairing bootstrap now lands the user in expert mode only.
 pub async fn bootstrap_im_chat_after_pairing(state: &mut BotChatState) -> String {
-    use crate::service::workspace::get_global_workspace_service;
-
-    state.display_mode = BotDisplayMode::Assistant;
     let language = current_bot_language().await;
-    let s = strings_for(language);
-
-    let ws_service = match get_global_workspace_service() {
-        Some(s) => s,
-        None => return s.bootstrap_workspace_unavailable.to_string(),
-    };
-
-    let mut assistants = ws_service.get_assistant_workspaces().await;
-    if assistants.is_empty() {
-        match ws_service.create_assistant_workspace(None).await {
-            Ok(w) => assistants.push(w),
-            Err(e) => return format!("{}{e}", s.assistant_create_failed_prefix),
-        }
-    }
-
-    let picked = assistants
-        .iter()
-        .find(|w| w.assistant_id.is_none())
-        .cloned()
-        .or_else(|| assistants.first().cloned());
-
-    let Some(ws_info) = picked else {
-        return s.bootstrap_workspace_unavailable.to_string();
-    };
-
-    let path_buf = ws_info.root_path.clone();
-    if let Err(e) = ws_service.open_workspace(path_buf.clone()).await {
-        return format!("{}{e}", s.workspace_open_failed_prefix);
-    }
-    if let Err(e) =
-        crate::service::snapshot::initialize_snapshot_manager_for_workspace(path_buf, None).await
-    {
-        error!("IM bot bootstrap: snapshot init after pairing: {e}");
-    }
-
-    state.current_assistant = Some(ws_info.root_path.to_string_lossy().to_string());
-    state.current_assistant_name = Some(ws_info.name.clone());
+    state.display_mode = BotDisplayMode::Pro;
+    state.current_assistant = None;
+    state.current_assistant_name = None;
     state.current_session_id = None;
-
-    let create_res = create_session(state, "Claw").await;
-    if state.current_session_id.is_none() {
-        let detail = create_res
-            .reply
-            .lines()
-            .next()
-            .unwrap_or("")
-            .to_string();
-        return format!("{}{detail}", s.bootstrap_session_failed_prefix);
+    if language.is_chinese() {
+        "配对完成。请使用 /switch_workspace、/new_code_session 或 /new_cowork_session 进入普通工作区。"
+    } else {
+        "Pairing completed. Use /switch_workspace, /new_code_session, or /new_cowork_session with a regular workspace."
     }
-
-    s.bootstrap_ready.to_string()
+    .to_string()
 }
 
 /// Mark chat paired, run assistant/session bootstrap, return main menu.
@@ -730,6 +692,10 @@ async fn dispatch(
 ) -> HandleResult {
     let language = current_bot_language().await;
     let s = strings_for(language);
+
+    if state.paired {
+        normalize_disabled_assistant_state(state);
+    }
 
     // Auto-expire pending actions before any branch.
     if state.pending_expired() {
@@ -820,6 +786,13 @@ async fn switch_mode(
     target: BotDisplayMode,
     s: &'static BotStrings,
 ) -> HandleResult {
+    if target != BotDisplayMode::Pro {
+        normalize_disabled_assistant_state(state);
+        let mut view = main_menu_view(state, s);
+        view = view.with_body(assistant_features_disabled_message(current_bot_language().await));
+        return result_from_menu(state, view);
+    }
+
     if state.display_mode == target {
         let body = if target == BotDisplayMode::Pro {
             s.mode_already_expert
@@ -1378,6 +1351,13 @@ async fn guarded_new(
     agent_type: &str,
     s: &'static BotStrings,
 ) -> HandleResult {
+    if matches!(agent_type, "Claw") {
+        normalize_disabled_assistant_state(state);
+        let mut view = main_menu_view(state, s);
+        view = view.with_body(assistant_features_disabled_message(current_bot_language().await));
+        return result_from_menu(state, view);
+    }
+
     let needs_pro = matches!(agent_type, "agentic" | "Cowork");
     let needs_assistant = matches!(agent_type, "Claw");
 
