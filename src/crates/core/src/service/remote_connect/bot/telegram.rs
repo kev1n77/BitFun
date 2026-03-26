@@ -335,11 +335,9 @@ impl TelegramBot {
             "commands": [
                 { "command": "switch_workspace", "description": "List and switch workspaces" },
                 { "command": "pro", "description": "Switch to Expert mode (Code/Cowork)" },
-                { "command": "assistant", "description": "Switch to Assistant mode (Claw)" },
                 { "command": "resume_session", "description": "Resume an existing session" },
                 { "command": "new_code_session", "description": "Create coding session (Expert)" },
                 { "command": "new_cowork_session", "description": "Create cowork session (Expert)" },
-                { "command": "new_claw_session", "description": "Create claw session (Assistant)" },
                 { "command": "cancel_task", "description": "Cancel the current task" },
                 { "command": "help", "description": "Show available commands" },
             ]

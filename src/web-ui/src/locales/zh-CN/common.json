@@ -100,9 +100,9 @@
       "assistantSessions": "助理会话"
     },
     "search": {
-      "triggerPlaceholder": "搜索",
+      "triggerPlaceholder": "搜索工作区、会话...",
       "triggerTooltip": "搜索 (Ctrl+K)",
-      "inputPlaceholder": "搜索工作区、助理、会话...",
+      "inputPlaceholder": "搜索工作区、会话...",
       "groupWorkspaces": "已打开工作区",
       "groupAssistants": "助理",
       "groupSessions": "所有会话",
@@ -128,6 +128,7 @@
     },
     "shell": {
       "title": "Shell",
+      "homeLabel": "home",
       "views": {
         "manual": "我的",
         "agent": "Agent"
