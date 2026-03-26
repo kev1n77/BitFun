@@ -11,8 +11,6 @@ A set of card components that render tool execution progress and results in Flow
 - TerminalCard: terminal command execution
 - TaskCard: AI task execution
 - TodoCard: task list and status
-- WebSearchCard: web search and fetch results
-
 ## Usage
 
 ```tsx

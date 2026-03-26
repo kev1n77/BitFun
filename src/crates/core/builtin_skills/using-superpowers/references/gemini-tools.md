@@ -12,8 +12,6 @@ Skills use Claude Code tool names. When you encounter these in a skill, use your
 | `Glob` (search files by name) | `glob` |
 | `TodoWrite` (task tracking) | `write_todos` |
 | `Skill` tool (invoke a skill) | `activate_skill` |
-| `WebSearch` | `google_web_search` |
-| `WebFetch` | `web_fetch` |
 | `Task` tool (dispatch subagent) | No equivalent — Gemini CLI does not support subagents |
 
 ## No subagent support

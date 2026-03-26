@@ -31,8 +31,6 @@ impl CoworkMode {
                 "Git".to_string(),
                 "Bash".to_string(),
                 "TerminalControl".to_string(),
-                "WebSearch".to_string(),
-                "ComputerUse".to_string(),
             ],
         }
     }
