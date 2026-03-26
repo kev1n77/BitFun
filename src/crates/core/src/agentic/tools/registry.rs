@@ -109,10 +109,6 @@ impl ToolRegistry {
         // AskUserQuestion tool
         self.register_tool(Arc::new(AskUserQuestionTool::new()));
 
-        // Web tool
-        self.register_tool(Arc::new(WebSearchTool::new()));
-        self.register_tool(Arc::new(WebFetchTool::new()));
-
         // Mermaid interactive chart tool
         self.register_tool(Arc::new(MermaidInteractiveTool::new()));
 
@@ -170,12 +166,6 @@ impl ToolRegistry {
 mod tests {
     use super::create_tool_registry;
     use serde_json::json;
-
-    #[test]
-    fn registry_includes_webfetch_tool() {
-        let registry = create_tool_registry();
-        assert!(registry.get_tool("WebFetch").is_some());
-    }
 
     #[test]
     fn registry_includes_cron_tool() {
