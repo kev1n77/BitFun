@@ -871,14 +871,6 @@ impl FeishuBot {
                 },
             ),
             (
-                "/new_claw_session",
-                if language.is_chinese() {
-                    "新建助理会话"
-                } else {
-                    "New Claw Session"
-                },
-            ),
-            (
                 "/cancel_task",
                 if language.is_chinese() {
                     "取消任务"
