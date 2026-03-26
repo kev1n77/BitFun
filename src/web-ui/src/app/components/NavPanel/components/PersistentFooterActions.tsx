@@ -6,8 +6,6 @@ import {
   PictureInPicture2,
   SquareTerminal,
   Terminal,
-  Smartphone,
-  Globe,
   Network,
   Layers,
   PanelsTopLeft,
@@ -45,11 +43,6 @@ const PersistentFooterActions: React.FC = () => {
   const openNavScene = useNavSceneStore((s) => s.openNavScene);
   const closeNavScene = useNavSceneStore((s) => s.closeNavScene);
 
-  // Check if a browser panel is the active tab in the AuxPane canvas
-  const isBrowserPanelActiveInCanvas = useCanvasStore((s) => {
-    const activeTab = s.primaryGroup.tabs.find((t) => t.id === s.primaryGroup.activeTabId);
-    return activeTab?.content.type === 'browser';
-  });
   const isMermaidPanelActiveInCanvas = useCanvasStore((s) => {
     const activeTab = s.primaryGroup.tabs.find((t) => t.id === s.primaryGroup.activeTabId);
     return activeTab?.content.type === 'mermaid-editor';
@@ -95,23 +88,6 @@ const PersistentFooterActions: React.FC = () => {
     }
     openNavScene('shell');
   }, [closeNavScene, navSceneId, openNavScene, showSceneNav]);
-
-  const handleOpenBrowser = useCallback(() => {
-    if (activeTabId === 'session') {
-      // Open browser as a panel in the AuxPane (right side of chat)
-      window.dispatchEvent(new CustomEvent('agent-create-tab', {
-        detail: {
-          type: 'browser',
-          title: t('scenes.browser'),
-          checkDuplicate: true,
-          duplicateCheckKey: 'browser-panel',
-          replaceExisting: false,
-        },
-      }));
-    } else {
-      openScene('browser');
-    }
-  }, [activeTabId, openScene, t]);
 
   const handleOpenMermaidEditor = useCallback(() => {
     const title = t('scenes.mermaidEditor');
@@ -291,9 +267,8 @@ const PersistentFooterActions: React.FC = () => {
           onMouseLeave={handleMultimodalLeave}
         >
           {(() => {
-            const isBrowserActive = activeTabId === 'browser' || (activeTabId === 'session' && isBrowserPanelActiveInCanvas);
             const isMermaidActive = activeTabId === 'mermaid' || (activeTabId === 'session' && isMermaidPanelActiveInCanvas);
-            const isAnyActive = isBrowserActive || isMermaidActive;
+            const isAnyActive = isMermaidActive;
             return (
               <>
                 <button
@@ -315,7 +290,8 @@ const PersistentFooterActions: React.FC = () => {
                     role="menu"
                     aria-label={t('nav.multimodalTools')}
                   >
-                    <button
+                    {/* Browser tool entry hidden */}
+                    {/* <button
                       type="button"
                       className={`bitfun-nav-panel__footer-multimodal-item${isBrowserActive ? ' is-active' : ''}`}
                       role="menuitem"
@@ -324,7 +300,7 @@ const PersistentFooterActions: React.FC = () => {
                     >
                       <Globe size={13} className="bitfun-nav-panel__footer-multimodal-item-icon" />
                       <span className="bitfun-nav-panel__footer-multimodal-item-label">{t('scenes.browser')}</span>
-                    </button>
+                    </button> */}
 
                     <button
                       type="button"
