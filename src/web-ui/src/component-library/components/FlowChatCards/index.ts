@@ -20,9 +20,6 @@ export type { TaskCardProps } from './TaskCard';
 export { TodoCard } from './TodoCard';
 export type { TodoCardProps, TodoItem } from './TodoCard';
 
-export { WebSearchCard } from './WebSearchCard';
-export type { WebSearchCardProps, WebSearchResult } from './WebSearchCard';
-
 export { ContextCompressionCard } from './ContextCompressionCard';
 export type { ContextCompressionCardProps } from './ContextCompressionCard';
 
@@ -98,27 +95,6 @@ export const FLOWCHAT_CARD_CONFIGS: Record<string, ToolCardConfig> = {
     description: i18nService.t('components:flowChatCards.toolConfig.glob.description'),
     displayMode: 'compact',
     primaryColor: '#06b6d4'
-  },
-
-  'WebSearch': {
-    toolName: 'WebSearch',
-    displayName: i18nService.t('components:flowChatCards.toolConfig.webSearch.displayName'),
-    icon: 'WS',
-    requiresConfirmation: false,
-    resultDisplayType: 'detailed',
-    description: i18nService.t('components:flowChatCards.toolConfig.webSearch.description'),
-    displayMode: 'compact',
-    primaryColor: '#0ea5e9'
-  },
-  'WebFetch': {
-    toolName: 'WebFetch',
-    displayName: i18nService.t('components:flowChatCards.toolConfig.webFetch.displayName'),
-    icon: 'WF',
-    requiresConfirmation: false,
-    resultDisplayType: 'detailed',
-    description: i18nService.t('components:flowChatCards.toolConfig.webFetch.description'),
-    displayMode: 'standard',
-    primaryColor: '#0ea5e9'
   },
 
   'Task': {

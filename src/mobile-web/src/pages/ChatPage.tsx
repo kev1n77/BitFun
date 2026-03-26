@@ -619,7 +619,6 @@ const TOOL_TYPE_MAP: Record<string, string> = {
   Task: 'tools.task',
   search: 'tools.search',
   edit_file: 'tools.edit',
-  web_search: 'tools.web',
   TodoWrite: 'tools.todo',
 };
 
@@ -901,13 +900,6 @@ function getToolPreview(tool: RemoteToolStatus): string | null {
       case 'Bash':
       case 'Shell':
         result = params.description || params.command || null;
-        break;
-      case 'web_search':
-      case 'WebSearch':
-        result = params.search_term || params.query || null;
-        break;
-      case 'WebFetch':
-        result = params.url || null;
         break;
       case 'SemanticSearch':
         result = params.query || null;

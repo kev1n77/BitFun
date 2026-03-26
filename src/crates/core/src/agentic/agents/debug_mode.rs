@@ -334,7 +334,6 @@ impl Agent for DebugMode {
             "Bash".to_string(),
             "Grep".to_string(),
             "Glob".to_string(),
-            "WebSearch".to_string(),
             "TodoWrite".to_string(),
             "Log".to_string(),
             "TerminalControl".to_string(),
