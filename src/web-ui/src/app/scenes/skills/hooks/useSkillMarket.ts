@@ -12,6 +12,7 @@ const DEFAULT_PAGE_SIZE = 10;
 const MAX_TOTAL_SKILLS = 500;
 
 interface UseSkillMarketOptions {
+  enabled?: boolean;
   searchQuery: string;
   installedSkillNames: Set<string>;
   onInstalledChanged?: () => Promise<void> | void;
@@ -19,6 +20,7 @@ interface UseSkillMarketOptions {
 }
 
 export function useSkillMarket({
+  enabled = true,
   searchQuery,
   installedSkillNames,
   onInstalledChanged,
@@ -29,12 +31,12 @@ export function useSkillMarket({
   const { hasWorkspace, workspacePath } = useWorkspaceManagerSync();
 
   const [marketSkills, setMarketSkills] = useState<SkillMarketItem[]>([]);
-  const [marketLoading, setMarketLoading] = useState(true);
+  const [marketLoading, setMarketLoading] = useState(enabled);
   const [loadingMore, setLoadingMore] = useState(false);
   const [marketError, setMarketError] = useState<string | null>(null);
   const [downloadingPackage, setDownloadingPackage] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(0);
-  const [hasMore, setHasMore] = useState(true);
+  const [hasMore, setHasMore] = useState(enabled);
 
   const fetchSkills = useCallback(async (query: string | undefined, limit: number) => {
     const normalized = query?.trim();
@@ -44,6 +46,16 @@ export function useSkillMarket({
   }, []);
 
   const loadFirstPage = useCallback(async (query?: string) => {
+    if (!enabled) {
+      setMarketSkills([]);
+      setMarketError(null);
+      setMarketLoading(false);
+      setLoadingMore(false);
+      setCurrentPage(0);
+      setHasMore(false);
+      return;
+    }
+
     setMarketLoading(true);
     setMarketError(null);
     setCurrentPage(0);
@@ -57,15 +69,29 @@ export function useSkillMarket({
     } finally {
       setMarketLoading(false);
     }
-  }, [fetchSkills, pageSize]);
+  }, [enabled, fetchSkills, pageSize]);
 
   useEffect(() => {
-    loadFirstPage(searchQuery || undefined);
-  }, [loadFirstPage, searchQuery]);
+    if (!enabled) {
+      setMarketSkills([]);
+      setMarketLoading(false);
+      setLoadingMore(false);
+      setMarketError(null);
+      setCurrentPage(0);
+      setHasMore(false);
+      return;
+    }
+
+    void loadFirstPage(searchQuery || undefined);
+  }, [enabled, loadFirstPage, searchQuery]);
 
   const refresh = useCallback(async () => {
+    if (!enabled) {
+      return;
+    }
+
     await loadFirstPage(searchQuery || undefined);
-  }, [loadFirstPage, searchQuery]);
+  }, [enabled, loadFirstPage, searchQuery]);
 
   const displayMarketSkills = useMemo(() => {
     const entries = marketSkills.map((skill, index) => ({
@@ -101,6 +127,10 @@ export function useSkillMarket({
   }, []);
 
   const goToNextPage = useCallback(async () => {
+    if (!enabled) {
+      return;
+    }
+
     const nextPage = currentPage + 1;
     const neededCount = Math.min((nextPage + 1) * pageSize, MAX_TOTAL_SKILLS);
 
@@ -127,9 +157,13 @@ export function useSkillMarket({
     } finally {
       setLoadingMore(false);
     }
-  }, [currentPage, displayMarketSkills.length, fetchSkills, hasMore, pageSize, searchQuery]);
+  }, [currentPage, displayMarketSkills.length, enabled, fetchSkills, hasMore, pageSize, searchQuery]);
 
   const handleDownload = useCallback(async (skill: SkillMarketItem) => {
+    if (!enabled) {
+      return;
+    }
+
     if (!hasWorkspace) {
       notification.warning(t('messages.noWorkspace'));
       return;
@@ -153,7 +187,7 @@ export function useSkillMarket({
     } finally {
       setDownloadingPackage(null);
     }
-  }, [hasWorkspace, notification, onInstalledChanged, t, workspacePath]);
+  }, [enabled, hasWorkspace, notification, onInstalledChanged, t, workspacePath]);
 
   return {
     marketSkills: paginatedSkills,

@@ -110,6 +110,11 @@ export const DEFAULT_CONFIG = {
 } as const;
 
 
+export const APP_FEATURES = {
+  SKILL_MARKET: false,
+} as const;
+
+
 export const PERFORMANCE_CONFIG = {
   DEBOUNCE_DELAY: 300,
   THROTTLE_DELAY: 100,
