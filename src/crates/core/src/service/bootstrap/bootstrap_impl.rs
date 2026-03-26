@@ -59,6 +59,8 @@ pub(crate) async fn initialize_workspace_persona_files(workspace_root: &Path) ->
     Ok(())
 }
 
+/// Used to detect `BOOTSTRAP.md` presence; coordinator no longer auto-starts assistant bootstrap.
+#[allow(dead_code)]
 pub(crate) fn is_workspace_bootstrap_pending(workspace_root: &Path) -> bool {
     workspace_root.join(BOOTSTRAP_FILE_NAME).exists()
 }
