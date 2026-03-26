@@ -18,7 +18,6 @@ import { MermaidInteractiveDisplay } from './MermaidInteractiveDisplay';
 import { CodeReviewToolCard } from './CodeReviewToolCard';
 import { FileOperationToolCard } from './FileOperationToolCard';
 import { DefaultToolCard } from './DefaultToolCard';
-import { WebSearchCard } from './WebSearchCard'; // Temporary until WebSearchDisplay exists.
 import { ContextCompressionDisplay } from './ContextCompressionDisplay';
 import { MCPToolDisplay } from './MCPToolDisplay';
 import { SkillDisplay } from './SkillDisplay';
@@ -107,28 +106,6 @@ export const TOOL_CARD_CONFIGS: Record<string, ToolCardConfig> = {
     description: 'Search files by pattern',
     displayMode: 'compact',
     primaryColor: '#06b6d4'
-  },
-
-  // Web tools
-  'WebSearch': {
-    toolName: 'WebSearch',
-    displayName: 'Web Search',
-    icon: 'WS',
-    requiresConfirmation: false,
-    resultDisplayType: 'detailed',
-    description: 'Search the web',
-    displayMode: 'compact',
-    primaryColor: '#0ea5e9'
-  },
-  'WebFetch': {
-    toolName: 'WebFetch',
-    displayName: 'Fetch Link',
-    icon: 'WF',
-    requiresConfirmation: false,
-    resultDisplayType: 'detailed',
-    description: 'Fetch webpage content',
-    displayMode: 'standard',
-    primaryColor: '#0ea5e9'
   },
 
   // Advanced tools
@@ -327,10 +304,6 @@ export const TOOL_CARD_COMPONENTS = {
   'Glob': GlobSearchDisplay,
   'LS': LSDisplay,
   
-  // Web tools
-  'WebSearch': WebSearchCard,
-  'WebFetch': WebSearchCard,
-  
   // Advanced tools
   'Task': TaskToolDisplay,
   'TodoWrite': TodoWriteDisplay,
@@ -456,18 +429,18 @@ export type { PlanDisplayProps } from './CreatePlanDisplay';
 import type { FlowItem, FlowToolItem } from '../types/flow-chat';
 
 /**
- * Collapsible explorer tools (only these 5).
+ * Collapsible explorer tools (only these 4).
  * They are auto-collapsed during streaming to reduce visual noise.
  */
 export const COLLAPSIBLE_TOOL_NAMES = new Set([
-  'Read', 'LS', 'Grep', 'Glob', 'WebSearch'
+  'Read', 'LS', 'Grep', 'Glob'
 ]);
 
 /** Read tools (counted in readCount). */
 export const READ_TOOL_NAMES = new Set(['Read', 'LS']);
 
 /** Search tools (counted in searchCount). */
-export const SEARCH_TOOL_NAMES = new Set(['Grep', 'Glob', 'WebSearch']);
+export const SEARCH_TOOL_NAMES = new Set(['Grep', 'Glob']);
 
 /** Check whether a tool is collapsible. */
 export function isCollapsibleTool(toolName: string): boolean {
@@ -479,7 +452,7 @@ export function isCollapsibleTool(toolName: string): boolean {
  * - Subagent items are never collapsed.
  * - Text needs context (use isCollapsibleItemWithContext).
  * - Thinking can be collapsed with explorer tools.
- * - Only the 5 explorer tools are collapsible.
+ * - Only the 4 explorer tools are collapsible.
  */
 export function isCollapsibleItem(item: FlowItem): boolean {
   // Subagent items are never collapsed.
@@ -491,7 +464,7 @@ export function isCollapsibleItem(item: FlowItem): boolean {
   // Thinking can be collapsed with explorer tools.
   if (item.type === 'thinking') return true;
   
-  // Tools: only the 5 explorer tools are collapsible.
+  // Tools: only the 4 explorer tools are collapsible.
   if (item.type === 'tool') {
     return isCollapsibleTool((item as FlowToolItem).toolName);
   }
@@ -532,7 +505,7 @@ export function isCollapsibleItemWithContext(
     return false;
   }
   
-  // Tools: only the 5 explorer tools are collapsible.
+  // Tools: only the 4 explorer tools are collapsible.
   if (item.type === 'tool') {
     return isCollapsibleTool((item as FlowToolItem).toolName);
   }
