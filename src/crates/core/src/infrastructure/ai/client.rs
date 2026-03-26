@@ -2311,7 +2311,7 @@ mod tests {
         });
 
         let gemini_tools = GeminiMessageConverter::convert_tools(Some(vec![ToolDefinition {
-            name: "WebSearch".to_string(),
+            name: "googleSearchRetrieval".to_string(),
             description: "Search the web".to_string(),
             parameters: json!({
                 "type": "object",
@@ -2331,7 +2331,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(request_body["tools"][0]["googleSearch"], json!({}));
+        assert_eq!(request_body["tools"][0]["googleSearchRetrieval"], json!({}));
         assert!(request_body.get("toolConfig").is_none());
     }
 
