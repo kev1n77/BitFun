@@ -45,7 +45,6 @@ import { Tooltip, IconButton } from '@/component-library';
 import { useAgentCanvasStore } from '@/app/components/panels/content-canvas/stores';
 import { openBtwSessionInAuxPane, selectActiveBtwSessionTab } from '../services/openBtwSession';
 import { resolveSessionRelationship } from '../utils/sessionMetadata';
-import { resolveWorkspaceChatInputMode } from '../utils/chatInputMode';
 import { useSceneStore } from '@/app/stores/sceneStore';
 import type { SceneTabId } from '@/app/components/SceneBar/types';
 import type { SkillInfo } from '@/infrastructure/config/types';
@@ -295,9 +294,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [tokenUsage, setTokenUsage] = React.useState({ current: 0, max: 128128 });
   const isAssistantWorkspace = workspace?.workspaceKind === WorkspaceKind.Assistant;
   const currentMode = modeState.current;
-  const activeSessionMode = effectiveTargetSessionId
-    ? flowChatState.sessions.get(effectiveTargetSessionId)?.mode
-    : undefined;
   const canSwitchModes = !isAssistantWorkspace && currentMode !== 'Cowork';
 
   // Session-level mode policy: Cowork sessions are fixed; code sessions should not switch into Cowork.
@@ -306,9 +302,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       modeState.available.filter(mode =>
         mode.enabled &&
         mode.id !== 'Cowork' &&
-        (isAssistantWorkspace || mode.id !== 'Claw')
+        mode.id !== 'Claw'
       ),
-    [isAssistantWorkspace, modeState.available]
+    [modeState.available]
   );
 
   /** Code session: modes switchable on top of default agentic */
@@ -810,27 +806,30 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, []);
 
   React.useEffect(() => {
-    const nextMode = resolveWorkspaceChatInputMode({
-      currentMode,
-      isAssistantWorkspace,
-      sessionMode: activeSessionMode,
-    });
+    if (!effectiveTargetSessionId) return;
 
-    if (nextMode) {
-      log.debug('Syncing mode with workspace and session', {
-        sessionId: effectiveTargetSessionId,
-        mode: nextMode,
-        sessionMode: activeSessionMode,
-        isAssistantWorkspace,
-      });
-      dispatchMode({ type: 'SET_CURRENT_MODE', payload: nextMode });
+    const store = FlowChatStore.getInstance();
+    const state = store.getState();
+    const session = state.sessions.get(effectiveTargetSessionId);
+
+    if (session?.mode) {
+      log.debug('Session ID changed, syncing mode', { sessionId: effectiveTargetSessionId, mode: session.mode });
+      dispatchMode({ type: 'SET_CURRENT_MODE', payload: session.mode });
       try {
-        sessionStorage.setItem('bitfun:flowchat:lastMode', nextMode);
+        sessionStorage.setItem('bitfun:flowchat:lastMode', session.mode);
       } catch {
         // ignore
       }
     }
-  }, [activeSessionMode, currentMode, effectiveTargetSessionId, isAssistantWorkspace]);
+  }, [effectiveTargetSessionId]);
+
+  React.useEffect(() => {
+    if (modeState.current !== 'Claw') {
+      return;
+    }
+
+    dispatchMode({ type: 'SET_CURRENT_MODE', payload: 'agentic' });
+  }, [modeState.current]);
 
   React.useEffect(() => {
     const queuedInput = derivedState?.queuedInput;

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { homeDir } from '@tauri-apps/api/path';
 import { getTerminalService } from '@/tools/terminal';
 import type { TerminalService } from '@/tools/terminal';
 import type { SessionResponse, TerminalEvent } from '@/tools/terminal/types/session';
@@ -54,6 +55,20 @@ function dispatchTerminalRenamed(sessionId: string, newName: string) {
   }
 
   window.dispatchEvent(new CustomEvent('terminal-session-renamed', { detail: { sessionId, newName } }));
+}
+
+async function resolveWorkingDirectory(workspacePath?: string): Promise<string | undefined> {
+  const trimmedWorkspacePath = workspacePath?.trim();
+  if (trimmedWorkspacePath) {
+    return trimmedWorkspacePath;
+  }
+
+  try {
+    const resolvedHomeDir = await homeDir();
+    return resolvedHomeDir.trim() || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function useTerminalSessions(
@@ -140,9 +155,12 @@ export function useTerminalSessions(
       }
 
       const shellType = entry.shellType ?? await getDefaultShellType();
+      const workingDirectory = await resolveWorkingDirectory(
+        entry.workingDirectory ?? entry.cwd ?? workspacePath
+      );
       await service.createSession({
         sessionId: entry.sessionId,
-        workingDirectory: entry.workingDirectory ?? entry.cwd ?? workspacePath,
+        workingDirectory,
         name: entry.name,
         shellType,
         source: entry.source,
@@ -173,9 +191,10 @@ export function useTerminalSessions(
 
     try {
       const shellType = shellTypeOverride ?? await getDefaultShellType();
+      const workingDirectory = await resolveWorkingDirectory(workspacePath);
       const nextIndex = sessions.filter((session) => session.source === MANUAL_SOURCE).length + 1;
       const session = await service.createSession({
-        workingDirectory: workspacePath,
+        workingDirectory,
         name: `Shell ${nextIndex}`,
         shellType,
         source: MANUAL_SOURCE,

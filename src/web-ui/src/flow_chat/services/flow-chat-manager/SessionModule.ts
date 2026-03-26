@@ -70,21 +70,23 @@ async function hydrateHistoricalSession(
   }
 }
 
-type SessionDisplayMode = 'code' | 'cowork' | 'claw';
+type SessionDisplayMode = 'code' | 'cowork';
 
 const isAssistantWorkspace = (workspace?: WorkspaceInfo | null): boolean => {
   return workspace?.workspaceKind === WorkspaceKind.Assistant;
+};
+
+const isClawMode = (mode?: string): boolean => {
+  return (mode || '').trim().toLowerCase() === 'claw';
 };
 
 const normalizeSessionDisplayMode = (
   mode?: string,
   workspace?: WorkspaceInfo | null
 ): SessionDisplayMode => {
-  if (isAssistantWorkspace(workspace)) return 'claw';
   if (!mode) return 'code';
   const normalizedMode = mode.toLowerCase();
   if (normalizedMode === 'cowork') return 'cowork';
-  if (normalizedMode === 'claw') return 'claw';
   return 'code';
 };
 
@@ -104,7 +106,7 @@ const resolveSessionWorkspacePath = (
   // currentWorkspacePath stays null while global workspace already has rootPath.
   const current = workspaceManager.getState().currentWorkspace;
   const root = current?.rootPath?.trim();
-  if (!root) {
+  if (!root || current?.workspaceKind === WorkspaceKind.Assistant) {
     return null;
   }
   return current?.workspaceKind === WorkspaceKind.Remote
@@ -161,9 +163,6 @@ const resolveAgentType = (
   requestedMode: string | undefined,
   workspace: WorkspaceInfo | null
 ): string => {
-  if (isAssistantWorkspace(workspace)) {
-    return 'Claw';
-  }
   return requestedMode || 'agentic';
 };
 
@@ -219,11 +218,18 @@ export async function createChatSession(
   mode?: string
 ): Promise<string> {
   try {
+    if (isClawMode(mode)) {
+      throw new Error('Claw sessions are disabled');
+    }
+
     const workspacePath = resolveSessionWorkspacePath(context, config);
     const workspace = resolveSessionWorkspace(context, config);
 
     if (!workspacePath) {
       throw new Error('Workspace path is required to create a session');
+    }
+    if (isAssistantWorkspace(workspace)) {
+      throw new Error('Open or add a project workspace first');
     }
     const remoteConnectionId =
       workspace?.workspaceKind === WorkspaceKind.Remote ? workspace.connectionId : undefined;
@@ -331,6 +337,9 @@ export async function switchChatSession(
 ): Promise<void> {
   try {
     const session = context.flowChatStore.getState().sessions.get(sessionId);
+    if (isClawMode(session?.mode)) {
+      throw new Error('Claw sessions are disabled');
+    }
 
     // Switch UI immediately so the user sees the new session without waiting for history load.
     context.flowChatStore.switchSession(sessionId);
@@ -484,6 +493,9 @@ export async function ensureBackendSession(
   if (session.isTransient) {
     return;
   }
+  if (isClawMode(session.mode)) {
+    throw new Error('Claw sessions are disabled');
+  }
 
   if (session.isHistorical) {
     await hydrateHistoricalSession(context, sessionId, false);
@@ -564,6 +576,9 @@ export async function retryCreateBackendSession(
   }
   if (session.isTransient) {
     return;
+  }
+  if (isClawMode(session.mode)) {
+    throw new Error('Claw sessions are disabled');
   }
 
   const workspacePath = requireSessionWorkspacePath(session.workspacePath, sessionId);

@@ -15,6 +15,18 @@ use bitfun_core::agentic::coordination::{
 use bitfun_core::agentic::core::*;
 use bitfun_core::agentic::image_analysis::ImageContextData;
 use bitfun_core::agentic::tools::image_context::get_image_context;
+
+fn is_claw_agent_type(agent_type: &str) -> bool {
+    agent_type.trim().eq_ignore_ascii_case("claw")
+}
+
+fn ensure_claw_disabled(agent_type: &str) -> Result<(), String> {
+    if is_claw_agent_type(agent_type) {
+        return Err("Claw sessions are disabled".to_string());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateSessionRequest {
@@ -230,6 +242,8 @@ pub async fn create_session(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: CreateSessionRequest,
 ) -> Result<CreateSessionResponse, String> {
+    ensure_claw_disabled(&request.agent_type)?;
+
     fn norm_conn(s: Option<String>) -> Option<String> {
         s.map(|x| x.trim().to_string()).filter(|x| !x.is_empty())
     }
@@ -374,11 +388,11 @@ pub async fn ensure_coordinator_session(
         request.remote_ssh_host.as_deref(),
     )
     .await;
-    coordinator
+    let session = coordinator
         .restore_session(&effective, session_id)
         .await
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    ensure_claw_disabled(&session.agent_type)
 }
 
 #[tauri::command]
@@ -399,6 +413,7 @@ pub async fn start_dialog_turn(
     } = request;
 
     let policy = DialogSubmissionPolicy::for_source(DialogTriggerSource::DesktopUi);
+    ensure_claw_disabled(&agent_type)?;
     let resolved_images = if let Some(image_contexts) = image_contexts
         .as_ref()
         .filter(|images| !images.is_empty())
@@ -480,15 +495,15 @@ pub async fn compact_session(
 
 #[tauri::command]
 pub async fn ensure_assistant_bootstrap(
-    coordinator: State<'_, Arc<ConversationCoordinator>>,
+    _coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: EnsureAssistantBootstrapRequest,
 ) -> Result<EnsureAssistantBootstrapResponse, String> {
-    let outcome = coordinator
-        .ensure_assistant_bootstrap(request.session_id, request.workspace_path)
-        .await
-        .map_err(|e| format!("Failed to ensure assistant bootstrap: {}", e))?;
-
-    Ok(assistant_bootstrap_outcome_to_response(outcome))
+    Ok(assistant_bootstrap_outcome_to_response(
+        AssistantBootstrapEnsureOutcome::Skipped {
+            session_id: request.session_id,
+            reason: AssistantBootstrapSkipReason::BootstrapNotRequired,
+        },
+    ))
 }
 
 fn is_blank_text(value: Option<&String>) -> bool {
@@ -719,6 +734,7 @@ pub async fn restore_session(
         .restore_session(&effective_path, &request.session_id)
         .await
         .map_err(|e| format!("Failed to restore session: {}", e))?;
+    ensure_claw_disabled(&session.agent_type)?;
 
     Ok(session_to_response(session))
 }
@@ -743,6 +759,7 @@ pub async fn list_sessions(
 
     let responses = summaries
         .into_iter()
+        .filter(|summary| !is_claw_agent_type(&summary.agent_type))
         .map(|summary| SessionResponse {
             session_id: summary.session_id,
             session_name: summary.session_name,
