@@ -19,7 +19,6 @@ import { MermaidInteractiveDisplay } from './MermaidInteractiveDisplay';
 import { CodeReviewToolCard } from './CodeReviewToolCard';
 import { FileOperationToolCard } from './FileOperationToolCard';
 import { DefaultToolCard } from './DefaultToolCard';
-import { WebSearchCard } from './WebSearchCard'; // Temporary until WebSearchDisplay exists.
 import { ContextCompressionDisplay } from './ContextCompressionDisplay';
 import { MCPToolDisplay } from './MCPToolDisplay';
 import { SkillDisplay } from './SkillDisplay';
@@ -109,28 +108,6 @@ export const TOOL_CARD_CONFIGS: Record<string, ToolCardConfig> = {
     description: 'Search files by pattern',
     displayMode: 'compact',
     primaryColor: '#06b6d4'
-  },
-
-  // Web tools
-  'WebSearch': {
-    toolName: 'WebSearch',
-    displayName: 'Web Search',
-    icon: 'WS',
-    requiresConfirmation: false,
-    resultDisplayType: 'detailed',
-    description: 'Search the web',
-    displayMode: 'compact',
-    primaryColor: '#0ea5e9'
-  },
-  'WebFetch': {
-    toolName: 'WebFetch',
-    displayName: 'Fetch Link',
-    icon: 'WF',
-    requiresConfirmation: false,
-    resultDisplayType: 'detailed',
-    description: 'Fetch webpage content',
-    displayMode: 'standard',
-    primaryColor: '#0ea5e9'
   },
 
   // Advanced tools
@@ -338,9 +315,6 @@ export const TOOL_CARD_COMPONENTS = {
   'Glob': GlobSearchDisplay,
   'LS': LSDisplay,
   
-  // Web tools
-  'WebSearch': WebSearchCard,
-  
   // Advanced tools
   'Task': TaskToolDisplay,
   'TodoWrite': TodoWriteDisplay,
@@ -488,14 +462,14 @@ import type { FlowItem, FlowToolItem } from '../types/flow-chat';
  * They are auto-collapsed during streaming to reduce visual noise.
  */
 export const COLLAPSIBLE_TOOL_NAMES = new Set([
-  'Read', 'LS', 'Grep', 'Glob', 'WebSearch', 'Bash'
+  'Read', 'LS', 'Grep', 'Glob', 'Bash'
 ]);
 
 /** Read tools (counted in readCount). */
 export const READ_TOOL_NAMES = new Set(['Read', 'LS']);
 
 /** Search tools (counted in searchCount). */
-export const SEARCH_TOOL_NAMES = new Set(['Grep', 'Glob', 'WebSearch']);
+export const SEARCH_TOOL_NAMES = new Set(['Grep', 'Glob']);
 
 /** Command tools (counted in commandCount). */
 export const COMMAND_TOOL_NAMES = new Set(['Bash']);

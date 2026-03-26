@@ -24,7 +24,6 @@ Current component folders in this directory:
 - `SnapshotCard`: snapshot-style structured output
 - `TaskCard`: delegated task execution and result summaries
 - `TodoCard`: todo list progress and status display
-- `WebSearchCard`: web search results and source summaries
 
 ## Tool Config
 
@@ -35,7 +34,7 @@ Current component folders in this directory:
 - result display type
 - primary color
 
-The config currently covers cards and tool outputs for `Read`, `Write`, `Edit`, `Delete`, `Grep`, `Glob`, `WebSearch`, `WebFetch`, `Task`, `TodoWrite`, and `ContextCompression`.
+The config currently covers cards and tool outputs for `Read`, `Write`, `Edit`, `Delete`, `Grep`, `Glob`, `Task`, `TodoWrite`, and `ContextCompression`.
 
 ## Usage
 

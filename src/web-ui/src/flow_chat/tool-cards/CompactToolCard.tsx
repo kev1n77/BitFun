@@ -1,6 +1,6 @@
 /**
  * Compact tool card component
- * Used for ReadFile, GrepSearch, WebSearch, etc. with transparent gray background
+ * Used for ReadFile, GrepSearch, etc. with transparent gray background
  *
  * Features:
  * - Collapsed: transparent background, no border, single-line display

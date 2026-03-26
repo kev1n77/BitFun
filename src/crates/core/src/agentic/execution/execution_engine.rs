@@ -1927,13 +1927,11 @@ impl ExecutionEngine {
             ("Edit", 7),
             ("Write", 8),
             ("Delete", 9),
-            ("WebFetch", 10),
-            ("WebSearch", 11),
-            ("TodoWrite", 12),
-            ("Skill", 13),
-            ("Log", 14),
-            ("MermaidInteractive", 15),
-            ("ControlHub", 16),
+            ("TodoWrite", 10),
+            ("Skill", 11),
+            ("Log", 12),
+            ("MermaidInteractive", 13),
+            ("ControlHub", 14),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))

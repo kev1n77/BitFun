@@ -24,7 +24,6 @@
 - `SnapshotCard`：快照类结构化输出展示
 - `TaskCard`：任务委托执行与结果摘要展示
 - `TodoCard`：Todo 列表进度与状态展示
-- `WebSearchCard`：网页搜索结果与来源摘要展示
 
 ## 工具配置
 
@@ -35,7 +34,7 @@
 - 结果展示类型
 - 主色
 
-当前配置覆盖的工具输出包括 `Read`、`Write`、`Edit`、`Delete`、`Grep`、`Glob`、`WebSearch`、`WebFetch`、`Task`、`TodoWrite` 和 `ContextCompression`。
+当前配置覆盖的工具输出包括 `Read`、`Write`、`Edit`、`Delete`、`Grep`、`Glob`、`Task`、`TodoWrite` 和 `ContextCompression`。
 
 ## 使用方式
 
