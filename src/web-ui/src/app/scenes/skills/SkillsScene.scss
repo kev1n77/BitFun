@@ -64,6 +64,17 @@ $skills-content-top: clamp(36px, 4.5vh, 48px);
   }
 }
 
+.skills-split--market-disabled {
+  .skills-split__right {
+    flex: 1 1 100%;
+  }
+
+  .skills-split__right-frame {
+    height: 100%;
+    max-height: none;
+  }
+}
+
 // Bordered panel: height = 2 × left market body block
 .skills-split__right-frame {
   display: flex;
