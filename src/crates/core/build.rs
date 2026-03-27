@@ -1,4 +1,5 @@
 fn main() {
+    emit_telemetry_build_env();
     emit_rerun_if_changed(std::path::Path::new("builtin_skills"));
 
     // Run the build script to embed prompts data
@@ -9,6 +10,25 @@ fn main() {
     // Embed announcement content (tips + feature cards)
     if let Err(e) = embed_announcement_content() {
         eprintln!("Warning: Failed to embed announcement content: {}", e);
+    }
+}
+
+fn emit_telemetry_build_env() {
+    println!("cargo:rerun-if-env-changed=BITFUN_BUILD_OTLP_ENDPOINT");
+    println!("cargo:rerun-if-env-changed=BITFUN_BUILD_OTLP_PROTOCOL");
+
+    if let Ok(endpoint) = std::env::var("BITFUN_BUILD_OTLP_ENDPOINT") {
+        let endpoint = endpoint.trim();
+        if !endpoint.is_empty() {
+            println!("cargo:rustc-env=BITFUN_COMPILED_OTLP_ENDPOINT={endpoint}");
+        }
+    }
+
+    if let Ok(protocol) = std::env::var("BITFUN_BUILD_OTLP_PROTOCOL") {
+        let protocol = protocol.trim();
+        if !protocol.is_empty() {
+            println!("cargo:rustc-env=BITFUN_COMPILED_OTLP_PROTOCOL={protocol}");
+        }
     }
 }
 
