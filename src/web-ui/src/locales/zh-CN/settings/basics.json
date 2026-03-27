@@ -78,13 +78,17 @@
       "logging": "日志",
       "loggingHint": "日志级别与本次启动日志目录",
       "level": "日志级别",
-      "path": "本次启动日志路径"
+      "path": "本次启动日志路径",
+      "upload": "上传日志"
     },
     "level": {
       "description": "实时控制日志输出级别，修改后立即生效。"
     },
     "path": {
       "description": "本次启动写入日志文件所在的目录。"
+    },
+    "upload": {
+      "description": "上传当前 session 日志。"
     },
     "levels": {
       "trace": "Trace",
@@ -97,7 +101,9 @@
     "actions": {
       "refreshTooltip": "刷新运行时状态",
       "openFolder": "打开文件夹",
-      "openFolderTooltip": "在文件管理器中打开日志文件夹"
+      "openFolderTooltip": "在文件管理器中打开日志文件夹",
+      "uploadLogs": "上传当前日志",
+      "uploadingLogs": "上传中..."
     },
     "messages": {
       "loading": "加载中...",
@@ -107,7 +113,9 @@
       "refreshed": "运行时状态已刷新",
       "openedFolder": "日志文件夹已打开",
       "openFailed": "打开日志文件夹失败",
-      "pathUnavailable": "日志文件夹路径不可用"
+      "pathUnavailable": "日志文件夹路径不可用",
+      "uploadFailed": "上传日志失败",
+      "uploaded": "日志已上传：{{fileName}}，关联 uid：{{telemetryUid}}"
     }
   },
   "terminal": {

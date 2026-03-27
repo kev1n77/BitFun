@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FolderOpen } from 'lucide-react';
+import { FolderOpen, Upload } from 'lucide-react';
 import {
   Alert,
   Select,
@@ -31,7 +31,12 @@ import {
 } from './common';
 import { configManager } from '../services/ConfigManager';
 import { createLogger } from '@/shared/utils/logger';
-import type { BackendLogLevel, RuntimeLoggingInfo, TerminalConfig as TerminalSettings } from '../types';
+import type {
+  BackendLogLevel,
+  RuntimeLoggingInfo,
+  RuntimeLogUploadResult,
+  TerminalConfig as TerminalSettings,
+} from '../types';
 import './BasicsConfig.scss';
 
 const log = createLogger('BasicsConfig');
@@ -357,6 +362,7 @@ function BasicsLoggingSection() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [openingFolder, setOpeningFolder] = useState(false);
+  const [uploadingLogs, setUploadingLogs] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
   const levelOptions = useMemo(
@@ -442,6 +448,30 @@ function BasicsLoggingSection() {
     }
   }, [runtimeInfo?.sessionLogDir, showMessage, t]);
 
+  const handleUploadLogs = useCallback(async () => {
+    if (!runtimeInfo?.sessionLogDir) {
+      showMessage('error', t('logging.messages.pathUnavailable'));
+      return;
+    }
+
+    try {
+      setUploadingLogs(true);
+      const result: RuntimeLogUploadResult = await configAPI.uploadRuntimeLogs();
+      showMessage(
+        'success',
+        t('logging.messages.uploaded', {
+          fileName: result.fileName,
+          telemetryUid: result.telemetryUid,
+        })
+      );
+    } catch (error) {
+      log.error('Failed to upload runtime logs', { error });
+      showMessage('error', t('logging.messages.uploadFailed'));
+    } finally {
+      setUploadingLogs(false);
+    }
+  }, [runtimeInfo?.sessionLogDir, showMessage, t]);
+
   if (loading) {
     return <ConfigPageLoading text={t('logging.messages.loading')} />;
   }
@@ -489,6 +519,25 @@ function BasicsLoggingSection() {
                 </button>
               </Tooltip>
             </div>
+          </ConfigPageRow>
+          <ConfigPageRow
+            label={t('logging.sections.upload')}
+            description={t('logging.upload.description')}
+            align="center"
+          >
+            <button
+              type="button"
+              className="bitfun-logging-config__action-btn"
+              onClick={() => {
+                void handleUploadLogs();
+              }}
+              disabled={uploadingLogs || !runtimeInfo?.sessionLogDir}
+            >
+              <Upload size={14} />
+              <span>
+                {uploadingLogs ? t('logging.actions.uploadingLogs') : t('logging.actions.uploadLogs')}
+              </span>
+            </button>
           </ConfigPageRow>
         </ConfigPageSection>
       </div>
