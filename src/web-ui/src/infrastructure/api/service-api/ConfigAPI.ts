@@ -3,8 +3,9 @@
 import { api } from './ApiClient';
 import { createTauriCommandError } from '../errors/TauriCommandError';
 import type {
-  ModeSkillInfo,
   ModeConfigItem,
+  ModeSkillInfo,
+  RuntimeLogUploadResult,
   RuntimeLoggingInfo,
   SkillInfo,
   SkillLevel,
@@ -139,6 +140,16 @@ export class ConfigAPI {
       });
     } catch (error) {
       throw createTauriCommandError('get_runtime_logging_info', error);
+    }
+  }
+
+  async uploadRuntimeLogs(): Promise<RuntimeLogUploadResult> {
+    try {
+      return await api.invoke('upload_runtime_logs', {
+        request: {},
+      });
+    } catch (error) {
+      throw createTauriCommandError('upload_runtime_logs', error);
     }
   }
 

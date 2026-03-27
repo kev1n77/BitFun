@@ -14,7 +14,6 @@ export interface GlobalConfig {
 export interface AppConfig {
   language: string;
   auto_update: boolean;
-  telemetry: boolean;
   startup_behavior: string;
   confirm_on_exit: boolean;
   restore_windows: boolean;
@@ -483,7 +482,6 @@ export type ConfigPath =
   | 'app'
   | 'app.language'
   | 'app.auto_update'
-  | 'app.telemetry'
   | 'app.session_config'
   | 'app.sidebar'
   | 'app.sidebar.width'
@@ -515,6 +513,14 @@ export interface RuntimeLoggingInfo {
   webviewLogPath: string;
 }
 
+export interface RuntimeLogUploadResult {
+  endpoint: string;
+  telemetryUid: string;
+  processSessionId?: string | null;
+  fileName: string;
+  fileSizeBytes: number;
+  includedFiles: string[];
+}
 export interface DefaultModels {
   primary: string | null;
   fast: string | null;
