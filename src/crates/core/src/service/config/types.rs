@@ -34,7 +34,6 @@ pub struct GlobalConfig {
 pub struct AppConfig {
     pub language: String,
     pub auto_update: bool,
-    pub telemetry: bool,
     pub startup_behavior: String,
     pub confirm_on_exit: bool,
     pub restore_windows: bool,
@@ -921,7 +920,6 @@ impl Default for AppConfig {
         Self {
             language: "zh-CN".to_string(),
             auto_update: true,
-            telemetry: false,
             startup_behavior: "lastWorkspace".to_string(),
             confirm_on_exit: true,
             restore_windows: true,
