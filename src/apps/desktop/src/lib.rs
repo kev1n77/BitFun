@@ -162,6 +162,7 @@ pub async fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(app_state)
         .manage(coordinator_state)
         .manage(scheduler_state)
@@ -616,6 +617,9 @@ pub async fn run() {
             api::terminal_api::terminal_shutdown_all,
             api::terminal_api::terminal_get_history,
             get_system_info,
+            get_app_version,
+            check_for_updates,
+            install_update,
             send_system_notification,
             check_command_exists,
             check_commands_exist,
