@@ -154,6 +154,24 @@ pub enum AgenticEvent {
         subagent_parent_info: Option<SubagentParentInfo>,
     },
 
+    ModelRoundCancelled {
+        session_id: String,
+        turn_id: String,
+        round_id: String,
+        round_index: usize,
+        reason: String,
+        subagent_parent_info: Option<SubagentParentInfo>,
+    },
+
+    ModelRoundFailed {
+        session_id: String,
+        turn_id: String,
+        round_id: String,
+        round_index: usize,
+        error: String,
+        subagent_parent_info: Option<SubagentParentInfo>,
+    },
+
     TextChunk {
         session_id: String,
         turn_id: String,
@@ -339,6 +357,8 @@ impl AgenticEvent {
             | Self::DialogTurnCancelled { session_id, .. }
             | Self::DialogTurnFailed { session_id, .. }
             | Self::ModelRoundStarted { session_id, .. }
+            | Self::ModelRoundCancelled { session_id, .. }
+            | Self::ModelRoundFailed { session_id, .. }
             | Self::TextChunk { session_id, .. }
             | Self::ThinkingChunk { session_id, .. }
             | Self::ModelRoundCompleted { session_id, .. }
@@ -353,7 +373,9 @@ impl AgenticEvent {
         match self {
             Self::SystemError { .. }
             | Self::DialogTurnFailed { .. }
-            | Self::DialogTurnCancelled { .. } => AgenticEventPriority::Critical,
+            | Self::DialogTurnCancelled { .. }
+            | Self::ModelRoundCancelled { .. }
+            | Self::ModelRoundFailed { .. } => AgenticEventPriority::Critical,
 
             Self::SessionStateChanged { .. }
             | Self::SessionTitleGenerated { .. }

@@ -1,19 +1,23 @@
 //! Logging Configuration
 
-use bitfun_core::infrastructure::get_path_manager_arc;
+use bitfun_core::infrastructure::{get_path_manager_arc, get_telemetry_identity};
 use chrono::Local;
+use log::{error, info};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicU8, Ordering},
     OnceLock,
 };
 use std::thread;
+use std::time::Duration;
 use tauri::{plugin::TauriPlugin, Runtime};
 use tauri_plugin_log::{fern, RotationStrategy, Target, TargetKind, TimezoneStrategy};
 
 const SESSION_DIR_PATTERN: &str = r"^\d{8}T\d{6}$";
 const MAX_LOG_SESSIONS: usize = 10;
+const LOG_UPLOAD_FILE_PREFIX: &str = "bitfun-runtime-logs";
+const LOG_UPLOAD_ENDPOINT: &str = "http://10.29.177.101:8080/api/upload";
 static SESSION_LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 // Default to Debug in early development for easier diagnostics
 static CURRENT_LOG_LEVEL: AtomicU8 = AtomicU8::new(level_filter_to_u8(log::LevelFilter::Debug));
@@ -158,11 +162,42 @@ pub struct RuntimeLoggingInfo {
     pub app_log_path: String,
     pub ai_log_path: String,
     pub webview_log_path: String,
+    pub telemetry_uid: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeLogUploadPayload {
+    pub telemetry_uid: String,
+    pub process_session_id: Option<String>,
+    pub file_name: String,
+    pub file_bytes: Vec<u8>,
+    pub included_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeLogUploadResponse {
+    pub endpoint: String,
+    pub telemetry_uid: String,
+    pub process_session_id: Option<String>,
+    pub file_name: String,
+    pub file_size_bytes: usize,
+    pub included_files: Vec<String>,
 }
 
 pub fn get_runtime_logging_info() -> RuntimeLoggingInfo {
     let fallback_dir = resolve_logs_root();
     let session_dir = session_log_dir().unwrap_or(fallback_dir);
+    let telemetry_uid = match get_telemetry_identity() {
+        Ok(identity) => Some(identity.uid),
+        Err(error) => {
+            error!(
+                "Failed to resolve telemetry identity for runtime logging info: {}",
+                error
+            );
+            None
+        }
+    };
 
     RuntimeLoggingInfo {
         effective_level: level_to_str(current_runtime_log_level()).to_string(),
@@ -173,7 +208,227 @@ pub fn get_runtime_logging_info() -> RuntimeLoggingInfo {
             .join("webview.log")
             .to_string_lossy()
             .to_string(),
+        telemetry_uid,
     }
+}
+
+pub fn build_runtime_log_upload_payload() -> Result<RuntimeLogUploadPayload, String> {
+    let session_dir = session_log_dir().unwrap_or_else(resolve_logs_root);
+    if !session_dir.exists() {
+        return Err(format!(
+            "Session log directory does not exist: {}",
+            session_dir.display()
+        ));
+    }
+
+    let telemetry_identity = get_telemetry_identity()
+        .map_err(|error| format!("Failed to resolve telemetry identity: {}", error))?;
+
+    let log_files = collect_session_log_files(&session_dir)?;
+    if log_files.is_empty() {
+        return Err(format!(
+            "No log files found in session directory: {}",
+            session_dir.display()
+        ));
+    }
+
+    let included_files: Vec<String> = log_files
+        .iter()
+        .map(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.display().to_string())
+        })
+        .collect();
+
+    let mut merged = String::new();
+    merged.push_str("# BitFun Runtime Log Upload\n");
+    merged.push_str(&format!("telemetry_uid={}\n", telemetry_identity.uid));
+    merged.push_str(&format!(
+        "process_session_id={}\n",
+        telemetry_identity
+            .process_session_id
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string())
+    ));
+    merged.push_str(&format!("session_log_dir={}\n", session_dir.display()));
+    merged.push_str(&format!(
+        "generated_at={}\n",
+        Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%:z")
+    ));
+    merged.push('\n');
+
+    for path in &log_files {
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+        merged.push_str(&format!("===== BEGIN {} =====\n", file_name));
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("Failed to read log file '{}': {}", path.display(), error))?;
+        merged.push_str(&String::from_utf8_lossy(&bytes));
+        if !merged.ends_with('\n') {
+            merged.push('\n');
+        }
+        merged.push_str(&format!("===== END {} =====\n\n", file_name));
+    }
+
+    let file_name = format!(
+        "{}-{}-{}.log",
+        LOG_UPLOAD_FILE_PREFIX,
+        sanitize_uid_fragment(&telemetry_identity.uid),
+        Local::now().format("%Y%m%dT%H%M%S")
+    );
+
+    Ok(RuntimeLogUploadPayload {
+        telemetry_uid: telemetry_identity.uid,
+        process_session_id: telemetry_identity.process_session_id,
+        file_name,
+        file_bytes: merged.into_bytes(),
+        included_files,
+    })
+}
+
+pub async fn upload_runtime_logs(reason: Option<&str>) -> Result<RuntimeLogUploadResponse, String> {
+    let payload = build_runtime_log_upload_payload()?;
+    upload_runtime_log_payload(payload, reason.unwrap_or("manual")).await
+}
+
+pub fn upload_runtime_logs_sync(reason: Option<&str>) -> Result<RuntimeLogUploadResponse, String> {
+    let reason = reason.unwrap_or("panic").to_string();
+    let thread = std::thread::Builder::new()
+        .name("bitfun-runtime-log-upload".to_string())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| format!("Failed to create runtime log upload runtime: {}", error))?;
+            runtime.block_on(async move { upload_runtime_logs(Some(&reason)).await })
+        })
+        .map_err(|error| format!("Failed to spawn runtime log upload thread: {}", error))?;
+
+    thread
+        .join()
+        .map_err(|_| "Runtime log upload thread panicked".to_string())?
+}
+
+async fn upload_runtime_log_payload(
+    payload: RuntimeLogUploadPayload,
+    reason: &str,
+) -> Result<RuntimeLogUploadResponse, String> {
+    let file_size_bytes = payload.file_bytes.len();
+
+    let part = reqwest::multipart::Part::bytes(payload.file_bytes.clone())
+        .file_name(payload.file_name.clone())
+        .mime_str("text/plain; charset=utf-8")
+        .map_err(|error| format!("Failed to build multipart log part: {}", error))?;
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|error| format!("Failed to build log upload client: {}", error))?;
+
+    let response = client
+        .post(LOG_UPLOAD_ENDPOINT)
+        .header("X-BitFun-Telemetry-Uid", payload.telemetry_uid.clone())
+        .header(
+            "X-BitFun-Process-Session-Id",
+            payload
+                .process_session_id
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+        )
+        .header("X-BitFun-Upload-Reason", reason)
+        .multipart(reqwest::multipart::Form::new().part(String::new(), part))
+        .send()
+        .await
+        .map_err(|error| format!("Failed to upload runtime logs: {}", error))?;
+
+    let status = response.status();
+    let response_text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        error!(
+            "Runtime log upload failed: status={}, endpoint={}, telemetry_uid={}, reason={}, body={}",
+            status, LOG_UPLOAD_ENDPOINT, payload.telemetry_uid, reason, response_text
+        );
+        return Err(format!(
+            "Runtime log upload failed: status={}, body={}",
+            status, response_text
+        ));
+    }
+
+    info!(
+        "Runtime log upload succeeded: endpoint={}, telemetry_uid={}, reason={}, file_name={}, file_size_bytes={}, included_files={}",
+        LOG_UPLOAD_ENDPOINT,
+        payload.telemetry_uid,
+        reason,
+        payload.file_name,
+        file_size_bytes,
+        payload.included_files.join(",")
+    );
+
+    Ok(RuntimeLogUploadResponse {
+        endpoint: LOG_UPLOAD_ENDPOINT.to_string(),
+        telemetry_uid: payload.telemetry_uid,
+        process_session_id: payload.process_session_id,
+        file_name: payload.file_name,
+        file_size_bytes,
+        included_files: payload.included_files,
+    })
+}
+
+fn collect_session_log_files(session_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    let entries = std::fs::read_dir(session_dir).map_err(|error| {
+        format!(
+            "Failed to read session log directory '{}': {}",
+            session_dir.display(),
+            error
+        )
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "Failed to enumerate session log directory '{}': {}",
+                session_dir.display(),
+                error
+            )
+        })?;
+        let path = entry.path();
+        if path.is_file() && is_log_file(&path) {
+            files.push(path);
+        }
+    }
+
+    files.sort_by(|a, b| {
+        let a_name = a.file_name().map(|name| name.to_string_lossy());
+        let b_name = b.file_name().map(|name| name.to_string_lossy());
+        a_name.cmp(&b_name)
+    });
+    Ok(files)
+}
+
+fn is_log_file(path: &Path) -> bool {
+    let file_name = match path.file_name() {
+        Some(name) => name.to_string_lossy(),
+        None => return false,
+    };
+
+    file_name.ends_with(".log") || file_name.contains(".log.")
+}
+
+fn sanitize_uid_fragment(uid: &str) -> String {
+    uid.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 pub fn create_session_log_dir() -> PathBuf {
