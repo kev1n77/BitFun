@@ -125,24 +125,6 @@ function copyDirRecursiveWithManifest(srcDir, destDir, manifest, payloadRoot) {
   }
 }
 
-function shouldCopySiblingRuntimeFile(fileName, appExeBaseName) {
-  if (fileName === appExeBaseName) return false;
-  if (fileName === ".cargo-lock") return false;
-
-  const lower = fileName.toLowerCase();
-  if (
-    lower.endsWith(".pdb") ||
-    lower.endsWith(".d") ||
-    lower.endsWith(".exp") ||
-    lower.endsWith(".lib") ||
-    lower.endsWith(".ilk")
-  ) {
-    return false;
-  }
-
-  return true;
-}
-
 function getCandidateAppExePaths(mode) {
   const preferredProfiles =
     mode === "fast"
@@ -161,17 +143,7 @@ function getCandidateAppExePaths(mode) {
         profile,
         "bitfun-desktop.exe"
       ),
-      path.join(
-        BITFUN_ROOT,
-        "src",
-        "apps",
-        "desktop",
-        "target",
-        profile,
-        "BitFun.exe"
-      ),
-      path.join(BITFUN_ROOT, "target", profile, "bitfun-desktop.exe"),
-      path.join(BITFUN_ROOT, "target", profile, "BitFun.exe")
+      path.join(BITFUN_ROOT, "target", profile, "bitfun-desktop.exe")
     );
   }
 
@@ -229,35 +201,20 @@ if (appExePath) {
     files: [],
   };
 
-  const destExe = path.join(PAYLOAD_DIR, "BitFun.exe");
+  const destExe = path.join(PAYLOAD_DIR, "bitfun-desktop.exe");
   writeFileWithManifest(appExePath, destExe, manifest, PAYLOAD_DIR);
   log(`Copied: ${appExePath} -> ${destExe}`);
 
   const exeSize = fs.statSync(destExe).size;
   if (STRICT_PAYLOAD_VALIDATION && exeSize < MIN_APP_EXE_BYTES) {
     error(
-      `BitFun.exe in payload is unexpectedly small (${exeSize} bytes). Refusing to continue.`
+      `bitfun-desktop.exe in payload is unexpectedly small (${exeSize} bytes). Refusing to continue.`
     );
   }
 
   const releaseDir = path.dirname(appExePath);
-  const appExeBaseName = path.basename(appExePath);
-  const siblingFiles = fs
-    .readdirSync(releaseDir, { withFileTypes: true })
-    .filter((e) => e.isFile())
-    .map((e) => e.name)
-    .filter((file) => shouldCopySiblingRuntimeFile(file, appExeBaseName));
-
-  for (const file of siblingFiles) {
-    const src = path.join(releaseDir, file);
-    const dest = path.join(PAYLOAD_DIR, file);
-    writeFileWithManifest(src, dest, manifest, PAYLOAD_DIR);
-    log(`Copied runtime file: ${file}`);
-  }
-
-  // Keep installer payload aligned with the desktop app's runtime lookup paths.
-  // `mobile-web` may be emitted as a sibling directory in no-bundle builds.
-  const runtimeDirs = ["resources", "locales", "swiftshader", "mobile-web"];
+  // Keep the custom installer payload aligned with the current NSIS footprint.
+  const runtimeDirs = ["mobile-web"];
   for (const dirName of runtimeDirs) {
     const srcDir = path.join(releaseDir, dirName);
     if (!fs.existsSync(srcDir) || !fs.statSync(srcDir).isDirectory()) {

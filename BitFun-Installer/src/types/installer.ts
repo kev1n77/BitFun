@@ -11,6 +11,16 @@ export interface InstallPathValidation {
   installPath: string;
 }
 
+/** Matches `get_existing_installation` / `ExistingInstallationResponse` (camelCase). */
+export interface ExistingInstallation {
+  detected: boolean;
+  installLocation: string | null;
+  displayVersion: string | null;
+  uninstallString: string | null;
+  mainBinaryPresent: boolean;
+  source: string | null;
+}
+
 export type ThemeId =
   | 'bitfun-dark'
   | 'bitfun-light'
@@ -64,8 +74,6 @@ export interface InstallOptions {
   installPath: string;
   desktopShortcut: boolean;
   startMenu: boolean;
-  contextMenu: boolean;
-  addToPath: boolean;
   launchAfterInstall: boolean;
   appLanguage: 'zh-CN' | 'en-US';
   themePreference: ThemePreferenceId;
@@ -92,8 +100,6 @@ export const DEFAULT_OPTIONS: InstallOptions = {
   installPath: '',
   desktopShortcut: true,
   startMenu: true,
-  contextMenu: true,
-  addToPath: true,
   launchAfterInstall: true,
   appLanguage: 'zh-CN',
   themePreference: SYSTEM_THEME_ID,
