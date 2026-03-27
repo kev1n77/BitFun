@@ -25,6 +25,7 @@ import { AboutDialog } from '../components/AboutDialog';
 import { WorkspaceManager } from '../../tools/workspace';
 import { workspaceAPI } from '@/infrastructure/api';
 import { createLogger } from '@/shared/utils/logger';
+import { DailyAppUpdateGate } from '@/infrastructure/update';
 import { useI18n } from '@/infrastructure/i18n';
 import { WorkspaceKind } from '@/shared/types';
 import { SSHContext } from '@/features/ssh-remote/SSHRemoteContext';
@@ -392,10 +393,18 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
     isTransitioning ? 'bitfun-app-layout--transitioning' : '',
   ].filter(Boolean).join(' ');
 
-  if (isToolbarMode) return <ToolbarMode />;
+  if (isToolbarMode) {
+    return (
+      <>
+        <DailyAppUpdateGate />
+        <ToolbarMode />
+      </>
+    );
+  }
 
   return (
     <>
+      <DailyAppUpdateGate />
       <div className={containerClassName} data-testid="app-layout">
         {/* Main content — always render WorkspaceBody; WelcomeScene in viewport handles no-workspace state */}
         <main className="bitfun-app-main-workspace" data-testid="app-main-content">
