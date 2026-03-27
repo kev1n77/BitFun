@@ -566,7 +566,7 @@ fn main_menu_view(state: &BotChatState, s: &'static BotStrings) -> MenuView {
     view
 }
 
-fn settings_menu_view(verbose: bool, state: &BotChatState, s: &'static BotStrings) -> MenuView {
+fn settings_menu_view(verbose: bool, _state: &BotChatState, s: &'static BotStrings) -> MenuView {
     let mut items: Vec<MenuItem> = Vec::new();
     if verbose {
         items.push(MenuItem::default(s.item_verbose_off, "/concise"));

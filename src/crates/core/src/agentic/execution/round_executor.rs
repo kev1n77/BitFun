@@ -11,6 +11,7 @@ use crate::agentic::tools::pipeline::{ToolExecutionContext, ToolExecutionOptions
 use crate::agentic::tools::registry::get_global_tool_registry;
 use crate::agentic::MessageContent;
 use crate::infrastructure::ai::AIClient;
+use crate::infrastructure::{with_telemetry_request_context, TelemetryRequestContext};
 use crate::service::config::GlobalConfigManager;
 use crate::util::errors::{BitFunError, BitFunResult};
 use crate::util::types::Message as AIMessage;
@@ -51,6 +52,37 @@ impl RoundExecutor {
         self.tool_pipeline
             .as_ref()
             .and_then(|p| p.computer_use_host())
+    }
+
+    async fn emit_round_terminal_event(
+        &self,
+        context: &RoundContext,
+        round_id: &str,
+        subagent_parent_info: Option<crate::agentic::events::SubagentParentInfo>,
+        error: &BitFunError,
+    ) {
+        let priority = EventPriority::Critical;
+        let event = if matches!(error, BitFunError::Cancelled(_)) {
+            AgenticEvent::ModelRoundCancelled {
+                session_id: context.session_id.clone(),
+                turn_id: context.dialog_turn_id.clone(),
+                round_id: round_id.to_string(),
+                round_index: context.round_number,
+                reason: error.to_string(),
+                subagent_parent_info,
+            }
+        } else {
+            AgenticEvent::ModelRoundFailed {
+                session_id: context.session_id.clone(),
+                turn_id: context.dialog_turn_id.clone(),
+                round_id: round_id.to_string(),
+                round_index: context.round_number,
+                error: error.to_string(),
+                subagent_parent_info,
+            }
+        };
+
+        self.emit_event(event, priority).await;
     }
 
     /// Execute a single model round
@@ -108,9 +140,17 @@ impl RoundExecutor {
             );
 
             // Use dynamically obtained client for call
-            let stream_response = match ai_client
-                .send_message_stream(ai_messages.clone(), tool_definitions.clone())
-                .await
+            let telemetry_context = TelemetryRequestContext {
+                session_id: context.session_id.clone(),
+                turn_id: context.dialog_turn_id.clone(),
+                round_id: round_id.clone(),
+                is_subagent,
+            };
+            let stream_response = match with_telemetry_request_context(
+                telemetry_context,
+                ai_client.send_message_stream(ai_messages.clone(), tool_definitions.clone()),
+            )
+            .await
             {
                 Ok(response) => response,
                 Err(e) => {
@@ -133,7 +173,15 @@ impl RoundExecutor {
                         attempt_index += 1;
                         continue;
                     }
-                    return Err(BitFunError::AIClient(err_msg));
+                    let error = BitFunError::AIClient(err_msg);
+                    self.emit_round_terminal_event(
+                        &context,
+                        &round_id,
+                        event_subagent_parent_info.clone(),
+                        &error,
+                    )
+                    .await;
+                    return Err(error);
                 }
             };
 
@@ -147,7 +195,15 @@ impl RoundExecutor {
                     "Cancel token detected before AI call, stopping execution: session_id={}",
                     context.session_id
                 );
-                return Err(BitFunError::Cancelled("Execution cancelled".to_string()));
+                let error = BitFunError::Cancelled("Execution cancelled".to_string());
+                self.emit_round_terminal_event(
+                    &context,
+                    &round_id,
+                    event_subagent_parent_info.clone(),
+                    &error,
+                )
+                .await;
+                return Err(error);
             }
 
             debug!(
@@ -263,6 +319,13 @@ impl RoundExecutor {
                         attempt_index += 1;
                         continue;
                     }
+                    self.emit_round_terminal_event(
+                        &context,
+                        &round_id,
+                        event_subagent_parent_info.clone(),
+                        &stream_err.error,
+                    )
+                    .await;
                     return Err(stream_err.error);
                 }
             }
@@ -299,7 +362,15 @@ impl RoundExecutor {
                 "Cancel token detected after stream processing, stopping execution: session_id={}",
                 context.session_id
             );
-            return Err(BitFunError::Cancelled("Execution cancelled".to_string()));
+            let error = BitFunError::Cancelled("Execution cancelled".to_string());
+            self.emit_round_terminal_event(
+                &context,
+                &round_id,
+                event_subagent_parent_info.clone(),
+                &error,
+            )
+            .await;
+            return Err(error);
         }
 
         // If stream response contains usage info, update token statistics
@@ -391,7 +462,15 @@ impl RoundExecutor {
                 "Cancel token detected before tool execution, stopping execution: session_id={}",
                 context.session_id
             );
-            return Err(BitFunError::Cancelled("Execution cancelled".to_string()));
+            let error = BitFunError::Cancelled("Execution cancelled".to_string());
+            self.emit_round_terminal_event(
+                &context,
+                &round_id,
+                event_subagent_parent_info.clone(),
+                &error,
+            )
+            .await;
+            return Err(error);
         }
 
         // Execute tool calls

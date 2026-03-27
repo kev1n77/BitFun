@@ -14,12 +14,13 @@ use bitfun_core::infrastructure::{get_path_manager_arc, try_get_path_manager_arc
 use bitfun_core::service::workspace::get_global_workspace_service;
 use bitfun_core::util::{elapsed_ms, TimingCollector};
 use bitfun_transport::{TauriTransportAdapter, TransportAdapter};
+use opentelemetry::KeyValue;
 use serde::Deserialize;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 #[cfg(target_os = "macos")]
 use tauri::Emitter;
 use tauri::Manager;
@@ -50,6 +51,9 @@ use api::subagent_api::*;
 use api::system_api::*;
 use api::tool_api::*;
 
+const TELEMETRY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+const EXIT_TELEMETRY_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(300);
+
 /// Agentic Coordinator state
 #[derive(Clone)]
 pub struct CoordinatorState {
@@ -79,10 +83,13 @@ async fn webdriver_bridge_result(request: WebdriverBridgeResultRequest) -> Resul
 pub async fn run() {
     let startup_started = Instant::now();
     let mut startup_timings = TimingCollector::default();
+    setup_panic_hook();
     let in_debug = cfg!(debug_assertions) || std::env::var("DEBUG").unwrap_or_default() == "1";
     let log_config = logging::LogConfig::new(in_debug);
     let log_targets = logging::build_log_targets(&log_config);
     let session_log_dir = log_config.session_log_dir.clone();
+    let app_started_at = Arc::new(Instant::now());
+    let app_started = Arc::new(AtomicBool::new(false));
 
     eprintln!("=== BitFun Desktop Starting ===");
 
@@ -111,11 +118,29 @@ pub async fn run() {
         startup_timings.record_elapsed("initialize_global_i18n_service", step_started);
     }
 
+    match bitfun_core::infrastructure::initialize_global_telemetry(
+        bitfun_core::infrastructure::TelemetryInitConfig {
+            service_name: "bitfun-desktop".to_string(),
+            app_name: "BitFun Desktop".to_string(),
+            app_version: VERSION.to_string(),
+            app_kind: "desktop".to_string(),
+            enabled: true,
+        },
+    ) {
+        Ok(telemetry) => telemetry
+            .service()
+            .emit_event("app_launch_started", Vec::new()),
+        Err(error) => {
+            log::warn!("Failed to initialize telemetry service: {}", error);
+        }
+    }
+
     let startup_log_level = resolve_runtime_log_level(log_config.level).await;
 
     let step_started = Instant::now();
     if let Err(e) = AIClientFactory::initialize_global().await {
         log::error!("Failed to initialize global AIClientFactory: {}", e);
+        emit_startup_failed("ai_client_factory_init", &e.to_string());
         return;
     }
     startup_timings.record_elapsed("initialize_global_ai_client_factory", step_started);
@@ -126,6 +151,7 @@ pub async fn run() {
             Ok(state) => state,
             Err(e) => {
                 log::error!("Failed to initialize agentic system: {}", e);
+                emit_startup_failed("agentic_system_init", &e.to_string());
                 return;
             }
         };
@@ -134,6 +160,7 @@ pub async fn run() {
     let step_started = Instant::now();
     if let Err(e) = init_function_agents(ai_client_factory.clone()).await {
         log::error!("Failed to initialize function agents: {}", e);
+        emit_startup_failed("function_agents_init", &e.to_string());
         return;
     }
     startup_timings.record_elapsed("init_function_agents", step_started);
@@ -143,6 +170,7 @@ pub async fn run() {
         Ok(state) => state,
         Err(e) => {
             log::error!("Failed to initialize AppState: {}", e);
+            emit_startup_failed("app_state_init", &e.to_string());
             return;
         }
     };
@@ -159,8 +187,9 @@ pub async fn run() {
     let terminal_state = api::terminal_api::TerminalState::new();
 
     let path_manager = get_path_manager_arc();
-
-    setup_panic_hook();
+    let app_started_at_for_setup = app_started_at.clone();
+    let app_started_for_setup = app_started.clone();
+    let app_started_at_for_window = app_started_at.clone();
 
     let run_result = tauri::Builder::default()
         .plugin(logging::build_log_plugin(log_targets))
@@ -318,6 +347,15 @@ pub async fn run() {
 
             logging::spawn_log_cleanup_task();
 
+            let startup_duration_ms = app_started_at_for_setup.elapsed().as_millis() as i64;
+            emit_telemetry_event(
+                "app_launch_succeeded",
+                vec![
+                    KeyValue::new("startup_duration_ms", startup_duration_ms),
+                    KeyValue::new("success", true),
+                ],
+            );
+            app_started_for_setup.store(true, Ordering::SeqCst);
             log::info!("BitFun Desktop started successfully");
             Ok(())
         })
@@ -332,8 +370,27 @@ pub async fn run() {
                             .is_ok()
                         {
                             log::info!("Main window close requested, cleaning up");
+                            let uptime_ms = app_started_at_for_window.elapsed().as_millis() as i64;
+                            emit_telemetry_event(
+                                "app_exit_requested",
+                                vec![
+                                    KeyValue::new("reason", "main_window_close_requested"),
+                                    KeyValue::new("uptime_ms", uptime_ms),
+                                ],
+                            );
                             bitfun_core::util::process_manager::cleanup_all_processes();
                             api::remote_connect_api::cleanup_on_exit();
+                            emit_telemetry_event(
+                                "app_closed",
+                                vec![
+                                    KeyValue::new("reason", "main_window_close_requested"),
+                                    KeyValue::new("uptime_ms", uptime_ms),
+                                ],
+                            );
+                            // Favor exit responsiveness on normal window close.
+                            bitfun_core::infrastructure::shutdown_global_telemetry_with_timeout(
+                                EXIT_TELEMETRY_SHUTDOWN_TIMEOUT,
+                            );
 
                             window.app_handle().exit(0);
                         } else {
@@ -437,6 +494,7 @@ pub async fn run() {
             sync_config_to_global,
             get_global_config_health,
             get_runtime_logging_info,
+            upload_runtime_logs,
             get_runtime_capabilities,
             get_mode_configs,
             get_mode_config,
@@ -782,6 +840,11 @@ pub async fn run() {
         .run(tauri::generate_context!());
     if let Err(e) = run_result {
         log::error!("Error while running tauri application: {}", e);
+        if app_started.load(Ordering::SeqCst) {
+            emit_runtime_failed("tauri_run", &e.to_string());
+        } else {
+            emit_startup_failed("tauri_run", &e.to_string());
+        }
     }
 }
 
@@ -860,6 +923,14 @@ async fn init_agentic_system() -> anyhow::Result<(
     );
     event_router.subscribe_internal("token_usage".to_string(), token_usage_subscriber);
 
+    if let Some(telemetry) = bitfun_core::infrastructure::get_global_telemetry() {
+        let telemetry_subscriber = Arc::new(
+            bitfun_core::infrastructure::TelemetryEventSubscriber::new(telemetry),
+        );
+        event_router.subscribe_internal("telemetry".to_string(), telemetry_subscriber);
+        log::info!("Telemetry subscriber registered");
+    }
+
     log::info!("Token usage service initialized and subscriber registered");
 
     // Create the DialogScheduler and wire up the outcome notification channel
@@ -910,6 +981,55 @@ fn init_mcp_servers(app_handle: tauri::AppHandle) {
     });
 }
 
+fn emit_telemetry_event(event_name: &str, attrs: Vec<KeyValue>) {
+    if let Some(telemetry) = bitfun_core::infrastructure::get_global_telemetry() {
+        telemetry.emit_event(event_name, attrs);
+    }
+}
+
+fn emit_startup_failed(stage: &str, error: &str) {
+    emit_telemetry_event(
+        "app_launch_failed",
+        vec![
+            KeyValue::new("stage", stage.to_string()),
+            KeyValue::new("success", false),
+            KeyValue::new("error", truncate_telemetry_text(error)),
+        ],
+    );
+    bitfun_core::infrastructure::flush_and_shutdown_global_telemetry(
+        TELEMETRY_SHUTDOWN_TIMEOUT,
+    );
+}
+
+fn emit_runtime_failed(stage: &str, error: &str) {
+    emit_telemetry_event(
+        "app_runtime_failed",
+        vec![
+            KeyValue::new("stage", stage.to_string()),
+            KeyValue::new("success", false),
+            KeyValue::new("error", truncate_telemetry_text(error)),
+        ],
+    );
+    bitfun_core::infrastructure::flush_and_shutdown_global_telemetry(
+        TELEMETRY_SHUTDOWN_TIMEOUT,
+    );
+}
+
+fn truncate_telemetry_text(value: &str) -> String {
+    const MAX_CHARS: usize = 512;
+
+    let mut truncated = String::new();
+    for (idx, ch) in value.chars().enumerate() {
+        if idx >= MAX_CHARS {
+            truncated.push_str("...");
+            break;
+        }
+        truncated.push(ch);
+    }
+
+    truncated
+}
+
 fn setup_panic_hook() {
     std::panic::set_hook(Box::new(move |panic_info| {
         let location = panic_info
@@ -948,6 +1068,52 @@ fn setup_panic_hook() {
             log::error!("  2) Check Windows network service status");
             log::error!("  3) Run as administrator");
         }
+
+        let log_upload_result = crate::logging::upload_runtime_logs_sync(Some("panic"));
+        match &log_upload_result {
+            Ok(response) => {
+                log::error!(
+                    "Panic runtime log upload succeeded: endpoint={}, file_name={}, telemetry_uid={}",
+                    response.endpoint,
+                    response.file_name,
+                    response.telemetry_uid
+                );
+            }
+            Err(error) => {
+                log::error!("Panic runtime log upload failed: {}", error);
+            }
+        }
+
+        let mut crash_attrs = vec![
+            KeyValue::new("fatal", true),
+            KeyValue::new("panic_location", truncate_telemetry_text(&location)),
+            KeyValue::new("panic_message", truncate_telemetry_text(message)),
+            KeyValue::new("runtime_log_upload_attempted", true),
+        ];
+        match log_upload_result {
+            Ok(response) => {
+                crash_attrs.push(KeyValue::new("runtime_log_upload_succeeded", true));
+                crash_attrs.push(KeyValue::new(
+                    "runtime_log_file_name",
+                    truncate_telemetry_text(&response.file_name),
+                ));
+            }
+            Err(error) => {
+                crash_attrs.push(KeyValue::new("runtime_log_upload_succeeded", false));
+                crash_attrs.push(KeyValue::new(
+                    "runtime_log_upload_error",
+                    truncate_telemetry_text(&error),
+                ));
+            }
+        }
+
+        emit_telemetry_event(
+            "app_crashed",
+            crash_attrs,
+        );
+        bitfun_core::infrastructure::flush_and_shutdown_global_telemetry(
+            TELEMETRY_SHUTDOWN_TIMEOUT,
+        );
 
         std::process::exit(1);
     }));
