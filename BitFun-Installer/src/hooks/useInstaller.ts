@@ -11,6 +11,7 @@ import type {
   ConnectionTestResult,
   LaunchContext,
   InstallPathValidation,
+  ExistingInstallation,
 } from '../types/installer';
 import { DEFAULT_OPTIONS } from '../types/installer';
 
@@ -26,6 +27,8 @@ export interface UseInstallerReturn {
   installationCompleted: boolean;
   error: string | null;
   diskSpace: DiskSpaceInfo | null;
+  existingInstall: ExistingInstallation | null;
+  launchRegisteredUninstaller: () => Promise<void>;
   install: () => Promise<void>;
   canConfirmProgress: boolean;
   confirmProgress: () => void;
@@ -74,6 +77,7 @@ export function useInstaller(): UseInstallerReturn {
   const [canConfirmProgress, setCanConfirmProgress] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [diskSpace, setDiskSpace] = useState<DiskSpaceInfo | null>(null);
+  const [existingInstall, setExistingInstall] = useState<ExistingInstallation | null>(null);
   const [isUninstallMode, setIsUninstallMode] = useState(false);
   const [isUninstalling, setIsUninstalling] = useState(false);
   const [uninstallCompleted, setUninstallCompleted] = useState(false);
@@ -129,6 +133,38 @@ export function useInstaller(): UseInstallerReturn {
     setError(null);
   }, []);
 
+  useEffect(() => {
+    setError(null);
+  }, [options.installPath, step]);
+
+  useEffect(() => {
+    if (step !== 'options') return;
+    let mounted = true;
+    (async () => {
+      try {
+        const info = await invoke<ExistingInstallation>('get_existing_installation');
+        if (mounted) {
+          setExistingInstall(info);
+        }
+      } catch (err) {
+        console.warn('Failed to detect existing installation:', err);
+        if (mounted) {
+          setExistingInstall({
+            detected: false,
+            installLocation: null,
+            displayVersion: null,
+            uninstallString: null,
+            mainBinaryPresent: false,
+            source: null,
+          });
+        }
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [step]);
+
   const goTo = useCallback((s: InstallStep) => setStep(s), []);
 
   const next = useCallback(() => {
@@ -149,6 +185,22 @@ export function useInstaller(): UseInstallerReturn {
       console.warn('Failed to get disk space:', err);
     }
   }, []);
+
+  const launchRegisteredUninstaller = useCallback(async () => {
+    const cmd = existingInstall?.uninstallString?.trim();
+    if (!cmd) {
+      setError('No uninstall command is registered for this installation.');
+      return;
+    }
+    try {
+      await invoke('launch_registered_uninstaller', {
+        uninstallCommand: cmd,
+        installPath: existingInstall?.installLocation ?? null,
+      });
+    } catch (err: unknown) {
+      setError(typeof err === 'string' ? err : (err as Error)?.message || 'Failed to start uninstaller');
+    }
+  }, [existingInstall?.installLocation, existingInstall?.uninstallString]);
 
   const install = useCallback(async () => {
     setError(null);
@@ -209,6 +261,12 @@ export function useInstaller(): UseInstallerReturn {
       await invoke('start_installation', { options: effectiveOptions });
       setInstallationCompleted(true);
       setStep('model');
+      try {
+        const info = await invoke<ExistingInstallation>('get_existing_installation');
+        setExistingInstall(info);
+      } catch {
+        /* ignore */
+      }
     } catch (err: any) {
       const raw = typeof err === 'string' ? err : err?.message;
       setError((raw && String(raw).trim()) ? String(raw) : i18n.t('errors.install.failed'));
@@ -292,6 +350,7 @@ export function useInstaller(): UseInstallerReturn {
     step, goTo, next, back,
     options, setOptions,
     progress, isInstalling, installationCompleted, error, diskSpace,
+    existingInstall, launchRegisteredUninstaller,
     install, canConfirmProgress, confirmProgress, retryInstall, backToOptions,
     saveModelConfig, testModelConnection, launchApp, closeInstaller, refreshDiskSpace, clearInstallError,
     isUninstallMode, isUninstalling, uninstallCompleted, uninstallError, uninstallProgress, startUninstall,
