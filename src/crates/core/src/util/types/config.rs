@@ -2,6 +2,8 @@ use crate::service::config::types::AIModelConfig;
 use log::warn;
 use serde::{Deserialize, Serialize};
 
+const DEFAULT_CONTEXT_WINDOW: u32 = 200_000;
+
 fn append_endpoint(base_url: &str, endpoint: &str) -> String {
     let base = base_url.trim();
     if base.is_empty() {
@@ -204,7 +206,7 @@ impl TryFrom<AIModelConfig> for AIConfig {
             api_key: other.api_key.clone(),
             model: other.model_name.clone(),
             format: other.provider.clone(),
-            context_window: other.context_window.unwrap_or(128128),
+            context_window: other.context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW),
             max_tokens: other.max_tokens,
             temperature: other.temperature,
             top_p: other.top_p,
