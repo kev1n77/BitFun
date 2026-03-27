@@ -5,6 +5,7 @@
 use crate::infrastructure::ai::providers::anthropic::AnthropicMessageConverter;
 use crate::infrastructure::ai::providers::gemini::GeminiMessageConverter;
 use crate::infrastructure::ai::providers::openai::OpenAIMessageConverter;
+use crate::infrastructure::telemetry::{get_global_telemetry, TelemetryRequestSpan};
 use crate::service::config::ProxyConfig;
 use crate::util::types::*;
 use crate::util::JsonChecker;
@@ -15,9 +16,12 @@ use ai_stream_handlers::{
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use log::{debug, error, info, warn};
+use opentelemetry::KeyValue;
 use reqwest::{Client, Proxy};
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 
 /// Streamed response result with the parsed stream and optional raw SSE receiver
@@ -26,6 +30,109 @@ pub struct StreamResponse {
     pub stream: std::pin::Pin<Box<dyn futures::Stream<Item = Result<UnifiedResponse>> + Send>>,
     /// Raw SSE receiver (for error diagnostics)
     pub raw_sse_rx: Option<mpsc::UnboundedReceiver<String>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ModelRequestTelemetryMeta {
+    retry_count: usize,
+    status_code: Option<u16>,
+    error_type: Option<String>,
+}
+
+#[derive(Debug)]
+struct ModelRequestFailure {
+    error: anyhow::Error,
+    telemetry: ModelRequestTelemetryMeta,
+}
+
+struct TelemetryStream {
+    inner: Pin<Box<dyn futures::Stream<Item = Result<UnifiedResponse>> + Send>>,
+    span: Option<TelemetryRequestSpan>,
+}
+
+impl TelemetryStream {
+    fn new(
+        inner: Pin<Box<dyn futures::Stream<Item = Result<UnifiedResponse>> + Send>>,
+        span: TelemetryRequestSpan,
+    ) -> Self {
+        Self {
+            inner,
+            span: Some(span),
+        }
+    }
+}
+
+impl futures::Stream for TelemetryStream {
+    type Item = Result<UnifiedResponse>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.inner.as_mut().poll_next(cx) {
+            Poll::Ready(Some(Ok(chunk))) => {
+                if let Some(span) = self.span.as_mut() {
+                    if let Some(reason) = chunk.finish_reason.clone() {
+                        span.add_attribute(KeyValue::new("finish_reason", reason));
+                    }
+
+                    if let Some(usage) = chunk.usage.as_ref() {
+                        span.add_attribute(KeyValue::new(
+                            "total_tokens",
+                            usage.total_token_count as i64,
+                        ));
+                        span.add_attribute(KeyValue::new(
+                            "input_tokens",
+                            usage.prompt_token_count as i64,
+                        ));
+                        span.add_attribute(KeyValue::new(
+                            "output_tokens",
+                            usage.candidates_token_count as i64,
+                        ));
+                    }
+                }
+
+                Poll::Ready(Some(Ok(chunk)))
+            }
+            Poll::Ready(Some(Err(error))) => {
+                if let Some(mut span) = self.span.take() {
+                    span.mark_error(error.to_string());
+                }
+                Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(None) => {
+                if let Some(mut span) = self.span.take() {
+                    span.mark_success();
+                }
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+fn attach_model_request_telemetry(
+    span: &mut TelemetryRequestSpan,
+    telemetry: &ModelRequestTelemetryMeta,
+) {
+    span.add_attribute(KeyValue::new(
+        "retry_count",
+        telemetry.retry_count as i64,
+    ));
+
+    if let Some(status_code) = telemetry.status_code {
+        span.add_attribute(KeyValue::new("status_code", status_code as i64));
+    }
+
+    if let Some(error_type) = telemetry.error_type.as_ref() {
+        span.add_attribute(KeyValue::new("error_type", error_type.clone()));
+    }
+}
+
+fn classify_status_error(status: reqwest::StatusCode) -> &'static str {
+    match status.as_u16() {
+        429 => "rate_limit",
+        500..=599 => "server_error",
+        400..=499 => "client_error",
+        _ => "http_error",
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -622,10 +729,7 @@ impl AIClient {
         builder = builder
             .header("Content-Type", "application/json")
             .header("x-goog-api-key", &self.config.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.config.api_key),
-            );
+            .header("Authorization", format!("Bearer {}", self.config.api_key));
 
         if self.config.base_url.contains("openbitfun.com") {
             builder = builder.header("X-Verification-Code", "from_bitfun");
@@ -1233,8 +1337,24 @@ impl AIClient {
         tools: Option<Vec<ToolDefinition>>,
         extra_body: Option<serde_json::Value>,
     ) -> Result<StreamResponse> {
+        let tool_count = tools.as_ref().map(|entries| entries.len()).unwrap_or(0);
+        let api_format = self.get_api_format().to_string();
+        let span = get_global_telemetry().and_then(|telemetry| {
+            telemetry.start_request_span(
+                "model_request",
+                vec![
+                    KeyValue::new("provider", self.config.name.clone()),
+                    KeyValue::new("model", self.config.model.clone()),
+                    KeyValue::new("api_format", api_format),
+                    KeyValue::new("stream", true),
+                    KeyValue::new("message_count", messages.len() as i64),
+                    KeyValue::new("tool_count", tool_count as i64),
+                ],
+            )
+        });
+
         let max_tries = 3;
-        match self.get_api_format().to_lowercase().as_str() {
+        let result = match self.get_api_format().to_lowercase().as_str() {
             "openai" => {
                 self.send_openai_stream(messages, tools, extra_body, max_tries)
                     .await
@@ -1251,7 +1371,31 @@ impl AIClient {
                 self.send_anthropic_stream(messages, tools, extra_body, max_tries)
                     .await
             }
-            _ => Err(anyhow!("Unknown API format: {}", self.get_api_format())),
+            _ => Err(ModelRequestFailure {
+                error: anyhow!("Unknown API format: {}", self.get_api_format()),
+                telemetry: ModelRequestTelemetryMeta {
+                    retry_count: 0,
+                    status_code: None,
+                    error_type: Some("unknown_api_format".to_string()),
+                },
+            }),
+        };
+
+        match result {
+            Ok((mut response, telemetry)) => {
+                if let Some(mut span) = span {
+                    attach_model_request_telemetry(&mut span, &telemetry);
+                    response.stream = Box::pin(TelemetryStream::new(response.stream, span));
+                }
+                Ok(response)
+            }
+            Err(failure) => {
+                if let Some(mut span) = span {
+                    attach_model_request_telemetry(&mut span, &failure.telemetry);
+                    span.mark_error(failure.error.to_string());
+                }
+                Err(failure.error)
+            }
         }
     }
 
@@ -1268,7 +1412,7 @@ impl AIClient {
         tools: Option<Vec<ToolDefinition>>,
         extra_body: Option<serde_json::Value>,
         max_tries: usize,
-    ) -> Result<StreamResponse> {
+    ) -> std::result::Result<(StreamResponse, ModelRequestTelemetryMeta), ModelRequestFailure> {
         let url = self.config.request_url.clone();
         debug!(
             "OpenAI config: model={}, request_url={}, max_tries={}",
@@ -1284,6 +1428,7 @@ impl AIClient {
             self.build_openai_request_body(&url, openai_messages, openai_tools, extra_body);
 
         let mut last_error = None;
+        let mut last_telemetry = ModelRequestTelemetryMeta::default();
         let base_wait_time_ms = 500;
 
         for attempt in 0..max_tries {
@@ -1307,11 +1452,18 @@ impl AIClient {
                             "OpenAI Streaming API client error {}: {}",
                             status, error_text
                         );
-                        return Err(anyhow!(
-                            "OpenAI Streaming API client error {}: {}",
-                            status,
-                            error_text
-                        ));
+                        return Err(ModelRequestFailure {
+                            error: anyhow!(
+                                "OpenAI Streaming API client error {}: {}",
+                                status,
+                                error_text
+                            ),
+                            telemetry: ModelRequestTelemetryMeta {
+                                retry_count: attempt,
+                                status_code: Some(status.as_u16()),
+                                error_type: Some(classify_status_error(status).to_string()),
+                            },
+                        });
                     }
 
                     if status.is_success() {
@@ -1337,6 +1489,11 @@ impl AIClient {
                             error
                         );
                         last_error = Some(error);
+                        last_telemetry = ModelRequestTelemetryMeta {
+                            retry_count: attempt,
+                            status_code: Some(status.as_u16()),
+                            error_type: Some(classify_status_error(status).to_string()),
+                        };
 
                         if attempt < max_tries - 1 {
                             let delay_ms = base_wait_time_ms * (1 << attempt.min(3));
@@ -1357,6 +1514,11 @@ impl AIClient {
                         e
                     );
                     last_error = Some(error);
+                    last_telemetry = ModelRequestTelemetryMeta {
+                        retry_count: attempt,
+                        status_code: None,
+                        error_type: Some("connection_error".to_string()),
+                    };
 
                     if attempt < max_tries - 1 {
                         let delay_ms = base_wait_time_ms * (1 << attempt.min(3));
@@ -1368,6 +1530,7 @@ impl AIClient {
             };
 
             // Success: create channels and return
+            let status_code = response.status().as_u16();
             let (tx, rx) = mpsc::unbounded_channel();
             let (tx_raw, rx_raw) = mpsc::unbounded_channel();
 
@@ -1378,10 +1541,17 @@ impl AIClient {
                 self.config.inline_think_in_text,
             ));
 
-            return Ok(StreamResponse {
-                stream: Box::pin(tokio_stream::wrappers::UnboundedReceiverStream::new(rx)),
-                raw_sse_rx: Some(rx_raw),
-            });
+            return Ok((
+                StreamResponse {
+                    stream: Box::pin(tokio_stream::wrappers::UnboundedReceiverStream::new(rx)),
+                    raw_sse_rx: Some(rx_raw),
+                },
+                ModelRequestTelemetryMeta {
+                    retry_count: attempt,
+                    status_code: Some(status_code),
+                    error_type: None,
+                },
+            ));
         }
 
         let error_msg = format!(
@@ -1390,7 +1560,10 @@ impl AIClient {
             last_error.unwrap_or_else(|| anyhow!("Unknown error"))
         );
         error!("{}", error_msg);
-        Err(anyhow!(error_msg))
+        Err(ModelRequestFailure {
+            error: anyhow!(error_msg),
+            telemetry: last_telemetry,
+        })
     }
 
     /// Send a Gemini streaming request with retries.
@@ -1400,7 +1573,7 @@ impl AIClient {
         tools: Option<Vec<ToolDefinition>>,
         extra_body: Option<serde_json::Value>,
         max_tries: usize,
-    ) -> Result<StreamResponse> {
+    ) -> std::result::Result<(StreamResponse, ModelRequestTelemetryMeta), ModelRequestFailure> {
         let url = Self::resolve_gemini_request_url(&self.config.request_url, &self.config.model);
         debug!(
             "Gemini config: model={}, request_url={}, max_tries={}",
@@ -1414,6 +1587,7 @@ impl AIClient {
             self.build_gemini_request_body(system_instruction, contents, gemini_tools, extra_body);
 
         let mut last_error = None;
+        let mut last_telemetry = ModelRequestTelemetryMeta::default();
         let base_wait_time_ms = 500;
 
         for attempt in 0..max_tries {
@@ -1435,11 +1609,18 @@ impl AIClient {
                             "Gemini Streaming API client error {}: {}",
                             status, error_text
                         );
-                        return Err(anyhow!(
-                            "Gemini Streaming API client error {}: {}",
-                            status,
-                            error_text
-                        ));
+                        return Err(ModelRequestFailure {
+                            error: anyhow!(
+                                "Gemini Streaming API client error {}: {}",
+                                status,
+                                error_text
+                            ),
+                            telemetry: ModelRequestTelemetryMeta {
+                                retry_count: attempt,
+                                status_code: Some(status.as_u16()),
+                                error_type: Some(classify_status_error(status).to_string()),
+                            },
+                        });
                     }
 
                     if status.is_success() {
@@ -1466,6 +1647,11 @@ impl AIClient {
                             error
                         );
                         last_error = Some(error);
+                        last_telemetry = ModelRequestTelemetryMeta {
+                            retry_count: attempt,
+                            status_code: Some(status.as_u16()),
+                            error_type: Some(classify_status_error(status).to_string()),
+                        };
 
                         if attempt < max_tries - 1 {
                             let delay_ms = base_wait_time_ms * (1 << attempt.min(3));
@@ -1490,6 +1676,11 @@ impl AIClient {
                         e
                     );
                     last_error = Some(error);
+                    last_telemetry = ModelRequestTelemetryMeta {
+                        retry_count: attempt,
+                        status_code: None,
+                        error_type: Some("connection_error".to_string()),
+                    };
 
                     if attempt < max_tries - 1 {
                         let delay_ms = base_wait_time_ms * (1 << attempt.min(3));
@@ -1504,15 +1695,23 @@ impl AIClient {
                 }
             };
 
+            let status_code = response.status().as_u16();
             let (tx, rx) = mpsc::unbounded_channel();
             let (tx_raw, rx_raw) = mpsc::unbounded_channel();
 
             tokio::spawn(handle_gemini_stream(response, tx, Some(tx_raw)));
 
-            return Ok(StreamResponse {
-                stream: Box::pin(tokio_stream::wrappers::UnboundedReceiverStream::new(rx)),
-                raw_sse_rx: Some(rx_raw),
-            });
+            return Ok((
+                StreamResponse {
+                    stream: Box::pin(tokio_stream::wrappers::UnboundedReceiverStream::new(rx)),
+                    raw_sse_rx: Some(rx_raw),
+                },
+                ModelRequestTelemetryMeta {
+                    retry_count: attempt,
+                    status_code: Some(status_code),
+                    error_type: None,
+                },
+            ));
         }
 
         let error_msg = format!(
@@ -1521,7 +1720,10 @@ impl AIClient {
             last_error.unwrap_or_else(|| anyhow!("Unknown error"))
         );
         error!("{}", error_msg);
-        Err(anyhow!(error_msg))
+        Err(ModelRequestFailure {
+            error: anyhow!(error_msg),
+            telemetry: last_telemetry,
+        })
     }
 
     /// Send a Responses API streaming request with retries.
@@ -1531,7 +1733,7 @@ impl AIClient {
         tools: Option<Vec<ToolDefinition>>,
         extra_body: Option<serde_json::Value>,
         max_tries: usize,
-    ) -> Result<StreamResponse> {
+    ) -> std::result::Result<(StreamResponse, ModelRequestTelemetryMeta), ModelRequestFailure> {
         let url = self.config.request_url.clone();
         debug!(
             "Responses config: model={}, request_url={}, max_tries={}",
@@ -1549,6 +1751,7 @@ impl AIClient {
         );
 
         let mut last_error = None;
+        let mut last_telemetry = ModelRequestTelemetryMeta::default();
         let base_wait_time_ms = 500;
 
         for attempt in 0..max_tries {
@@ -1567,11 +1770,18 @@ impl AIClient {
                             .await
                             .unwrap_or_else(|e| format!("Failed to read error response: {}", e));
                         error!("Responses API client error {}: {}", status, error_text);
-                        return Err(anyhow!(
-                            "Responses API client error {}: {}",
-                            status,
-                            error_text
-                        ));
+                        return Err(ModelRequestFailure {
+                            error: anyhow!(
+                                "Responses API client error {}: {}",
+                                status,
+                                error_text
+                            ),
+                            telemetry: ModelRequestTelemetryMeta {
+                                retry_count: attempt,
+                                status_code: Some(status.as_u16()),
+                                error_type: Some(classify_status_error(status).to_string()),
+                            },
+                        });
                     }
 
                     if status.is_success() {
@@ -1596,6 +1806,11 @@ impl AIClient {
                             error
                         );
                         last_error = Some(error);
+                        last_telemetry = ModelRequestTelemetryMeta {
+                            retry_count: attempt,
+                            status_code: Some(status.as_u16()),
+                            error_type: Some(classify_status_error(status).to_string()),
+                        };
 
                         if attempt < max_tries - 1 {
                             let delay_ms = base_wait_time_ms * (1 << attempt.min(3));
@@ -1616,6 +1831,11 @@ impl AIClient {
                         e
                     );
                     last_error = Some(error);
+                    last_telemetry = ModelRequestTelemetryMeta {
+                        retry_count: attempt,
+                        status_code: None,
+                        error_type: Some("connection_error".to_string()),
+                    };
 
                     if attempt < max_tries - 1 {
                         let delay_ms = base_wait_time_ms * (1 << attempt.min(3));
@@ -1626,15 +1846,23 @@ impl AIClient {
                 }
             };
 
+            let status_code = response.status().as_u16();
             let (tx, rx) = mpsc::unbounded_channel();
             let (tx_raw, rx_raw) = mpsc::unbounded_channel();
 
             tokio::spawn(handle_responses_stream(response, tx, Some(tx_raw)));
 
-            return Ok(StreamResponse {
-                stream: Box::pin(tokio_stream::wrappers::UnboundedReceiverStream::new(rx)),
-                raw_sse_rx: Some(rx_raw),
-            });
+            return Ok((
+                StreamResponse {
+                    stream: Box::pin(tokio_stream::wrappers::UnboundedReceiverStream::new(rx)),
+                    raw_sse_rx: Some(rx_raw),
+                },
+                ModelRequestTelemetryMeta {
+                    retry_count: attempt,
+                    status_code: Some(status_code),
+                    error_type: None,
+                },
+            ));
         }
 
         let error_msg = format!(
@@ -1643,7 +1871,10 @@ impl AIClient {
             last_error.unwrap_or_else(|| anyhow!("Unknown error"))
         );
         error!("{}", error_msg);
-        Err(anyhow!(error_msg))
+        Err(ModelRequestFailure {
+            error: anyhow!(error_msg),
+            telemetry: last_telemetry,
+        })
     }
 
     /// Send an Anthropic streaming request with retries
@@ -1659,7 +1890,7 @@ impl AIClient {
         tools: Option<Vec<ToolDefinition>>,
         extra_body: Option<serde_json::Value>,
         max_tries: usize,
-    ) -> Result<StreamResponse> {
+    ) -> std::result::Result<(StreamResponse, ModelRequestTelemetryMeta), ModelRequestFailure> {
         let url = self.config.request_url.clone();
         debug!(
             "Anthropic config: model={}, request_url={}, max_tries={}",
@@ -1681,6 +1912,7 @@ impl AIClient {
         );
 
         let mut last_error = None;
+        let mut last_telemetry = ModelRequestTelemetryMeta::default();
         let base_wait_time_ms = 500;
 
         for attempt in 0..max_tries {
@@ -1704,11 +1936,18 @@ impl AIClient {
                             "Anthropic Streaming API client error {}: {}",
                             status, error_text
                         );
-                        return Err(anyhow!(
-                            "Anthropic Streaming API client error {}: {}",
-                            status,
-                            error_text
-                        ));
+                        return Err(ModelRequestFailure {
+                            error: anyhow!(
+                                "Anthropic Streaming API client error {}: {}",
+                                status,
+                                error_text
+                            ),
+                            telemetry: ModelRequestTelemetryMeta {
+                                retry_count: attempt,
+                                status_code: Some(status.as_u16()),
+                                error_type: Some(classify_status_error(status).to_string()),
+                            },
+                        });
                     }
 
                     if status.is_success() {
@@ -1734,6 +1973,11 @@ impl AIClient {
                             error
                         );
                         last_error = Some(error);
+                        last_telemetry = ModelRequestTelemetryMeta {
+                            retry_count: attempt,
+                            status_code: Some(status.as_u16()),
+                            error_type: Some(classify_status_error(status).to_string()),
+                        };
 
                         if attempt < max_tries - 1 {
                             let delay_ms = base_wait_time_ms * (1 << attempt.min(3));
@@ -1754,6 +1998,11 @@ impl AIClient {
                         e
                     );
                     last_error = Some(error);
+                    last_telemetry = ModelRequestTelemetryMeta {
+                        retry_count: attempt,
+                        status_code: None,
+                        error_type: Some("connection_error".to_string()),
+                    };
 
                     if attempt < max_tries - 1 {
                         let delay_ms = base_wait_time_ms * (1 << attempt.min(3));
@@ -1765,15 +2014,23 @@ impl AIClient {
             };
 
             // Success: create channels and return
+            let status_code = response.status().as_u16();
             let (tx, rx) = mpsc::unbounded_channel();
             let (tx_raw, rx_raw) = mpsc::unbounded_channel();
 
             tokio::spawn(handle_anthropic_stream(response, tx, Some(tx_raw)));
 
-            return Ok(StreamResponse {
-                stream: Box::pin(tokio_stream::wrappers::UnboundedReceiverStream::new(rx)),
-                raw_sse_rx: Some(rx_raw),
-            });
+            return Ok((
+                StreamResponse {
+                    stream: Box::pin(tokio_stream::wrappers::UnboundedReceiverStream::new(rx)),
+                    raw_sse_rx: Some(rx_raw),
+                },
+                ModelRequestTelemetryMeta {
+                    retry_count: attempt,
+                    status_code: Some(status_code),
+                    error_type: None,
+                },
+            ));
         }
 
         let error_msg = format!(
@@ -1782,7 +2039,10 @@ impl AIClient {
             last_error.unwrap_or_else(|| anyhow!("Unknown error"))
         );
         error!("{}", error_msg);
-        Err(anyhow!(error_msg))
+        Err(ModelRequestFailure {
+            error: anyhow!(error_msg),
+            telemetry: last_telemetry,
+        })
     }
 
     /// Send a message and wait for the full response (non-streaming)
