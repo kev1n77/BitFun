@@ -3,7 +3,12 @@ import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Checkbox } from '../components/Checkbox';
-import type { InstallOptions, DiskSpaceInfo, InstallPathValidation } from '../types/installer';
+import type {
+  InstallOptions,
+  DiskSpaceInfo,
+  InstallPathValidation,
+  ExistingInstallation,
+} from '../types/installer';
 
 interface OptionsProps {
   options: InstallOptions;
@@ -11,6 +16,8 @@ interface OptionsProps {
   diskSpace: DiskSpaceInfo | null;
   error: string | null;
   refreshDiskSpace: (path: string) => Promise<void>;
+  existingInstall: ExistingInstallation | null;
+  onLaunchRegisteredUninstaller: () => void | Promise<void>;
   onBack: () => void;
   onInstall: () => void;
 }
@@ -21,6 +28,8 @@ export function Options({
   diskSpace,
   error,
   refreshDiskSpace,
+  existingInstall,
+  onLaunchRegisteredUninstaller,
   onBack,
   onInstall,
 }: OptionsProps) {
@@ -67,6 +76,52 @@ export function Options({
           <div style={{ marginBottom: 8, fontSize: 12, color: 'var(--color-text-muted)' }}>
             {t('options.subtitle')}
           </div>
+          {existingInstall?.detected ? (
+            <div
+              style={{
+                marginBottom: 16,
+                padding: '12px 14px',
+                borderRadius: 10,
+                border: '1px solid color-mix(in srgb, var(--color-accent-500) 45%, transparent)',
+                background: 'color-mix(in srgb, var(--color-accent-500) 8%, transparent)',
+                fontSize: 12,
+                lineHeight: 1.55,
+                color: 'var(--color-text-primary)',
+              }}
+            >
+              <div style={{ fontWeight: 600, marginBottom: 8 }}>{t('options.existingInstallTitle')}</div>
+              {existingInstall.displayVersion ? (
+                <div style={{ marginBottom: 4, wordBreak: 'break-all' }}>
+                  {t('options.existingInstallVersion', { version: existingInstall.displayVersion })}
+                </div>
+              ) : null}
+              {existingInstall.installLocation ? (
+                <div style={{ marginBottom: 8, wordBreak: 'break-all', opacity: 0.95 }}>
+                  {t('options.existingInstallLocation', { path: existingInstall.installLocation })}
+                </div>
+              ) : null}
+              {!existingInstall.mainBinaryPresent ? (
+                <div style={{ marginBottom: 8, color: 'var(--color-warning, #c9a227)' }}>
+                  {t('options.existingInstallBinaryMissing')}
+                </div>
+              ) : null}
+              <p style={{ margin: '0 0 10px', opacity: 0.88 }}>{t('options.existingInstallHint')}</p>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {existingInstall.uninstallString ? (
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ padding: '8px 12px', fontSize: 12 }}
+                    onClick={() => {
+                      void onLaunchRegisteredUninstaller();
+                    }}
+                  >
+                    {t('options.existingInstallRunUninstaller')}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
           <div style={{ marginBottom: 20 }}>
             <div className="section-label">
               <svg
@@ -151,11 +206,6 @@ export function Options({
                 checked={options.startMenu}
                 onChange={(value) => update('startMenu', value)}
                 label={t('options.startMenu')}
-              />
-              <Checkbox
-                checked={options.contextMenu}
-                onChange={(value) => update('contextMenu', value)}
-                label={t('options.contextMenu')}
               />
               <Checkbox
                 checked={options.addToPath}

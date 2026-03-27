@@ -27,7 +27,13 @@
     "launchAfterInstall": "Launch BitFun after setup",
     "back": "Back",
     "install": "Install",
-    "nextModel": "Next: Configure model"
+    "nextModel": "Next: Configure model",
+    "existingInstallTitle": "BitFun is already installed on this system",
+    "existingInstallVersion": "Installed version: {{version}}",
+    "existingInstallLocation": "Install location: {{path}}",
+    "existingInstallBinaryMissing": "The main program file was not found under this path. Try running the uninstaller or installing again.",
+    "existingInstallHint": "Choose Install to upgrade or repair in place. Use the button below to run the uninstaller first if you want a clean removal.",
+    "existingInstallRunUninstaller": "Run uninstaller"
   },
   "model": {
     "title": "Model",

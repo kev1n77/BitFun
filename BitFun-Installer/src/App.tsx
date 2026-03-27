@@ -51,6 +51,8 @@ function App() {
             diskSpace={installer.diskSpace}
             error={installer.error}
             refreshDiskSpace={installer.refreshDiskSpace}
+            existingInstall={installer.existingInstall}
+            onLaunchRegisteredUninstaller={installer.launchRegisteredUninstaller}
             onBack={installer.back}
             onInstall={installer.install}
           />
