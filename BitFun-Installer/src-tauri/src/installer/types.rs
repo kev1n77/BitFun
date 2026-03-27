@@ -11,8 +11,6 @@ pub struct InstallOptions {
     pub desktop_shortcut: bool,
     /// Add to Start Menu
     pub start_menu: bool,
-    /// Register right-click context menu ("Open with BitFun")
-    pub context_menu: bool,
     /// Add to system PATH
     pub add_to_path: bool,
     /// Launch after installation
@@ -98,7 +96,6 @@ impl Default for InstallOptions {
             install_path: String::new(),
             desktop_shortcut: true,
             start_menu: true,
-            context_menu: true,
             add_to_path: true,
             launch_after_install: true,
             app_language: "zh-CN".to_string(),
