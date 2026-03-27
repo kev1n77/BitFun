@@ -19,6 +19,7 @@ import { translateConnectionTestMessage } from '@/shared/utils/aiConnectionTestM
 import './AIModelConfig.scss';
 
 const log = createLogger('AIModelConfig');
+const DEFAULT_CONTEXT_WINDOW = 200000;
 
 interface RemoteModelOption {
   id: string;
@@ -57,7 +58,7 @@ function createModelDraft(
     configId: overrides?.configId ?? baseConfig?.id,
     modelName: trimmedModelName,
     category: overrides?.category ?? baseConfig?.category ?? 'general_chat',
-    contextWindow: overrides?.contextWindow ?? baseConfig?.context_window ?? 128000,
+    contextWindow: overrides?.contextWindow ?? baseConfig?.context_window ?? DEFAULT_CONTEXT_WINDOW,
     maxTokens: overrides?.maxTokens ?? baseConfig?.max_tokens ?? 8192,
     enableThinking: overrides?.enableThinking ?? baseConfig?.enable_thinking_process ?? false,
   };
@@ -357,7 +358,7 @@ const AIModelConfig: React.FC = () => {
   const createDraftsFromConfigs = (configs: AIModelConfigType[]) => (
     configs.map(config => createModelDraft(config.model_name, config, {
       configId: config.id,
-      contextWindow: config.context_window || 128000,
+      contextWindow: config.context_window || DEFAULT_CONTEXT_WINDOW,
       maxTokens: config.max_tokens || 8192,
       enableThinking: config.enable_thinking_process ?? false,
     }))
@@ -543,7 +544,7 @@ const AIModelConfig: React.FC = () => {
       request_url: config.request_url || resolveRequestUrl(resolvedBaseUrl, resolvedProvider, resolvedModelName),
       model_name: resolvedModelName,
       description: config.description,
-      context_window: config.context_window || 128000,
+      context_window: config.context_window || DEFAULT_CONTEXT_WINDOW,
       max_tokens: config.max_tokens || 8192,
       temperature: config.temperature,
       top_p: config.top_p,
@@ -671,7 +672,7 @@ const AIModelConfig: React.FC = () => {
       model_name: defaultModel,
       provider: primaryConfiguredModel?.provider || template.format,
       enabled: true,
-      context_window: 128000,
+      context_window: DEFAULT_CONTEXT_WINDOW,
       max_tokens: 8192,
       category: 'general_chat',
       capabilities: ['text_chat', 'function_calling'],
@@ -683,7 +684,7 @@ const AIModelConfig: React.FC = () => {
       configuredProviderModels.length > 0
         ? createDraftsFromConfigs(configuredProviderModels)
         : (defaultModel ? [createModelDraft(defaultModel, {
-            context_window: 128000,
+            context_window: DEFAULT_CONTEXT_WINDOW,
             max_tokens: 8192,
             enable_thinking_process: false,
           })] : [])
@@ -707,7 +708,7 @@ const AIModelConfig: React.FC = () => {
       model_name: '',
       provider: 'openai',  
       enabled: true,
-      context_window: 128000,
+      context_window: DEFAULT_CONTEXT_WINDOW,
       max_tokens: 8192,  
       
       category: 'general_chat',
@@ -740,7 +741,7 @@ const AIModelConfig: React.FC = () => {
       provider: config.provider,
       enabled: true,
       description: config.description,
-      context_window: config.context_window || 128000,
+      context_window: config.context_window || DEFAULT_CONTEXT_WINDOW,
       max_tokens: config.max_tokens || 8192,
       category: config.category || 'general_chat',
       capabilities: config.capabilities || getCapabilitiesByCategory(config.category || 'general_chat'),
@@ -773,7 +774,7 @@ const AIModelConfig: React.FC = () => {
     setEditingConfig({ ...config, name: getProviderDisplayName(config) });
     setSelectedModelDrafts([
       createModelDraft(config.model_name, config, {
-        contextWindow: config.context_window || 128000,
+        contextWindow: config.context_window || DEFAULT_CONTEXT_WINDOW,
         maxTokens: config.max_tokens || 8192,
         enableThinking: config.enable_thinking_process ?? false,
       })
@@ -1797,7 +1798,7 @@ const AIModelConfig: React.FC = () => {
             </div>
             <div className="bitfun-ai-model-config__details-item">
               <span className="bitfun-ai-model-config__details-label">{t('details.contextWindow')}</span>
-              <span className="bitfun-ai-model-config__details-value">{config.context_window?.toLocaleString() || '128,000'}</span>
+              <span className="bitfun-ai-model-config__details-value">{config.context_window?.toLocaleString() || DEFAULT_CONTEXT_WINDOW.toLocaleString()}</span>
             </div>
             <div className="bitfun-ai-model-config__details-item">
               <span className="bitfun-ai-model-config__details-label">{t('details.maxOutput')}</span>
