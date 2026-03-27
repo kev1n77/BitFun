@@ -10,6 +10,7 @@
   },
   "bundle": {
     "active": true,
+    "publisher": "BitFun Team",
     "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
