@@ -3,11 +3,13 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+use super::MAIN_APP_EXE;
+
 /// Create a desktop shortcut for BitFun.
 pub fn create_desktop_shortcut(install_path: &Path) -> Result<()> {
     let desktop = dirs::desktop_dir().with_context(|| "Cannot find Desktop directory")?;
     let shortcut_path = desktop.join("BitFun.lnk");
-    let exe_path = install_path.join("BitFun.exe");
+    let exe_path = install_path.join(MAIN_APP_EXE);
 
     create_lnk(&shortcut_path, &exe_path, install_path)?;
     log::info!("Created desktop shortcut at {}", shortcut_path.display());
@@ -21,7 +23,7 @@ pub fn create_start_menu_shortcut(install_path: &Path) -> Result<()> {
     std::fs::create_dir_all(&bitfun_folder)?;
 
     let shortcut_path = bitfun_folder.join("BitFun.lnk");
-    let exe_path = install_path.join("BitFun.exe");
+    let exe_path = install_path.join(MAIN_APP_EXE);
 
     create_lnk(&shortcut_path, &exe_path, install_path)?;
     log::info!("Created Start Menu shortcut at {}", shortcut_path.display());
