@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import logoUrl from '../Logo-ICON.png';
 
@@ -14,10 +14,20 @@ const LANGUAGES = [
 export function LanguageSelect({ onSelect }: LanguageSelectProps) {
   const { i18n } = useTranslation();
   const [selected, setSelected] = useState<string>('en');
+  const currentUiLanguage = i18n.resolvedLanguage === 'zh' ? 'zh' : 'en';
+  const isZh = selected === 'zh';
+  const supportPrefix = isZh ? '\u7531' : 'Technical support provided by ';
+  const supportOrg = isZh ? '\u8f6f\u4ef6IDE\u5b9e\u9a8c\u5ba4' : 'Software IDE Lab';
+  const supportSuffix = isZh ? '\u63d0\u4f9b\u6280\u672f\u652f\u6301' : '';
+
+  useEffect(() => {
+    if (currentUiLanguage !== selected) {
+      void i18n.changeLanguage(selected);
+    }
+  }, [currentUiLanguage, i18n, selected]);
 
   const handleSelect = (code: string) => {
     setSelected(code);
-    i18n.changeLanguage(code);
   };
 
   const handleContinue = () => {
@@ -76,7 +86,16 @@ export function LanguageSelect({ onSelect }: LanguageSelectProps) {
             opacity: 0.6,
             letterSpacing: '0.5px',
           }}>
-            Version 0.2.1
+            <div>Version 0.2.0-bata.3</div>
+            <div style={{
+              marginTop: 6,
+              lineHeight: 1.5,
+              letterSpacing: 0,
+            }}>
+              {supportPrefix}
+              <strong style={{ fontWeight: 700 }}>{supportOrg}</strong>
+              {supportSuffix}
+            </div>
           </div>
         </div>
       </div>
