@@ -4,6 +4,7 @@ import { createLogger } from '@/shared/utils/logger';
 import type { ConnectionTestMessageCode } from './aiConnectionTestMessages';
 
 const log = createLogger('ConfigConverter');
+const DEFAULT_CONTEXT_WINDOW = 200000;
 
  
 export interface RustModelConfig {
@@ -26,7 +27,7 @@ export function convertToRustConfig(config: ModelConfig): RustModelConfig {
     format: config.format,
     base_url: config.baseUrl,          
     api_key: config.apiKey,            
-    context_window: config.contextWindow || 128128,  
+    context_window: config.contextWindow || DEFAULT_CONTEXT_WINDOW,  
     max_tokens: config.maxTokens,      
   };
 }
