@@ -26,6 +26,7 @@ const MIN_WINDOWS_APP_EXE_BYTES: u64 = 5 * 1024 * 1024;
 const PAYLOAD_MANIFEST_FILE: &str = "payload-manifest.json";
 const INSTALL_MANIFEST_FILE: &str = ".bitfun-install-manifest.json";
 const INSTALLER_STATE_FILE: &str = "installer-state.json";
+const DEFAULT_MODEL_CONTEXT_WINDOW: u64 = 200_000;
 const EMBEDDED_PAYLOAD_ZIP: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/embedded_payload.zip"));
 
@@ -1179,6 +1180,10 @@ fn apply_first_launch_model(model: &ModelConfig) -> Result<(), String> {
     model_map.insert("enable_thinking_process".to_string(), Value::Bool(false));
     model_map.insert("support_preserved_thinking".to_string(), Value::Bool(false));
     model_map.insert("inline_think_in_text".to_string(), Value::Bool(false));
+    model_map.insert(
+        "context_window".to_string(),
+        Value::Number(DEFAULT_MODEL_CONTEXT_WINDOW.into()),
+    );
 
     if let Some(skip_ssl_verify) = model.skip_ssl_verify {
         model_map.insert("skip_ssl_verify".to_string(), Value::Bool(skip_ssl_verify));
