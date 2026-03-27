@@ -36,14 +36,6 @@ export function getVersionInfo(): VersionInfo {
 }
 
  
-export function formatVersion(version: string, isDev: boolean): string {
-  if (isDev) {
-    return `${version}-dev`;
-  }
-  return version;
-}
-
- 
 export function formatBuildDate(buildDate: string): string {
   try {
     const date = new Date(buildDate);
