@@ -12,7 +12,7 @@ This is the BitFun component preview system for quickly viewing and testing UI c
 pnpm run preview-components
 ```
 
-Starts a dev server and opens the preview page at `http://localhost:3000`.
+Starts a dev server and opens the preview page on the local dev port (default `3000`).
 
 ### Build the preview site
 
