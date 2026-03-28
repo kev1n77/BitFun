@@ -83,6 +83,15 @@ export function useInstaller(): UseInstallerReturn {
   const [uninstallError, setUninstallError] = useState<string | null>(null);
   const [uninstallProgress, setUninstallProgress] = useState(0);
 
+  const emptyExistingInstall: ExistingInstallation = {
+    detected: false,
+    installLocation: null,
+    displayVersion: null,
+    uninstallString: null,
+    mainBinaryPresent: false,
+    source: null,
+  };
+
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -132,33 +141,52 @@ export function useInstaller(): UseInstallerReturn {
     setError(null);
   }, [options.installPath, step]);
 
+  const readExistingInstall = useCallback(async (): Promise<ExistingInstallation> => {
+    try {
+      return await invoke<ExistingInstallation>('get_existing_installation');
+    } catch (err) {
+      console.warn('Failed to detect existing installation:', err);
+      return emptyExistingInstall;
+    }
+  }, []);
+
+  const refreshExistingInstall = useCallback(async () => {
+    const info = await readExistingInstall();
+    setExistingInstall(info);
+    return info;
+  }, [readExistingInstall]);
+
   useEffect(() => {
     if (step !== 'options') return;
     let mounted = true;
     (async () => {
-      try {
-        const info = await invoke<ExistingInstallation>('get_existing_installation');
-        if (mounted) {
-          setExistingInstall(info);
-        }
-      } catch (err) {
-        console.warn('Failed to detect existing installation:', err);
-        if (mounted) {
-          setExistingInstall({
-            detected: false,
-            installLocation: null,
-            displayVersion: null,
-            uninstallString: null,
-            mainBinaryPresent: false,
-            source: null,
-          });
-        }
+      const info = await readExistingInstall();
+      if (mounted) {
+        setExistingInstall(info);
       }
     })();
     return () => {
       mounted = false;
     };
-  }, [step]);
+  }, [readExistingInstall, step]);
+
+  useEffect(() => {
+    if (step !== 'options') return;
+    const refreshIfVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshExistingInstall();
+      }
+    };
+    const refreshOnFocus = () => {
+      void refreshExistingInstall();
+    };
+    window.addEventListener('focus', refreshOnFocus);
+    document.addEventListener('visibilitychange', refreshIfVisible);
+    return () => {
+      window.removeEventListener('focus', refreshOnFocus);
+      document.removeEventListener('visibilitychange', refreshIfVisible);
+    };
+  }, [refreshExistingInstall, step]);
 
   const goTo = useCallback((s: InstallStep) => setStep(s), []);
 
@@ -182,7 +210,12 @@ export function useInstaller(): UseInstallerReturn {
   }, []);
 
   const launchRegisteredUninstaller = useCallback(async () => {
-    const cmd = existingInstall?.uninstallString?.trim();
+    setError(null);
+    const latestInstall = await refreshExistingInstall();
+    if (!latestInstall.detected) {
+      return;
+    }
+    const cmd = latestInstall.uninstallString?.trim();
     if (!cmd) {
       setError('No uninstall command is registered for this installation.');
       return;
@@ -190,12 +223,18 @@ export function useInstaller(): UseInstallerReturn {
     try {
       await invoke('launch_registered_uninstaller', {
         uninstallCommand: cmd,
-        installPath: existingInstall?.installLocation ?? null,
+        installPath: latestInstall.installLocation ?? null,
       });
+      window.setTimeout(() => {
+        void refreshExistingInstall();
+      }, 1500);
+      window.setTimeout(() => {
+        void refreshExistingInstall();
+      }, 5000);
     } catch (err: unknown) {
       setError(typeof err === 'string' ? err : (err as Error)?.message || 'Failed to start uninstaller');
     }
-  }, [existingInstall?.installLocation, existingInstall?.uninstallString]);
+  }, [refreshExistingInstall]);
 
   const install = useCallback(async () => {
     setError(null);
@@ -257,7 +296,7 @@ export function useInstaller(): UseInstallerReturn {
       setInstallationCompleted(true);
       setStep('model');
       try {
-        const info = await invoke<ExistingInstallation>('get_existing_installation');
+        const info = await readExistingInstall();
         setExistingInstall(info);
       } catch {
         /* ignore */
@@ -267,7 +306,7 @@ export function useInstaller(): UseInstallerReturn {
     } finally {
       setIsInstalling(false);
     }
-  }, [options]);
+  }, [options, readExistingInstall]);
 
   const confirmProgress = useCallback(() => {
     if (!canConfirmProgress) return;
