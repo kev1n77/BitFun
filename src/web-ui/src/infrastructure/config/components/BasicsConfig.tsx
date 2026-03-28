@@ -522,7 +522,9 @@ function BasicsLoggingSection() {
           </ConfigPageRow>
           <ConfigPageRow
             label={t('logging.sections.upload')}
-            description={t('logging.upload.description')}
+            description={runtimeInfo?.telemetryUid
+              ? t('logging.upload.uidDescription', { uid: runtimeInfo.telemetryUid })
+              : t('logging.upload.description')}
             align="center"
           >
             <button
