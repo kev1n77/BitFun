@@ -2,13 +2,13 @@
 //!
 //! Supports macOS (pgrep) and Windows (tasklist) for process detection.
 
+use crate::util::process_manager;
 use anyhow::{anyhow, Result};
 use log::{info, warn};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 
 /// Tracks the PID of the ngrok process we started, so it can be killed
 /// synchronously during application exit even if async cleanup didn't run.
@@ -68,7 +68,7 @@ pub fn detect_running_ngrok() -> Option<Vec<u32>> {
 
 #[cfg(unix)]
 fn list_ngrok_pids() -> Vec<u32> {
-    std::process::Command::new("pgrep")
+    process_manager::create_command("pgrep")
         .args(["-x", "ngrok"])
         .output()
         .ok()
@@ -89,7 +89,7 @@ fn list_ngrok_pids() -> Vec<u32> {
 
 #[cfg(windows)]
 fn list_ngrok_pids() -> Vec<u32> {
-    std::process::Command::new("tasklist")
+    process_manager::create_command("tasklist")
         .args(["/FI", "IMAGENAME eq ngrok.exe", "/FO", "CSV", "/NH"])
         .output()
         .ok()
@@ -142,7 +142,7 @@ pub async fn start_ngrok_tunnel(local_port: u16) -> Result<NgrokTunnel> {
 
     info!("Using ngrok at: {}", ngrok_path.display());
 
-    let mut child = Command::new(&ngrok_path)
+    let mut child = process_manager::create_tokio_command(&ngrok_path)
         .args([
             "http",
             &local_port.to_string(),
@@ -233,14 +233,14 @@ async fn parse_tunnel_url_from_stdout(stdout: tokio::process::ChildStdout) -> Re
 /// Force-kill an ngrok process by PID.
 #[cfg(unix)]
 fn kill_process(pid: u32) {
-    let _ = std::process::Command::new("kill")
+    let _ = process_manager::create_command("kill")
         .args(["-9", &pid.to_string()])
         .output();
 }
 
 #[cfg(windows)]
 fn kill_process(pid: u32) {
-    let _ = std::process::Command::new("taskkill")
+    let _ = process_manager::create_command("taskkill")
         .args(["/F", "/PID", &pid.to_string()])
         .output();
 }
