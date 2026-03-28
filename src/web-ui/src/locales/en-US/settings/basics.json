@@ -111,7 +111,8 @@
       "description": "Directory where log files for this run are written."
     },
     "upload": {
-      "description": "Upload the current session logs."
+      "description": "Upload the current session logs.",
+      "uidDescription": "UID: {{uid}}"
     },
     "levels": {
       "trace": "Trace",

@@ -566,6 +566,7 @@ export interface RuntimeLoggingInfo {
   appLogPath: string;
   aiLogPath: string;
   webviewLogPath: string;
+  telemetryUid?: string | null;
 }
 
 export interface RuntimeLogUploadResult {
