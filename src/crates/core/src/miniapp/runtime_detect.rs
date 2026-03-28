@@ -1,7 +1,7 @@
 //! Runtime detection — Bun first, Node.js fallback for JS Worker.
 
+use crate::util::process_manager;
 use std::path::PathBuf;
-use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeKind {
@@ -40,7 +40,9 @@ pub fn detect_runtime() -> Option<DetectedRuntime> {
 }
 
 fn get_version(executable: &std::path::Path) -> Result<String, std::io::Error> {
-    let out = Command::new(executable).arg("--version").output()?;
+    let out = process_manager::create_command(executable)
+        .arg("--version")
+        .output()?;
     if out.status.success() {
         let v = String::from_utf8_lossy(&out.stdout);
         Ok(v.trim().to_string())
