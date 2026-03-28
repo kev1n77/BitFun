@@ -4,10 +4,10 @@ use crate::miniapp::js_worker::JsWorker;
 use crate::miniapp::runtime_detect::{detect_runtime, DetectedRuntime};
 use crate::miniapp::types::{NodePermissions, NpmDep};
 use crate::util::errors::{BitFunError, BitFunResult};
+use crate::util::process_manager;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::process::Command;
 use tokio::sync::Mutex;
 
 const MAX_WORKERS: usize = 5;
@@ -270,7 +270,7 @@ impl JsWorkerPool {
             }
         };
 
-        let output = Command::new(cmd)
+        let output = process_manager::create_tokio_command(cmd)
             .args(args)
             .current_dir(&app_dir)
             .output()
