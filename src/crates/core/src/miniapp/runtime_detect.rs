@@ -12,8 +12,8 @@
 //!   3. Glob nvm / fnm / volta version directories so any installed Node is
 //!      picked up regardless of the active version.
 
+use crate::util::process_manager;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeKind {
@@ -111,7 +111,9 @@ fn is_executable(p: &Path) -> bool {
 }
 
 fn get_version(executable: &std::path::Path) -> Result<String, std::io::Error> {
-    let out = Command::new(executable).arg("--version").output()?;
+    let out = process_manager::create_command(executable)
+        .arg("--version")
+        .output()?;
     if out.status.success() {
         let v = String::from_utf8_lossy(&out.stdout);
         Ok(v.trim().to_string())
