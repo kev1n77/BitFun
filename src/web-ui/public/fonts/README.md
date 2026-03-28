@@ -24,7 +24,7 @@ src/web-ui/public/fonts/
 ## Fira Code
 
 - Use: code editor and terminal
-- Source: https://github.com/tonsky/FiraCode
+- Source: Fira Code (open-source project; license in `FiraCode/LICENSE.txt`)
 - License: SIL Open Font License 1.1 (OFL-1.1)
 - Local license: `FiraCode/LICENSE.txt`
 
@@ -38,7 +38,7 @@ src/web-ui/public/fonts/
 ## Noto Sans SC
 
 - Use: UI text (Chinese and English)
-- Source: https://fonts.google.com/noto/specimen/Noto+Sans+SC
+- Source: Noto Sans SC (open-source project; license in `Noto_Sans_SC/OFL.txt`)
 - License: SIL Open Font License 1.1 (OFL-1.1)
 - Local license: `Noto_Sans_SC/OFL.txt`
 
