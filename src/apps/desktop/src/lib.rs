@@ -19,7 +19,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 #[cfg(target_os = "macos")]
 use tauri::Emitter;
 use tauri::Manager;
@@ -50,6 +50,9 @@ use api::storage_commands::*;
 use api::subagent_api::*;
 use api::system_api::*;
 use api::tool_api::*;
+
+const TELEMETRY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+const EXIT_TELEMETRY_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// Agentic Coordinator state
 #[derive(Clone)]
@@ -105,7 +108,7 @@ pub async fn run() {
     ) {
         Ok(telemetry) => telemetry
             .service()
-            .emit_event("app_start_started", Vec::new()),
+            .emit_event("app_launch_started", Vec::new()),
         Err(error) => {
             log::warn!("Failed to initialize telemetry service: {}", error);
         }
@@ -315,7 +318,7 @@ pub async fn run() {
 
             let startup_duration_ms = app_started_at_for_setup.elapsed().as_millis() as i64;
             emit_telemetry_event(
-                "app_opened",
+                "app_launch_succeeded",
                 vec![
                     KeyValue::new("startup_duration_ms", startup_duration_ms),
                     KeyValue::new("success", true),
@@ -353,7 +356,10 @@ pub async fn run() {
                                     KeyValue::new("uptime_ms", uptime_ms),
                                 ],
                             );
-                            bitfun_core::infrastructure::shutdown_global_telemetry();
+                            // Favor exit responsiveness on normal window close.
+                            bitfun_core::infrastructure::shutdown_global_telemetry_with_timeout(
+                                EXIT_TELEMETRY_SHUTDOWN_TIMEOUT,
+                            );
 
                             window.app_handle().exit(0);
                         } else {
@@ -902,14 +908,16 @@ fn emit_telemetry_event(event_name: &str, attrs: Vec<KeyValue>) {
 
 fn emit_startup_failed(stage: &str, error: &str) {
     emit_telemetry_event(
-        "app_start_failed",
+        "app_launch_failed",
         vec![
             KeyValue::new("stage", stage.to_string()),
             KeyValue::new("success", false),
             KeyValue::new("error", truncate_telemetry_text(error)),
         ],
     );
-    bitfun_core::infrastructure::shutdown_global_telemetry();
+    bitfun_core::infrastructure::flush_and_shutdown_global_telemetry(
+        TELEMETRY_SHUTDOWN_TIMEOUT,
+    );
 }
 
 fn emit_runtime_failed(stage: &str, error: &str) {
@@ -921,7 +929,9 @@ fn emit_runtime_failed(stage: &str, error: &str) {
             KeyValue::new("error", truncate_telemetry_text(error)),
         ],
     );
-    bitfun_core::infrastructure::shutdown_global_telemetry();
+    bitfun_core::infrastructure::flush_and_shutdown_global_telemetry(
+        TELEMETRY_SHUTDOWN_TIMEOUT,
+    );
 }
 
 fn truncate_telemetry_text(value: &str) -> String {
@@ -1020,7 +1030,9 @@ fn setup_panic_hook() {
             "app_crashed",
             crash_attrs,
         );
-        bitfun_core::infrastructure::shutdown_global_telemetry();
+        bitfun_core::infrastructure::flush_and_shutdown_global_telemetry(
+            TELEMETRY_SHUTDOWN_TIMEOUT,
+        );
 
         std::process::exit(1);
     }));
