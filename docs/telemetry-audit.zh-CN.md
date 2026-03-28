@@ -34,15 +34,22 @@ Desktop 启动时会初始化全局 telemetry，且当前是硬编码 `enabled: 
 - `src/apps/desktop/src/lib.rs:91`
 - `src/apps/desktop/src/lib.rs:97`
 
-启动成功后会立刻打一个 `app_opened` 事件：
+初始化成功后会先打一个 `app_launch_started` 事件，表示“启动流程开始”。
+在 Desktop `setup` 完成后，会再打一个 `app_launch_succeeded` 事件，表示“应用启动成功完成”，并附带 `startup_duration_ms`：
 
 - `src/apps/desktop/src/lib.rs:100`
+- `src/apps/desktop/src/lib.rs:315`
 
-主窗口关闭时会打 `app_closed`，随后执行 telemetry shutdown：
+如果启动阶段失败，会打 `app_launch_failed`。如果应用已经成功启动、随后在运行阶段报错，则会打 `app_runtime_failed`。
+
+主窗口关闭时，会先打 `app_exit_requested`，再打 `app_closed`，随后执行 telemetry shutdown。发生 panic 时还会打 `app_crashed`：
 
 - `src/apps/desktop/src/lib.rs:316`
 - `src/apps/desktop/src/lib.rs:319`
 - `src/apps/desktop/src/lib.rs:321`
+- `src/apps/desktop/src/lib.rs:917`
+- `src/apps/desktop/src/lib.rs:929`
+- `src/apps/desktop/src/lib.rs:1032`
 
 ### 2. 公共上下文字段
 
@@ -85,32 +92,44 @@ Desktop 启动时会初始化全局 telemetry，且当前是硬编码 `enabled: 
 - 注册位置：`src/apps/desktop/src/lib.rs:810`
 - 内部订阅模型：`src/crates/core/src/agentic/events/router.rs:36`
 
-当前实际会转成 telemetry 的事件如下。
+当前代码里实际会发出的 telemetry event 如下。
 
 | 事件名 | 触发来源 | 主要字段 |
 | --- | --- | --- |
-| `app_opened` | Desktop 启动 | 仅公共上下文 |
-| `app_closed` | Desktop 关闭 | 仅公共上下文 |
+| `app_launch_started` | Desktop 启动流程开始 | 仅公共上下文 |
+| `app_launch_succeeded` | Desktop 启动完成 | `startup_duration_ms`, `success=true` |
+| `app_launch_failed` | Desktop 启动失败 | `stage`, `success=false`, `error` |
+| `app_runtime_failed` | Desktop 运行期失败 | `stage`, `success=false`, `error` |
+| `app_exit_requested` | 主窗口收到关闭请求 | `reason`, `uptime_ms` |
+| `app_closed` | Desktop 关闭完成 | `reason`, `uptime_ms` |
+| `app_crashed` | 进程 panic | `fatal=true`, `panic_location`, `panic_message`, `runtime_log_upload_*` |
 | `chat_request_started` | `DialogTurnStarted` | `session_id`, `turn_id`, `turn_index` |
 | `chat_request_completed` | `DialogTurnCompleted` | `session_id`, `turn_id`, `total_rounds`, `total_tools`, `duration_ms`, `success=true` |
 | `chat_request_cancelled` | `DialogTurnCancelled` | `session_id`, `turn_id`, `cancelled=true` |
 | `chat_request_failed` | `DialogTurnFailed` | `session_id`, `turn_id`, `success=false`, `error` |
+| `token_usage_updated` | `TokenUsageUpdated` | `session_id`, `turn_id`, `model_id`, `input_tokens`, `output_tokens`, `total_tokens`, `max_context_tokens`, `is_subagent` |
+| `context_compression_started` | `ContextCompressionStarted` | `session_id`, `turn_id`, `compression_id`, `trigger`, `tokens_before`, `context_window`, `threshold` |
+| `context_compression_completed` | `ContextCompressionCompleted` | `session_id`, `turn_id`, `compression_id`, `compression_count`, `tokens_before`, `tokens_after`, `compression_ratio`, `duration_ms`, `has_summary`, `success=true` |
+| `context_compression_failed` | `ContextCompressionFailed` | `session_id`, `turn_id`, `compression_id`, `success=false`, `error` |
+| `model_round_started` | `ModelRoundStarted` | `session_id`, `turn_id`, `round_id`, `round_index` |
+| `model_round_completed` | `ModelRoundCompleted` | `session_id`, `turn_id`, `round_id`, `has_tool_calls`, `success=true` |
+| `model_round_cancelled` | `ModelRoundCancelled` | `session_id`, `turn_id`, `round_id`, `round_index`, `cancel_reason`, `cancelled=true` |
+| `model_round_failed` | `ModelRoundFailed` | `session_id`, `turn_id`, `round_id`, `round_index`, `success=false`, `error` |
 | `tool_request_started` | `ToolEvent::Started` | `session_id`, `turn_id`, `tool_id`, `tool_name` |
 | `tool_request_completed` | `ToolEvent::Completed` | `session_id`, `turn_id`, `tool_id`, `tool_name`, `duration_ms`, `success=true` |
 | `tool_request_failed` | `ToolEvent::Failed` | `session_id`, `turn_id`, `tool_id`, `tool_name`, `success=false`, `error` |
 | `tool_request_cancelled` | `ToolEvent::Cancelled` | `session_id`, `turn_id`, `tool_id`, `tool_name`, `cancel_reason`, `cancelled=true` |
 
-代码位置：
+其中：
 
-- `src/crates/core/src/infrastructure/telemetry/mod.rs:279`
-- `src/crates/core/src/infrastructure/telemetry/mod.rs:287`
-- `src/crates/core/src/infrastructure/telemetry/mod.rs:302`
-- `src/crates/core/src/infrastructure/telemetry/mod.rs:317`
-- `src/crates/core/src/infrastructure/telemetry/mod.rs:330`
-- `src/crates/core/src/infrastructure/telemetry/mod.rs:349`
-- `src/crates/core/src/infrastructure/telemetry/mod.rs:369`
-- `src/crates/core/src/infrastructure/telemetry/mod.rs:390`
-- `src/crates/core/src/infrastructure/telemetry/mod.rs:411`
+- App 生命周期事件来自：`src/apps/desktop/src/lib.rs`
+- Chat / image analysis / token / compression / round / tool 事件来自：`src/crates/core/src/infrastructure/telemetry/mod.rs`
+
+补充说明：
+
+- `ImageAnalysisStarted` / `ImageAnalysisCompleted` 事件类型、transport 适配和前端消费代码目前都还在。
+- 但本次复查没有在后端执行链路中找到实际的生产端 `emit/enqueue` 位置。
+- 所以它们更准确的状态是“已预留、可被 telemetry 映射”，而不是“当前代码里稳定实际发出”的 event。
 
 ### 4. 模型请求 span
 
@@ -158,6 +177,15 @@ Desktop 启动时会初始化全局 telemetry，且当前是硬编码 `enabled: 
 - `src/crates/core/src/infrastructure/ai/client.rs:111`
 - `src/crates/core/src/infrastructure/telemetry/mod.rs:191`
 - `src/crates/core/src/infrastructure/telemetry/mod.rs:233`
+
+另外，请求上下文还会自动补齐：
+
+- `session_id`
+- `turn_id`
+- `round_id`
+- `is_subagent`
+
+这部分通过 `with_telemetry_request_context` 注入，确保 `model_request` span 能关联到具体对话轮次。
 
 ### 5. 远端导出条件
 
@@ -313,6 +341,8 @@ Insights 不是单独新增的远端埋点系统，而是基于已有的会话�
 
 - 应用生命周期：有
 - 对话请求生命周期：有
+- 上下文压缩生命周期：有
+- 模型 round 生命周期：有
 - 工具调用生命周期：有
 - 模型请求性能/结果：有
 - token 统计：有，但本地落盘
