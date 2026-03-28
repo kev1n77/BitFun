@@ -89,7 +89,7 @@ miniapps/git-graph/
 
 - **Client-side third-party library**: `require('simple-git')` in `worker.js` runs inside a Bun or Node.js Worker process — no need to reimplement Git in Rust
 - **Zero custom dialect**: UI is plain concatenated JavaScript (IIFE modules sharing `window.__GG`), Worker is standard CJS — no custom framework or transpiler required; `window.app` is the unified Bridge API
-- **ESM dependencies**: this demo uses plain vanilla JS; `esm_dependencies.json` is empty — add React, D3, etc. there to have them served via Import Map from esm.sh
+- **ESM dependencies**: this demo uses plain vanilla JS; `esm_dependencies.json` is empty — add React, D3, etc. there to have them served via Import Map from a public ESM CDN
 
 ---
 
@@ -178,4 +178,4 @@ miniapps/git-graph/
 
 - **端侧三方库**：`worker.js` 中 `require('simple-git')`，在 Bun 或 Node.js Worker 进程中运行，无需在 Rust 中重新实现 Git 能力
 - **无自定义方言**：UI 为普通拼接脚本（IIFE 模块通过 `window.__GG` 共享状态），Worker 为标准 CJS，无需自定义框架或转译器；`window.app` 为统一 Bridge API
-- **ESM 依赖**：本示例 UI 使用纯 vanilla JS，`esm_dependencies.json` 为空；若需 React/D3 等，可在其中声明并由 Import Map 从 esm.sh 加载
+- **ESM 依赖**：本示例 UI 使用纯 vanilla JS，`esm_dependencies.json` 为空；若需 React/D3 等，可在其中声明并由 Import Map 从公共 ESM CDN 加载

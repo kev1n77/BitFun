@@ -16,11 +16,8 @@ WebSocket relay server for BitFun Remote Connect. Bridges desktop (WebSocket) an
 ### Docker (Recommended)
 
 ```bash
-# SSH into your target server first, then clone the repo:
-git clone https://github.com/GCWing/BitFun
-cd BitFun/src/apps/relay-server
-
-# SSH into your target server first, then run:
+# On the target server, from this repository root:
+cd src/apps/relay-server
 bash deploy.sh
 ```
 
@@ -38,7 +35,7 @@ bash restart.sh
 
 In **Remote Connect → Self-Hosted → Server URL**, use one of:
 
-- Direct relay port: `http://<YOUR_SERVER_IP>:9700`
+- Direct relay port: `<YOUR_SERVER_IP>:9700` (scheme/host as deployed)
 
 `/relay` is **not mandatory**. It is only needed when your reverse proxy is configured with that path prefix.
 
@@ -135,8 +132,7 @@ Only desktop clients connect via WebSocket. Mobile clients use the HTTP endpoint
 If you have the repo cloned **on the server**:
 
 ```bash
-git clone https://github.com/GCWing/BitFun
-cd BitFun/src/apps/relay-server/
+cd src/apps/relay-server/
 bash deploy.sh
 ```
 
@@ -185,10 +181,10 @@ Push code changes from your local dev machine to a remote server via SSH:
 cd src/apps/relay-server/
 
 # First-time setup (creates /opt/bitfun-relay, copies static/)
-bash remote-deploy.sh 116.204.120.240 --first
+bash remote-deploy.sh <SERVER_IP> --first
 
 # Subsequent updates (syncs src + rebuilds)
-bash remote-deploy.sh 116.204.120.240
+bash remote-deploy.sh <SERVER_IP>
 ```
 
 The script will:
@@ -208,11 +204,8 @@ The script will:
 1. Open required ports:
    - `9700` (relay direct access, optional if only via reverse proxy)
    - `80/443` (for Caddy reverse proxy)
-2. Verify health endpoint:
-   - `http://<server-ip>:9700/health`
-3. Configure your final URL strategy:
-   - root domain (`https://relay.example.com`)
-4. Fill the same URL into BitFun Desktop "Custom Server"
+2. Verify the health endpoint on port `9700` (path `/health`) using your deployed host and scheme.
+3. Configure your public URL (e.g. root domain behind HTTPS reverse proxy) and use the same value in BitFun Desktop **Custom Server**.
 
 ### Directory Structure
 
