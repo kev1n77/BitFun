@@ -204,11 +204,6 @@ export function Options({
                 onChange={(value) => update('startMenu', value)}
                 label={t('options.startMenu')}
               />
-              <Checkbox
-                checked={options.addToPath}
-                onChange={(value) => update('addToPath', value)}
-                label={t('options.addToPath')}
-              />
             </div>
           </div>
         </div>
