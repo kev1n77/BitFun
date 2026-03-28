@@ -74,7 +74,6 @@ export interface InstallOptions {
   installPath: string;
   desktopShortcut: boolean;
   startMenu: boolean;
-  addToPath: boolean;
   launchAfterInstall: boolean;
   appLanguage: 'zh-CN' | 'en-US';
   themePreference: ThemePreferenceId;
@@ -101,7 +100,6 @@ export const DEFAULT_OPTIONS: InstallOptions = {
   installPath: '',
   desktopShortcut: true,
   startMenu: true,
-  addToPath: true,
   launchAfterInstall: true,
   appLanguage: 'zh-CN',
   themePreference: SYSTEM_THEME_ID,
