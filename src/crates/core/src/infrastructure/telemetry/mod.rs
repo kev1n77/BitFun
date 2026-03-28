@@ -7,6 +7,7 @@ mod exporter;
 
 use crate::agentic::events::{AgenticEvent, EventSubscriber, ToolEventData};
 use crate::infrastructure::filesystem::{try_get_path_manager_arc, PathManager};
+use crate::service::system;
 use crate::util::errors::{BitFunError, BitFunResult};
 use chrono::{SecondsFormat, Utc};
 use exporter::build_tracer_provider;
@@ -683,13 +684,14 @@ pub fn initialize_global_telemetry(
         });
     }
 
+    let system_info = system::get_system_info();
     let common_context = TelemetryCommonContext {
         uid: resolve_or_create_uid()?,
         process_session_id: uuid::Uuid::new_v4().to_string(),
         ide_version: config.app_version.clone(),
-        os: detect_os_name(),
-        os_version: detect_os_version(),
-        arch: std::env::consts::ARCH.to_string(),
+        os: system_info.platform,
+        os_version: system_info.os_version,
+        arch: system_info.arch,
         app_name: config.app_name.clone(),
         app_kind: config.app_kind.clone(),
     };
@@ -800,47 +802,6 @@ fn telemetry_uid_path() -> BitFunResult<PathBuf> {
 
     let path_manager = PathManager::new()?;
     Ok(path_manager.user_data_dir().join("telemetry").join("uid"))
-}
-
-fn detect_os_name() -> String {
-    if cfg!(target_os = "windows") {
-        "windows".to_string()
-    } else if cfg!(target_os = "macos") {
-        "macos".to_string()
-    } else if cfg!(target_os = "linux") {
-        "linux".to_string()
-    } else {
-        std::env::consts::OS.to_string()
-    }
-}
-
-fn detect_os_version() -> Option<String> {
-    let output = if cfg!(target_os = "macos") {
-        std::process::Command::new("sw_vers")
-            .arg("-productVersion")
-            .output()
-            .ok()
-    } else if cfg!(target_os = "linux") {
-        std::process::Command::new("uname").arg("-r").output().ok()
-    } else if cfg!(target_os = "windows") {
-        std::process::Command::new("cmd")
-            .args(["/C", "ver"])
-            .output()
-            .ok()
-    } else {
-        None
-    }?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
 }
 
 #[cfg(test)]
