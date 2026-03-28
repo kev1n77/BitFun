@@ -111,7 +111,8 @@
       "description": "本次启动写入日志文件所在的目录。"
     },
     "upload": {
-      "description": "上传当前 session 日志。"
+      "description": "上传当前 session 日志。",
+      "uidDescription": "UID: {{uid}}"
     },
     "levels": {
       "trace": "Trace",

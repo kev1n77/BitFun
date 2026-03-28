@@ -162,6 +162,7 @@ pub struct RuntimeLoggingInfo {
     pub app_log_path: String,
     pub ai_log_path: String,
     pub webview_log_path: String,
+    pub telemetry_uid: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -187,6 +188,16 @@ pub struct RuntimeLogUploadResponse {
 pub fn get_runtime_logging_info() -> RuntimeLoggingInfo {
     let fallback_dir = resolve_logs_root();
     let session_dir = session_log_dir().unwrap_or(fallback_dir);
+    let telemetry_uid = match get_telemetry_identity() {
+        Ok(identity) => Some(identity.uid),
+        Err(error) => {
+            error!(
+                "Failed to resolve telemetry identity for runtime logging info: {}",
+                error
+            );
+            None
+        }
+    };
 
     RuntimeLoggingInfo {
         effective_level: level_to_str(current_runtime_log_level()).to_string(),
@@ -197,6 +208,7 @@ pub fn get_runtime_logging_info() -> RuntimeLoggingInfo {
             .join("webview.log")
             .to_string_lossy()
             .to_string(),
+        telemetry_uid,
     }
 }
 
