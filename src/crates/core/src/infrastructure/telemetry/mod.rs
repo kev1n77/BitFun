@@ -22,7 +22,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 static GLOBAL_TELEMETRY: OnceLock<Arc<TelemetryService>> = OnceLock::new();
 
@@ -214,6 +214,33 @@ impl TelemetryService {
         if let Some(provider) = provider {
             if let Err(error) = provider.shutdown() {
                 warn!("Failed to shutdown telemetry provider cleanly: {}", error);
+            }
+        }
+    }
+
+    pub fn force_flush(&self) {
+        let provider = self
+            .provider
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().cloned());
+
+        if let Some(provider) = provider {
+            if let Err(error) = provider.force_flush() {
+                warn!("Failed to force flush telemetry provider cleanly: {}", error);
+            }
+        }
+    }
+
+    pub fn shutdown_with_timeout(&self, timeout: Duration) {
+        let provider = self.provider.lock().ok().and_then(|mut guard| guard.take());
+
+        if let Some(provider) = provider {
+            if let Err(error) = provider.shutdown_with_timeout(timeout) {
+                warn!(
+                    "Failed to shutdown telemetry provider cleanly within {:?}: {}",
+                    timeout, error
+                );
             }
         }
     }
@@ -752,6 +779,19 @@ pub fn shutdown_global_telemetry() {
     }
 }
 
+pub fn flush_and_shutdown_global_telemetry(timeout: Duration) {
+    if let Some(telemetry) = GLOBAL_TELEMETRY.get() {
+        telemetry.force_flush();
+        telemetry.shutdown_with_timeout(timeout);
+    }
+}
+
+pub fn shutdown_global_telemetry_with_timeout(timeout: Duration) {
+    if let Some(telemetry) = GLOBAL_TELEMETRY.get() {
+        telemetry.shutdown_with_timeout(timeout);
+    }
+}
+
 fn current_request_context_attributes() -> Vec<KeyValue> {
     ACTIVE_REQUEST_CONTEXT
         .try_with(|context| {
@@ -826,7 +866,7 @@ mod tests {
             SdkTracerProvider::builder().build(),
         );
 
-        let attrs = telemetry.common_attributes("app_opened");
+        let attrs = telemetry.common_attributes("app_launch_succeeded");
 
         assert!(attrs.iter().any(|attr| attr.key.as_str() == "timestamp"));
         assert!(attrs
