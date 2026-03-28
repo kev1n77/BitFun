@@ -22,8 +22,9 @@ pub use filesystem::{
     FileTreeService, FileTreeStatistics, FileWriteResult, SearchMatchType,
 };
 pub use telemetry::{
-    get_global_telemetry, get_telemetry_identity, initialize_global_telemetry,
-    shutdown_global_telemetry, with_telemetry_request_context, ConfiguredTelemetry,
+    flush_and_shutdown_global_telemetry, get_global_telemetry, get_telemetry_identity,
+    initialize_global_telemetry, shutdown_global_telemetry,
+    shutdown_global_telemetry_with_timeout, with_telemetry_request_context, ConfiguredTelemetry,
     TelemetryEventSubscriber, TelemetryIdentity, TelemetryInitConfig, TelemetryRequestContext,
     TelemetryService,
 };
