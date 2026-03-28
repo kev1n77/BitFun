@@ -26,7 +26,7 @@ src/web-ui/public/fonts/
 ## Fira Code
 
 - 用途：代码编辑器与终端
-- 来源：https://github.com/tonsky/FiraCode
+- 来源：Fira Code 开源字体（许可证见 `FiraCode/LICENSE.txt`）
 - 许可证：SIL Open Font License 1.1 (OFL-1.1)
 - 本地许可证：`FiraCode/LICENSE.txt`
 
@@ -40,7 +40,7 @@ src/web-ui/public/fonts/
 ## Noto Sans SC
 
 - 用途：UI 界面（中英文显示）
-- 来源：https://fonts.google.com/noto/specimen/Noto+Sans+SC
+- 来源：Noto Sans SC 开源字体（许可证见 `Noto_Sans_SC/OFL.txt`）
 - 许可证：SIL Open Font License 1.1 (OFL-1.1)
 - 本地许可证：`Noto_Sans_SC/OFL.txt`
 

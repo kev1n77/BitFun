@@ -220,21 +220,3 @@ Edit [variables.css](src/styles/variables.css). Colors, spacing, and animations 
 
 Place the built BitFun application files in `src-tauri/payload/` before building the installer. The build script handles this automatically.
 During `cargo build`, the payload directory is packed into an embedded zip inside `bitfun-installer.exe`.
-
-## Integration with CI/CD
-
-Add to your GitHub Actions workflow:
-
-```yaml
-- name: Build Installer
-  run: |
-    cd BitFun-Installer
-    pnpm install
-    pnpm run installer:build:only
-
-- name: Upload Installer
-  uses: actions/upload-artifact@v4
-  with:
-    name: BitFun-Installer-Exe
-    path: BitFun-Installer/src-tauri/target/release/bitfun-installer.exe
-```

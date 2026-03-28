@@ -1,59 +1,45 @@
 # BitFun Relay Server
 
-WebSocket relay server for BitFun Remote Connect. It bridges desktop (WebSocket) and mobile (HTTP) clients while forwarding end-to-end encrypted payloads.
+WebSocket relay server for BitFun Remote Connect. Bridges desktop (WebSocket) and mobile (HTTP) clients with E2E encryption support.
 
 ## Features
 
-- Desktop connects via WebSocket, mobile via HTTP
-- End-to-end encrypted passthrough (the server does not decrypt payloads)
+- Desktop connects via WebSocket, mobile via HTTP — relay bridges between them
+- End-to-end encrypted message passthrough (server cannot decrypt)
 - Correlation-based HTTP-to-WebSocket request-response matching
-- Per-room mobile-web static file upload and serving
+- Per-room mobile-web static file upload & serving (content-addressable, incremental)
 - Heartbeat-based connection management with configurable room TTL
-- Docker deployment support with optional Caddy reverse proxy
+- Docker deployment ready with Caddy reverse proxy
 
 ## Quick Start
 
-### Recommended: Run on the target server
+### Docker (Recommended)
 
 ```bash
-# Clone on the target server
-git clone https://github.com/GCWing/BitFun
-cd BitFun/src/apps/relay-server
-
-# Deploy to the current machine
+# On the target server, from this repository root:
+cd src/apps/relay-server
 bash deploy.sh
 ```
 
-`deploy.sh` must run on the target server itself. It deploys to the current machine only and does not SSH to another host.
+`deploy.sh` must be run on the target server itself. It only deploys to the current machine and does not SSH to a remote host.
 
-### Service Operations
-
-Run these commands on the target server inside this directory:
+After deployment, you can manage the service with:
 
 ```bash
 bash start.sh
 bash stop.sh
 bash restart.sh
-docker compose ps
-docker compose logs -f relay-server
 ```
-
-Notes:
-
-- `start.sh` is idempotent and exits if the service is already running.
-- `stop.sh` exits cleanly when the service is already stopped.
-- `restart.sh` restarts the service when running, or starts it when stopped.
-- The container uses `restart: unless-stopped`.
 
 ### What URL should I fill in BitFun Desktop?
 
 In **Remote Connect → Self-Hosted → Server URL**, use one of:
 
-- `http://<YOUR_SERVER_IP>:9700`
+- Direct relay port: `<YOUR_SERVER_IP>:9700` (scheme/host as deployed)
 
-`/relay` is only needed when your reverse proxy is configured with that path prefix.
+`/relay` is **not mandatory**. It is only needed when your reverse proxy is configured with that path prefix.
 
-### Manual Run
+### Manual
 
 ```bash
 # From project root
@@ -62,17 +48,6 @@ cargo build --release -p bitfun-relay-server
 # Run
 RELAY_PORT=9700 ./target/release/bitfun-relay-server
 ```
-
-## Deployment Checklist
-
-1. Open required ports:
-   - `9700` for direct relay access
-   - `80/443` when using Caddy or another reverse proxy
-2. Verify the health endpoint:
-   - `http://<server-ip>:9700/health`
-3. Decide the final URL strategy:
-   - direct port or reverse proxy domain
-4. Fill the same URL into BitFun Desktop custom server settings
 
 ## Environment Variables
 
@@ -89,23 +64,23 @@ RELAY_PORT=9700 ./target/release/bitfun-relay-server
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Health check (returns status, version, uptime, room and connection counts) |
-| `/api/info` | GET | Server info (name, version, protocol version) |
+| `/health` | GET | Health check (returns status, version, uptime, room/connection counts) |
+| `/api/info` | GET | Server info (name, version, protocol_version) |
 
 ### Room Operations (Mobile HTTP → Desktop WS bridge)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/rooms/:room_id/pair` | POST | Mobile initiates pairing; relay forwards to desktop via WebSocket and waits for a response |
-| `/api/rooms/:room_id/command` | POST | Mobile sends an encrypted command; relay forwards it to desktop and returns the response |
+| `/api/rooms/:room_id/pair` | POST | Mobile initiates pairing — relay forwards to desktop via WS, waits for response |
+| `/api/rooms/:room_id/command` | POST | Mobile sends encrypted command — relay forwards to desktop, returns response |
 
 ### Per-Room Mobile-Web File Management
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/rooms/:room_id/upload-web` | POST | Full upload of base64-encoded files keyed by path (10 MB body limit) |
-| `/api/rooms/:room_id/check-web-files` | POST | Incremental check for already uploaded files by hash |
-| `/api/rooms/:room_id/upload-web-files` | POST | Incremental upload of only missing files (10 MB body limit) |
+| `/api/rooms/:room_id/upload-web` | POST | Full upload: base64-encoded files keyed by path (10MB body limit) |
+| `/api/rooms/:room_id/check-web-files` | POST | Incremental: check which files the server already has by hash |
+| `/api/rooms/:room_id/upload-web-files` | POST | Incremental: upload only the missing files (10MB body limit) |
 | `/r/:room_id/*path` | GET | Serve uploaded mobile-web static files for a room |
 
 ### WebSocket
@@ -150,6 +125,114 @@ Only desktop clients connect via WebSocket. Mobile clients use the HTTP endpoint
 { "type": "error", "message": "..." }
 ```
 
+## Self-Hosted Deployment
+
+### Option A: Deploy on the Server Itself
+
+If you have the repo cloned **on the server**:
+
+```bash
+cd src/apps/relay-server/
+bash deploy.sh
+```
+
+Or, if the repo is already present on the server:
+
+```bash
+cd src/apps/relay-server/
+bash deploy.sh
+```
+
+This script must be executed in an SSH session on the target server. It builds the Docker image on that server and starts the container there. It will **automatically stop any previously running relay container** before restarting.
+
+### Service Operations
+
+Run these commands on the target server inside `src/apps/relay-server/`:
+
+```bash
+# Start the service only when it is not already running
+bash start.sh
+
+# Stop the running service
+bash stop.sh
+
+# Restart the service, or start it if it is currently stopped
+bash restart.sh
+
+# View current status
+docker compose ps
+
+# View logs
+docker compose logs -f relay-server
+```
+
+Behavior notes:
+
+- `start.sh` is idempotent. If the relay service is already running, it exits without starting it again.
+- `stop.sh` exits cleanly when the service is already stopped.
+- `restart.sh` restarts the service when it is running, and starts it when it is stopped.
+- The container uses `restart: unless-stopped`, so it will automatically come back after a server reboot as long as the Docker service itself is enabled and running.
+
+### Option B: Remote Deploy (from your dev machine)
+
+Push code changes from your local dev machine to a remote server via SSH:
+
+```bash
+cd src/apps/relay-server/
+
+# First-time setup (creates /opt/bitfun-relay, copies static/)
+bash remote-deploy.sh <SERVER_IP> --first
+
+# Subsequent updates (syncs src + rebuilds)
+bash remote-deploy.sh <SERVER_IP>
+```
+
+The script will:
+1. Test SSH connectivity
+2. **Stop the old container** if running
+3. Sync source code (`src/`), `Cargo.toml`, `Dockerfile`, `docker-compose.yml`
+4. Rebuild the Docker image on the server
+5. Start the new container
+6. Run a health check
+
+**Prerequisites:**
+- SSH key-based auth to the server (configured in `~/.ssh/config`)
+- Docker + Docker Compose installed on the server
+
+### Deployment Checklist
+
+1. Open required ports:
+   - `9700` (relay direct access, optional if only via reverse proxy)
+   - `80/443` (for Caddy reverse proxy)
+2. Verify the health endpoint on port `9700` (path `/health`) using your deployed host and scheme.
+3. Configure your public URL (e.g. root domain behind HTTPS reverse proxy) and use the same value in BitFun Desktop **Custom Server**.
+
+### Directory Structure
+
+```
+relay-server/
+├── src/                    # Rust source code
+├── static/                 # Mobile-web static files
+├── Cargo.toml              # Crate manifest (standalone, no workspace deps)
+├── Dockerfile              # Docker build (standalone single-crate build)
+├── docker-compose.yml      # Docker Compose config
+├── Caddyfile               # Caddy reverse proxy config (optional)
+├── deploy.sh               # Deploy current machine (run on the target server itself)
+├── start.sh                # Start service if not already running
+├── stop.sh                 # Stop running service
+├── restart.sh              # Restart service, or start if stopped
+├── remote-deploy.sh        # Remote deploy (run from dev machine via SSH)
+└── README.md
+```
+
+Relay server is a **standalone crate** — one set of code, one Dockerfile, one docker-compose.yml.
+Whether deployed as a public relay, LAN relay, or NAT traversal relay, the build and runtime are identical.
+
+### About `src/apps/server` vs `src/apps/relay-server`
+
+- Remote Connect self-hosted deployment uses **`src/apps/relay-server`**.
+- `src/apps/server` is a different application and not the relay service used by mobile/desktop Remote Connect.
+
 ## Architecture
 
 ```
@@ -163,29 +246,6 @@ Mobile Phone ──HTTP POST──► Relay Server ◄──WebSocket── Desk
 The relay server bridges HTTP and WebSocket:
 
 - **Desktop** connects via WebSocket, creates a room, and stays connected.
-- **Mobile** sends HTTP POST requests such as `/pair` and `/command`.
-- The relay forwards requests to the desktop over WebSocket with correlation IDs, waits for the response, and returns it over HTTP.
-- The relay only manages rooms and forwards opaque encrypted payloads.
-- Per-room mobile-web static files can be uploaded and served at `/r/:room_id/`.
-
-## Directory structure
-
-```
-relay-server/
-├── src/                    # Rust source code
-├── static/                 # Mobile-web static files
-├── Cargo.toml              # Crate manifest
-├── Dockerfile              # Docker build
-├── docker-compose.yml      # Docker Compose config
-├── Caddyfile               # Optional reverse proxy config
-├── deploy.sh               # Deploy on the target server itself
-├── start.sh                # Start service if not already running
-├── stop.sh                 # Stop running service
-├── restart.sh              # Restart service, or start if stopped
-└── README.md
-```
-
-## About `src/apps/server` vs `src/apps/relay-server`
-
-- Remote Connect self-hosted deployment uses the relay server in this directory.
-- `src/apps/server` is a different application and is not the relay service used by mobile and desktop Remote Connect.
+- **Mobile** sends HTTP POST requests (`/pair`, `/command`). The relay forwards them to the desktop over WS using correlation IDs, waits for the WS response, and returns it to mobile via HTTP.
+- The relay only manages rooms and forwards opaque encrypted payloads. All encryption/decryption happens on the client side.
+- Per-room mobile-web static files can be uploaded via the incremental upload API and served at `/r/:room_id/`.
