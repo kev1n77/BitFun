@@ -2,7 +2,7 @@
 //!
 //! Provides system info retrieval.
 
-use std::process::Command;
+use crate::util::process_manager;
 
 /// System info
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -41,11 +41,20 @@ fn detect_platform() -> String {
 
 fn detect_os_version() -> Option<String> {
     let output = if cfg!(target_os = "macos") {
-        Command::new("sw_vers").arg("-productVersion").output().ok()
+        process_manager::create_command("sw_vers")
+            .arg("-productVersion")
+            .output()
+            .ok()
     } else if cfg!(target_os = "linux") {
-        Command::new("uname").arg("-r").output().ok()
+        process_manager::create_command("uname")
+            .arg("-r")
+            .output()
+            .ok()
     } else if cfg!(target_os = "windows") {
-        Command::new("cmd").args(["/C", "ver"]).output().ok()
+        process_manager::create_command("cmd")
+            .args(["/C", "ver"])
+            .output()
+            .ok()
     } else {
         None
     }?;
