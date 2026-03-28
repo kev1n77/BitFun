@@ -20,12 +20,10 @@ struct WindowsInstallState {
     uninstall_registered: bool,
     desktop_shortcut_created: bool,
     start_menu_shortcut_created: bool,
-    added_to_path: bool,
 }
 
 const MIN_WINDOWS_APP_EXE_BYTES: u64 = 5 * 1024 * 1024;
 const PAYLOAD_MANIFEST_FILE: &str = "payload-manifest.json";
-const INSTALL_MANIFEST_FILE: &str = ".bitfun-install-manifest.json";
 const INSTALLER_STATE_FILE: &str = "installer-state.json";
 const DEFAULT_MODEL_CONTEXT_WINDOW: u64 = 200_000;
 const EMBEDDED_PAYLOAD_ZIP: &[u8] =
@@ -39,12 +37,6 @@ struct PayloadManifest {
 #[derive(Debug, Clone, Deserialize)]
 struct PayloadManifestFile {
     path: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct InstalledManifest {
-    version: u32,
-    files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -439,19 +431,12 @@ pub async fn start_installation(window: Window, options: InstallOptions) -> Resu
         let mut extracted = false;
         let mut used_debug_placeholder = false;
         let mut checked_locations: Vec<String> = Vec::new();
-        let mut installed_files: Vec<String> = Vec::new();
 
         if embedded_payload_available() {
             checked_locations.push("embedded payload zip".to_string());
             preflight_validate_payload_zip_bytes(EMBEDDED_PAYLOAD_ZIP, "embedded payload zip")?;
-            installed_files = read_payload_manifest_from_zip_bytes(
-                EMBEDDED_PAYLOAD_ZIP,
-                "embedded payload zip",
-            )?
-            .files
-            .into_iter()
-            .map(|entry| entry.path)
-            .collect();
+            let _ =
+                read_payload_manifest_from_zip_bytes(EMBEDDED_PAYLOAD_ZIP, "embedded payload zip")?;
             extract::extract_zip_bytes_with_filter(
                 EMBEDDED_PAYLOAD_ZIP,
                 &install_path,
@@ -477,14 +462,7 @@ pub async fn start_installation(window: Window, options: InstallOptions) -> Resu
                         continue;
                     }
                     preflight_validate_payload_zip_file(&candidate.path, &candidate.label)?;
-                    installed_files = read_payload_manifest_from_zip_file(
-                        &candidate.path,
-                        &candidate.label,
-                    )?
-                    .files
-                    .into_iter()
-                    .map(|entry| entry.path)
-                    .collect();
+                    let _ = read_payload_manifest_from_zip_file(&candidate.path, &candidate.label)?;
                     extract::extract_zip_with_filter(
                         &candidate.path,
                         &install_path,
@@ -501,11 +479,7 @@ pub async fn start_installation(window: Window, options: InstallOptions) -> Resu
                     continue;
                 }
                 preflight_validate_payload_dir(&candidate.path, &candidate.label)?;
-                installed_files = read_payload_manifest_from_dir(&candidate.path, &candidate.label)?
-                    .files
-                    .into_iter()
-                    .map(|entry| entry.path)
-                    .collect();
+                let _ = read_payload_manifest_from_dir(&candidate.path, &candidate.label)?;
                 extract::copy_directory_with_filter(
                     &candidate.path,
                     &install_path,
@@ -527,7 +501,6 @@ pub async fn start_installation(window: Window, options: InstallOptions) -> Resu
                     std::fs::write(&placeholder, "placeholder")
                         .map_err(|e| format!("Failed to write placeholder: {}", e))?;
                 }
-                installed_files.push(MAIN_APP_EXE.to_string());
                 used_debug_placeholder = true;
             } else {
                 return Err(format!(
@@ -553,12 +526,7 @@ pub async fn start_installation(window: Window, options: InstallOptions) -> Resu
             let uninstaller_path = install_path.join("uninstall.exe");
             std::fs::copy(&current_exe, &uninstaller_path)
                 .map_err(|e| format!("Failed to create uninstaller executable: {}", e))?;
-            let uninstall_command = format!(
-                "\"{}\" --uninstall \"{}\"",
-                uninstaller_path.display(),
-                install_path.display()
-            );
-            installed_files.push("uninstall.exe".to_string());
+            let uninstall_command = format!("\"{}\"", uninstaller_path.display());
 
             emit_progress(&window, "registry", 60, "Registering application...");
             registry::register_tauri_install_location(&install_path)
@@ -587,16 +555,7 @@ pub async fn start_installation(window: Window, options: InstallOptions) -> Resu
                     .map_err(|e| format!("Start Menu error: {}", e))?;
                 windows_state.start_menu_shortcut_created = true;
             }
-
-            // PATH
-            if options.add_to_path {
-                emit_progress(&window, "path", 85, "Adding to system PATH...");
-                registry::add_to_path(&install_path).map_err(|e| format!("PATH error: {}", e))?;
-                windows_state.added_to_path = true;
-            }
         }
-
-        write_installed_manifest(&install_path, installed_files)?;
 
         // Step 4: Save first-launch language preference for BitFun app.
         emit_progress(&window, "config", 92, "Applying startup preferences...");
@@ -701,6 +660,7 @@ fn schedule_windows_self_uninstall_cleanup(uninstall_exe_path: &Path) -> Result<
 setlocal enableextensions
 set "TARGET=%~1"
 set "LOG=%~2"
+set "TARGET_DIR=%~dp1"
 if "%TARGET%"=="" exit /b 2
 if "%LOG%"=="" set "LOG=%TEMP%\bitfun-uninstall-cleanup.log"
 echo [%DATE% %TIME%] cleanup start > "%LOG%"
@@ -712,6 +672,7 @@ for /L %%i in (1,1,30) do (
   )
   del /f /q "%TARGET%" >> "%LOG%" 2>&1
   if not exist "%TARGET%" (
+    if not "%TARGET_DIR%"=="" rmdir "%TARGET_DIR%" >> "%LOG%" 2>&1
     echo [%DATE% %TIME%] cleanup success on try %%i >> "%LOG%"
     exit /b 0
   )
@@ -1162,10 +1123,7 @@ fn prepare_install_target(requested_path: &Path) -> Result<PathBuf, String> {
         if !install_path.is_dir() {
             return Err(format!("{}path_not_directory", INSTALL_PATH_ERR_PREFIX));
         }
-        if directory_has_entries(&install_path)?
-            && !install_path.join(INSTALL_MANIFEST_FILE).exists()
-            && !install_path.join(MAIN_APP_EXE).exists()
-        {
+        if directory_has_entries(&install_path)? && !install_path.join(MAIN_APP_EXE).exists() {
             return Err(format!(
                 "{}directory_must_be_empty_or_bitfun",
                 INSTALL_PATH_ERR_PREFIX
@@ -1602,47 +1560,23 @@ fn should_install_payload_path(relative_path: &Path) -> bool {
     !is_payload_manifest_path(relative_path)
 }
 
-fn write_installed_manifest(install_path: &Path, files: Vec<String>) -> Result<(), String> {
-    let mut normalized: Vec<String> = files
-        .into_iter()
-        .map(|entry| sanitize_manifest_relative_path(&entry))
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .map(path_buf_to_manifest_string)
-        .collect();
-    normalized.sort();
-    normalized.dedup();
-
-    let manifest = InstalledManifest {
-        version: 1,
-        files: normalized,
-    };
-    let path = install_path.join(INSTALL_MANIFEST_FILE);
-    let body = serde_json::to_string_pretty(&manifest)
-        .map_err(|e| format!("Failed to serialize install manifest: {}", e))?;
-    std::fs::write(&path, body)
-        .map_err(|e| format!("Failed to write install manifest: {}", e))
-}
-
-fn read_installed_manifest(install_path: &Path) -> Result<Option<InstalledManifest>, String> {
-    let path = install_path.join(INSTALL_MANIFEST_FILE);
-    if !path.exists() {
-        return Ok(None);
+fn collect_payload_relative_paths_for_uninstall() -> Result<Vec<String>, String> {
+    if embedded_payload_available() {
+        return Ok(
+            read_payload_manifest_from_zip_bytes(EMBEDDED_PAYLOAD_ZIP, "embedded payload zip")?
+                .files
+                .into_iter()
+                .map(|entry| entry.path)
+                .collect(),
+        );
     }
 
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read install manifest: {}", e))?;
-    let manifest = serde_json::from_str::<InstalledManifest>(&raw)
-        .map_err(|e| format!("Invalid install manifest: {}", e))?;
-    Ok(Some(manifest))
+    Ok(vec![MAIN_APP_EXE.to_string()])
 }
 
 fn collect_uninstall_targets(install_path: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut relative_paths = match read_installed_manifest(install_path)? {
-        Some(manifest) => manifest.files,
-        None => vec![MAIN_APP_EXE.to_string(), "uninstall.exe".to_string()],
-    };
-    relative_paths.push(INSTALL_MANIFEST_FILE.to_string());
+    let mut relative_paths = collect_payload_relative_paths_for_uninstall()?;
+    relative_paths.push("uninstall.exe".to_string());
 
     let mut targets: Vec<PathBuf> = relative_paths
         .into_iter()
@@ -1682,6 +1616,7 @@ fn remove_installed_targets(
     for dir in collect_parent_directories(install_path, targets) {
         let _ = std::fs::remove_dir(&dir);
     }
+    let _ = std::fs::remove_dir(install_path);
 
     Ok(())
 }
@@ -1727,10 +1662,6 @@ fn sanitize_manifest_relative_path(raw: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn path_buf_to_manifest_string(path: PathBuf) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
-
 fn verify_installed_payload(install_path: &Path) -> Result<(), String> {
     let app_exe = install_path.join(MAIN_APP_EXE);
     let app_meta = std::fs::metadata(&app_exe).map_err(|_| {
@@ -1773,9 +1704,6 @@ fn rollback_installation(
 
     log::warn!("Installation failed, starting rollback");
 
-    if windows_state.added_to_path {
-        let _ = registry::remove_from_path(install_path);
-    }
     if windows_state.manufacturer_registered {
         let _ = registry::remove_tauri_install_location();
     }
