@@ -2,8 +2,11 @@
 
 use bitfun_core::infrastructure::{get_path_manager_arc, get_telemetry_identity};
 use chrono::Local;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use log::{error, info};
 use serde::Serialize;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicU8, Ordering},
@@ -273,18 +276,20 @@ pub fn build_runtime_log_upload_payload() -> Result<RuntimeLogUploadPayload, Str
         merged.push_str(&format!("===== END {} =====\n\n", file_name));
     }
 
-    let file_name = format!(
+    let raw_file_name = format!(
         "{}-{}-{}.log",
         LOG_UPLOAD_FILE_PREFIX,
         sanitize_uid_fragment(&telemetry_identity.uid),
         Local::now().format("%Y%m%dT%H%M%S")
     );
+    let compressed_bytes = gzip_bytes(merged.as_bytes())?;
+    let file_name = format!("{}.gz", raw_file_name);
 
     Ok(RuntimeLogUploadPayload {
         telemetry_uid: telemetry_identity.uid,
         process_session_id: telemetry_identity.process_session_id,
         file_name,
-        file_bytes: merged.into_bytes(),
+        file_bytes: compressed_bytes,
         included_files,
     })
 }
@@ -302,7 +307,9 @@ pub fn upload_runtime_logs_sync(reason: Option<&str>) -> Result<RuntimeLogUpload
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .map_err(|error| format!("Failed to create runtime log upload runtime: {}", error))?;
+                .map_err(|error| {
+                    format!("Failed to create runtime log upload runtime: {}", error)
+                })?;
             runtime.block_on(async move { upload_runtime_logs(Some(&reason)).await })
         })
         .map_err(|error| format!("Failed to spawn runtime log upload thread: {}", error))?;
@@ -320,7 +327,7 @@ async fn upload_runtime_log_payload(
 
     let part = reqwest::multipart::Part::bytes(payload.file_bytes.clone())
         .file_name(payload.file_name.clone())
-        .mime_str("text/plain; charset=utf-8")
+        .mime_str("application/gzip")
         .map_err(|error| format!("Failed to build multipart log part: {}", error))?;
 
     let client = reqwest::Client::builder()
@@ -340,6 +347,7 @@ async fn upload_runtime_log_payload(
                 .unwrap_or_else(|| "unknown".to_string()),
         )
         .header("X-BitFun-Upload-Reason", reason)
+        .header("X-BitFun-Log-Archive-Format", "gzip")
         .multipart(reqwest::multipart::Form::new().part(String::new(), part))
         .send()
         .await
@@ -419,15 +427,19 @@ fn is_log_file(path: &Path) -> bool {
     file_name.ends_with(".log") || file_name.contains(".log.")
 }
 
+fn gzip_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(bytes)
+        .map_err(|error| format!("Failed to write gzip log payload: {}", error))?;
+    encoder
+        .finish()
+        .map_err(|error| format!("Failed to finalize gzip log payload: {}", error))
+}
+
 fn sanitize_uid_fragment(uid: &str) -> String {
     uid.chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch
-            } else {
-                '_'
-            }
-        })
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
         .collect()
 }
 
