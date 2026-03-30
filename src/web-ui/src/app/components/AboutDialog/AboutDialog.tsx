@@ -6,8 +6,8 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { useI18n } from '@/infrastructure/i18n';
-import { Modal, Button, Alert } from '@/component-library';
-import { Check, Download, CheckCircle2 } from 'lucide-react';
+import { Modal, Button } from '@/component-library';
+import { Check, Download, CheckCircle2, AlertCircle } from 'lucide-react';
 import {
   getAboutInfo,
   formatBuildDate
@@ -127,10 +127,8 @@ export const AboutDialog: React.FC<AboutDialogProps> = ({
               {t('about.customVersion')}
             </div>
             <div className="bitfun-about-dialog__divider" />
-            <div className="bitfun-about-dialog__dots">
-              <span></span>
-              <span></span>
-              <span></span>
+            <div className="bitfun-about-dialog__version-line">
+              {version.version}
             </div>
           </div>
 
@@ -151,36 +149,41 @@ export const AboutDialog: React.FC<AboutDialogProps> = ({
                     </p>
                   </div>
                 </div>
-                <div className="bitfun-about-dialog__update-card-actions">
-                  <Button
-                    variant="secondary"
-                    size="small"
-                    isLoading={manualCheckBusy}
-                    onClick={() => void handleCheckForUpdates()}
-                  >
-                    {!manualCheckBusy ? (
-                      <Check size={14} className="bitfun-about-dialog__update-btn-icon" aria-hidden />
+                <div className="bitfun-about-dialog__update-card-actions-row">
+                  <div className="bitfun-about-dialog__update-card-status-slot">
+                    {manualCheckStatus === 'latest' ? (
+                      <div
+                        className="bitfun-about-dialog__update-status bitfun-about-dialog__update-status--success"
+                        role="status"
+                      >
+                        <CheckCircle2 size={14} aria-hidden />
+                        <span>{t('update.noUpdate')}</span>
+                      </div>
                     ) : null}
-                    {manualCheckBusy ? t('update.checking') : t('update.checkForUpdates')}
-                  </Button>
-                </div>
-                {manualCheckStatus === 'latest' ? (
-                  <div
-                    className="bitfun-about-dialog__update-status bitfun-about-dialog__update-status--success"
-                    role="status"
-                  >
-                    <CheckCircle2 size={14} aria-hidden />
-                    <span>{t('update.noUpdate')}</span>
+                    {manualCheckStatus === 'error' && manualCheckErrorMessage ? (
+                      <div
+                        className="bitfun-about-dialog__update-status bitfun-about-dialog__update-status--error"
+                        role="alert"
+                      >
+                        <AlertCircle size={14} aria-hidden />
+                        <span>{manualCheckErrorMessage}</span>
+                      </div>
+                    ) : null}
                   </div>
-                ) : null}
-                {manualCheckStatus === 'error' && manualCheckErrorMessage ? (
-                  <Alert
-                    type="error"
-                    message={manualCheckErrorMessage}
-                    showIcon
-                    className="bitfun-about-dialog__update-alert"
-                  />
-                ) : null}
+                  <div className="bitfun-about-dialog__update-card-actions">
+                    <Button
+                      variant="secondary"
+                      size="small"
+                      isLoading={manualCheckBusy}
+                      onClick={() => void handleCheckForUpdates()}
+                    >
+                      {!manualCheckBusy ? (
+                        <Check size={14} className="bitfun-about-dialog__update-btn-icon" aria-hidden />
+                      ) : null}
+                      {manualCheckBusy ? t('update.checking') : t('update.checkForUpdates')}
+                    </Button>
+                  </div>
+                </div>
               </div>
             ) : (
               <p className="bitfun-about-dialog__update-hint">{t('update.desktopOnly')}</p>
