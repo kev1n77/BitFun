@@ -111,8 +111,9 @@
       "description": "Directory where log files for this run are written."
     },
     "upload": {
-      "description": "Upload the current session logs.",
-      "uidDescription": "UID: {{uid}}"
+      "description": "Upload the current session logs as a compressed archive.",
+      "uidDescription": "UID: {{uid}}",
+      "lastUploadedFile": "Last uploaded file"
     },
     "levels": {
       "trace": "Trace",
@@ -127,7 +128,8 @@
       "openFolder": "Open Folder",
       "openFolderTooltip": "Open log folder in file explorer",
       "uploadLogs": "Upload Current Logs",
-      "uploadingLogs": "Uploading..."
+      "uploadingLogs": "Uploading...",
+      "copyFileName": "Copy File Name"
     },
     "messages": {
       "loading": "Loading...",
@@ -139,7 +141,9 @@
       "openFailed": "Failed to open log folder",
       "pathUnavailable": "Log folder path is unavailable",
       "uploadFailed": "Failed to upload logs",
-      "uploaded": "Logs uploaded: {{fileName}}, linked uid: {{telemetryUid}}"
+      "uploaded": "Logs uploaded: {{fileName}}, linked uid: {{telemetryUid}}",
+      "fileNameCopied": "Uploaded file name copied",
+      "copyFailed": "Failed to copy uploaded file name"
     }
   },
   "terminal": {
