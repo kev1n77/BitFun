@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Button } from '@/component-library';
 import { useI18n } from '@/infrastructure/i18n';
 import type { CheckForUpdatesResponse } from '@/infrastructure/api/service-api/SystemAPI';
-import { ArrowRight, Download, X } from 'lucide-react';
+import { Download, X } from 'lucide-react';
 import './DailyUpdatePromptToast.scss';
 
 export interface DailyUpdatePromptToastProps {
@@ -29,6 +29,7 @@ export const DailyUpdatePromptToast: React.FC<DailyUpdatePromptToastProps> = ({
 
   const latest = data.latestVersion ?? '';
   const notes = data.releaseNotes?.trim();
+  const notesId = notes ? 'bitfun-daily-update-toast-notes' : undefined;
 
   return createPortal(
     <aside
@@ -36,9 +37,8 @@ export const DailyUpdatePromptToast: React.FC<DailyUpdatePromptToastProps> = ({
       role="dialog"
       aria-modal="false"
       aria-labelledby="bitfun-daily-update-toast-title"
-      aria-describedby="bitfun-daily-update-toast-subtitle"
+      aria-describedby={notesId}
     >
-      <div className="bitfun-daily-update-toast__accent" aria-hidden />
       <button
         className="bitfun-daily-update-toast__close"
         type="button"
@@ -54,40 +54,22 @@ export const DailyUpdatePromptToast: React.FC<DailyUpdatePromptToastProps> = ({
         </div>
         <div className="bitfun-daily-update-toast__header-copy">
           <div
-            className="bitfun-daily-update-toast__eyebrow"
+            className="bitfun-daily-update-toast__title"
             id="bitfun-daily-update-toast-title"
           >
             {t('update.availableTitle')}
           </div>
-          <p
-            className="bitfun-daily-update-toast__subtitle"
-            id="bitfun-daily-update-toast-subtitle"
-          >
-            {t('update.availableSubtitle')}
-          </p>
-        </div>
-      </div>
-
-      <div className="bitfun-daily-update-toast__versions" aria-label={t('update.availableTitle')}>
-        <div className="bitfun-daily-update-toast__version">
-          <span className="bitfun-daily-update-toast__version-label">
-            {t('update.currentVersion')}
-          </span>
-          <span className="bitfun-daily-update-toast__version-value">{data.currentVersion}</span>
-        </div>
-        <div className="bitfun-daily-update-toast__version-arrow" aria-hidden>
-          <ArrowRight size={14} strokeWidth={2} />
-        </div>
-        <div className="bitfun-daily-update-toast__version bitfun-daily-update-toast__version--latest">
-          <span className="bitfun-daily-update-toast__version-label">
-            {t('update.latestVersion')}
-          </span>
-          <span className="bitfun-daily-update-toast__version-value">{latest}</span>
+          <div className="bitfun-daily-update-toast__latest">
+            <span className="bitfun-daily-update-toast__latest-label">
+              {t('update.latestVersion')}
+            </span>
+            <span className="bitfun-daily-update-toast__latest-value">{latest}</span>
+          </div>
         </div>
       </div>
 
       {notes ? (
-        <div className="bitfun-daily-update-toast__notes">
+        <div className="bitfun-daily-update-toast__notes" id={notesId}>
           <div className="bitfun-daily-update-toast__notes-label">
             {t('update.releaseNotes')}
           </div>
@@ -96,7 +78,7 @@ export const DailyUpdatePromptToast: React.FC<DailyUpdatePromptToastProps> = ({
       ) : null}
 
       <div className="bitfun-daily-update-toast__actions">
-        <Button variant="secondary" size="small" onClick={onLater}>
+        <Button variant="ghost" size="small" onClick={onLater}>
           {t('update.later')}
         </Button>
         {onSkip ? (
