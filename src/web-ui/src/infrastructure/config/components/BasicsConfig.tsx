@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { FontPreferencePanel } from '@/infrastructure/font-preference';
 import { useTranslation } from 'react-i18next';
-import { FolderOpen, Upload } from 'lucide-react';
+import { Copy, FolderOpen, Upload } from 'lucide-react';
 import {
   Alert,
+  Button,
   Select,
   Switch,
   Tooltip,
@@ -365,6 +366,8 @@ function BasicsLoggingSection() {
   const [openingFolder, setOpeningFolder] = useState(false);
   const [uploadingLogs, setUploadingLogs] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const [uploadMessage, setUploadMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const [lastUploadResult, setLastUploadResult] = useState<RuntimeLogUploadResult | null>(null);
 
   const levelOptions = useMemo(
     () => [
@@ -381,6 +384,10 @@ function BasicsLoggingSection() {
   const showMessage = useCallback((type: 'success' | 'error' | 'info', text: string) => {
     setMessage({ type, text });
     setTimeout(() => setMessage(null), 3000);
+  }, []);
+
+  const showUploadMessage = useCallback((type: 'success' | 'error' | 'info', text: string) => {
+    setUploadMessage({ type, text });
   }, []);
 
   const loadData = useCallback(async () => {
@@ -458,7 +465,8 @@ function BasicsLoggingSection() {
     try {
       setUploadingLogs(true);
       const result: RuntimeLogUploadResult = await configAPI.uploadRuntimeLogs();
-      showMessage(
+      setLastUploadResult(result);
+      showUploadMessage(
         'success',
         t('logging.messages.uploaded', {
           fileName: result.fileName,
@@ -471,7 +479,21 @@ function BasicsLoggingSection() {
     } finally {
       setUploadingLogs(false);
     }
-  }, [runtimeInfo?.sessionLogDir, showMessage, t]);
+  }, [runtimeInfo?.sessionLogDir, showMessage, showUploadMessage, t]);
+
+  const handleCopyUploadFileName = useCallback(async () => {
+    if (!lastUploadResult?.fileName) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(lastUploadResult.fileName);
+      showMessage('success', t('logging.messages.fileNameCopied'));
+    } catch (error) {
+      log.error('Failed to copy uploaded log file name', { error, fileName: lastUploadResult.fileName });
+      showMessage('error', t('logging.messages.copyFailed'));
+    }
+  }, [lastUploadResult?.fileName, showMessage, t]);
 
   if (loading) {
     return <ConfigPageLoading text={t('logging.messages.loading')} />;
@@ -480,6 +502,7 @@ function BasicsLoggingSection() {
   return (
     <div className="bitfun-logging-config">
       <div className="bitfun-logging-config__content">
+        <ConfigPageMessage message={uploadMessage} />
         <ConfigPageMessage message={message} />
 
         <ConfigPageSection
@@ -527,20 +550,47 @@ function BasicsLoggingSection() {
               ? t('logging.upload.uidDescription', { uid: runtimeInfo.telemetryUid })
               : t('logging.upload.description')}
             align="center"
+            balanced
           >
-            <button
-              type="button"
-              className="bitfun-logging-config__action-btn"
-              onClick={() => {
-                void handleUploadLogs();
-              }}
-              disabled={uploadingLogs || !runtimeInfo?.sessionLogDir}
-            >
-              <Upload size={14} />
-              <span>
-                {uploadingLogs ? t('logging.actions.uploadingLogs') : t('logging.actions.uploadLogs')}
-              </span>
-            </button>
+            <div className="bitfun-logging-config__upload-panel">
+              <button
+                type="button"
+                className="bitfun-logging-config__action-btn"
+                onClick={() => {
+                  void handleUploadLogs();
+                }}
+                disabled={uploadingLogs || !runtimeInfo?.sessionLogDir}
+              >
+                <Upload size={14} />
+                <span>
+                  {uploadingLogs ? t('logging.actions.uploadingLogs') : t('logging.actions.uploadLogs')}
+                </span>
+              </button>
+
+              {lastUploadResult && (
+                <div className="bitfun-logging-config__upload-result">
+                  <div className="bitfun-logging-config__upload-result-label">
+                    {t('logging.upload.lastUploadedFile')}
+                  </div>
+                  <div className="bitfun-logging-config__upload-result-row">
+                    <code className="bitfun-logging-config__upload-result-name">
+                      {lastUploadResult.fileName}
+                    </code>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="small"
+                      onClick={() => {
+                        void handleCopyUploadFileName();
+                      }}
+                    >
+                      <Copy size={14} />
+                      <span>{t('logging.actions.copyFileName')}</span>
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
           </ConfigPageRow>
         </ConfigPageSection>
       </div>

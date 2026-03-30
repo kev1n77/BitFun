@@ -111,8 +111,9 @@
       "description": "本次启动写入日志文件所在的目录。"
     },
     "upload": {
-      "description": "上传当前 session 日志。",
-      "uidDescription": "UID: {{uid}}"
+      "description": "将当前 session 日志压缩后上传。",
+      "uidDescription": "UID: {{uid}}",
+      "lastUploadedFile": "最近上传文件"
     },
     "levels": {
       "trace": "Trace",
@@ -127,7 +128,8 @@
       "openFolder": "打开文件夹",
       "openFolderTooltip": "在文件管理器中打开日志文件夹",
       "uploadLogs": "上传当前日志",
-      "uploadingLogs": "上传中..."
+      "uploadingLogs": "上传中...",
+      "copyFileName": "复制文件名"
     },
     "messages": {
       "loading": "加载中...",
@@ -139,7 +141,9 @@
       "openFailed": "打开日志文件夹失败",
       "pathUnavailable": "日志文件夹路径不可用",
       "uploadFailed": "上传日志失败",
-      "uploaded": "日志已上传：{{fileName}}，关联 uid：{{telemetryUid}}"
+      "uploaded": "日志已上传：{{fileName}}，关联 uid：{{telemetryUid}}",
+      "fileNameCopied": "已复制上传文件名",
+      "copyFailed": "复制上传文件名失败"
     }
   },
   "terminal": {
