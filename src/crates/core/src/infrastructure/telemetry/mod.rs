@@ -486,6 +486,7 @@ impl EventSubscriber for TelemetryEventSubscriber {
                 compression_ratio,
                 duration_ms,
                 has_summary,
+                summary_source,
                 subagent_parent_info,
             } => self.telemetry.emit_event(
                 "context_compression_completed",
@@ -499,6 +500,7 @@ impl EventSubscriber for TelemetryEventSubscriber {
                     KeyValue::new("compression_ratio", *compression_ratio),
                     KeyValue::new("duration_ms", *duration_ms as i64),
                     KeyValue::new("has_summary", *has_summary),
+                    KeyValue::new("summary_source", summary_source.clone()),
                     KeyValue::new("success", true),
                     KeyValue::new("is_subagent", subagent_parent_info.is_some()),
                 ],
