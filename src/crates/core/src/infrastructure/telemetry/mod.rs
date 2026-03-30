@@ -71,6 +71,7 @@ impl ConfiguredTelemetry {
 #[derive(Debug, Clone)]
 struct TelemetryCommonContext {
     uid: String,
+    username: Option<String>,
     process_session_id: String,
     ide_version: String,
     os: String,
@@ -201,6 +202,10 @@ impl TelemetryService {
             KeyValue::new("event_name", event_name.to_string()),
         ];
 
+        if let Some(username) = self.common_context.username.clone() {
+            attrs.push(KeyValue::new("username", username));
+        }
+
         if let Some(os_version) = self.common_context.os_version.clone() {
             attrs.push(KeyValue::new("os_version", os_version));
         }
@@ -227,7 +232,10 @@ impl TelemetryService {
 
         if let Some(provider) = provider {
             if let Err(error) = provider.force_flush() {
-                warn!("Failed to force flush telemetry provider cleanly: {}", error);
+                warn!(
+                    "Failed to force flush telemetry provider cleanly: {}",
+                    error
+                );
             }
         }
     }
@@ -716,6 +724,7 @@ pub fn initialize_global_telemetry(
     let system_info = system::get_system_info();
     let common_context = TelemetryCommonContext {
         uid: resolve_or_create_uid()?,
+        username: resolve_current_username(),
         process_session_id: uuid::Uuid::new_v4().to_string(),
         ide_version: config.app_version.clone(),
         os: system_info.platform,
@@ -837,6 +846,29 @@ fn resolve_or_create_uid() -> BitFunResult<String> {
     Ok(uid)
 }
 
+fn resolve_current_username() -> Option<String> {
+    let candidates = if cfg!(target_os = "windows") {
+        ["USERNAME", "USER", "LOGNAME"]
+    } else {
+        ["USER", "LOGNAME", "USERNAME"]
+    };
+
+    candidates
+        .into_iter()
+        .filter_map(read_nonempty_env_var)
+        .next()
+}
+
+fn read_nonempty_env_var(key: &str) -> Option<String> {
+    let value = std::env::var(key).ok()?;
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
 fn telemetry_uid_path() -> BitFunResult<PathBuf> {
     if let Ok(path_manager) = try_get_path_manager_arc() {
         return Ok(path_manager.user_data_dir().join("telemetry").join("uid"));
@@ -857,6 +889,7 @@ mod tests {
             "bitfun-desktop.telemetry".to_string(),
             TelemetryCommonContext {
                 uid: "uid-1".to_string(),
+                username: Some("emp001".to_string()),
                 process_session_id: "process-1".to_string(),
                 ide_version: "0.0.1".to_string(),
                 os: "macos".to_string(),
@@ -874,5 +907,8 @@ mod tests {
         assert!(attrs
             .iter()
             .any(|attr| attr.key.as_str() == "process_session_id"));
+        assert!(attrs.iter().any(|attr| {
+            attr.key.as_str() == "username" && attr.value.as_str().as_ref() == "emp001"
+        }));
     }
 }
