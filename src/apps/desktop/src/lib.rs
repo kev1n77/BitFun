@@ -957,9 +957,7 @@ fn emit_startup_failed(stage: &str, error: &str) {
             KeyValue::new("error", truncate_telemetry_text(error)),
         ],
     );
-    bitfun_core::infrastructure::flush_and_shutdown_global_telemetry(
-        TELEMETRY_SHUTDOWN_TIMEOUT,
-    );
+    bitfun_core::infrastructure::flush_and_shutdown_global_telemetry(TELEMETRY_SHUTDOWN_TIMEOUT);
 }
 
 fn emit_runtime_failed(stage: &str, error: &str) {
@@ -971,9 +969,7 @@ fn emit_runtime_failed(stage: &str, error: &str) {
             KeyValue::new("error", truncate_telemetry_text(error)),
         ],
     );
-    bitfun_core::infrastructure::flush_and_shutdown_global_telemetry(
-        TELEMETRY_SHUTDOWN_TIMEOUT,
-    );
+    bitfun_core::infrastructure::flush_and_shutdown_global_telemetry(TELEMETRY_SHUTDOWN_TIMEOUT);
 }
 
 fn truncate_telemetry_text(value: &str) -> String {
@@ -1068,10 +1064,7 @@ fn setup_panic_hook() {
             }
         }
 
-        emit_telemetry_event(
-            "app_crashed",
-            crash_attrs,
-        );
+        emit_telemetry_event("app_crashed", crash_attrs);
         bitfun_core::infrastructure::flush_and_shutdown_global_telemetry(
             TELEMETRY_SHUTDOWN_TIMEOUT,
         );
