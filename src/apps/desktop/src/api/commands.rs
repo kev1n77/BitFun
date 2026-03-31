@@ -53,9 +53,7 @@ async fn lookup_remote_entry_for_path(
         .get_remote_workspace_async()
         .await
         .map(|w| w.connection_id);
-    let preferred: Option<String> = request_preferred
-        .map(|s| s.to_string())
-        .or(legacy);
+    let preferred: Option<String> = request_preferred.map(|s| s.to_string()).or(legacy);
     manager.lookup_connection(path, preferred.as_deref()).await
 }
 
@@ -364,7 +362,10 @@ async fn apply_active_workspace_context(
     if workspace_info.workspace_kind == WorkspaceKind::Remote {
         if let Some(rw) = remote_workspace_from_info(workspace_info) {
             if let Err(e) = state.set_remote_workspace(rw).await {
-                warn!("Failed to sync remote workspace registry for active workspace: {}", e);
+                warn!(
+                    "Failed to sync remote workspace registry for active workspace: {}",
+                    e
+                );
             }
         }
     } else {
@@ -500,7 +501,9 @@ pub async fn test_ai_config_connection(
                             let merged = bitfun_core::util::types::ConnectionTestResult {
                                 success: false,
                                 response_time_ms,
-                                model_response: image_result.model_response.or(result.model_response),
+                                model_response: image_result
+                                    .model_response
+                                    .or(result.model_response),
                                 message_code: image_result.message_code,
                                 error_details: image_result.error_details,
                             };
@@ -857,7 +860,10 @@ pub async fn open_remote_workspace(
                 }
             }
             if let Err(e) = state.workspace_service.manual_save().await {
-                warn!("Failed to save workspace data after opening remote workspace: {}", e);
+                warn!(
+                    "Failed to save workspace data after opening remote workspace: {}",
+                    e
+                );
             }
 
             // Register the remote mapping before applying workspace context so session storage path
@@ -1366,8 +1372,8 @@ pub async fn get_file_tree(
     state: State<'_, AppState>,
     request: GetFileTreeRequest,
 ) -> Result<serde_json::Value, String> {
-    use std::path::Path;
     use bitfun_core::service::remote_ssh::workspace_state::is_remote_path;
+    use std::path::Path;
 
     let is_remote = is_remote_path(&request.path).await;
     if !is_remote {
@@ -1437,8 +1443,8 @@ pub async fn get_directory_children(
     state: State<'_, AppState>,
     request: GetDirectoryChildrenRequest,
 ) -> Result<serde_json::Value, String> {
-    use std::path::Path;
     use bitfun_core::service::remote_ssh::workspace_state::is_remote_path;
+    use std::path::Path;
 
     let is_remote = is_remote_path(&request.path).await;
     if !is_remote {
@@ -1486,8 +1492,8 @@ pub async fn get_directory_children_paginated(
     state: State<'_, AppState>,
     request: GetDirectoryChildrenPaginatedRequest,
 ) -> Result<serde_json::Value, String> {
-    use std::path::Path;
     use bitfun_core::service::remote_ssh::workspace_state::is_remote_path;
+    use std::path::Path;
 
     let offset = request.offset.unwrap_or(0);
     let limit = request.limit.unwrap_or(100);
@@ -1554,12 +1560,15 @@ pub async fn read_file_content(
     )
     .await
     {
-        let remote_fs = state.get_remote_file_service_async().await
+        let remote_fs = state
+            .get_remote_file_service_async()
+            .await
             .map_err(|e| format!("Remote file service not available: {}", e))?;
-        let bytes = remote_fs.read_file(&entry.connection_id, &request.file_path).await
+        let bytes = remote_fs
+            .read_file(&entry.connection_id, &request.file_path)
+            .await
             .map_err(|e| format!("Failed to read remote file: {}", e))?;
-        return String::from_utf8(bytes)
-            .map_err(|e| format!("File is not valid UTF-8: {}", e));
+        return String::from_utf8(bytes).map_err(|e| format!("File is not valid UTF-8: {}", e));
     }
 
     match state.filesystem_service.read_file(&request.file_path).await {
@@ -1586,9 +1595,17 @@ pub async fn write_file_content(
     )
     .await
     {
-        let remote_fs = state.get_remote_file_service_async().await
+        let remote_fs = state
+            .get_remote_file_service_async()
+            .await
             .map_err(|e| format!("Remote file service not available: {}", e))?;
-        remote_fs.write_file(&entry.connection_id, &request.file_path, request.content.as_bytes()).await
+        remote_fs
+            .write_file(
+                &entry.connection_id,
+                &request.file_path,
+                request.content.as_bytes(),
+            )
+            .await
             .map_err(|e| format!("Failed to write remote file: {}", e))?;
         return Ok(());
     }
@@ -1653,9 +1670,13 @@ pub async fn check_path_exists(
     request: CheckPathExistsRequest,
 ) -> Result<bool, String> {
     if let Some(entry) = lookup_remote_entry_for_path(&state, &request.path, None).await {
-        let remote_fs = state.get_remote_file_service_async().await
+        let remote_fs = state
+            .get_remote_file_service_async()
+            .await
             .map_err(|e| format!("Remote file service not available: {}", e))?;
-        return remote_fs.exists(&entry.connection_id, &request.path).await
+        return remote_fs
+            .exists(&entry.connection_id, &request.path)
+            .await
             .map_err(|e| format!("Failed to check remote path: {}", e));
     }
 
@@ -1671,7 +1692,9 @@ pub async fn get_file_metadata(
     use std::time::SystemTime;
 
     if let Some(entry) = lookup_remote_entry_for_path(&state, &request.path, None).await {
-        let remote_fs = state.get_remote_file_service_async().await
+        let remote_fs = state
+            .get_remote_file_service_async()
+            .await
             .map_err(|e| format!("Remote file service not available: {}", e))?;
 
         // Use SFTP stat for stable mtime/size. Returning `SystemTime::now()` as `modified` caused
@@ -1777,9 +1800,13 @@ pub async fn rename_file(
     request: RenameFileRequest,
 ) -> Result<(), String> {
     if let Some(entry) = lookup_remote_entry_for_path(&state, &request.old_path, None).await {
-        let remote_fs = state.get_remote_file_service_async().await
+        let remote_fs = state
+            .get_remote_file_service_async()
+            .await
             .map_err(|e| format!("Remote file service not available: {}", e))?;
-        remote_fs.rename(&entry.connection_id, &request.old_path, &request.new_path).await
+        remote_fs
+            .rename(&entry.connection_id, &request.old_path, &request.new_path)
+            .await
             .map_err(|e| format!("Failed to rename remote file: {}", e))?;
         return Ok(());
     }
@@ -1818,9 +1845,13 @@ pub async fn delete_file(
     request: DeleteFileRequest,
 ) -> Result<(), String> {
     if let Some(entry) = lookup_remote_entry_for_path(&state, &request.path, None).await {
-        let remote_fs = state.get_remote_file_service_async().await
+        let remote_fs = state
+            .get_remote_file_service_async()
+            .await
             .map_err(|e| format!("Remote file service not available: {}", e))?;
-        remote_fs.remove_file(&entry.connection_id, &request.path).await
+        remote_fs
+            .remove_file(&entry.connection_id, &request.path)
+            .await
             .map_err(|e| format!("Failed to delete remote file: {}", e))?;
         return Ok(());
     }
@@ -1842,13 +1873,19 @@ pub async fn delete_directory(
     let recursive = request.recursive.unwrap_or(false);
 
     if let Some(entry) = lookup_remote_entry_for_path(&state, &request.path, None).await {
-        let remote_fs = state.get_remote_file_service_async().await
+        let remote_fs = state
+            .get_remote_file_service_async()
+            .await
             .map_err(|e| format!("Remote file service not available: {}", e))?;
         if recursive {
-            remote_fs.remove_dir_all(&entry.connection_id, &request.path).await
+            remote_fs
+                .remove_dir_all(&entry.connection_id, &request.path)
+                .await
                 .map_err(|e| format!("Failed to delete remote directory: {}", e))?;
         } else {
-            remote_fs.remove_dir_all(&entry.connection_id, &request.path).await
+            remote_fs
+                .remove_dir_all(&entry.connection_id, &request.path)
+                .await
                 .map_err(|e| format!("Failed to delete remote directory: {}", e))?;
         }
         return Ok(());
@@ -1869,9 +1906,13 @@ pub async fn create_file(
     request: CreateFileRequest,
 ) -> Result<(), String> {
     if let Some(entry) = lookup_remote_entry_for_path(&state, &request.path, None).await {
-        let remote_fs = state.get_remote_file_service_async().await
+        let remote_fs = state
+            .get_remote_file_service_async()
+            .await
             .map_err(|e| format!("Remote file service not available: {}", e))?;
-        remote_fs.write_file(&entry.connection_id, &request.path, b"").await
+        remote_fs
+            .write_file(&entry.connection_id, &request.path, b"")
+            .await
             .map_err(|e| format!("Failed to create remote file: {}", e))?;
         return Ok(());
     }
@@ -1892,9 +1933,13 @@ pub async fn create_directory(
     request: CreateDirectoryRequest,
 ) -> Result<(), String> {
     if let Some(entry) = lookup_remote_entry_for_path(&state, &request.path, None).await {
-        let remote_fs = state.get_remote_file_service_async().await
+        let remote_fs = state
+            .get_remote_file_service_async()
+            .await
             .map_err(|e| format!("Remote file service not available: {}", e))?;
-        remote_fs.create_dir_all(&entry.connection_id, &request.path).await
+        remote_fs
+            .create_dir_all(&entry.connection_id, &request.path)
+            .await
             .map_err(|e| format!("Failed to create remote directory: {}", e))?;
         return Ok(());
     }
@@ -1922,11 +1967,16 @@ pub async fn list_directory_files(
     use std::path::Path;
 
     if let Some(entry) = lookup_remote_entry_for_path(&state, &request.path, None).await {
-        let remote_fs = state.get_remote_file_service_async().await
+        let remote_fs = state
+            .get_remote_file_service_async()
+            .await
             .map_err(|e| format!("Remote file service not available: {}", e))?;
-        let entries = remote_fs.read_dir(&entry.connection_id, &request.path).await
+        let entries = remote_fs
+            .read_dir(&entry.connection_id, &request.path)
+            .await
             .map_err(|e| format!("Failed to read remote directory: {}", e))?;
-        let mut files: Vec<String> = entries.into_iter()
+        let mut files: Vec<String> = entries
+            .into_iter()
             .filter(|e| !e.is_dir)
             .filter(|e| {
                 if let Some(ref extensions) = request.extensions {
