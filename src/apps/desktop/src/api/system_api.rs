@@ -4,12 +4,57 @@ use std::sync::{Arc, Mutex};
 
 use crate::api::app_state::AppState;
 use bitfun_core::service::system;
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_updater::UpdaterExt;
 
 /// Emitted during `install_update` download; matches `installUpdateWithProgress` / frontend listener.
 const UPDATE_PROGRESS_EVENT: &str = "bitfun-update-progress";
+const UPDATE_MANIFEST_URL: &str =
+    "http://bitfun.rnd.huawei.com/download/releases/current/latest.json";
+const UPDATE_USER_HEADER: &str = "X-BitFun-Update-User";
+
+fn read_nonempty_env_var(key: &str) -> Option<String> {
+    let value = std::env::var(key).ok()?;
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn resolve_update_username() -> Option<String> {
+    let candidates = if cfg!(target_os = "windows") {
+        ["USERNAME", "USER", "LOGNAME"]
+    } else {
+        ["USER", "LOGNAME", "USERNAME"]
+    };
+
+    candidates
+        .into_iter()
+        .filter_map(read_nonempty_env_var)
+        .next()
+}
+
+/// Builds the updater with the fixed Nginx entrypoint and optional username header used
+/// by server-side channel routing.
+fn build_scoped_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+    let manifest_url = Url::parse(UPDATE_MANIFEST_URL).map_err(|e| e.to_string())?;
+    let mut builder = app.updater_builder();
+    builder = builder
+        .endpoints(vec![manifest_url])
+        .map_err(|e| e.to_string())?;
+
+    if let Some(username) = resolve_update_username() {
+        builder = builder
+            .header(UPDATE_USER_HEADER, username)
+            .map_err(|e| e.to_string())?;
+    }
+
+    builder.build().map_err(|e| e.to_string())
+}
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,7 +117,7 @@ pub async fn check_for_updates(
     request: CheckForUpdatesRequest,
 ) -> Result<CheckForUpdatesResponse, String> {
     let _ = request;
-    let updater = app.updater().map_err(|e| e.to_string())?;
+    let updater = build_scoped_updater(&app)?;
     let update = updater.check().await.map_err(|e| e.to_string())?;
     match update {
         Some(u) => Ok(CheckForUpdatesResponse {
@@ -98,12 +143,9 @@ pub struct InstallUpdateRequest {}
 
 /// Downloads and installs the latest update from the updater endpoint (re-checks remote).
 #[tauri::command]
-pub async fn install_update(
-    app: AppHandle,
-    request: InstallUpdateRequest,
-) -> Result<(), String> {
+pub async fn install_update(app: AppHandle, request: InstallUpdateRequest) -> Result<(), String> {
     let _ = request;
-    let updater = app.updater().map_err(|e| e.to_string())?;
+    let updater = build_scoped_updater(&app)?;
     let update = updater.check().await.map_err(|e| e.to_string())?;
     let Some(update) = update else {
         return Err("No update available".to_string());
@@ -116,17 +158,16 @@ pub async fn install_update(
         .download_and_install(
             move |chunk_len, content_len| {
                 let (downloaded, total) = {
-                    let mut g = progress_chunk.lock().expect("update progress mutex poisoned");
+                    let mut g = progress_chunk
+                        .lock()
+                        .expect("update progress mutex poisoned");
                     g.0 = g.0.saturating_add(chunk_len as u64);
                     g.1 = g.1.or(content_len);
                     (g.0, g.1)
                 };
                 let _ = app_chunk.emit(
                     UPDATE_PROGRESS_EVENT,
-                    UpdateProgressPayload {
-                        downloaded,
-                        total,
-                    },
+                    UpdateProgressPayload { downloaded, total },
                 );
             },
             {
@@ -141,10 +182,7 @@ pub async fn install_update(
                     };
                     let _ = app_done.emit(
                         UPDATE_PROGRESS_EVENT,
-                        UpdateProgressPayload {
-                            downloaded,
-                            total,
-                        },
+                        UpdateProgressPayload { downloaded, total },
                     );
                 }
             },
