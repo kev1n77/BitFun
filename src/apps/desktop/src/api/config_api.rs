@@ -294,9 +294,15 @@ pub async fn get_mode_configs(state: State<'_, AppState>) -> Result<Value, Strin
             // All desktop automation is now consolidated into ComputerUse.
             // Remove any stale split tool names from available_tools.
             if mode_id == "Claw" {
-                let stale = ["ComputerUseMousePrecise", "ComputerUseMouseStep", "ComputerUseMouseClick"];
+                let stale = [
+                    "ComputerUseMousePrecise",
+                    "ComputerUseMouseStep",
+                    "ComputerUseMouseClick",
+                ];
                 let before = config.available_tools.len();
-                config.available_tools.retain(|t| !stale.contains(&t.as_str()));
+                config
+                    .available_tools
+                    .retain(|t| !stale.contains(&t.as_str()));
                 if config.available_tools.len() != before {
                     needs_save = true;
                 }

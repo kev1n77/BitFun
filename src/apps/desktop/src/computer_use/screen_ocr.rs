@@ -168,9 +168,7 @@ fn levenshtein_chars(a: &str, b: &str) -> usize {
         curr[0] = i + 1;
         for j in 0..m {
             let cost = usize::from(a[i] != b[j]);
-            curr[j + 1] = (prev[j] + cost)
-                .min(prev[j + 1] + 1)
-                .min(curr[j] + 1);
+            curr[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(curr[j] + 1);
         }
         std::mem::swap(&mut prev, &mut curr);
     }
@@ -230,11 +228,7 @@ fn rank_matches(mut matches: Vec<OcrTextMatch>, query: &str) -> Vec<OcrTextMatch
     matches
 }
 
-fn compare_match(
-    a: &OcrTextMatch,
-    b: &OcrTextMatch,
-    normalized_query: &str,
-) -> std::cmp::Ordering {
+fn compare_match(a: &OcrTextMatch, b: &OcrTextMatch, normalized_query: &str) -> std::cmp::Ordering {
     let sa = match_score(a, normalized_query);
     let sb = match_score(b, normalized_query);
     sb.cmp(&sa)
@@ -398,7 +392,9 @@ pub fn crop_shot_to_ocr_region(
     let crop_w = px1 - px0;
     let crop_h = py1 - py0;
     if px0.saturating_add(crop_w) > img_w || py0.saturating_add(crop_h) > img_h {
-        return Err(BitFunError::tool("OCR crop rectangle is out of image bounds.".to_string()));
+        return Err(BitFunError::tool(
+            "OCR crop rectangle is out of image bounds.".to_string(),
+        ));
     }
     let cropped_view = image::imageops::crop_imm(&rgb, px0, py0, crop_w, crop_h);
     let cropped = cropped_view.to_image();
@@ -406,14 +402,13 @@ pub fn crop_shot_to_ocr_region(
     const OCR_CROP_JPEG_QUALITY: u8 = 75;
     let mut buf = Vec::new();
     let mut enc = JpegEncoder::new_with_quality(&mut buf, OCR_CROP_JPEG_QUALITY);
-    enc
-        .encode(
-            cropped.as_raw(),
-            cropped.width(),
-            cropped.height(),
-            image::ColorType::Rgb8,
-        )
-        .map_err(|e| BitFunError::tool(format!("OCR crop: encode JPEG: {}", e)))?;
+    enc.encode(
+        cropped.as_raw(),
+        cropped.width(),
+        cropped.height(),
+        image::ColorType::Rgb8,
+    )
+    .map_err(|e| BitFunError::tool(format!("OCR crop: encode JPEG: {}", e)))?;
 
     // Affine mapping must match `image_box_to_global_match`: global = origin + (jpeg_px - content_left) / content_w * native_capture.
     // Do **not** use ix0/ix1 (intersection clip) as display_origin/native size — they disagree with floor/ceil JPEG bounds px0..px1.
@@ -475,9 +470,9 @@ mod macos {
     use objc2::AnyThread;
     use objc2_foundation::{NSArray, NSData, NSDictionary, NSError, NSString};
     use objc2_vision::{
-        VNImageOption, VNImageRectForNormalizedRect, VNImageRequestHandler,
-        VNRecognizeTextRequest, VNRecognizeTextRequestRevision3, VNRecognizedTextObservation,
-        VNRequest, VNRequestTextRecognitionLevel,
+        VNImageOption, VNImageRectForNormalizedRect, VNImageRequestHandler, VNRecognizeTextRequest,
+        VNRecognizeTextRequestRevision3, VNRecognizedTextObservation, VNRequest,
+        VNRequestTextRecognitionLevel,
     };
 
     /// Top-N candidates per observation; Chinese matches often appear below rank 1.
@@ -697,12 +692,8 @@ mod windows_backend {
         // Windows.Media.Ocr requires STA thread
         let mut co_init = None;
         if unsafe { CoIncrementMTAUsage() }.is_err() {
-            let hr = unsafe {
-                CoInitializeEx(
-                    None,
-                    COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE,
-                )
-            };
+            let hr =
+                unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
             if hr.is_err() {
                 return Err(BitFunError::tool(format!(
                     "Windows OCR COM initialization failed: {:?}",
@@ -730,9 +721,9 @@ mod windows_backend {
                 Ok(e) => e,
                 Err(_) => {
                     // Fallback to English if user profile languages fail
-                    let lang = w(windows::Globalization::Language::CreateLanguage(&HSTRING::from(
-                        "en-US",
-                    )))?;
+                    let lang = w(windows::Globalization::Language::CreateLanguage(
+                        &HSTRING::from("en-US"),
+                    ))?;
                     if !w(OcrEngine::IsLanguageSupported(&lang))? {
                         return Err(BitFunError::tool(
                             "Windows OCR: No supported language packs installed.".to_string(),
@@ -769,8 +760,7 @@ mod windows_backend {
             if ranked.is_empty() {
                 return Err(BitFunError::tool(format!(
                     "No OCR text matched {:?} on screen (Windows OCR found {} text regions total).",
-                    text_query,
-                    line_count
+                    text_query, line_count
                 )));
             }
             Ok(ranked)
@@ -810,13 +800,7 @@ mod windows_backend {
         let height = f64::from(rect.Height);
 
         Some(image_box_to_global_match(
-            shot,
-            text,
-            0.8,
-            local_left,
-            local_top,
-            width,
-            height,
+            shot, text, 0.8, local_left, local_top, width, height,
         ))
     }
 }
@@ -889,9 +873,7 @@ mod linux_backend {
         let boxa = api
             .get_component_images(TessPageIteratorLevel_RIL_WORD, true)
             .ok_or_else(|| {
-                BitFunError::tool(
-                    "Linux OCR: Tesseract did not return word regions.".to_string(),
-                )
+                BitFunError::tool("Linux OCR: Tesseract did not return word regions.".to_string())
             })?;
 
         let word_region_count = boxa.get_n();
@@ -945,7 +927,10 @@ mod linux_backend {
         text_query: &str,
         text: &str,
         confidence: f32,
-        x1: i32, y1: i32, x2: i32, y2: i32,
+        x1: i32,
+        y1: i32,
+        x2: i32,
+        y2: i32,
         content_left: u32,
         content_top: u32,
         _content_width: u32,

@@ -5,8 +5,16 @@ use bitfun_core::util::errors::{BitFunError, BitFunResult};
 use screenshots::display_info::DisplayInfo;
 
 pub fn validate_query(q: &UiElementLocateQuery) -> BitFunResult<()> {
-    let t = q.title_contains.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false);
-    let r = q.role_substring.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+    let t = q
+        .title_contains
+        .as_ref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let r = q
+        .role_substring
+        .as_ref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
     let i = q
         .identifier_contains
         .as_ref()
@@ -106,10 +114,7 @@ pub fn role_substring_matches_ax_role(ax_role: &str, want: &str) -> bool {
 }
 
 fn combine_is_any(query: &UiElementLocateQuery) -> bool {
-    matches!(
-        query.filter_combine.as_deref(),
-        Some("any") | Some("or")
-    )
+    matches!(query.filter_combine.as_deref(), Some("any") | Some("or"))
 }
 
 /// OR semantics: element matches if **at least one** non-empty filter matches.
@@ -208,9 +213,18 @@ pub fn ok_result(
     matched_identifier: Option<String>,
 ) -> BitFunResult<UiElementLocateResult> {
     ok_result_with_context(
-        gx, gy, bounds_left, bounds_top, bounds_width, bounds_height,
-        matched_role, matched_title, matched_identifier,
-        None, 1, vec![],
+        gx,
+        gy,
+        bounds_left,
+        bounds_top,
+        bounds_width,
+        bounds_height,
+        matched_role,
+        matched_title,
+        matched_identifier,
+        None,
+        1,
+        vec![],
     )
 }
 
@@ -230,7 +244,14 @@ pub fn ok_result_with_context(
 ) -> BitFunResult<UiElementLocateResult> {
     let (nx, ny) = global_to_native_center(gx, gy)?;
     let (nminx, nminy, nmaxx, nmaxy) = if bounds_width > 0.0 && bounds_height > 0.0 {
-        global_bounds_to_native_minmax(gx, gy, bounds_left, bounds_top, bounds_width, bounds_height)?
+        global_bounds_to_native_minmax(
+            gx,
+            gy,
+            bounds_left,
+            bounds_top,
+            bounds_width,
+            bounds_height,
+        )?
     } else {
         (nx, ny, nx, ny)
     };
