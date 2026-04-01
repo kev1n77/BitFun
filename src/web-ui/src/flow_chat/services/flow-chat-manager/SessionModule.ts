@@ -91,25 +91,22 @@ const normalizeSessionDisplayMode = (
 };
 
 const resolveSessionWorkspacePath = (
-  context: FlowChatContext,
+  _context: FlowChatContext,
   config?: SessionConfig
 ): string | null => {
   const explicitWorkspacePath = config?.workspacePath?.trim();
   if (explicitWorkspacePath) {
     return explicitWorkspacePath;
   }
-  const fromFlowChat = context.currentWorkspacePath?.trim();
-  if (fromFlowChat) {
-    return fromFlowChat;
-  }
-  // Remote restore: AppLayout may skip FlowChat.initialize until SSH connects, so
-  // currentWorkspacePath stays null while global workspace already has rootPath.
+  // Prefer live workspace from WorkspaceManager. Do not fall back to FlowChat's
+  // cached currentWorkspacePath — it can stay set after close/switch and caused
+  // create_session with a stale path while currentWorkspace was already null.
   const current = workspaceManager.getState().currentWorkspace;
   const root = current?.rootPath?.trim();
-  if (!root || current?.workspaceKind === WorkspaceKind.Assistant) {
+  if (!current || !root || current.workspaceKind === WorkspaceKind.Assistant) {
     return null;
   }
-  return current?.workspaceKind === WorkspaceKind.Remote
+  return current.workspaceKind === WorkspaceKind.Remote
     ? normalizeRemoteWorkspacePath(root)
     : root;
 };
@@ -320,10 +317,11 @@ export async function createChatSession(
     }
   } catch (error) {
     log.error('Failed to create chat session', { config, error });
-    
-    notificationService.error('Failed to create chat session', {
-      duration: 3000
-    });
+    if (workspaceManager.getState().currentWorkspace) {
+      notificationService.error('Failed to create chat session', {
+        duration: 3000
+      });
+    }
     throw error;
   }
 }
