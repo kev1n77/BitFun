@@ -30,6 +30,7 @@ import { useI18n } from '@/infrastructure/i18n';
 import { WorkspaceKind } from '@/shared/types';
 import { SSHContext } from '@/features/ssh-remote/SSHRemoteContext';
 import { shortcutManager } from '@/infrastructure/services/ShortcutManager';
+import { workspaceManager } from '@/infrastructure/services/business/workspaceManager';
 import { useSessionModeStore } from '../stores/sessionModeStore';
 import './AppLayout.scss';
 
@@ -157,8 +158,19 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
 
   // Initialize FlowChatManager
   React.useEffect(() => {
+    let cancelled = false;
+
     const initializeFlowChat = async () => {
       if (!currentWorkspace?.rootPath) return;
+
+      const expectedWorkspaceId = currentWorkspace.id;
+      const expectedRootPath = currentWorkspace.rootPath;
+
+      const sameWorkspaceAsExpected = (): boolean => {
+        if (cancelled) return false;
+        const cur = workspaceManager.getState().currentWorkspace;
+        return cur?.id === expectedWorkspaceId && cur?.rootPath === expectedRootPath;
+      };
 
       // Remote session index and turns live under ~/.bitfun/remote_ssh/... (local disk).
       // Always initialize FlowChat so historical sessions list even when SSH is not connected yet.
@@ -184,9 +196,19 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
             : undefined
         );
 
-        let sessionId: string | undefined;
+        if (!sameWorkspaceAsExpected()) return;
+
         const { flowChatStore } = await import('@/flow_chat/store/FlowChatStore');
+        const activeWs = workspaceManager.getState().currentWorkspace;
+        if (!activeWs || activeWs.id !== expectedWorkspaceId) return;
+
+        if (activeWs.workspaceKind === WorkspaceKind.Assistant) {
+          return;
+        }
+
+        let sessionId: string | undefined;
         if (!hasHistoricalSessions || !flowChatStore.getState().activeSessionId) {
+          if (!sameWorkspaceAsExpected()) return;
           sessionId = await flowChatManager.createChatSession({}, explicitPreferredMode || 'agentic');
         }
 
@@ -195,6 +217,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
           sessionStorage.removeItem('pendingProjectDescription');
 
           setTimeout(async () => {
+            if (cancelled || !sameWorkspaceAsExpected()) return;
             try {
               const targetSessionId = sessionId || flowChatStore.getState().activeSessionId;
 
@@ -222,6 +245,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
         if (pendingSettings) {
           sessionStorage.removeItem('pendingOpenSettings');
           setTimeout(async () => {
+            if (cancelled || !sameWorkspaceAsExpected()) return;
             try {
               const { quickActions } = await import('@/shared/services/ide-control');
               await quickActions.openSettings(pendingSettings);
@@ -231,6 +255,11 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
           }, 500);
         }
       } catch (error) {
+        if (cancelled) return;
+        if (!workspaceManager.getState().currentWorkspace) {
+          log.debug('FlowChat init skipped or aborted (no active workspace)', { error });
+          return;
+        }
         log.error('FlowChatManager initialization failed', error);
         import('@/shared/notification-system').then(({ notificationService }) => {
           notificationService.error(t('appLayout.flowChatInitFailed'), { duration: 5000 });
@@ -238,7 +267,12 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
       }
     };
 
-    initializeFlowChat();
+    void initializeFlowChat();
+
+    return () => {
+      cancelled = true;
+      FlowChatManager.getInstance().clearCurrentWorkspacePath();
+    };
   }, [
     currentWorkspace,
     currentWorkspace?.id,
