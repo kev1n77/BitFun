@@ -86,7 +86,7 @@ export function LanguageSelect({ onSelect }: LanguageSelectProps) {
             opacity: 0.6,
             letterSpacing: '0.5px',
           }}>
-            <div>Version 0.2.1</div>
+            <div>Version 0.2.2</div>
             <div style={{
               marginTop: 6,
               lineHeight: 1.5,
