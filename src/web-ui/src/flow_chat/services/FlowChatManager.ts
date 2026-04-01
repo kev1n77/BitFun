@@ -179,6 +179,14 @@ export class FlowChatManager {
     }
   }
 
+  /**
+   * Clear cached workspace path (e.g. when switching/closing workspaces) so session code
+   * does not use a stale path after the active workspace is gone.
+   */
+  public clearCurrentWorkspacePath(): void {
+    this.context.currentWorkspacePath = null;
+  }
+
   private processBatchedEvents(events: Array<{ key: string; payload: any }>): void {
     processBatchedEvents(
       this.context,
