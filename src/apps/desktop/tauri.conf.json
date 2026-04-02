@@ -26,7 +26,12 @@
       "deb": {
         "depends": [
           "libwebkit2gtk-4.1-0",
-          "libgtk-3-0"
+          "libgtk-3-0",
+          "libatspi2.0-0",
+          "libtesseract5",
+          "tesseract-ocr",
+          "tesseract-ocr-eng",
+          "libxdo3"
         ],
         "files": {
           "/usr/share/icons/hicolor/16x16/apps/bitfun-desktop.png": "icons/hicolor/16x16/apps/bitfun-desktop.png",
