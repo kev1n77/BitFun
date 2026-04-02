@@ -549,7 +549,8 @@ function BasicsLoggingSection() {
             description={runtimeInfo?.telemetryUid
               ? t('logging.upload.uidDescription', { uid: runtimeInfo.telemetryUid })
               : t('logging.upload.description')}
-            multiline
+            align="center"
+            balanced
           >
             <div className="bitfun-logging-config__upload-panel">
               <button
