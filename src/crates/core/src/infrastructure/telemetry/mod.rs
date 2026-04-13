@@ -6,7 +6,7 @@
 mod exporter;
 
 use crate::agentic::events::{AgenticEvent, EventSubscriber, ToolEventData};
-use crate::infrastructure::filesystem::{try_get_path_manager_arc, PathManager};
+use crate::infrastructure::{try_get_path_manager_arc, PathManager};
 use crate::service::system;
 use crate::util::errors::{BitFunError, BitFunResult};
 use chrono::{SecondsFormat, Utc};

@@ -12,20 +12,13 @@ pub(crate) mod response_aggregator;
 pub(crate) mod sse;
 pub(crate) mod utils;
 
-use crate::infrastructure::ai::providers::anthropic::AnthropicMessageConverter;
-use crate::infrastructure::ai::providers::gemini::GeminiMessageConverter;
-use crate::infrastructure::ai::providers::openai::OpenAIMessageConverter;
 use crate::infrastructure::ai::providers::{anthropic, gemini, openai};
 use crate::infrastructure::telemetry::{get_global_telemetry, TelemetryRequestSpan};
 use crate::service::config::ProxyConfig;
 use crate::util::types::*;
-use ai_stream_handlers::{
-    handle_anthropic_stream, handle_gemini_stream, handle_openai_stream, handle_responses_stream,
-    UnifiedResponse,
-};
-use anyhow::{anyhow, Result};
+use ai_stream_handlers::UnifiedResponse;
+use anyhow::Result;
 use format::ApiFormat;
-use log::{debug, error, warn};
 use opentelemetry::KeyValue;
 use reqwest::Client;
 use std::pin::Pin;
@@ -38,19 +31,6 @@ pub struct StreamResponse {
         Box<dyn futures::Stream<Item = Result<ai_stream_handlers::UnifiedResponse>> + Send>,
     >,
     pub raw_sse_rx: Option<mpsc::UnboundedReceiver<String>>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct ModelRequestTelemetryMeta {
-    retry_count: usize,
-    status_code: Option<u16>,
-    error_type: Option<String>,
-}
-
-#[derive(Debug)]
-struct ModelRequestFailure {
-    error: anyhow::Error,
-    telemetry: ModelRequestTelemetryMeta,
 }
 
 struct TelemetryStream {
@@ -116,33 +96,6 @@ impl futures::Stream for TelemetryStream {
     }
 }
 
-fn attach_model_request_telemetry(
-    span: &mut TelemetryRequestSpan,
-    telemetry: &ModelRequestTelemetryMeta,
-) {
-    span.add_attribute(KeyValue::new(
-        "retry_count",
-        telemetry.retry_count as i64,
-    ));
-
-    if let Some(status_code) = telemetry.status_code {
-        span.add_attribute(KeyValue::new("status_code", status_code as i64));
-    }
-
-    if let Some(error_type) = telemetry.error_type.as_ref() {
-        span.add_attribute(KeyValue::new("error_type", error_type.clone()));
-    }
-}
-
-fn classify_status_error(status: reqwest::StatusCode) -> &'static str {
-    match status.as_u16() {
-        429 => "rate_limit",
-        500..=599 => "server_error",
-        400..=499 => "client_error",
-        _ => "http_error",
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct AIClient {
     pub(crate) client: Client,
@@ -186,7 +139,14 @@ impl AIClient {
         extra_body: Option<serde_json::Value>,
     ) -> Result<StreamResponse> {
         let tool_count = tools.as_ref().map(|entries| entries.len()).unwrap_or(0);
-        let api_format = self.get_api_format().to_string();
+        let parsed_format = ApiFormat::parse(&self.config.format);
+        let api_format = match parsed_format.as_ref() {
+            Ok(ApiFormat::OpenAIChat) => "openai".to_string(),
+            Ok(ApiFormat::OpenAIResponses) => "responses".to_string(),
+            Ok(ApiFormat::Anthropic) => "anthropic".to_string(),
+            Ok(ApiFormat::Gemini) => "gemini".to_string(),
+            Err(_) => self.config.format.clone(),
+        };
         let span = get_global_telemetry().and_then(|telemetry| {
             telemetry.start_request_span(
                 "model_request",
@@ -202,695 +162,36 @@ impl AIClient {
         });
 
         let max_tries = 3;
-        let result = match ApiFormat::parse(&self.config.format) {
+        let result = match parsed_format {
             Ok(ApiFormat::OpenAIChat) => {
-                self.send_openai_stream(messages, tools, extra_body, max_tries)
-                    .await
+                openai::chat::send_stream(self, messages, tools, extra_body, max_tries).await
             }
             Ok(ApiFormat::OpenAIResponses) => {
-                self.send_responses_stream(messages, tools, extra_body, max_tries)
-                    .await
+                openai::responses::send_stream(self, messages, tools, extra_body, max_tries).await
             }
             Ok(ApiFormat::Anthropic) => {
-                self.send_anthropic_stream(messages, tools, extra_body, max_tries)
-                    .await
+                anthropic::request::send_stream(self, messages, tools, extra_body, max_tries).await
             }
             Ok(ApiFormat::Gemini) => {
-                self.send_gemini_stream(messages, tools, extra_body, max_tries)
-                    .await
+                gemini::request::send_stream(self, messages, tools, extra_body, max_tries).await
             }
-            Err(error) => Err(ModelRequestFailure {
-                error: anyhow!(error),
-                telemetry: ModelRequestTelemetryMeta {
-                    retry_count: 0,
-                    status_code: None,
-                    error_type: Some("unknown_api_format".to_string()),
-                },
-            }),
+            Err(error) => Err(error),
         };
 
         match result {
-            Ok((mut response, telemetry)) => {
-                if let Some(mut span) = span {
-                    attach_model_request_telemetry(&mut span, &telemetry);
+            Ok(mut response) => {
+                if let Some(span) = span {
                     response.stream = Box::pin(TelemetryStream::new(response.stream, span));
                 }
                 Ok(response)
             }
-            Err(failure) => {
+            Err(error) => {
                 if let Some(mut span) = span {
-                    attach_model_request_telemetry(&mut span, &failure.telemetry);
-                    span.mark_error(failure.error.to_string());
+                    span.mark_error(error.to_string());
                 }
-                Err(failure.error)
+                Err(error)
             }
         }
-    }
-
-    /// Send an OpenAI streaming request with retries
-    ///
-    /// # Parameters
-    /// - `messages`: message list
-    /// - `tools`: tool definitions
-    /// - `extra_body`: extra request body parameters
-    /// - `max_tries`: max attempts (including the first)
-    async fn send_openai_stream(
-        &self,
-        messages: Vec<Message>,
-        tools: Option<Vec<ToolDefinition>>,
-        extra_body: Option<serde_json::Value>,
-        max_tries: usize,
-    ) -> std::result::Result<(StreamResponse, ModelRequestTelemetryMeta), ModelRequestFailure> {
-        let url = self.config.request_url.clone();
-        debug!(
-            "OpenAI config: model={}, request_url={}, max_tries={}",
-            self.config.model, self.config.request_url, max_tries
-        );
-
-        // Use OpenAI message converter
-        let openai_messages = OpenAIMessageConverter::convert_messages(messages);
-        let openai_tools = OpenAIMessageConverter::convert_tools(tools);
-
-        // Build request body
-        let request_body =
-            self.build_openai_request_body(&url, openai_messages, openai_tools, extra_body);
-
-        let mut last_error = None;
-        let mut last_telemetry = ModelRequestTelemetryMeta::default();
-        let base_wait_time_ms = 500;
-
-        for attempt in 0..max_tries {
-            let request_start_time = std::time::Instant::now();
-
-            // Send request - apply request headers
-            let request_builder = self.apply_openai_headers(self.client.post(&url));
-            let response_result = request_builder.json(&request_body).send().await;
-
-            let response = match response_result {
-                Ok(resp) => {
-                    let connect_time = request_start_time.elapsed().as_millis();
-                    let status = resp.status();
-
-                    if status.is_client_error() {
-                        let error_text = resp
-                            .text()
-                            .await
-                            .unwrap_or_else(|e| format!("Failed to read error response: {}", e));
-                        error!(
-                            "OpenAI Streaming API client error {}: {}",
-                            status, error_text
-                        );
-                        return Err(ModelRequestFailure {
-                            error: anyhow!(
-                                "OpenAI Streaming API client error {}: {}",
-                                status,
-                                error_text
-                            ),
-                            telemetry: ModelRequestTelemetryMeta {
-                                retry_count: attempt,
-                                status_code: Some(status.as_u16()),
-                                error_type: Some(classify_status_error(status).to_string()),
-                            },
-                        });
-                    }
-
-                    if status.is_success() {
-                        debug!(
-                            "Stream request connected: {}ms, status: {}, attempt: {}/{}",
-                            connect_time,
-                            status,
-                            attempt + 1,
-                            max_tries
-                        );
-                        resp
-                    } else {
-                        let error_text = resp
-                            .text()
-                            .await
-                            .unwrap_or_else(|e| format!("Failed to read error response: {}", e));
-                        let error =
-                            anyhow!("OpenAI Streaming API error {}: {}", status, error_text);
-                        warn!(
-                            "Stream request failed (attempt {}/{}): {}",
-                            attempt + 1,
-                            max_tries,
-                            error
-                        );
-                        last_error = Some(error);
-                        last_telemetry = ModelRequestTelemetryMeta {
-                            retry_count: attempt,
-                            status_code: Some(status.as_u16()),
-                            error_type: Some(classify_status_error(status).to_string()),
-                        };
-
-                        if attempt < max_tries - 1 {
-                            let delay_ms = base_wait_time_ms * (1 << attempt.min(3));
-                            debug!("Retrying after {}ms (attempt {})", delay_ms, attempt + 2);
-                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                        }
-                        continue;
-                    }
-                }
-                Err(e) => {
-                    let connect_time = request_start_time.elapsed().as_millis();
-                    let error = anyhow!("Stream request connection failed: {}", e);
-                    warn!(
-                        "Stream request connection failed: {}ms, attempt {}/{}, error: {}",
-                        connect_time,
-                        attempt + 1,
-                        max_tries,
-                        e
-                    );
-                    last_error = Some(error);
-                    last_telemetry = ModelRequestTelemetryMeta {
-                        retry_count: attempt,
-                        status_code: None,
-                        error_type: Some("connection_error".to_string()),
-                    };
-
-                    if attempt < max_tries - 1 {
-                        let delay_ms = base_wait_time_ms * (1 << attempt.min(3));
-                        debug!("Retrying after {}ms (attempt {})", delay_ms, attempt + 2);
-                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                    }
-                    continue;
-                }
-            };
-
-            // Success: create channels and return
-            let status_code = response.status().as_u16();
-            let (tx, rx) = mpsc::unbounded_channel();
-            let (tx_raw, rx_raw) = mpsc::unbounded_channel();
-
-            tokio::spawn(handle_openai_stream(
-                response,
-                tx,
-                Some(tx_raw),
-                self.config.inline_think_in_text,
-            ));
-
-            return Ok((
-                StreamResponse {
-                    stream: Box::pin(tokio_stream::wrappers::UnboundedReceiverStream::new(rx)),
-                    raw_sse_rx: Some(rx_raw),
-                },
-                ModelRequestTelemetryMeta {
-                    retry_count: attempt,
-                    status_code: Some(status_code),
-                    error_type: None,
-                },
-            ));
-        }
-
-        let error_msg = format!(
-            "Stream request failed after {} attempts: {}",
-            max_tries,
-            last_error.unwrap_or_else(|| anyhow!("Unknown error"))
-        );
-        error!("{}", error_msg);
-        Err(ModelRequestFailure {
-            error: anyhow!(error_msg),
-            telemetry: last_telemetry,
-        })
-    }
-
-    /// Send a Gemini streaming request with retries.
-    async fn send_gemini_stream(
-        &self,
-        messages: Vec<Message>,
-        tools: Option<Vec<ToolDefinition>>,
-        extra_body: Option<serde_json::Value>,
-        max_tries: usize,
-    ) -> std::result::Result<(StreamResponse, ModelRequestTelemetryMeta), ModelRequestFailure> {
-        let url = Self::resolve_gemini_request_url(&self.config.request_url, &self.config.model);
-        debug!(
-            "Gemini config: model={}, request_url={}, max_tries={}",
-            self.config.model, url, max_tries
-        );
-
-        let (system_instruction, contents) =
-            GeminiMessageConverter::convert_messages(messages, &self.config.model);
-        let gemini_tools = GeminiMessageConverter::convert_tools(tools);
-        let request_body =
-            self.build_gemini_request_body(system_instruction, contents, gemini_tools, extra_body);
-
-        let mut last_error = None;
-        let mut last_telemetry = ModelRequestTelemetryMeta::default();
-        let base_wait_time_ms = 500;
-
-        for attempt in 0..max_tries {
-            let request_start_time = std::time::Instant::now();
-            let request_builder = self.apply_gemini_headers(self.client.post(&url));
-            let response_result = request_builder.json(&request_body).send().await;
-
-            let response = match response_result {
-                Ok(resp) => {
-                    let connect_time = request_start_time.elapsed().as_millis();
-                    let status = resp.status();
-
-                    if status.is_client_error() {
-                        let error_text = resp
-                            .text()
-                            .await
-                            .unwrap_or_else(|e| format!("Failed to read error response: {}", e));
-                        error!(
-                            "Gemini Streaming API client error {}: {}",
-                            status, error_text
-                        );
-                        return Err(ModelRequestFailure {
-                            error: anyhow!(
-                                "Gemini Streaming API client error {}: {}",
-                                status,
-                                error_text
-                            ),
-                            telemetry: ModelRequestTelemetryMeta {
-                                retry_count: attempt,
-                                status_code: Some(status.as_u16()),
-                                error_type: Some(classify_status_error(status).to_string()),
-                            },
-                        });
-                    }
-
-                    if status.is_success() {
-                        debug!(
-                            "Gemini stream request connected: {}ms, status: {}, attempt: {}/{}",
-                            connect_time,
-                            status,
-                            attempt + 1,
-                            max_tries
-                        );
-                        resp
-                    } else {
-                        let error_text = resp
-                            .text()
-                            .await
-                            .unwrap_or_else(|e| format!("Failed to read error response: {}", e));
-                        let error =
-                            anyhow!("Gemini Streaming API error {}: {}", status, error_text);
-                        warn!(
-                            "Gemini stream request failed: {}ms, attempt {}/{}, error: {}",
-                            connect_time,
-                            attempt + 1,
-                            max_tries,
-                            error
-                        );
-                        last_error = Some(error);
-                        last_telemetry = ModelRequestTelemetryMeta {
-                            retry_count: attempt,
-                            status_code: Some(status.as_u16()),
-                            error_type: Some(classify_status_error(status).to_string()),
-                        };
-
-                        if attempt < max_tries - 1 {
-                            let delay_ms = base_wait_time_ms * (1 << attempt.min(3));
-                            debug!(
-                                "Retrying Gemini after {}ms (attempt {})",
-                                delay_ms,
-                                attempt + 2
-                            );
-                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                        }
-                        continue;
-                    }
-                }
-                Err(e) => {
-                    let connect_time = request_start_time.elapsed().as_millis();
-                    let error = anyhow!("Gemini stream request connection failed: {}", e);
-                    warn!(
-                        "Gemini stream request connection failed: {}ms, attempt {}/{}, error: {}",
-                        connect_time,
-                        attempt + 1,
-                        max_tries,
-                        e
-                    );
-                    last_error = Some(error);
-                    last_telemetry = ModelRequestTelemetryMeta {
-                        retry_count: attempt,
-                        status_code: None,
-                        error_type: Some("connection_error".to_string()),
-                    };
-
-                    if attempt < max_tries - 1 {
-                        let delay_ms = base_wait_time_ms * (1 << attempt.min(3));
-                        debug!(
-                            "Retrying Gemini after {}ms (attempt {})",
-                            delay_ms,
-                            attempt + 2
-                        );
-                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                    }
-                    continue;
-                }
-            };
-
-            let status_code = response.status().as_u16();
-            let (tx, rx) = mpsc::unbounded_channel();
-            let (tx_raw, rx_raw) = mpsc::unbounded_channel();
-
-            tokio::spawn(handle_gemini_stream(response, tx, Some(tx_raw)));
-
-            return Ok((
-                StreamResponse {
-                    stream: Box::pin(tokio_stream::wrappers::UnboundedReceiverStream::new(rx)),
-                    raw_sse_rx: Some(rx_raw),
-                },
-                ModelRequestTelemetryMeta {
-                    retry_count: attempt,
-                    status_code: Some(status_code),
-                    error_type: None,
-                },
-            ));
-        }
-
-        let error_msg = format!(
-            "Gemini stream request failed after {} attempts: {}",
-            max_tries,
-            last_error.unwrap_or_else(|| anyhow!("Unknown error"))
-        );
-        error!("{}", error_msg);
-        Err(ModelRequestFailure {
-            error: anyhow!(error_msg),
-            telemetry: last_telemetry,
-        })
-    }
-
-    /// Send a Responses API streaming request with retries.
-    async fn send_responses_stream(
-        &self,
-        messages: Vec<Message>,
-        tools: Option<Vec<ToolDefinition>>,
-        extra_body: Option<serde_json::Value>,
-        max_tries: usize,
-    ) -> std::result::Result<(StreamResponse, ModelRequestTelemetryMeta), ModelRequestFailure> {
-        let url = self.config.request_url.clone();
-        debug!(
-            "Responses config: model={}, request_url={}, max_tries={}",
-            self.config.model, self.config.request_url, max_tries
-        );
-
-        let (instructions, response_input) =
-            OpenAIMessageConverter::convert_messages_to_responses_input(messages);
-        let openai_tools = OpenAIMessageConverter::convert_tools(tools);
-        let request_body = self.build_responses_request_body(
-            instructions,
-            response_input,
-            openai_tools,
-            extra_body,
-        );
-
-        let mut last_error = None;
-        let mut last_telemetry = ModelRequestTelemetryMeta::default();
-        let base_wait_time_ms = 500;
-
-        for attempt in 0..max_tries {
-            let request_start_time = std::time::Instant::now();
-            let request_builder = self.apply_openai_headers(self.client.post(&url));
-            let response_result = request_builder.json(&request_body).send().await;
-
-            let response = match response_result {
-                Ok(resp) => {
-                    let connect_time = request_start_time.elapsed().as_millis();
-                    let status = resp.status();
-
-                    if status.is_client_error() {
-                        let error_text = resp
-                            .text()
-                            .await
-                            .unwrap_or_else(|e| format!("Failed to read error response: {}", e));
-                        error!("Responses API client error {}: {}", status, error_text);
-                        return Err(ModelRequestFailure {
-                            error: anyhow!(
-                                "Responses API client error {}: {}",
-                                status,
-                                error_text
-                            ),
-                            telemetry: ModelRequestTelemetryMeta {
-                                retry_count: attempt,
-                                status_code: Some(status.as_u16()),
-                                error_type: Some(classify_status_error(status).to_string()),
-                            },
-                        });
-                    }
-
-                    if status.is_success() {
-                        debug!(
-                            "Responses request connected: {}ms, status: {}, attempt: {}/{}",
-                            connect_time,
-                            status,
-                            attempt + 1,
-                            max_tries
-                        );
-                        resp
-                    } else {
-                        let error_text = resp
-                            .text()
-                            .await
-                            .unwrap_or_else(|e| format!("Failed to read error response: {}", e));
-                        let error = anyhow!("Responses API error {}: {}", status, error_text);
-                        warn!(
-                            "Responses request failed (attempt {}/{}): {}",
-                            attempt + 1,
-                            max_tries,
-                            error
-                        );
-                        last_error = Some(error);
-                        last_telemetry = ModelRequestTelemetryMeta {
-                            retry_count: attempt,
-                            status_code: Some(status.as_u16()),
-                            error_type: Some(classify_status_error(status).to_string()),
-                        };
-
-                        if attempt < max_tries - 1 {
-                            let delay_ms = base_wait_time_ms * (1 << attempt.min(3));
-                            debug!("Retrying after {}ms (attempt {})", delay_ms, attempt + 2);
-                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                        }
-                        continue;
-                    }
-                }
-                Err(e) => {
-                    let connect_time = request_start_time.elapsed().as_millis();
-                    let error = anyhow!("Responses request connection failed: {}", e);
-                    warn!(
-                        "Responses request connection failed: {}ms, attempt {}/{}, error: {}",
-                        connect_time,
-                        attempt + 1,
-                        max_tries,
-                        e
-                    );
-                    last_error = Some(error);
-                    last_telemetry = ModelRequestTelemetryMeta {
-                        retry_count: attempt,
-                        status_code: None,
-                        error_type: Some("connection_error".to_string()),
-                    };
-
-                    if attempt < max_tries - 1 {
-                        let delay_ms = base_wait_time_ms * (1 << attempt.min(3));
-                        debug!("Retrying after {}ms (attempt {})", delay_ms, attempt + 2);
-                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                    }
-                    continue;
-                }
-            };
-
-            let status_code = response.status().as_u16();
-            let (tx, rx) = mpsc::unbounded_channel();
-            let (tx_raw, rx_raw) = mpsc::unbounded_channel();
-
-            tokio::spawn(handle_responses_stream(response, tx, Some(tx_raw)));
-
-            return Ok((
-                StreamResponse {
-                    stream: Box::pin(tokio_stream::wrappers::UnboundedReceiverStream::new(rx)),
-                    raw_sse_rx: Some(rx_raw),
-                },
-                ModelRequestTelemetryMeta {
-                    retry_count: attempt,
-                    status_code: Some(status_code),
-                    error_type: None,
-                },
-            ));
-        }
-
-        let error_msg = format!(
-            "Responses request failed after {} attempts: {}",
-            max_tries,
-            last_error.unwrap_or_else(|| anyhow!("Unknown error"))
-        );
-        error!("{}", error_msg);
-        Err(ModelRequestFailure {
-            error: anyhow!(error_msg),
-            telemetry: last_telemetry,
-        })
-    }
-
-    /// Send an Anthropic streaming request with retries
-    ///
-    /// # Parameters
-    /// - `messages`: message list
-    /// - `tools`: tool definitions
-    /// - `extra_body`: extra request body parameters
-    /// - `max_tries`: max attempts (including the first)
-    async fn send_anthropic_stream(
-        &self,
-        messages: Vec<Message>,
-        tools: Option<Vec<ToolDefinition>>,
-        extra_body: Option<serde_json::Value>,
-        max_tries: usize,
-    ) -> std::result::Result<(StreamResponse, ModelRequestTelemetryMeta), ModelRequestFailure> {
-        let url = self.config.request_url.clone();
-        debug!(
-            "Anthropic config: model={}, request_url={}, max_tries={}",
-            self.config.model, self.config.request_url, max_tries
-        );
-
-        // Use Anthropic message converter
-        let (system_message, anthropic_messages) =
-            AnthropicMessageConverter::convert_messages(messages);
-        let anthropic_tools = AnthropicMessageConverter::convert_tools(tools);
-
-        // Build request body
-        let request_body = self.build_anthropic_request_body(
-            &url,
-            system_message,
-            anthropic_messages,
-            anthropic_tools,
-            extra_body,
-        );
-
-        let mut last_error = None;
-        let mut last_telemetry = ModelRequestTelemetryMeta::default();
-        let base_wait_time_ms = 500;
-
-        for attempt in 0..max_tries {
-            let request_start_time = std::time::Instant::now();
-
-            // Send request - apply Anthropic-style request headers
-            let request_builder = self.apply_anthropic_headers(self.client.post(&url), &url);
-            let response_result = request_builder.json(&request_body).send().await;
-
-            let response = match response_result {
-                Ok(resp) => {
-                    let connect_time = request_start_time.elapsed().as_millis();
-                    let status = resp.status();
-
-                    if status.is_client_error() {
-                        let error_text = resp
-                            .text()
-                            .await
-                            .unwrap_or_else(|e| format!("Failed to read error response: {}", e));
-                        error!(
-                            "Anthropic Streaming API client error {}: {}",
-                            status, error_text
-                        );
-                        return Err(ModelRequestFailure {
-                            error: anyhow!(
-                                "Anthropic Streaming API client error {}: {}",
-                                status,
-                                error_text
-                            ),
-                            telemetry: ModelRequestTelemetryMeta {
-                                retry_count: attempt,
-                                status_code: Some(status.as_u16()),
-                                error_type: Some(classify_status_error(status).to_string()),
-                            },
-                        });
-                    }
-
-                    if status.is_success() {
-                        debug!(
-                            "Stream request connected: {}ms, status: {}, attempt: {}/{}",
-                            connect_time,
-                            status,
-                            attempt + 1,
-                            max_tries
-                        );
-                        resp
-                    } else {
-                        let error_text = resp
-                            .text()
-                            .await
-                            .unwrap_or_else(|e| format!("Failed to read error response: {}", e));
-                        let error =
-                            anyhow!("Anthropic Streaming API error {}: {}", status, error_text);
-                        warn!(
-                            "Stream request failed (attempt {}/{}): {}",
-                            attempt + 1,
-                            max_tries,
-                            error
-                        );
-                        last_error = Some(error);
-                        last_telemetry = ModelRequestTelemetryMeta {
-                            retry_count: attempt,
-                            status_code: Some(status.as_u16()),
-                            error_type: Some(classify_status_error(status).to_string()),
-                        };
-
-                        if attempt < max_tries - 1 {
-                            let delay_ms = base_wait_time_ms * (1 << attempt.min(3));
-                            debug!("Retrying after {}ms (attempt {})", delay_ms, attempt + 2);
-                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                        }
-                        continue;
-                    }
-                }
-                Err(e) => {
-                    let connect_time = request_start_time.elapsed().as_millis();
-                    let error = anyhow!("Stream request connection failed: {}", e);
-                    warn!(
-                        "Stream request connection failed: {}ms, attempt {}/{}, error: {}",
-                        connect_time,
-                        attempt + 1,
-                        max_tries,
-                        e
-                    );
-                    last_error = Some(error);
-                    last_telemetry = ModelRequestTelemetryMeta {
-                        retry_count: attempt,
-                        status_code: None,
-                        error_type: Some("connection_error".to_string()),
-                    };
-
-                    if attempt < max_tries - 1 {
-                        let delay_ms = base_wait_time_ms * (1 << attempt.min(3));
-                        debug!("Retrying after {}ms (attempt {})", delay_ms, attempt + 2);
-                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                    }
-                    continue;
-                }
-            };
-
-            // Success: create channels and return
-            let status_code = response.status().as_u16();
-            let (tx, rx) = mpsc::unbounded_channel();
-            let (tx_raw, rx_raw) = mpsc::unbounded_channel();
-
-            tokio::spawn(handle_anthropic_stream(response, tx, Some(tx_raw)));
-
-            return Ok((
-                StreamResponse {
-                    stream: Box::pin(tokio_stream::wrappers::UnboundedReceiverStream::new(rx)),
-                    raw_sse_rx: Some(rx_raw),
-                },
-                ModelRequestTelemetryMeta {
-                    retry_count: attempt,
-                    status_code: Some(status_code),
-                    error_type: None,
-                },
-            ));
-        }
-
-        let error_msg = format!(
-            "Stream request failed after {} attempts: {}",
-            max_tries,
-            last_error.unwrap_or_else(|| anyhow!("Unknown error"))
-        );
-        error!("{}", error_msg);
-        Err(ModelRequestFailure {
-            error: anyhow!(error_msg),
-            telemetry: last_telemetry,
-        })
     }
 
     /// Send a message and wait for the full response (non-streaming)
