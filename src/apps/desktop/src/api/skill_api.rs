@@ -8,12 +8,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::OnceLock;
 use tauri::State;
 use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 use tokio::time::{timeout, Duration};
+use tokio::io::AsyncWriteExt;
 
 use crate::api::app_state::AppState;
 use bitfun_core::agentic::tools::implementations::skills::mode_overrides::{
@@ -30,10 +30,8 @@ use bitfun_core::agentic::workspace::RemoteWorkspaceFs;
 use bitfun_core::infrastructure::get_path_manager_arc;
 use bitfun_core::service::remote_ssh::workspace_state::is_remote_path;
 use bitfun_core::service::remote_ssh::{get_remote_workspace_manager, RemoteWorkspaceEntry};
-use bitfun_core::service::runtime::RuntimeManager;
-use bitfun_core::util::process_manager;
 
-const SKILLS_SEARCH_API_BASE: &str = "https://skills.sh";
+const SKILLS_SEARCH_API_BASE: &str = "https://skill-market.csitool.rnd.huawei.com/opencsitool/rest/v1/openapi/noAuth/skill";
 const DEFAULT_MARKET_QUERY: &str = "skill";
 const DEFAULT_MARKET_LIMIT: u32 = 12;
 const MAX_MARKET_LIMIT: u32 = 500;
@@ -103,22 +101,41 @@ pub struct SkillMarketItem {
     pub install_id: String,
 }
 
+// API 可能返回数组或对象，使用枚举来处理两种情况
 #[derive(Debug, Clone, Deserialize)]
-struct SkillSearchApiResponse {
-    #[serde(default)]
-    skills: Vec<SkillSearchApiItem>,
+#[serde(untagged)]
+enum SkillSearchApiResponse {
+    Array(Vec<SkillSearchApiItem>),
+    Object {
+        #[serde(default)]
+        value: Vec<SkillSearchApiItem>,
+        #[serde(default)]
+        Count: usize,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct SkillSearchApiItem {
-    id: String,
+    id: u32,
     name: String,
     #[serde(default)]
     description: String,
     #[serde(default)]
-    source: String,
+    skill_type: String,
     #[serde(default)]
-    installs: u64,
+    tags: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    version_description: String,
+    #[serde(default)]
+    create_time: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SkillDownloadApiResponse {
+    #[serde(rename = "downloadUrl")]
+    download_url: String,
 }
 
 fn workspace_root_from_input(workspace_path: Option<&str>) -> Option<PathBuf> {
@@ -932,63 +949,181 @@ pub async fn download_skill_market(
         .map(|skill| skill.name)
         .collect();
 
-    let runtime_manager = RuntimeManager::new()
-        .map_err(|e| format!("Failed to initialize runtime manager: {}", e))?;
-    let resolved_npx = runtime_manager.resolve_command("npx").ok_or_else(|| {
-        "Command 'npx' is not available. Install Node.js or configure BitFun runtimes.".to_string()
-    })?;
+    // 解析 package 获取 skill ID（只支持纯数字 ID 格式）
+    let skill_id: u32 = package
+        .parse()
+        .map_err(|_| format!("Invalid skill ID: {}. Expected a numeric ID.", package))?;
 
-    let mut command = process_manager::create_tokio_command(&resolved_npx.command);
-    command
-        .arg("-y")
-        .arg("skills")
-        .arg("add")
-        .arg(&package)
-        .arg("-y")
-        .arg("-a")
-        .arg("universal");
+    // 获取下载链接
+    let api_base =
+        std::env::var("SKILLS_API_URL").unwrap_or_else(|_| SKILLS_SEARCH_API_BASE.into());
+    let base_url = api_base.trim_end_matches('/');
+    let download_url = format!("{}/{}/download", base_url, skill_id);
 
-    if level == SkillLocation::User {
-        command.arg("-g");
-    }
+    let client = create_http_client()?;
 
-    if let Some(path) = workspace_path.as_ref() {
-        command.current_dir(path);
-    }
-
-    let current_path = std::env::var("PATH").ok();
-    if let Some(merged_path) = runtime_manager.merged_path_env(current_path.as_deref()) {
-        command.env("PATH", &merged_path);
-        #[cfg(windows)]
-        {
-            command.env("Path", &merged_path);
-        }
-    }
-
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
-
-    let output = command
-        .output()
+    let response = client
+        .get(&download_url)
+        .send()
         .await
-        .map_err(|e| format!("Failed to execute skills installer: {}", e))?;
+        .map_err(|e| format!("Failed to get download URL: {}", e))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    if !output.status.success() {
-        let exit_code = output.status.code().unwrap_or(-1);
-        let detail = if !stderr.trim().is_empty() {
-            truncate_preview(stderr.trim())
-        } else if !stdout.trim().is_empty() {
-            truncate_preview(stdout.trim())
-        } else {
-            "Unknown installer error".to_string()
-        };
+    if !response.status().is_success() {
         return Err(format!(
-            "Failed to download skill package '{}' (exit code {}): {}",
-            package, exit_code, detail
+            "Failed to get download URL, status: {}",
+            response.status()
         ));
+    }
+
+    let download_response: SkillDownloadApiResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse download response: {}", e))?;
+
+    let zip_url = download_response.download_url;
+    if zip_url.is_empty() {
+        return Err("Download URL is empty".to_string());
+    }
+
+    // 下载 zip 文件
+    let temp_dir = std::env::temp_dir();
+    let zip_path = temp_dir.join(format!("skill_{}.zip", skill_id));
+
+    let response = client
+        .get(&zip_url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to download skill: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Failed to download skill, status: {}",
+            response.status()
+        ));
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read download content: {}", e))?;
+
+    // 保存到临时文件
+    let mut file = tokio::fs::File::create(&zip_path)
+        .await
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+    file.write_all(&bytes)
+        .await
+        .map_err(|e| format!("Failed to write temp file: {}", e))?;
+    drop(file);
+
+    // 解压 zip 文件
+    // 使用原始的 Option<String> 而不是转换后的 Option<PathBuf>
+    let target_dir = if level == SkillLocation::Project {
+        if let Some(workspace_root) = workspace_root_from_input(request.workspace_path.as_deref()) {
+            workspace_root.join(".bitfun").join("skills")
+        } else {
+            tokio::fs::remove_file(&zip_path).await.ok();
+            return Err("No workspace open, cannot add project-level Skill".to_string());
+        }
+    } else {
+        get_path_manager_arc().user_skills_dir()
+    };
+
+    tokio::fs::create_dir_all(&target_dir)
+        .await
+        .map_err(|e| format!("Failed to create skills directory: {}", e))?;
+
+    // 解压到临时目录，然后移动内容
+    let extract_dir = temp_dir.join(format!("skill_extract_{}", skill_id));
+    if extract_dir.exists() {
+        tokio::fs::remove_dir_all(&extract_dir).await.ok();
+    }
+    tokio::fs::create_dir_all(&extract_dir)
+        .await
+        .map_err(|e| format!("Failed to create extract directory: {}", e))?;
+
+    // 使用 zip 库解压（同步方式，因为 tokio 没有内置 zip 支持）
+    let zip_path_clone = zip_path.clone();
+    let extract_dir_clone = extract_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(&zip_path_clone)
+            .map_err(|e| format!("Failed to open zip file: {}", e))?;
+        let mut archive = zip::ZipArchive::new(file)
+            .map_err(|e| format!("Failed to read zip archive: {}", e))?;
+
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i)
+                .map_err(|e| format!("Failed to read zip entry: {}", e))?;
+            let outpath = extract_dir_clone.join(file.mangled_name());
+
+            if file.name().ends_with('/') {
+                std::fs::create_dir_all(&outpath)
+                    .map_err(|e| format!("Failed to create directory: {}", e))?;
+            } else {
+                if let Some(p) = outpath.parent() {
+                    if !p.exists() {
+                        std::fs::create_dir_all(p)
+                            .map_err(|e| format!("Failed to create parent directory: {}", e))?;
+                    }
+                }
+                let mut outfile = std::fs::File::create(&outpath)
+                    .map_err(|e| format!("Failed to create out file: {}", e))?;
+                std::io::copy(&mut file, &mut outfile)
+                    .map_err(|e| format!("Failed to extract file: {}", e))?;
+            }
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("Extract task failed: {}", e))??;
+
+    // 清理 zip 文件
+    tokio::fs::remove_file(&zip_path).await.ok();
+
+    // 获取解压后的 skill 目录（假设 zip 打包时最外层就是 skill 目录）
+    let mut entries = tokio::fs::read_dir(&extract_dir).await
+        .map_err(|e| format!("Failed to read extract directory: {}", e))?;
+    let skill_folder = entries.next_entry().await
+        .map_err(|e| format!("Failed to read extract directory entry: {}", e))?
+        .ok_or_else(|| "Extracted skill folder is empty".to_string())?;
+
+    let skill_name = skill_folder.file_name()
+        .to_str()
+        .ok_or("Invalid skill name")?
+        .to_string();
+
+    let target_path = target_dir.join(&skill_name);
+
+    if target_path.exists() {
+        // 清理临时解压目录
+        tokio::fs::remove_dir_all(&extract_dir).await.ok();
+        return Err(format!(
+            "Skill '{}' already exists in {} level directory",
+            skill_name,
+            if level == SkillLocation::Project {
+                "project"
+            } else {
+                "user"
+            }
+        ));
+    }
+
+    // 移动到目标目录
+    let _ = tokio::fs::rename(&skill_folder.path(), &target_path)
+        .await
+        .map_err(|e| {
+            // 如果移动失败（跨文件系统），尝试复制后删除
+            format!("Failed to move skill: {}. Try copy and delete.", e)
+        });
+
+    // 如果 rename 失败（跨文件系统），使用 copy + delete
+    if !target_path.exists() {
+        copy_dir_all(&skill_folder.path(), &target_path).await
+            .map_err(|e| format!("Failed to copy skill folder: {}", e))?;
+        tokio::fs::remove_dir_all(&extract_dir).await.ok();
+    } else {
+        // 清理临时解压目录
+        tokio::fs::remove_dir_all(&extract_dir).await.ok();
     }
 
     registry
@@ -1015,7 +1150,7 @@ pub async fn download_skill_market(
         package,
         level,
         installed_skills,
-        output: summarize_command_output(&stdout, &stderr),
+        output: format!("Successfully downloaded and installed skill '{}'", skill_name),
     })
 }
 
@@ -1025,16 +1160,36 @@ fn normalize_market_limit(value: Option<u32>) -> u32 {
         .clamp(1, MAX_MARKET_LIMIT)
 }
 
+/// 创建带代理支持的 HTTP 客户端
+/// 对于内网地址，优先直接连接，不走代理
+/// 创建 HTTP 客户端（用于访问内网 skill 市场）
+/// 直接连接内网，不使用代理，忽略 TLS 证书错误
+fn create_http_client() -> Result<Client, String> {
+    Client::builder()
+        .timeout(Duration::from_secs(60))
+        .connect_timeout(Duration::from_secs(15))
+        // 忽略 TLS 证书错误（内网使用自签名证书）
+        .danger_accept_invalid_certs(true)
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))
+}
+
 async fn fetch_skill_market(query: &str, limit: u32) -> Result<Vec<SkillMarketItem>, String> {
     let api_base =
         std::env::var("SKILLS_API_URL").unwrap_or_else(|_| SKILLS_SEARCH_API_BASE.into());
     let base_url = api_base.trim_end_matches('/');
-    let endpoint = format!("{}/api/search", base_url);
 
-    let client = Client::new();
+    let client = create_http_client()?;
+
+    // 根据是否有关键词选择 endpoint
+    let endpoint = if query.is_empty() || query == "skill" {
+        format!("{}/all", base_url)
+    } else {
+        format!("{}/all?keyword={}", base_url, query)
+    };
+
     let response = client
         .get(&endpoint)
-        .query(&[("q", query), ("limit", &limit.to_string())])
         .send()
         .await
         .map_err(|e| format!("Failed to query skill market: {}", e))?;
@@ -1046,42 +1201,48 @@ async fn fetch_skill_market(query: &str, limit: u32) -> Result<Vec<SkillMarketIt
         ));
     }
 
+    // 解析 JSON - 支持数组和对象两种格式
     let payload: SkillSearchApiResponse = response
         .json()
         .await
         .map_err(|e| format!("Failed to decode skill market response: {}", e))?;
 
+    // 提取技能列表（兼容数组和对象格式）
+    let skills = match payload {
+        SkillSearchApiResponse::Array(arr) => arr,
+        SkillSearchApiResponse::Object { value, .. } => value,
+    };
+
     let mut seen_install_ids: HashSet<String> = HashSet::new();
     let mut items = Vec::new();
 
-    for raw in payload.skills {
-        let source = raw.source.trim().to_string();
-        let install_id = if source.is_empty() {
-            if raw.id.contains('@') {
-                raw.id.clone()
-            } else {
-                format!("{}@{}", raw.id, raw.name)
-            }
-        } else {
-            format!("{}@{}", source, raw.name)
-        };
+    // 应用 limit 限制
+    let limited_skills: Vec<_> = skills.into_iter().take(limit as usize).collect();
+
+    for raw in limited_skills {
+        let install_id = raw.id.to_string();
 
         if !seen_install_ids.insert(install_id.clone()) {
             continue;
         }
 
+        // 新 API 没有 source 和 installs 字段，使用默认值
+        let source = String::new();
+        let installs: u64 = 0;
+
         items.push(SkillMarketItem {
-            id: raw.id.clone(),
+            id: raw.id.to_string(),
             name: raw.name,
             description: raw.description,
             source,
-            installs: raw.installs,
-            url: format!("{}/{}", base_url, raw.id.trim_start_matches('/')),
+            installs,
+            url: format!("{}/{}", base_url, raw.id),
             install_id,
         });
     }
 
-    fill_market_descriptions(&client, base_url, &mut items).await;
+    // 新 API 返回的数据已包含 description，不需要再爬网页获取
+    // fill_market_descriptions(&client, base_url, &mut items).await;
 
     Ok(items)
 }
