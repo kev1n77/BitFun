@@ -8,7 +8,7 @@
     },
     "anchorDescriptions": {
       "installed": "管理当前环境中已经可用的技能。",
-      "market": "从 skills.sh 检索并下载更多技能。"
+      "market": "从内部市场浏览和下载可复用技能。"
     },
     "categories": {
       "discover": "探索",
@@ -55,6 +55,7 @@
     "title": "技能市场",
     "subtitle": "搜索并下载可复用技能（默认下载到当前项目）",
     "subtitlePrefix": "从",
+    "subtitleLink": "内部市场",
     "subtitleSuffix": "浏览和下载可复用技能。",
     "searchPlaceholder": "搜索市场技能...",
     "loading": "正在加载市场技能...",

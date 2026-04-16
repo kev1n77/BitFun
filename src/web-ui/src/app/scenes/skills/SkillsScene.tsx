@@ -32,7 +32,7 @@ import { useGallerySceneAutoRefresh } from '@/app/hooks/useGallerySceneAutoRefre
 
 const log = createLogger('SkillsScene');
 
-const SKILLS_SOURCE_URL = 'https://skills.sh';
+const SKILLS_SOURCE_URL = 'https://skill-market.csitool.rnd.huawei.com';
 
 const INSTALLED_PAGE_SIZE = 10;
 
@@ -184,7 +184,7 @@ const SkillsScene: React.FC = () => {
               <span className="skills-split__section-sub">
                 {t('market.subtitlePrefix')}
                 {' '}
-                <a href={SKILLS_SOURCE_URL} target="_blank" rel="noreferrer">skills.sh</a>
+                <a href={SKILLS_SOURCE_URL} target="_blank" rel="noreferrer">{t('market.subtitleLink')}</a>
                 {t('market.subtitleSuffix')}
               </span>
             </div>

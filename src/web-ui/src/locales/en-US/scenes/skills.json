@@ -8,7 +8,7 @@
     },
     "anchorDescriptions": {
       "installed": "Manage skills already available in this environment.",
-      "market": "Search and download more skills from skills.sh."
+      "market": "Browse and download reusable skills from the internal marketplace."
     },
     "categories": {
       "discover": "Discover",
@@ -55,6 +55,7 @@
     "title": "Skill Marketplace",
     "subtitle": "Search and download reusable skills (default scope: current project)",
     "subtitlePrefix": "Browse reusable skills from",
+    "subtitleLink": "the internal marketplace",
     "subtitleSuffix": ".",
     "searchPlaceholder": "Search marketplace skills...",
     "loading": "Loading marketplace skills...",
