@@ -318,5 +318,29 @@
       "validJson": "JSON format is valid",
       "mergeHint": "Custom fields will override corresponding fields in the default request body"
     }
+  },
+  "usageStats": {
+    "title": "Usage Statistics",
+    "overview": "Overview",
+    "logs": "Logs",
+    "loading": "Loading usage data...",
+    "retry": "Retry",
+    "refresh": "Refresh",
+    "window5h": "5-Hour Requests",
+    "tokenUsage": "Token Usage",
+    "inputTokens": "Input",
+    "outputTokens": "Output",
+    "plan": "Plan",
+    "concurrency": "Concurrency",
+    "rpmLimit": "RPM Limit",
+    "keyInfo": "Key Info",
+    "keyPrefix": "Key Prefix",
+    "createdAt": "Created",
+    "expires": "Expires",
+    "blocked": "Blocked",
+    "active": "Active",
+    "noLogs": "No usage logs found",
+    "noData": "No data",
+    "totalLogs": "{{total}} total records"
   }
 }

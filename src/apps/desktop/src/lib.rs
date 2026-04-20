@@ -40,6 +40,7 @@ use api::i18n_api::*;
 use api::lsp_api::*;
 use api::lsp_workspace_api::*;
 use api::mcp_api::*;
+use api::provider_usage_api::*;
 use api::runtime_api::*;
 use api::session_api::*;
 use api::skill_api::*;
@@ -487,6 +488,9 @@ pub async fn run() {
             validate_skill_path,
             add_skill,
             delete_skill,
+            // Provider usage statistics API
+            api::provider_usage_api::get_provider_usage_stats,
+            api::provider_usage_api::get_provider_usage_logs,
             git_is_repository,
             git_get_repository,
             git_get_status,

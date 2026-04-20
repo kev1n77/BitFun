@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Plus, SquarePen, Trash2, Wifi, Loader, AlertTriangle, X, Settings, ExternalLink, Eye, EyeOff, ChevronDown, ChevronRight, Info } from 'lucide-react';
+import { Plus, SquarePen, Trash2, Wifi, Loader, AlertTriangle, X, Settings, ExternalLink, Eye, EyeOff, ChevronDown, ChevronRight, Info, BarChart2 } from 'lucide-react';
 import { Button, Switch, Select, IconButton, NumberInput, Card, Modal, Input, Textarea, Tooltip, type SelectOption } from '@/component-library';
 import { 
   AIModelConfig as AIModelConfigType, 
@@ -12,11 +12,12 @@ import {
 import { configManager } from '../services/ConfigManager';
 import { PROVIDER_TEMPLATES, getModelDisplayName, getProviderDisplayName, getProviderTemplateId } from '../services/modelConfigs';
 import { DEFAULT_REASONING_MODE, getEffectiveReasoningMode, supportsAnthropicAdaptive, supportsAnthropicReasoning, supportsAnthropicThinkingBudget, supportsResponsesReasoning } from '../utils/reasoning';
-import { aiApi, systemAPI } from '@/infrastructure/api';
+import { aiApi, systemAPI, isInternalProvider } from '@/infrastructure/api';
 import type { DiscoveredCliCredential } from '@/infrastructure/api/service-api/AIApi';
 import { useNotification } from '@/shared/notification-system';
 import { ConfigPageHeader, ConfigPageLayout, ConfigPageContent, ConfigPageSection, ConfigPageRow, ConfigCollectionItem } from './common';
 import DefaultModelConfig from './DefaultModelConfig';
+import { UsageStatsModal } from './UsageStatsModal';
 import { createLogger } from '@/shared/utils/logger';
 import { translateConnectionTestMessage } from '@/shared/utils/aiConnectionTestMessages';
 import './AIModelConfig.scss';
@@ -298,6 +299,7 @@ const AIModelConfig: React.FC = () => {
   const [expandedModelCards, setExpandedModelCards] = useState<Set<string>>(new Set());
   const [discoveredCli, setDiscoveredCli] = useState<DiscoveredCliCredential[]>([]);
   const [isDiscoveringCli, setIsDiscoveringCli] = useState(false);
+  const [statsModalConfig, setStatsModalConfig] = useState<{ apiKey: string; modelName: string; baseUrl: string } | null>(null);
   const lastRemoteFetchSignatureRef = React.useRef<string | null>(null);
   const activeRemoteFetchSignatureRef = React.useRef<string | null>(null);
 
@@ -2421,6 +2423,21 @@ const AIModelConfig: React.FC = () => {
                       </span>
                     </div>
                     <div className="bitfun-ai-model-config__provider-group-actions">
+                      {isInternalProvider(group.models[0]?.base_url) && (
+                        <Tooltip content={t('usageStats.title', { defaultValue: 'Usage Stats' })}>
+                          <IconButton
+                            variant="ghost"
+                            size="small"
+                            onClick={() => setStatsModalConfig({
+                              apiKey: group.models[0]?.api_key || '',
+                              modelName: group.models[0]?.provider || '',
+                              baseUrl: group.models[0]?.base_url || '',
+                            })}
+                          >
+                            <BarChart2 size={14} />
+                          </IconButton>
+                        </Tooltip>
+                      )}
                       <IconButton
                         variant="ghost"
                         size="small"
@@ -2536,6 +2553,16 @@ const AIModelConfig: React.FC = () => {
       >
         {renderEditingForm()}
       </Modal>
+
+      {statsModalConfig && (
+        <UsageStatsModal
+          isOpen={!!statsModalConfig}
+          onClose={() => setStatsModalConfig(null)}
+          apiKey={statsModalConfig.apiKey}
+          modelName={statsModalConfig.modelName}
+          baseUrl={statsModalConfig.baseUrl}
+        />
+      )}
     </ConfigPageLayout>
   );
 };
