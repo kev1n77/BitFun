@@ -32,9 +32,14 @@ import { i18nAPI } from './service-api/I18nAPI';
 import { btwAPI } from './service-api/BtwAPI';
 import { editorAiAPI } from './service-api/EditorAiAPI';
 import { insightsApi } from './insightsApi';
+import { providerUsageAPI, isInternalProvider, formatTokenCount, formatCurrency, formatDate, getStatusDisplay } from './service-api/ProviderUsageAPI';
+export type { UsageStats, PlanInfo, KeyInfo, UsageLogEntry, UsageLogs, UsageWindow, CombinedUsageStats } from './service-api/ProviderUsageAPI';
 
 // Export API modules
-export { workspaceAPI, configAPI, aiApi, toolAPI, agentAPI, systemAPI, projectAPI, diffAPI, snapshotAPI, globalAPI, contextAPI, cronAPI, gitAPI, gitAgentAPI, gitRepoHistoryAPI, startchatAgentAPI, sessionAPI, i18nAPI, btwAPI, editorAiAPI, insightsApi };
+export { workspaceAPI, configAPI, aiApi, toolAPI, agentAPI, systemAPI, projectAPI, diffAPI, snapshotAPI, globalAPI, contextAPI, cronAPI, gitAPI, gitAgentAPI, gitRepoHistoryAPI, startchatAgentAPI, sessionAPI, i18nAPI, btwAPI, editorAiAPI, insightsApi, providerUsageAPI };
+
+// Export utilities
+export { isInternalProvider, formatTokenCount, formatCurrency, formatDate, getStatusDisplay };
 
 // Export types
 export type { GitRepoHistory };
@@ -63,6 +68,7 @@ export const bitfunAPI = {
   btw: btwAPI,
   editorAi: editorAiAPI,
   insights: insightsApi,
+  providerUsage: providerUsageAPI,
 };
 
 // Default export

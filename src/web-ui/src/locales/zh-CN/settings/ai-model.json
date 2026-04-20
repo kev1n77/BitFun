@@ -318,5 +318,29 @@
       "validJson": "JSON格式有效",
       "mergeHint": "自定义字段将覆盖默认请求体中的对应字段"
     }
+  },
+  "usageStats": {
+    "title": "用量统计",
+    "overview": "概览",
+    "logs": "日志",
+    "loading": "正在加载用量数据...",
+    "retry": "重试",
+    "refresh": "刷新",
+    "window5h": "5小时请求数",
+    "tokenUsage": "Token 用量",
+    "inputTokens": "输入",
+    "outputTokens": "输出",
+    "plan": "套餐",
+    "concurrency": "并发",
+    "rpmLimit": "RPM限制",
+    "keyInfo": "密钥信息",
+    "keyPrefix": "密钥前缀",
+    "createdAt": "创建时间",
+    "expires": "过期时间",
+    "blocked": "已封禁",
+    "active": "正常",
+    "noLogs": "暂无调用记录",
+    "noData": "暂无数据",
+    "totalLogs": "共 {{total}} 条记录"
   }
 }
