@@ -1,6 +1,6 @@
 ---
 id: feature_shortcuts_v0_2_2
-trigger: version_first_open
+trigger: manual
 once_per_version: true
 delay_ms: 5000
 toast_title: "v0.2.2"
