@@ -13,7 +13,6 @@ import { configManager } from '../services/ConfigManager';
 import { PROVIDER_TEMPLATES, getModelDisplayName, getProviderDisplayName, getProviderTemplateId } from '../services/modelConfigs';
 import { DEFAULT_REASONING_MODE, getEffectiveReasoningMode, supportsAnthropicAdaptive, supportsAnthropicReasoning, supportsAnthropicThinkingBudget, supportsResponsesReasoning } from '../utils/reasoning';
 import { aiApi, systemAPI, isInternalProvider } from '@/infrastructure/api';
-import type { DiscoveredCliCredential } from '@/infrastructure/api/service-api/AIApi';
 import { useNotification } from '@/shared/notification-system';
 import { ConfigPageHeader, ConfigPageLayout, ConfigPageContent, ConfigPageSection, ConfigPageRow, ConfigCollectionItem } from './common';
 import DefaultModelConfig from './DefaultModelConfig';
@@ -297,8 +296,6 @@ const AIModelConfig: React.FC = () => {
   const [selectedModelDrafts, setSelectedModelDrafts] = useState<SelectedModelDraft[]>([]);
   const [manualModelInput, setManualModelInput] = useState('');
   const [expandedModelCards, setExpandedModelCards] = useState<Set<string>>(new Set());
-  const [discoveredCli, setDiscoveredCli] = useState<DiscoveredCliCredential[]>([]);
-  const [isDiscoveringCli, setIsDiscoveringCli] = useState(false);
   const [statsModalConfig, setStatsModalConfig] = useState<{ apiKey: string; modelName: string; baseUrl: string } | null>(null);
   const lastRemoteFetchSignatureRef = React.useRef<string | null>(null);
   const activeRemoteFetchSignatureRef = React.useRef<string | null>(null);
@@ -424,22 +421,6 @@ const AIModelConfig: React.FC = () => {
     loadConfig();
   }, [loadConfig]);
 
-  const refreshDiscoveredCli = useCallback(async () => {
-    setIsDiscoveringCli(true);
-    try {
-      const items = await aiApi.discoverCliCredentials();
-      setDiscoveredCli(items);
-    } catch (e) {
-      log.warn('discover_cli_credentials failed', { error: String(e) });
-    } finally {
-      setIsDiscoveringCli(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    refreshDiscoveredCli();
-  }, [refreshDiscoveredCli]);
-  
   // Provider options with translations (must be at top level, before any conditional returns)
   const providerOrder = ['inner'];
   const providers = useMemo(() => {
@@ -786,48 +767,6 @@ const AIModelConfig: React.FC = () => {
     setCreationMode('selection');
   };
 
-  const handleImportFromCli = useCallback((cred: DiscoveredCliCredential) => {
-    resetRemoteModelDiscovery();
-    setManualModelInput('');
-    setShowApiKey(false);
-    setSelectedProviderId(null);
-    const authType: 'codex_cli' | 'gemini_cli' = cred.kind === 'codex' ? 'codex_cli' : 'gemini_cli';
-    setEditingConfig({
-      name: cred.display_label,
-      provider: cred.suggested_format,
-      base_url: cred.suggested_base_url,
-      // Leave request_url + model_name empty so the user must pick a model
-      // from the live CLI list. We never inject a hard-coded default slug.
-      request_url: '',
-      api_key: '',
-      model_name: '',
-      enabled: true,
-      context_window: 200000,
-      max_tokens: 32000,
-      category: 'general_chat',
-      capabilities: ['text_chat', 'function_calling'],
-      recommended_for: [],
-      metadata: {},
-      inline_think_in_text: true,
-      auth: { type: authType },
-    });
-    setSelectedModelDrafts([]);
-    setShowAdvancedSettings(false);
-    setCreationMode('form');
-    setIsEditing(true);
-  }, [resetRemoteModelDiscovery]);
-
-  const handleRefreshCli = useCallback(async (kind: 'codex' | 'gemini') => {
-    try {
-      await aiApi.refreshCliCredential(kind);
-      await refreshDiscoveredCli();
-      notification.success(t('cliAuth.refreshSuccess'));
-    } catch (e) {
-      notification.error(t('cliAuth.refreshFailed', { error: String(e) }));
-    }
-  }, [refreshDiscoveredCli, notification, t]);
-
-  
   const handleSelectProvider = (providerId: string) => {
     const template = PROVIDER_TEMPLATES[providerId];
     if (!template) return;
@@ -1690,45 +1629,6 @@ const AIModelConfig: React.FC = () => {
     };
 
     const authType: 'api_key' | 'codex_cli' | 'gemini_cli' = editingConfig.auth?.type || 'api_key';
-    const authIsCli = authType !== 'api_key';
-    const cliAuthOptions: SelectOption[] = [
-      { value: 'api_key', label: t('cliAuth.options.apiKey') },
-      { value: 'codex_cli', label: t('cliAuth.options.codexCli') },
-      { value: 'gemini_cli', label: t('cliAuth.options.geminiCli') },
-    ];
-    const matchedCliCredential = authType === 'codex_cli'
-      ? discoveredCli.find(c => c.kind === 'codex')
-      : authType === 'gemini_cli'
-        ? discoveredCli.find(c => c.kind === 'gemini')
-        : undefined;
-
-    const renderAuthRow = () => (
-      <ConfigPageRow label={t('cliAuth.label')} align={authIsCli ? 'start' : 'center'} wide>
-        <div className="bitfun-ai-model-config__control-stack">
-          <Select
-            value={authType}
-            onChange={(value) => {
-              const next = String(value) as 'api_key' | 'codex_cli' | 'gemini_cli';
-              setEditingConfig(prev => ({ ...prev, auth: { type: next } }));
-            }}
-            options={cliAuthOptions}
-            size="small"
-          />
-          {authIsCli && (
-            <small className={matchedCliCredential ? 'resolved-url__hint bitfun-ai-model-config__cli-auth-hint' : `resolved-url__hint bitfun-ai-model-config__cli-auth-hint bitfun-ai-model-config__json-status--error`}>
-              {matchedCliCredential
-                ? t('cliAuth.detected', {
-                    label: matchedCliCredential.display_label,
-                    account: matchedCliCredential.account || t('cliAuth.unknownAccount'),
-                  })
-                : t('cliAuth.notDetected', {
-                    kind: authType === 'codex_cli' ? 'Codex CLI' : 'Gemini CLI',
-                  })}
-            </small>
-          )}
-        </div>
-      </ConfigPageRow>
-    );
 
     const renderApiKeyRow = (label: string) => (
       <ConfigPageRow label={label} align="center" wide>
@@ -1759,8 +1659,7 @@ const AIModelConfig: React.FC = () => {
                 <ConfigPageRow label={`${t('form.configName')} *`} align="center" wide>
                   <Input value={editingConfig.name || ''} onChange={(e) => setEditingConfig(prev => ({ ...prev, name: e.target.value }))} placeholder={t('form.configNamePlaceholder')} inputSize="small" />
                 </ConfigPageRow>
-                {renderAuthRow()}
-                {!authIsCli && renderApiKeyRow(`${t('form.apiKey')} *`)}
+                {authType === 'api_key' && renderApiKeyRow(`${t('form.apiKey')} *`)}
                 <ConfigPageRow label={t('form.baseUrl')} align="center" wide>
                   <div className="bitfun-ai-model-config__control-stack">
                     {currentTemplate?.baseUrlOptions && currentTemplate.baseUrlOptions.length > 0 && (
@@ -1915,8 +1814,7 @@ const AIModelConfig: React.FC = () => {
                         )}
                       </div>
                     </ConfigPageRow>
-                    {renderAuthRow()}
-                    {!authIsCli && renderApiKeyRow(`${t('form.apiKey')} *`)}
+                    {authType === 'api_key' && renderApiKeyRow(`${t('form.apiKey')} *`)}
                     <ConfigPageRow label={t('form.provider')} align="center" wide>
                       <Select value={editingConfig.provider || 'openai'} onChange={(value) => {
                         const provider = value as string;
@@ -2320,71 +2218,6 @@ const AIModelConfig: React.FC = () => {
           description={tDefault('subtitle')}
         >
           <DefaultModelConfig />
-        </ConfigPageSection>
-
-        <ConfigPageSection
-          title={t('cliAuth.sectionTitle')}
-          description={t('cliAuth.sectionDescription')}
-          extra={(
-            <IconButton
-              variant="ghost"
-              size="small"
-              onClick={refreshDiscoveredCli}
-              tooltip={t('cliAuth.rescan')}
-              disabled={isDiscoveringCli}
-            >
-              <Loader size={16} className={isDiscoveringCli ? 'bitfun-ai-model-config__spin' : ''} />
-            </IconButton>
-          )}
-        >
-          {discoveredCli.length === 0 ? (
-            <div className="bitfun-ai-model-config__cli-empty">
-              <p>{t('cliAuth.empty')}</p>
-            </div>
-          ) : (
-            <div className="bitfun-ai-model-config__cli-discovery">
-              {discoveredCli.map(cred => {
-                const descriptionParts: string[] = [];
-                if (cred.account) {
-                  descriptionParts.push(cred.account);
-                }
-                if (cred.expires_at) {
-                  descriptionParts.push(
-                    t('cliAuth.expiresAt', {
-                      time: new Date(cred.expires_at * 1000).toLocaleString(),
-                    }),
-                  );
-                } else {
-                  descriptionParts.push(t('cliAuth.tokenValid'));
-                }
-                return (
-                  <ConfigPageRow
-                    key={`${cred.kind}-${cred.source_path}`}
-                    label={cred.display_label}
-                    description={descriptionParts.join(' · ')}
-                    align="center"
-                  >
-                    <div className="bitfun-ai-model-config__cli-actions">
-                      <Button
-                        size="small"
-                        variant="secondary"
-                        onClick={() => handleRefreshCli(cred.kind)}
-                      >
-                        {t('cliAuth.refresh')}
-                      </Button>
-                      <Button
-                        size="small"
-                        variant="primary"
-                        onClick={() => handleImportFromCli(cred)}
-                      >
-                        {t('cliAuth.import')}
-                      </Button>
-                    </div>
-                  </ConfigPageRow>
-                );
-              })}
-            </div>
-          )}
         </ConfigPageSection>
 
         <ConfigPageSection
