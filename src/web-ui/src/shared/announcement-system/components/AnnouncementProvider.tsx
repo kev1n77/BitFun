@@ -14,7 +14,6 @@ const log = createLogger('AnnouncementProvider');
  * Order determines display sequence.
  */
 const DEBUG_CARD_IDS = [
-  'feature_shortcuts_v0_2_2',
   'feature_welcome',
 ];
 
