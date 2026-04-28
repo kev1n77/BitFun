@@ -12,6 +12,7 @@ use crate::agentic::deep_review_policy::{
     REVIEWER_ARCHITECTURE_AGENT_TYPE, REVIEWER_BUSINESS_LOGIC_AGENT_TYPE,
     REVIEWER_PERFORMANCE_AGENT_TYPE, REVIEWER_SECURITY_AGENT_TYPE, REVIEW_JUDGE_AGENT_TYPE,
 };
+use crate::agentic::tools::computer_use_capability::computer_use_feature_enabled;
 use crate::agentic::tools::{get_all_registered_tool_names, get_readonly_registered_tool_names};
 use crate::service::config::global::GlobalConfigManager;
 use crate::service::config::mode_config_canonicalizer::resolve_effective_tools;
@@ -338,8 +339,7 @@ impl AgentRegistry {
         }
 
         // Register built-in sub-agents
-        let builtin_subagents: Vec<Arc<dyn Agent>> = vec![
-            Arc::new(ComputerUseMode::new()),
+        let mut builtin_subagents: Vec<Arc<dyn Agent>> = vec![
             Arc::new(ExploreAgent::new()),
             Arc::new(FileFinderAgent::new()),
             Arc::new(BusinessLogicReviewerAgent::new()),
@@ -350,6 +350,9 @@ impl AgentRegistry {
             Arc::new(ReviewJudgeAgent::new()),
             Arc::new(ReviewFixerAgent::new()),
         ];
+        if computer_use_feature_enabled() {
+            builtin_subagents.insert(0, Arc::new(ComputerUseMode::new()));
+        }
         for subagent in builtin_subagents {
             register(
                 &mut agents,
@@ -1307,7 +1310,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn computer_use_is_builtin_subagent_not_mode() {
+    async fn computer_use_is_not_exposed_when_feature_disabled() {
         let registry = AgentRegistry::new();
         let modes = registry.get_modes_info().await;
         assert!(
@@ -1316,16 +1319,10 @@ mod tests {
         );
 
         let subagents = registry.get_subagents_info(None).await;
-        let computer_use = subagents
-            .iter()
-            .find(|agent| agent.id == "ComputerUse")
-            .expect("ComputerUse should be registered as a built-in sub-agent");
-        assert!(computer_use
-            .default_tools
-            .contains(&"ControlHub".to_string()));
-        assert!(computer_use
-            .default_tools
-            .contains(&"ComputerUse".to_string()));
+        assert!(
+            !subagents.iter().any(|agent| agent.id == "ComputerUse"),
+            "ComputerUse should not be exposed while the feature is disabled"
+        );
     }
 
     #[test]

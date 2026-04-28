@@ -7,8 +7,6 @@ pub mod logging;
 pub mod macos_menubar;
 pub mod theme;
 
-use bitfun_core::agentic::tools::computer_use_capability::set_computer_use_desktop_available;
-use bitfun_core::agentic::tools::computer_use_host::ComputerUseHostRef;
 use bitfun_core::infrastructure::ai::AIClientFactory;
 use bitfun_core::infrastructure::{get_path_manager_arc, try_get_path_manager_arc};
 use bitfun_core::service::workspace::get_global_workspace_service;
@@ -882,14 +880,10 @@ async fn init_agentic_system() -> anyhow::Result<(
     let tool_registry = tools::registry::get_global_tool_registry();
     let tool_state_manager = Arc::new(tools::pipeline::ToolStateManager::new(event_queue.clone()));
 
-    let computer_use_host: ComputerUseHostRef =
-        Arc::new(computer_use::DesktopComputerUseHost::new());
-    set_computer_use_desktop_available(true);
-
     let tool_pipeline = Arc::new(tools::pipeline::ToolPipeline::new(
         tool_registry,
         tool_state_manager,
-        Some(computer_use_host),
+        None,
     ));
 
     let stream_processor = Arc::new(execution::StreamProcessor::new(event_queue.clone()));

@@ -2,6 +2,7 @@
 
 use crate::api::app_state::AppState;
 use crate::computer_use::DesktopComputerUseHost;
+use bitfun_core::agentic::tools::computer_use_capability::computer_use_feature_enabled;
 use bitfun_core::agentic::tools::computer_use_host::ComputerUseHost;
 use bitfun_core::service::config::types::AIConfig;
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,15 @@ pub struct ComputerUseOpenSettingsRequest {
 pub async fn computer_use_get_status(
     state: State<'_, AppState>,
 ) -> Result<ComputerUseStatusResponse, String> {
+    if !computer_use_feature_enabled() {
+        return Ok(ComputerUseStatusResponse {
+            computer_use_enabled: false,
+            accessibility_granted: false,
+            screen_capture_granted: false,
+            platform_note: Some("Computer use is disabled in this build.".to_string()),
+        });
+    }
+
     let ai: AIConfig = state
         .config_service
         .get_config(Some("ai"))
@@ -49,6 +59,10 @@ pub async fn computer_use_get_status(
 
 #[tauri::command]
 pub async fn computer_use_request_permissions() -> Result<(), String> {
+    if !computer_use_feature_enabled() {
+        return Err("Computer use is disabled in this build.".to_string());
+    }
+
     let host = DesktopComputerUseHost::new();
     host.request_accessibility_permission()
         .await
@@ -63,6 +77,10 @@ pub async fn computer_use_request_permissions() -> Result<(), String> {
 pub async fn computer_use_open_system_settings(
     request: ComputerUseOpenSettingsRequest,
 ) -> Result<(), String> {
+    if !computer_use_feature_enabled() {
+        return Err("Computer use is disabled in this build.".to_string());
+    }
+
     #[cfg(target_os = "macos")]
     {
         let url = match request.pane.as_str() {

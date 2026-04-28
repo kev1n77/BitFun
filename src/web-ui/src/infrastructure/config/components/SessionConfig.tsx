@@ -92,6 +92,7 @@ const SessionConfig: React.FC = () => {
   const [isTemplatesModalOpen, setIsTemplatesModalOpen] = useState(false);
 
   const refreshComputerUseStatus = useCallback(async (): Promise<boolean> => {
+    if (!SHOW_COMPUTER_USE_SECTION) return false;
     if (!IS_TAURI_DESKTOP) return false;
     setComputerUseStatusLoading(true);
     try {
@@ -138,9 +139,11 @@ const SessionConfig: React.FC = () => {
       return;
     }
 
-    void refreshComputerUseStatus().then((ok) => {
-      if (!ok) setComputerUseEnabled(computerUseCfg ?? false);
-    });
+    if (SHOW_COMPUTER_USE_SECTION) {
+      void refreshComputerUseStatus().then((ok) => {
+        if (!ok) setComputerUseEnabled(computerUseCfg ?? false);
+      });
+    }
 
     void refreshBrowserControlStatus();
 

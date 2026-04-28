@@ -37,6 +37,7 @@ struct TipFrontMatter {
 #[derive(Debug)]
 struct FeatureFrontMatter {
     id: String,
+    hidden: bool,
     /// `version_first_open` | `always` | `manual` (default: version_first_open)
     trigger: String,
     once_per_version: bool,
@@ -103,6 +104,7 @@ fn parse_tip_front_matter(fm: &str) -> Option<TipFrontMatter> {
 
 fn parse_feature_front_matter(fm: &str) -> Option<FeatureFrontMatter> {
     let mut id = String::new();
+    let mut hidden = false;
     let mut trigger = "version_first_open".to_string();
     let mut once_per_version = true;
     let mut delay_ms: u64 = 2000;
@@ -117,6 +119,7 @@ fn parse_feature_front_matter(fm: &str) -> Option<FeatureFrontMatter> {
         if let Some((k, v)) = parse_kv(line) {
             match k {
                 "id" => id = v.to_string(),
+                "hidden" => hidden = v == "true",
                 "trigger" => trigger = v.to_string(),
                 "once_per_version" => once_per_version = v == "true",
                 "delay_ms" => delay_ms = v.parse().unwrap_or(2000),
@@ -136,6 +139,7 @@ fn parse_feature_front_matter(fm: &str) -> Option<FeatureFrontMatter> {
     }
     Some(FeatureFrontMatter {
         id,
+        hidden,
         trigger,
         once_per_version,
         delay_ms,
@@ -328,6 +332,9 @@ pub fn load_features(locale: &str) -> Vec<AnnouncementCard> {
         .filter_map(|(_, content)| {
             let (fm_text, body) = split_front_matter(content)?;
             let fm = parse_feature_front_matter(fm_text)?;
+            if fm.hidden {
+                return None;
+            }
             Some(build_feature_card(fm, body))
         })
         .collect()

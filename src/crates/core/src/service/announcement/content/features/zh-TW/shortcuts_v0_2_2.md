@@ -1,5 +1,6 @@
 ---
 id: feature_shortcuts_v0_2_2
+hidden: true
 trigger: version_first_open
 once_per_version: true
 delay_ms: 5000
