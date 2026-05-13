@@ -269,7 +269,7 @@ jobs:
             --assets-dir release-updater-assets \
             --version "${{ needs.prepare.outputs.version }}" \
             --tag "${{ needs.prepare.outputs.release_tag }}" \
-            --repo "GCWing/BitFun" \
+            --repo "${{ github.repository }}" \
             --out release-updater-assets/latest.json \
             --required-platforms "${REQUIRED_UPDATER_PLATFORMS}"
 
@@ -296,7 +296,7 @@ jobs:
       - name: Verify published updater manifest
         run: |
           curl -fsSL --retry 5 --retry-delay 3 \
-            "https://github.com/GCWing/BitFun/releases/download/${{ needs.prepare.outputs.release_tag }}/latest.json" \
+            "https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release_tag }}/latest.json" \
             -o latest.published.json
           node scripts/verify-tauri-latest-json.mjs \
             --manifest latest.published.json \
