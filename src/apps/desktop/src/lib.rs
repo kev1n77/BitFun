@@ -41,6 +41,7 @@ use api::i18n_api::*;
 use api::lsp_api::*;
 use api::lsp_workspace_api::*;
 use api::mcp_api::*;
+use api::review_platform_api::*;
 use api::runtime_api::*;
 use api::search_api::*;
 use api::session_api::*;
@@ -682,6 +683,10 @@ pub async fn run() {
             delete_skill,
             git_is_repository,
             git_get_repository,
+            review_platform_get_workspace_snapshot,
+            review_platform_get_pull_request_detail,
+            review_platform_update_auth_token,
+            review_platform_clear_auth_token,
             git_get_status,
             git_get_branches,
             git_get_enhanced_branches,

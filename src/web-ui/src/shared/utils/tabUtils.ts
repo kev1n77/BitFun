@@ -266,6 +266,32 @@ export function createConfigCenterTab(
   window.dispatchEvent(new CustomEvent('scene:open', { detail: { sceneId: 'settings' } }));
 }
 
+export function createReviewPlatformTab(workspacePath?: string): void {
+  const detail = {
+    type: 'review-platform',
+    title: i18nService.getT()('common:tabs.pullRequests', { defaultValue: 'Pull Requests' }),
+    data: { workspacePath },
+    metadata: {
+      workspacePath,
+      duplicateCheckKey: `review-platform:${workspacePath || 'current'}`,
+    },
+    checkDuplicate: true,
+    duplicateCheckKey: `review-platform:${workspacePath || 'current'}`,
+    replaceExisting: true,
+  };
+
+  window.dispatchEvent(new CustomEvent(TAB_EVENTS.EXPAND_RIGHT_PANEL));
+
+  if (isRightPanelCollapsed()) {
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent(TAB_EVENTS.AGENT_CREATE_TAB, { detail }));
+    }, 300);
+    return;
+  }
+
+  window.dispatchEvent(new CustomEvent(TAB_EVENTS.AGENT_CREATE_TAB, { detail }));
+}
+
 export function createTerminalTab(
   sessionId: string,
   sessionName: string,

@@ -27,6 +27,7 @@ export type PanelContentType =
   | 'plan-viewer'
   | 'btw-session'
   | 'session-usage'
+  | 'review-platform'
   | 'terminal'
   | 'generative-widget'
   | 'browser';
