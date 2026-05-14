@@ -14,6 +14,7 @@ import {
   Link2,
   Loader2,
   MessageSquareText,
+  PanelRightOpen,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -24,7 +25,20 @@ import {
 } from 'lucide-react';
 import { Button, IconButton, Input, MarkdownRenderer, Modal, Select, Tabs, TabPane, Tooltip, type SelectOption } from '@/component-library';
 import { reviewPlatformAPI, systemAPI, type ReviewPlatformAccount, type ReviewPlatformPullRequest, type ReviewPlatformPullRequestDetail, type ReviewPlatformRemote, type ReviewPlatformRepositoryRef, type ReviewPlatformWorkspaceSnapshot } from '@/infrastructure/api';
+import { globalEventBus } from '@/infrastructure/event-bus';
 import { createLogger } from '@/shared/utils/logger';
+import { notificationService } from '@/shared/notification-system';
+import { useDeepReviewConsent } from '@/flow_chat/components/DeepReviewConsentDialog';
+import {
+  buildDeepReviewLaunchFromSessionFiles,
+  buildDeepReviewPreviewFromSessionFiles,
+  launchDeepReviewSession,
+} from '@/flow_chat/services/DeepReviewService';
+import { openBtwSessionInAuxPane, openMainSession } from '@/flow_chat/services/openBtwSession';
+import { flowChatStore } from '@/flow_chat/store/FlowChatStore';
+import type { FlowToolItem, Session } from '@/flow_chat/types/flow-chat';
+import { findLatestCodeReviewResult, summarizeCodeReviewResult } from '@/flow_chat/utils/reviewSessionSummary';
+import { deriveDeepReviewSessionConcurrencyGuard } from '@/flow_chat/utils/deepReviewCapacityGuard';
 import './ReviewPlatformPanel.scss';
 
 const log = createLogger('ReviewPlatformPanel');
@@ -40,6 +54,24 @@ type SnapshotCacheState = 'none' | 'cached' | 'refreshing';
 const PR_PAGE_SIZE = 10;
 const CACHE_TTL_MS = 2 * 60 * 1000;
 const REMOTE_STORAGE_PREFIX = 'bitfun:review-platform:last-remote:';
+const MAX_LINKED_REVIEW_SESSIONS = 6;
+
+const REVIEW_EXCLUDED_EXTENSIONS = new Set([
+  '.7z', '.avi', '.avif', '.bin', '.bmp', '.class', '.dll', '.doc', '.docx', '.eot', '.exe',
+  '.gif', '.gz', '.ico', '.jar', '.jpeg', '.jpg', '.lock', '.map', '.min.js', '.min.css',
+  '.mov', '.mp3', '.mp4', '.otf', '.pdf', '.png', '.rar', '.so', '.svg', '.tar', '.tgz',
+  '.tiff', '.ttf', '.wav', '.webm', '.webp', '.woff', '.woff2', '.xz', '.zip',
+]);
+
+const REVIEW_EXCLUDED_FILENAMES = new Set([
+  'bun.lock', 'bun.lockb', 'Cargo.lock', 'composer.lock', 'Gemfile.lock', 'package-lock.json',
+  'pnpm-lock.yaml', 'poetry.lock', 'Podfile.lock', 'yarn.lock',
+]);
+
+const REVIEW_EXCLUDED_PATH_SEGMENTS = new Set([
+  '.cache', '.next', '.nuxt', '.output', '.parcel-cache', '.svelte-kit', '.turbo',
+  'build', 'coverage', 'dist', 'node_modules', 'out', 'target',
+]);
 
 interface SnapshotCacheEntry {
   snapshot: ReviewPlatformWorkspaceSnapshot;
@@ -49,6 +81,35 @@ interface SnapshotCacheEntry {
 interface DetailCacheEntry {
   detail: ReviewPlatformPullRequestDetail;
   fetchedAt: number;
+}
+
+interface ReviewSessionMarkerInput {
+  childSessionId?: string;
+  parentSessionId?: string;
+  kind?: 'review' | 'deep_review';
+  title?: string;
+  requestedFiles?: string[];
+}
+
+interface ReviewSessionMarker {
+  childSessionId: string;
+  parentSessionId?: string;
+  kind: 'review' | 'deep_review';
+  title?: string;
+  requestedFiles: string[];
+}
+
+interface LinkedReviewSession {
+  childSession: Session;
+  parentSession?: Session;
+  marker?: ReviewSessionMarker;
+  kind: 'review' | 'deep_review';
+  title: string;
+  requestedFiles: string[];
+  issueCount: number;
+  riskLevel?: string;
+  lifecycle: 'running' | 'completed' | 'error' | 'idle';
+  updatedAt: number;
 }
 
 const snapshotCache = new Map<string, SnapshotCacheEntry>();
@@ -232,14 +293,137 @@ function fileKey(file: { path: string; oldPath?: string | null }): string {
   return `${file.oldPath ?? ''}->${file.path}`;
 }
 
+function normalizePath(value: string): string {
+  return value.replace(/\\/g, '/').trim();
+}
+
+function shouldReviewFile(filePath: string): boolean {
+  const normalizedPath = normalizePath(filePath);
+  const segments = normalizedPath
+    .split('/')
+    .map(segment => segment.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (segments.some(segment => REVIEW_EXCLUDED_PATH_SEGMENTS.has(segment))) {
+    return false;
+  }
+
+  const fileName = normalizedPath.split('/').pop()?.trim() || normalizedPath;
+  const lowerFileName = fileName.toLowerCase();
+
+  if (REVIEW_EXCLUDED_FILENAMES.has(fileName) || REVIEW_EXCLUDED_FILENAMES.has(lowerFileName)) {
+    return false;
+  }
+
+  if (lowerFileName.endsWith('.min.js') || lowerFileName.endsWith('.min.css')) {
+    return false;
+  }
+
+  const extMatch = lowerFileName.match(/(\.[^.]+)$/);
+  const extension = extMatch?.[1];
+  return !(extension && REVIEW_EXCLUDED_EXTENSIONS.has(extension));
+}
+
+function uniquePaths(paths: string[]): string[] {
+  const seen = new Set<string>();
+  const next: string[] = [];
+  for (const path of paths) {
+    const normalized = normalizePath(path);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    next.push(normalized);
+  }
+  return next;
+}
+
+function pathsOverlap(left: string[], right: string[]): boolean {
+  if (!left.length || !right.length) return false;
+  const rightSet = new Set(right.map(normalizePath));
+  return left.some(path => rightSet.has(normalizePath(path)));
+}
+
+function isReviewSessionRunning(session: Session): boolean {
+  const turn = session.dialogTurns[session.dialogTurns.length - 1];
+  return turn?.status === 'pending' ||
+    turn?.status === 'image_analyzing' ||
+    turn?.status === 'processing' ||
+    turn?.status === 'finishing';
+}
+
+function reviewSessionLifecycle(session: Session): LinkedReviewSession['lifecycle'] {
+  const turn = session.dialogTurns[session.dialogTurns.length - 1];
+  if (session.error || turn?.status === 'error') return 'error';
+  if (isReviewSessionRunning(session)) return 'running';
+  if (turn?.status === 'completed') return 'completed';
+  return 'idle';
+}
+
+function getSessionTitle(session?: Session, fallback = 'Review session'): string {
+  return session?.title?.trim() || fallback;
+}
+
+function extractReviewSessionMarkers(session: Session): ReviewSessionMarker[] {
+  const markers: ReviewSessionMarker[] = [];
+  for (const turn of session.dialogTurns) {
+    for (const round of turn.modelRounds) {
+      for (const item of round.items) {
+        if (item.type !== 'tool') continue;
+        const toolItem = item as FlowToolItem;
+        if (toolItem.toolName !== 'ReviewSessionSummary') continue;
+        const input = (toolItem.toolCall?.input ?? {}) as ReviewSessionMarkerInput;
+        if (!input.childSessionId) continue;
+        markers.push({
+          childSessionId: input.childSessionId,
+          parentSessionId: input.parentSessionId ?? session.sessionId,
+          kind: input.kind === 'deep_review' ? 'deep_review' : 'review',
+          title: input.title,
+          requestedFiles: uniquePaths(input.requestedFiles ?? []),
+        });
+      }
+    }
+  }
+  return markers;
+}
+
+function buildPrChatPrompt(params: {
+  pr: ReviewPlatformPullRequest;
+  remote: ReviewPlatformRemote | null;
+  repository: ReviewPlatformRepositoryRef | null;
+  filePaths: string[];
+  webUrl?: string;
+}): string {
+  const fileList = params.filePaths.length
+    ? params.filePaths.map(path => `- ${path}`).join('\n')
+    : '- No file list is loaded yet';
+  const provider = params.remote ? providerLabel(params.remote) : 'review platform';
+  const repository = params.repository?.projectPath ?? params.remote?.projectPath ?? 'current repository';
+
+  return [
+    `Review PR #${params.pr.number}: ${params.pr.title}`,
+    '',
+    `Provider: ${provider}`,
+    `Repository: ${repository}`,
+    `Branch: ${params.pr.sourceBranch} -> ${params.pr.targetBranch}`,
+    params.webUrl ? `URL: ${params.webUrl}` : null,
+    '',
+    'Changed files:',
+    fileList,
+    '',
+    'Please use this PR context with the current conversation. Focus on risks, review findings, and concrete fixes.',
+  ].filter(Boolean).join('\n');
+}
+
 export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ workspacePath }) => {
+  const { confirmDeepReviewLaunch, deepReviewConsentDialog } = useDeepReviewConsent();
   const [snapshot, setSnapshot] = useState<ReviewPlatformWorkspaceSnapshot>(emptySnapshot);
   const [selectedRemoteId, setSelectedRemoteId] = useState<string | null>(null);
   const [selectedPrId, setSelectedPrId] = useState<string | null>(null);
   const [detail, setDetail] = useState<ReviewPlatformPullRequestDetail | null>(null);
+  const [flowState, setFlowState] = useState(() => flowChatStore.getState());
   const [activeTab, setActiveTab] = useState<DetailTab>('overview');
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [launchingDeepReview, setLaunchingDeepReview] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [stateFilter, setStateFilter] = useState<ListStateFilter>('all');
@@ -261,6 +445,15 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
     () => snapshot.pullRequests.find(pr => pr.id === selectedPrId) ?? null,
     [selectedPrId, snapshot.pullRequests],
   );
+  const prFilePaths = useMemo(
+    () => uniquePaths((detail?.files ?? []).map(file => file.path)),
+    [detail?.files],
+  );
+  const reviewablePrFilePaths = useMemo(
+    () => prFilePaths.filter(shouldReviewFile),
+    [prFilePaths],
+  );
+  const skippedReviewFileCount = Math.max(0, prFilePaths.length - reviewablePrFilePaths.length);
   const remoteOptions = useMemo<SelectOption[]>(
     () => snapshot.remotes.map(remote => ({
       value: remote.id,
@@ -370,6 +563,8 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
     void loadSnapshot();
   }, [loadSnapshot]);
 
+  useEffect(() => flowChatStore.subscribe(setFlowState), []);
+
   useEffect(() => {
     if (!selectedRemoteId) {
       setDetail(null);
@@ -411,6 +606,80 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
       ].some(value => value.toLowerCase().includes(needle));
     });
   }, [query, snapshot.pullRequests, stateFilter]);
+
+  const parentSession = useMemo(() => {
+    const sessions = Array.from(flowState.sessions.values());
+    const activeSession = flowState.activeSessionId
+      ? flowState.sessions.get(flowState.activeSessionId)
+      : undefined;
+    const sameWorkspace = (session?: Session) =>
+      Boolean(session && (!workspacePath || normalizePath(session.workspacePath ?? '') === normalizePath(workspacePath)));
+
+    if (activeSession?.sessionKind === 'normal' && sameWorkspace(activeSession)) {
+      return activeSession;
+    }
+
+    if (
+      activeSession &&
+      (activeSession.sessionKind === 'review' || activeSession.sessionKind === 'deep_review') &&
+      activeSession.parentSessionId
+    ) {
+      const parent = flowState.sessions.get(activeSession.parentSessionId);
+      if (parent?.sessionKind === 'normal' && sameWorkspace(parent)) {
+        return parent;
+      }
+    }
+
+    return sessions
+      .filter(session => session.sessionKind === 'normal' && sameWorkspace(session))
+      .sort((left, right) => (right.lastActiveAt || right.updatedAt || right.createdAt) - (left.lastActiveAt || left.updatedAt || left.createdAt))[0];
+  }, [flowState.activeSessionId, flowState.sessions, workspacePath]);
+
+  const linkedReviewSessions = useMemo<LinkedReviewSession[]>(() => {
+    const sessions = Array.from(flowState.sessions.values());
+    const markersByChildId = new Map<string, ReviewSessionMarker>();
+    for (const session of sessions) {
+      for (const marker of extractReviewSessionMarkers(session)) {
+        markersByChildId.set(marker.childSessionId, marker);
+      }
+    }
+
+    const selectedPaths = prFilePaths;
+    const sameWorkspace = (session: Session) =>
+      !workspacePath || normalizePath(session.workspacePath ?? '') === normalizePath(workspacePath);
+
+    return sessions
+      .filter(session =>
+        (session.sessionKind === 'review' || session.sessionKind === 'deep_review') &&
+        sameWorkspace(session),
+      )
+      .map((session): LinkedReviewSession | null => {
+        const marker = markersByChildId.get(session.sessionId);
+        const requestedFiles = marker?.requestedFiles ?? [];
+        if (selectedPaths.length > 0 && requestedFiles.length > 0 && !pathsOverlap(selectedPaths, requestedFiles)) {
+          return null;
+        }
+
+        const reviewResult = findLatestCodeReviewResult(session);
+        const summary = summarizeCodeReviewResult(reviewResult);
+        const kind = session.sessionKind === 'deep_review' ? 'deep_review' : 'review';
+        return {
+          childSession: session,
+          parentSession: marker?.parentSessionId ? flowState.sessions.get(marker.parentSessionId) : undefined,
+          marker,
+          kind,
+          title: marker?.title || getSessionTitle(session, kind === 'deep_review' ? 'Deep review' : 'Code review'),
+          requestedFiles,
+          issueCount: summary.issueCount,
+          riskLevel: summary.riskLevel,
+          lifecycle: reviewSessionLifecycle(session),
+          updatedAt: session.lastActiveAt || session.updatedAt || session.createdAt,
+        };
+      })
+      .filter((session): session is LinkedReviewSession => Boolean(session))
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, MAX_LINKED_REVIEW_SESSIONS);
+  }, [flowState.sessions, prFilePaths, workspacePath]);
 
   const pagination = snapshot.pagination;
   const totalCount = pagination.total ?? null;
@@ -474,6 +743,124 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
       log.error('Failed to open pull request URL', { error, webUrl });
     }
   }, [selectedPr?.webUrl]);
+
+  const handleOpenParentChat = useCallback(async () => {
+    if (!parentSession) {
+      notificationService.warning('Open or create a chat session before linking PR context.', { duration: 3500 });
+      return;
+    }
+    await openMainSession(parentSession.sessionId);
+  }, [parentSession]);
+
+  const handleFillPrContext = useCallback(async () => {
+    if (!selectedPr) return;
+    if (!parentSession) {
+      notificationService.warning('Open or create a chat session before sending PR context.', { duration: 3500 });
+      return;
+    }
+
+    await openMainSession(parentSession.sessionId);
+    globalEventBus.emit('fill-chat-input', {
+      content: buildPrChatPrompt({
+        pr: selectedPr,
+        remote: selectedRemote,
+        repository,
+        filePaths: prFilePaths,
+        webUrl: selectedPr.webUrl,
+      }),
+      mode: 'replace',
+    });
+  }, [parentSession, prFilePaths, repository, selectedPr, selectedRemote]);
+
+  const handleOpenLinkedReview = useCallback(async (linked: LinkedReviewSession) => {
+    const parentId = linked.parentSession?.sessionId ?? linked.childSession.parentSessionId ?? parentSession?.sessionId;
+    if (!parentId) {
+      notificationService.warning('The parent chat session for this review is unavailable.', { duration: 3500 });
+      return;
+    }
+
+    await openMainSession(parentId);
+    openBtwSessionInAuxPane({
+      childSessionId: linked.childSession.sessionId,
+      parentSessionId: parentId,
+      workspacePath: linked.childSession.workspacePath,
+      expand: true,
+    });
+  }, [parentSession?.sessionId]);
+
+  const handleRunDeepReview = useCallback(async () => {
+    if (!selectedPr) return;
+    if (!parentSession) {
+      notificationService.warning('Open or create a chat session before launching Deep Review.', { duration: 3500 });
+      return;
+    }
+    if (!workspacePath) {
+      notificationService.warning('No active workspace is available for Deep Review.', { duration: 3500 });
+      return;
+    }
+    if (!reviewablePrFilePaths.length) {
+      notificationService.warning('No reviewable files are loaded for this pull request.', { duration: 3500 });
+      return;
+    }
+
+    setLaunchingDeepReview(true);
+    try {
+      const extraContext = [
+        `Pull request: #${selectedPr.number} ${selectedPr.title}`,
+        `Branch: ${selectedPr.sourceBranch} -> ${selectedPr.targetBranch}`,
+        selectedPr.webUrl ? `URL: ${selectedPr.webUrl}` : null,
+        selectedRemote ? `Provider: ${providerLabel(selectedRemote)} ${selectedRemote.projectPath}` : null,
+      ].filter(Boolean).join('\n');
+      const preview = await buildDeepReviewPreviewFromSessionFiles(reviewablePrFilePaths, workspacePath);
+      const confirmed = await confirmDeepReviewLaunch(preview, {
+        sessionConcurrencyGuard: deriveDeepReviewSessionConcurrencyGuard(flowChatStore.getState(), parentSession.sessionId),
+      });
+      if (!confirmed) {
+        return;
+      }
+
+      if (skippedReviewFileCount > 0) {
+        notificationService.info(
+          `Deep Review will analyze ${reviewablePrFilePaths.length} files and skip ${skippedReviewFileCount} generated, binary, or lock files.`,
+          { duration: 4000 },
+        );
+      }
+
+      const { prompt, runManifest } = await buildDeepReviewLaunchFromSessionFiles(
+        reviewablePrFilePaths,
+        extraContext,
+        workspacePath,
+      );
+      const fileList = reviewablePrFilePaths.map(path => `- ${path}`).join('\n');
+      await launchDeepReviewSession({
+        parentSessionId: parentSession.sessionId,
+        workspacePath,
+        prompt,
+        displayMessage: `Deep review PR #${selectedPr.number}: ${selectedPr.title}\n\n${fileList}`,
+        runManifest,
+        childSessionName: `Deep review PR #${selectedPr.number}`,
+        requestedFiles: reviewablePrFilePaths,
+      });
+      notificationService.success('Deep Review started for this pull request.', { duration: 3000 });
+    } catch (err) {
+      log.error('Failed to launch PR Deep Review', {
+        pullRequestId: selectedPr.id,
+        parentSessionId: parentSession.sessionId,
+        error: err,
+      });
+      notificationService.error(err instanceof Error ? err.message : 'Failed to launch Deep Review.', { duration: 5000 });
+    } finally {
+      setLaunchingDeepReview(false);
+    }
+  }, [
+    confirmDeepReviewLaunch,
+    parentSession,
+    reviewablePrFilePaths,
+    selectedPr,
+    selectedRemote,
+    skippedReviewFileCount,
+    workspacePath,
+  ]);
 
   const refreshAuthSnapshot = useCallback((remoteId: string | null) => {
     snapshotCache.clear();
@@ -552,6 +939,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
     : snapshotCacheState === 'cached'
       ? 'Cached pull requests'
       : null;
+  const parentSessionLabel = parentSession ? getSessionTitle(parentSession, 'Current chat') : 'No chat session linked';
 
   return (
     <div className="review-platform">
@@ -765,13 +1153,17 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
                   </div>
                 </div>
                 <div className="review-platform__detail-actions">
+                  <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleRunDeepReview} disabled={!selectedPr || detailLoading || !reviewablePrFilePaths.length || launchingDeepReview} isLoading={launchingDeepReview}>
+                    <Sparkles size={13} />
+                    Deep Review
+                  </Button>
+                  <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleFillPrContext} disabled={!selectedPr}>
+                    <MessageSquareText size={13} />
+                    Ask
+                  </Button>
                   <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleOpenExternal} disabled={!selectedPr.webUrl}>
                     <Link2 size={13} />
                     Open
-                  </Button>
-                  <Button className="review-platform__panel-button" size="small" variant="ghost" disabled={!snapshot.capabilities.canCreateReview}>
-                    <MessageSquareText size={13} />
-                    Review
                   </Button>
                 </div>
               </div>
@@ -795,6 +1187,28 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
                 </div>
               </div>
 
+              <section className="review-platform__agent-link-panel" aria-label="Conversation and review agents">
+                <div className="review-platform__agent-link-main">
+                  <span className="review-platform__agent-link-label">Conversation link</span>
+                  <strong>{parentSessionLabel}</strong>
+                  <span>
+                    {reviewablePrFilePaths.length} reviewable files
+                    {skippedReviewFileCount > 0 ? ` · ${skippedReviewFileCount} skipped` : ''}
+                    {linkedReviewSessions.length > 0 ? ` · ${linkedReviewSessions.length} related review sessions` : ''}
+                  </span>
+                </div>
+                <div className="review-platform__agent-link-actions">
+                  <Button className="review-platform__panel-button" size="small" variant="ghost" onClick={handleOpenParentChat} disabled={!parentSession}>
+                    <MessageSquareText size={13} />
+                    Open chat
+                  </Button>
+                  <Button className="review-platform__panel-button" size="small" variant="ghost" onClick={handleFillPrContext} disabled={!parentSession || !selectedPr}>
+                    <Code2 size={13} />
+                    Insert context
+                  </Button>
+                </div>
+              </section>
+
               <Tabs
                 activeKey={activeTab}
                 onChange={(key) => setActiveTab(key as DetailTab)}
@@ -804,6 +1218,41 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
               >
                 <TabPane tabKey="overview" label="Overview">
                   <section className="review-platform__tab-content">
+                    <div className="review-platform__review-sessions">
+                      <div className="review-platform__review-sessions-head">
+                        <span>Review activity</span>
+                        <span>{linkedReviewSessions.length ? 'Synced from chat sessions' : 'No related review session yet'}</span>
+                      </div>
+                      {linkedReviewSessions.length > 0 ? (
+                        <div className="review-platform__review-session-list">
+                          {linkedReviewSessions.map((linked) => (
+                            <button
+                              key={linked.childSession.sessionId}
+                              type="button"
+                              className={`review-platform__review-session review-platform__review-session--${linked.lifecycle}`}
+                              onClick={() => void handleOpenLinkedReview(linked)}
+                            >
+                              <span className="review-platform__review-session-icon">
+                                {linked.kind === 'deep_review' ? <Sparkles size={14} /> : <ShieldCheck size={14} />}
+                              </span>
+                              <span className="review-platform__review-session-main">
+                                <strong>{linked.title}</strong>
+                                <span>
+                                  {linked.lifecycle}
+                                  {linked.issueCount > 0 ? ` · ${linked.issueCount} issues` : ' · no issues reported'}
+                                  {linked.riskLevel ? ` · ${linked.riskLevel} risk` : ''}
+                                </span>
+                              </span>
+                              <PanelRightOpen size={14} />
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="review-platform__review-session-empty">
+                          Start Deep Review to attach reviewer output and remediation actions to this PR.
+                        </div>
+                      )}
+                    </div>
                     <div className="review-platform__body-markdown">
                       {detail?.body
                         ? <MarkdownRenderer content={detail.body} basePath={workspacePath} />
@@ -977,6 +1426,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
           </div>
         </form>
       </Modal>
+      {deepReviewConsentDialog}
     </div>
   );
 };

@@ -36,6 +36,7 @@
   &__status-line,
   &__detail-meta,
   &__detail-actions,
+  &__agent-link-actions,
   &__summary-strip,
   &__summary-grid span,
   &__timeline-item,
@@ -497,6 +498,58 @@
     flex-wrap: wrap;
   }
 
+  &__agent-link-panel {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 10px 14px 0;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 20%, var(--border-base));
+    border-radius: 7px;
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--accent-primary) 8%, transparent), transparent),
+      color-mix(in srgb, var(--color-bg-elevated) 70%, transparent);
+  }
+
+  &__agent-link-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+
+    strong,
+    span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    strong {
+      color: var(--color-text-primary);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    span {
+      color: var(--color-text-secondary);
+      font-size: 11px;
+    }
+  }
+
+  &__agent-link-label {
+    color: var(--accent-primary) !important;
+    font-weight: 650;
+    text-transform: uppercase;
+    letter-spacing: 0;
+  }
+
+  &__agent-link-actions {
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
   &__summary-card {
     min-width: 106px;
     display: flex;
@@ -604,6 +657,121 @@
     color: var(--color-text-secondary);
     font-size: 12px;
     line-height: 1.55;
+  }
+
+  &__review-sessions {
+    max-width: 860px;
+    margin-bottom: 12px;
+    border: 1px solid var(--border-base);
+    border-radius: 7px;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--color-bg-elevated) 62%, transparent);
+  }
+
+  &__review-sessions-head {
+    min-height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 0 10px;
+    border-bottom: 1px solid var(--border-base);
+    background: color-mix(in srgb, var(--element-bg-soft) 42%, transparent);
+
+    span:first-child {
+      color: var(--color-text-primary);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    span:last-child {
+      color: var(--color-text-secondary);
+      font-size: 11px;
+    }
+  }
+
+  &__review-session-list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  &__review-session {
+    width: 100%;
+    min-height: 42px;
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr) 18px;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border: 0;
+    border-bottom: 1px solid var(--border-base);
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+
+    &:last-child {
+      border-bottom: 0;
+    }
+
+    &:hover {
+      background: color-mix(in srgb, var(--element-bg-soft) 58%, transparent);
+    }
+
+    > svg {
+      color: var(--color-text-secondary);
+    }
+  }
+
+  &__review-session--running &__review-session-icon {
+    color: var(--accent-primary);
+  }
+
+  &__review-session--completed &__review-session-icon {
+    color: #3fb950;
+  }
+
+  &__review-session--error &__review-session-icon {
+    color: #f85149;
+  }
+
+  &__review-session-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  &__review-session-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+
+    strong,
+    span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    strong {
+      color: var(--color-text-primary);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    span {
+      color: var(--color-text-secondary);
+      font-size: 11px;
+    }
+  }
+
+  &__review-session-empty {
+    padding: 10px;
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    line-height: 1.5;
   }
 
   &__body-markdown {
@@ -867,6 +1035,16 @@
 
     &__summary-strip {
       gap: 6px;
+    }
+
+    &__agent-link-panel {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+
+    &__agent-link-actions {
+      width: 100%;
+      flex-wrap: wrap;
     }
   }
 }
