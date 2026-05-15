@@ -118,7 +118,10 @@ pub const STARTUP_COMMAND_SPECS: &[CommandSpec] = &[
     },
 ];
 
-pub fn match_prefix_in(prefix: &str, commands: &'static [CommandSpec]) -> Vec<&'static CommandSpec> {
+pub fn match_prefix_in(
+    prefix: &str,
+    commands: &'static [CommandSpec],
+) -> Vec<&'static CommandSpec> {
     if prefix.is_empty() {
         return Vec::new();
     }

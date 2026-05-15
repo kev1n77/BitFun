@@ -1,8 +1,8 @@
-use crate::agentic::tools::ToolPathOperation;
 use crate::agentic::tools::framework::{Tool, ToolResult, ToolUseContext, ValidationResult};
+use crate::agentic::tools::ToolPathOperation;
 use crate::util::errors::{BitFunError, BitFunResult};
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tool_runtime::fs::edit_file::{apply_edit_to_content, edit_file};
 
 pub struct FileEditTool;

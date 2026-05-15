@@ -1,3 +1,19 @@
+use super::agent_selector::{AgentItem, AgentSelectorState};
+use super::command_menu::CommandMenuState;
+use super::command_palette::{CommandPaletteState, PaletteAction};
+use super::model_config_form::{ModelConfigFormState, ModelFormAction, ModelFormResult};
+use super::model_selector::{ModelItem, ModelSelectorState};
+use super::provider_selector::{ProviderSelection, ProviderSelectorState};
+use super::session_selector::{SessionAction, SessionItem, SessionSelectorState};
+use super::skill_selector::{SkillItem, SkillSelectorState};
+use super::subagent_selector::{SubagentItem, SubagentSelectorState};
+use super::text_input::{TextInput, TextInputStyle};
+use super::theme::{
+    builtin_theme_json, resolve_appearance, resolve_effective_color_scheme, EffectiveColorScheme,
+    Theme,
+};
+use crate::commands::STARTUP_COMMAND_SPECS;
+use crate::config::CliConfig;
 /// Startup page module
 ///
 /// Full-featured startup page with:
@@ -5,7 +21,6 @@
 /// - Slash command menu with real execution
 /// - Model/Agent/Session/Skill/Subagent selector popups
 /// - Random tips
-
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
@@ -18,25 +33,9 @@ use ratatui::{
 };
 use std::sync::Arc;
 use std::time::Duration;
-use super::text_input::{TextInput, TextInputStyle};
-use super::command_menu::CommandMenuState;
-use super::command_palette::{CommandPaletteState, PaletteAction};
-use super::model_config_form::{ModelConfigFormState, ModelFormAction, ModelFormResult};
-use super::model_selector::{ModelItem, ModelSelectorState};
-use super::provider_selector::{ProviderSelection, ProviderSelectorState};
-use super::agent_selector::{AgentItem, AgentSelectorState};
-use super::session_selector::{SessionAction, SessionItem, SessionSelectorState};
-use super::skill_selector::{SkillItem, SkillSelectorState};
-use super::subagent_selector::{SubagentItem, SubagentSelectorState};
-use super::theme::{
-    builtin_theme_json, resolve_appearance, resolve_effective_color_scheme, EffectiveColorScheme,
-    Theme,
-};
-use crate::commands::STARTUP_COMMAND_SPECS;
-use crate::config::CliConfig;
 
-use bitfun_core::agentic::coordination::ConversationCoordinator;
 use bitfun_core::agentic::agents::{get_agent_registry, AgentInfo};
+use bitfun_core::agentic::coordination::ConversationCoordinator;
 use bitfun_core::agentic::tools::implementations::skills::registry::SkillRegistry;
 use bitfun_core::service::config::GlobalConfigManager;
 
@@ -337,7 +336,10 @@ impl StartupPage {
                     } else {
                         for ev in events {
                             match ev {
-                                Event::Key(key) if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat => {
+                                Event::Key(key)
+                                    if key.kind == KeyEventKind::Press
+                                        || key.kind == KeyEventKind::Repeat =>
+                                {
                                     if let Some(result) = self.handle_key(key) {
                                         return Ok(result);
                                     }
@@ -436,19 +438,21 @@ impl StartupPage {
 
         // Dynamic input height: content lines (1..6) + 2 (padding top + agent label row) + 1 (gap)
         let input_content_width = max_width.saturating_sub(2 + 4); // left bar(2) + inner padding(4)
-        let visual_lines = self.text_input.visual_line_count_with_prefix(input_content_width, 0) as u16;
+        let visual_lines =
+            self.text_input
+                .visual_line_count_with_prefix(input_content_width, 0) as u16;
         let content_lines = visual_lines.max(1).min(6);
         let input_box_height = content_lines + 3; // +1 top padding, +1 gap, +1 agent label
 
         let v_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(20), // top space
-                Constraint::Length(12),      // logo
-                Constraint::Length(1),       // gap
+                Constraint::Percentage(20),           // top space
+                Constraint::Length(12),               // logo
+                Constraint::Length(1),                // gap
                 Constraint::Length(input_box_height), // input box
-                Constraint::Length(2),       // gap + tip/status
-                Constraint::Min(1),          // bottom space
+                Constraint::Length(2),                // gap + tip/status
+                Constraint::Min(1),                   // bottom space
             ])
             .split(area);
 
@@ -485,18 +489,13 @@ impl StartupPage {
             .direction(Direction::Horizontal)
             .constraints([
                 Constraint::Length(2), // left bar
-                Constraint::Min(1),   // content
+                Constraint::Min(1),    // content
             ])
             .split(area);
 
         // Left bar: full-height ┃
         let bar_lines: Vec<Line> = (0..area.height)
-            .map(|_| {
-                Line::from(Span::styled(
-                    " ┃",
-                    Style::default().fg(highlight_color),
-                ))
-            })
+            .map(|_| Line::from(Span::styled(" ┃", Style::default().fg(highlight_color))))
             .collect();
         let bar = Paragraph::new(bar_lines);
         frame.render_widget(bar, h_chunks[0]);
@@ -505,10 +504,8 @@ impl StartupPage {
         let content_area = h_chunks[1];
 
         // Fill background
-        let bg = Paragraph::new(
-            vec![Line::from(""); content_area.height as usize],
-        )
-        .style(Style::default().bg(self.theme.background_element));
+        let bg = Paragraph::new(vec![Line::from(""); content_area.height as usize])
+            .style(Style::default().bg(self.theme.background_element));
         frame.render_widget(bg, content_area);
 
         // Inner content with padding
@@ -546,10 +543,7 @@ impl StartupPage {
                 Style::default().fg(highlight_color),
             )];
             if !self.model_display_name.is_empty() {
-                spans.push(Span::styled(
-                    " | ",
-                    Style::default().fg(self.theme.muted),
-                ));
+                spans.push(Span::styled(" | ", Style::default().fg(self.theme.muted)));
                 spans.push(Span::styled(
                     &self.model_display_name,
                     Style::default().fg(self.theme.muted),
@@ -605,7 +599,10 @@ impl StartupPage {
         // Right: MCP status | version
         let right = Paragraph::new(Line::from(vec![
             Span::styled(&mcp_status, Style::default().fg(mcp_color)),
-            Span::styled(format!(" | {}  ", version), Style::default().fg(self.theme.muted)),
+            Span::styled(
+                format!(" | {}  ", version),
+                Style::default().fg(self.theme.muted),
+            ),
         ]))
         .alignment(Alignment::Right);
         frame.render_widget(right, area);
@@ -795,7 +792,10 @@ impl StartupPage {
                 KeyCode::Enter => {
                     if let Some(selected) = self.subagent_selector.confirm_selection() {
                         self.subagent_selector.hide();
-                        self.set_input(&format!("Launch subagent {} to finish task: ", selected.name));
+                        self.set_input(&format!(
+                            "Launch subagent {} to finish task: ",
+                            selected.name
+                        ));
                     }
                 }
                 KeyCode::Esc => self.navigate_back(),
@@ -866,7 +866,8 @@ impl StartupPage {
                 }
                 KeyCode::Esc => {
                     self.text_input.clear();
-                    self.command_menu.update_with_commands("", 0, STARTUP_COMMAND_SPECS);
+                    self.command_menu
+                        .update_with_commands("", 0, STARTUP_COMMAND_SPECS);
                     return None;
                 }
                 _ => {
@@ -1065,20 +1066,21 @@ impl StartupPage {
                     prompt: Some("/acp".to_string()),
                 });
             }
-            "/init" => {
-                match crate::prompts::get_cli_prompt("init") {
-                    Some(prompt) => {
-                        return Some(StartupResult::NewSession {
-                            prompt: Some(prompt.to_string()),
-                        });
-                    }
-                    None => {
-                        self.status = Some("Init prompt not found".to_string());
-                    }
+            "/init" => match crate::prompts::get_cli_prompt("init") {
+                Some(prompt) => {
+                    return Some(StartupResult::NewSession {
+                        prompt: Some(prompt.to_string()),
+                    });
                 }
-            }
+                None => {
+                    self.status = Some("Init prompt not found".to_string());
+                }
+            },
             _ => {
-                self.status = Some(format!("Unknown command: {}. Type /help for available commands.", cmd));
+                self.status = Some(format!(
+                    "Unknown command: {}. Type /help for available commands.",
+                    cmd
+                ));
             }
         }
 
@@ -1167,9 +1169,8 @@ impl StartupPage {
 
         let result = tokio::task::block_in_place(|| {
             let workspace_path = self.workspace_path_buf();
-            tokio::runtime::Handle::current().block_on(async {
-                coordinator.delete_session(&workspace_path, &sid).await
-            })
+            tokio::runtime::Handle::current()
+                .block_on(async { coordinator.delete_session(&workspace_path, &sid).await })
         });
 
         match result {
@@ -1320,7 +1321,9 @@ impl StartupPage {
             enable_thinking_process: result.enable_thinking || result.support_preserved_thinking,
             skip_ssl_verify: result.skip_ssl_verify,
             custom_headers,
-            custom_headers_mode: if result.custom_headers_mode.is_empty() || result.custom_headers_mode == "merge" {
+            custom_headers_mode: if result.custom_headers_mode.is_empty()
+                || result.custom_headers_mode == "merge"
+            {
                 None
             } else {
                 Some(result.custom_headers_mode.clone())
@@ -1330,8 +1333,7 @@ impl StartupPage {
         };
 
         let result_name = result.name.clone();
-        let result_model_display =
-            format!("{} / {}", result.model_name, result.name);
+        let result_model_display = format!("{} / {}", result.model_name, result.name);
 
         let success = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
@@ -1418,10 +1420,13 @@ impl StartupPage {
                     enable_thinking: model.enable_thinking_process,
                     support_preserved_thinking: model.inline_think_in_text,
                     skip_ssl_verify: model.skip_ssl_verify,
-                    custom_headers: model.custom_headers
+                    custom_headers: model
+                        .custom_headers
                         .map(|h| serde_json::to_string(&h).unwrap_or_default())
                         .unwrap_or_default(),
-                    custom_headers_mode: model.custom_headers_mode.unwrap_or_else(|| "merge".to_string()),
+                    custom_headers_mode: model
+                        .custom_headers_mode
+                        .unwrap_or_else(|| "merge".to_string()),
                     custom_request_body: model.custom_request_body.unwrap_or_default(),
                 };
                 self.model_config_form.show_for_edit(&model.id, &form_data);
@@ -1465,7 +1470,9 @@ impl StartupPage {
             enable_thinking_process: result.enable_thinking || result.support_preserved_thinking,
             skip_ssl_verify: result.skip_ssl_verify,
             custom_headers,
-            custom_headers_mode: if result.custom_headers_mode.is_empty() || result.custom_headers_mode == "merge" {
+            custom_headers_mode: if result.custom_headers_mode.is_empty()
+                || result.custom_headers_mode == "merge"
+            {
                 None
             } else {
                 Some(result.custom_headers_mode.clone())
@@ -1475,8 +1482,7 @@ impl StartupPage {
         };
 
         let result_name = result.name.clone();
-        let result_model_display =
-            format!("{} / {}", result.model_name, result.name);
+        let result_model_display = format!("{} / {}", result.model_name, result.name);
 
         let success = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
@@ -1488,7 +1494,10 @@ impl StartupPage {
                     }
                 };
 
-                if let Err(e) = config_service.update_ai_model(&model_id, model_config).await {
+                if let Err(e) = config_service
+                    .update_ai_model(&model_id, model_config)
+                    .await
+                {
                     tracing::error!("Failed to update AI model: {}", e);
                     return false;
                 }
@@ -1524,7 +1533,8 @@ impl StartupPage {
             })
             .collect();
 
-        self.agent_selector.show(agent_items, Some(self.agent_type.clone()));
+        self.agent_selector
+            .show(agent_items, Some(self.agent_type.clone()));
     }
 
     fn apply_agent_selection(&mut self, selected: &AgentItem) {
@@ -1588,8 +1598,12 @@ impl StartupPage {
             .into_iter()
             .map(|s| {
                 let source = match s.subagent_source {
-                    Some(bitfun_core::agentic::agents::SubAgentSource::Builtin) => "builtin".to_string(),
-                    Some(bitfun_core::agentic::agents::SubAgentSource::Project) => "project".to_string(),
+                    Some(bitfun_core::agentic::agents::SubAgentSource::Builtin) => {
+                        "builtin".to_string()
+                    }
+                    Some(bitfun_core::agentic::agents::SubAgentSource::Project) => {
+                        "project".to_string()
+                    }
                     Some(bitfun_core::agentic::agents::SubAgentSource::User) => "user".to_string(),
                     None => "builtin".to_string(),
                 };

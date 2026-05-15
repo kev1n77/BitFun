@@ -950,6 +950,24 @@
     font-size: 11px;
   }
 
+  &__detail-error {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 36px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, #f85149 34%, var(--border-base));
+    border-radius: 7px;
+    background: rgba(248, 81, 73, 0.08);
+    color: #f85149;
+    font-size: 11px;
+
+    span {
+      min-width: 0;
+      flex: 1;
+    }
+  }
+
   &__timeline-item {
     gap: 9px;
     min-height: 42px;

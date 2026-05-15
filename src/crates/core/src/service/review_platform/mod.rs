@@ -5,7 +5,7 @@
 
 use crate::infrastructure::try_get_path_manager_arc;
 use crate::service::git::{execute_git_command, get_repository_root};
-use futures::future::join_all;
+use futures::{stream, StreamExt};
 use reqwest::header::{HeaderMap, ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,6 +18,7 @@ const USER_AGENT_VALUE: &str = "BitFun";
 const DEFAULT_PR_PAGE: u32 = 1;
 const DEFAULT_PR_PAGE_SIZE: u32 = 10;
 const MAX_PR_PAGE_SIZE: u32 = 50;
+const PROVIDER_ENRICH_CONCURRENCY: usize = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReviewPlatformError {
@@ -243,6 +244,7 @@ pub struct ReviewPlatformWorkspaceSnapshot {
     pub pull_requests: Vec<ReviewPlatformPullRequest>,
     pub pagination: ReviewPlatformPagination,
     pub capabilities: ReviewPlatformCapabilities,
+    pub message: Option<String>,
 }
 
 pub struct ReviewPlatformService;
@@ -360,6 +362,15 @@ impl ReviewPlatformService {
         page: Option<u32>,
         per_page: Option<u32>,
     ) -> Result<ReviewPlatformWorkspaceSnapshot, ReviewPlatformError> {
+        if crate::service::remote_ssh::workspace_state::is_remote_path(repository_path).await {
+            return Ok(empty_snapshot(
+                Vec::new(),
+                None,
+                None,
+                "Pull request browsing is not available for remote SSH workspaces yet.",
+            ));
+        }
+
         let pagination_request = PullRequestPagination::new(page, per_page);
         let auth_tokens = load_stored_tokens().await?;
         let root = get_repository_root(repository_path)
@@ -415,6 +426,7 @@ impl ReviewPlatformService {
             pull_requests: page.items,
             pagination: page.pagination,
             capabilities: capabilities_for_remote(&remote),
+            message: None,
         })
     }
 
@@ -423,6 +435,12 @@ impl ReviewPlatformService {
         remote_id: &str,
         pull_request_id: &str,
     ) -> Result<ReviewPlatformPullRequestDetail, ReviewPlatformError> {
+        if crate::service::remote_ssh::workspace_state::is_remote_path(repository_path).await {
+            return Err(ReviewPlatformError::UnsupportedPlatform(
+                "remote SSH workspace".to_string(),
+            ));
+        }
+
         let auth_tokens = load_stored_tokens().await?;
         let root = get_repository_root(repository_path)
             .map_err(|error| ReviewPlatformError::InvalidRepository(error.to_string()))?;
@@ -530,11 +548,15 @@ impl ReviewProvider for GithubProvider {
         let items = response.value.as_array().ok_or_else(|| {
             ReviewPlatformError::Parse("GitHub pull response was not an array".to_string())
         })?;
-        let total =
-            github_total_count(ctx, &url, &response.headers, pagination, items.len()).await?;
-        let has_next = total
-            .map(|total| u64::from(pagination.page) * u64::from(pagination.per_page) < total)
-            .unwrap_or_else(|| link_header_has_rel(&response.headers, "next"));
+        let total = if link_header_last_page(&response.headers).is_some() {
+            None
+        } else {
+            Some(
+                u64::from(pagination.page.saturating_sub(1)) * u64::from(pagination.per_page)
+                    + items.len() as u64,
+            )
+        };
+        let has_next = link_header_has_rel(&response.headers, "next");
 
         let pull_requests = items
             .iter()
@@ -564,41 +586,54 @@ impl ReviewProvider for GithubProvider {
         );
         let client = http_client()?;
         let detail = send_json(github_request(client.clone(), &base, ctx.token.as_deref())).await?;
-        let files = send_json(
-            github_request(
-                client.clone(),
-                &format!("{}/files", base),
-                ctx.token.as_deref(),
-            )
-            .query(&[("per_page", "100")]),
+        let token = ctx.token.clone();
+        let files_url = format!("{}/files", base);
+        let files = fetch_paginated_array(
+            |page| {
+                let page = page.to_string();
+                github_request(client.clone(), &files_url, token.as_deref())
+                    .query(&[("per_page", "100"), ("page", &page)])
+            },
+            github_next_page,
         )
         .await?;
-        let commits = send_json(
-            github_request(
-                client.clone(),
-                &format!("{}/commits", base),
-                ctx.token.as_deref(),
-            )
-            .query(&[("per_page", "100")]),
+        let token = ctx.token.clone();
+        let commits_url = format!("{}/commits", base);
+        let commits = fetch_paginated_array(
+            |page| {
+                let page = page.to_string();
+                github_request(client.clone(), &commits_url, token.as_deref())
+                    .query(&[("per_page", "100"), ("page", &page)])
+            },
+            github_next_page,
         )
         .await?;
-        let reviews = send_json(
-            github_request(
-                client.clone(),
-                &format!("{}/reviews", base),
-                ctx.token.as_deref(),
-            )
-            .query(&[("per_page", "100")]),
+        let token = ctx.token.clone();
+        let reviews_url = format!("{}/reviews", base);
+        let reviews = fetch_paginated_array(
+            |page| {
+                let page = page.to_string();
+                github_request(client.clone(), &reviews_url, token.as_deref())
+                    .query(&[("per_page", "100"), ("page", &page)])
+            },
+            github_next_page,
         )
         .await?;
-        let comments = send_json(
-            github_request(client, &format!("{}/comments", base), ctx.token.as_deref())
-                .query(&[("per_page", "100")]),
+        let token = ctx.token.clone();
+        let comments_url = format!("{}/comments", base);
+        let comments = fetch_paginated_array(
+            |page| {
+                let page = page.to_string();
+                github_request(client.clone(), &comments_url, token.as_deref())
+                    .query(&[("per_page", "100"), ("page", &page)])
+            },
+            github_next_page,
         )
         .await?;
 
         let mut pull_request = github_pull_request_from_value(&detail);
         pull_request.review_decision = github_review_decision(&reviews);
+        pull_request.checks = github_checks(ctx, &client, &detail).await;
 
         Ok(ReviewPlatformPullRequestDetail {
             body: value_string(&detail, "body"),
@@ -680,17 +715,27 @@ impl ReviewProvider for GitlabProvider {
             ctx.token.as_deref(),
         ))
         .await?;
-        let commits = send_json(gitlab_request(
-            client.clone(),
-            &format!("{}/commits", base),
-            ctx.token.as_deref(),
-        ))
+        let token = ctx.token.clone();
+        let commits_url = format!("{}/commits", base);
+        let commits = fetch_paginated_array(
+            |page| {
+                let page = page.to_string();
+                gitlab_request(client.clone(), &commits_url, token.as_deref())
+                    .query(&[("per_page", "100"), ("page", &page)])
+            },
+            gitlab_next_page,
+        )
         .await?;
-        let discussions = send_json(gitlab_request(
-            client,
-            &format!("{}/discussions", base),
-            ctx.token.as_deref(),
-        ))
+        let token = ctx.token.clone();
+        let discussions_url = format!("{}/discussions", base);
+        let discussions = fetch_paginated_array(
+            |page| {
+                let page = page.to_string();
+                gitlab_request(client.clone(), &discussions_url, token.as_deref())
+                    .query(&[("per_page", "100"), ("page", &page)])
+            },
+            gitlab_next_page,
+        )
         .await?;
 
         let mut pull_request = gitlab_pull_request_from_value(&detail);
@@ -783,25 +828,40 @@ impl ReviewProvider for GitcodeProvider {
         );
         let detail =
             send_json(gitcode_request(client.clone(), &base, ctx.token.as_deref())).await?;
-        let files = send_json(gitcode_request(
-            client.clone(),
-            &format!("{}/files", base),
-            ctx.token.as_deref(),
-        ))
+        let token = ctx.token.clone();
+        let files_url = format!("{}/files", base);
+        let files = fetch_paginated_array(
+            |page| {
+                let page = page.to_string();
+                gitcode_request(client.clone(), &files_url, token.as_deref())
+                    .query(&[("per_page", "100"), ("page", &page)])
+            },
+            github_next_page,
+        )
         .await
         .unwrap_or(Value::Array(Vec::new()));
-        let commits = send_json(gitcode_request(
-            client.clone(),
-            &format!("{}/commits", base),
-            ctx.token.as_deref(),
-        ))
+        let token = ctx.token.clone();
+        let commits_url = format!("{}/commits", base);
+        let commits = fetch_paginated_array(
+            |page| {
+                let page = page.to_string();
+                gitcode_request(client.clone(), &commits_url, token.as_deref())
+                    .query(&[("per_page", "100"), ("page", &page)])
+            },
+            github_next_page,
+        )
         .await
         .unwrap_or(Value::Array(Vec::new()));
-        let comments = send_json(gitcode_request(
-            client,
-            &format!("{}/comments", base),
-            ctx.token.as_deref(),
-        ))
+        let token = ctx.token.clone();
+        let comments_url = format!("{}/comments", base);
+        let comments = fetch_paginated_array(
+            |page| {
+                let page = page.to_string();
+                gitcode_request(client.clone(), &comments_url, token.as_deref())
+                    .query(&[("per_page", "100"), ("page", &page)])
+            },
+            github_next_page,
+        )
         .await
         .unwrap_or(Value::Array(Vec::new()));
 
@@ -895,44 +955,30 @@ async fn send_json_response(
     Ok(JsonResponse { value, headers })
 }
 
-async fn github_total_count(
-    ctx: &ProviderContext,
-    url: &str,
-    headers: &HeaderMap,
-    pagination: PullRequestPagination,
-    current_count: usize,
-) -> Result<Option<u64>, ReviewPlatformError> {
-    let Some(last_page) = link_header_last_page(headers) else {
-        return Ok(Some(
-            u64::from(pagination.page.saturating_sub(1)) * u64::from(pagination.per_page)
-                + current_count as u64,
-        ));
-    };
+async fn fetch_paginated_array<F>(
+    mut build_request: F,
+    next_page: fn(&HeaderMap, u32) -> Option<u32>,
+) -> Result<Value, ReviewPlatformError>
+where
+    F: FnMut(u32) -> reqwest::RequestBuilder,
+{
+    let mut page = 1;
+    let mut values = Vec::new();
 
-    if last_page <= pagination.page {
-        return Ok(Some(
-            u64::from(pagination.page.saturating_sub(1)) * u64::from(pagination.per_page)
-                + current_count as u64,
-        ));
+    loop {
+        let response = send_json_response(build_request(page)).await?;
+        let items = response.value.as_array().ok_or_else(|| {
+            ReviewPlatformError::Parse("Provider paginated response was not an array".to_string())
+        })?;
+        values.extend(items.iter().cloned());
+
+        let Some(next) = next_page(&response.headers, page).filter(|next| *next > page) else {
+            break;
+        };
+        page = next;
     }
 
-    let per_page = pagination.per_page.to_string();
-    let page = last_page.to_string();
-    let response = send_json(
-        github_request(http_client()?, url, ctx.token.as_deref()).query(&[
-            ("state", "all"),
-            ("per_page", &per_page),
-            ("page", &page),
-        ]),
-    )
-    .await?;
-    let last_count = response.as_array().map(Vec::len).ok_or_else(|| {
-        ReviewPlatformError::Parse("GitHub last pull response was not an array".to_string())
-    })?;
-
-    Ok(Some(
-        u64::from(last_page.saturating_sub(1)) * u64::from(pagination.per_page) + last_count as u64,
-    ))
+    Ok(Value::Array(values))
 }
 
 fn header_string(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -973,6 +1019,25 @@ fn link_header_last_page(headers: &HeaderMap) -> Option<u32> {
     None
 }
 
+fn github_next_page(headers: &HeaderMap, current_page: u32) -> Option<u32> {
+    if link_header_has_rel(headers, "next") {
+        Some(current_page.saturating_add(1))
+    } else {
+        None
+    }
+}
+
+fn gitlab_next_page(headers: &HeaderMap, _current_page: u32) -> Option<u32> {
+    header_string(headers, "x-next-page").and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            trimmed.parse::<u32>().ok()
+        }
+    })
+}
+
 fn query_param_u32(url: &str, name: &str) -> Option<u32> {
     let query = url.split_once('?')?.1;
     for pair in query.split('&') {
@@ -1010,7 +1075,10 @@ async fn enrich_github_pull_request_counts(
             pull_request
         }
     });
-    join_all(futures).await
+    stream::iter(futures)
+        .buffered(PROVIDER_ENRICH_CONCURRENCY)
+        .collect()
+        .await
 }
 
 async fn enrich_gitlab_pull_request_counts(
@@ -1041,7 +1109,10 @@ async fn enrich_gitlab_pull_request_counts(
             pull_request
         }
     });
-    join_all(futures).await
+    stream::iter(futures)
+        .buffered(PROVIDER_ENRICH_CONCURRENCY)
+        .collect()
+        .await
 }
 
 async fn enrich_gitcode_pull_request_counts(
@@ -1069,7 +1140,10 @@ async fn enrich_gitcode_pull_request_counts(
             pull_request
         }
     });
-    join_all(futures).await
+    stream::iter(futures)
+        .buffered(PROVIDER_ENRICH_CONCURRENCY)
+        .collect()
+        .await
 }
 
 fn github_request(
@@ -1310,6 +1384,11 @@ fn empty_snapshot(
             can_merge: false,
             supports_draft_review: false,
         },
+        message: if message.trim().is_empty() {
+            None
+        } else {
+            Some(message.to_string())
+        },
     }
 }
 
@@ -1351,21 +1430,13 @@ fn account_for_remote(remote: &ReviewPlatformRemote) -> ReviewPlatformAccount {
     }
 }
 
-fn capabilities_for_remote(remote: &ReviewPlatformRemote) -> ReviewPlatformCapabilities {
-    let has_token = matches!(
-        remote.auth_source,
-        ReviewAuthSource::Env | ReviewAuthSource::Stored
-    );
+fn capabilities_for_remote(_remote: &ReviewPlatformRemote) -> ReviewPlatformCapabilities {
     ReviewPlatformCapabilities {
-        can_create_review: has_token,
-        can_reply_to_thread: has_token,
-        can_resolve_thread: has_token
-            && matches!(
-                remote.platform,
-                ReviewPlatformKind::Gitlab | ReviewPlatformKind::Codehub
-            ),
+        can_create_review: false,
+        can_reply_to_thread: false,
+        can_resolve_thread: false,
         can_merge: false,
-        supports_draft_review: remote.platform == ReviewPlatformKind::Github,
+        supports_draft_review: false,
     }
 }
 
@@ -1377,6 +1448,74 @@ fn platform_label(platform: ReviewPlatformKind) -> &'static str {
         ReviewPlatformKind::Gitcode => "GitCode",
         ReviewPlatformKind::Unknown => "Git",
     }
+}
+
+async fn github_checks(
+    ctx: &ProviderContext,
+    client: &reqwest::Client,
+    pull_detail: &Value,
+) -> ReviewChecks {
+    let sha = nested_string(pull_detail, &["head", "sha"]);
+    if sha.trim().is_empty() {
+        return empty_checks();
+    }
+
+    let mut checks = empty_checks();
+    let status_url = format!(
+        "{}/repos/{}/{}/commits/{}/status",
+        ctx.api_base_url, ctx.remote.owner, ctx.remote.repository_name, sha
+    );
+    if let Ok(status) = send_json(github_request(
+        client.clone(),
+        &status_url,
+        ctx.token.as_deref(),
+    ))
+    .await
+    {
+        let statuses = status
+            .get("statuses")
+            .and_then(Value::as_array)
+            .map(|items| items.as_slice())
+            .unwrap_or(&[]);
+        for item in statuses {
+            match value_string(item, "state").as_str() {
+                "success" => checks.passed += 1,
+                "failure" | "error" => checks.failed += 1,
+                _ => checks.pending += 1,
+            }
+        }
+    }
+
+    let check_runs_url = format!(
+        "{}/repos/{}/{}/commits/{}/check-runs",
+        ctx.api_base_url, ctx.remote.owner, ctx.remote.repository_name, sha
+    );
+    if let Ok(check_runs) = send_json(
+        github_request(client.clone(), &check_runs_url, ctx.token.as_deref())
+            .query(&[("per_page", "100")]),
+    )
+    .await
+    {
+        for item in check_runs
+            .get("check_runs")
+            .and_then(Value::as_array)
+            .map(|items| items.as_slice())
+            .unwrap_or(&[])
+        {
+            if value_string(item, "status") != "completed" {
+                checks.pending += 1;
+                continue;
+            }
+            match value_string(item, "conclusion").as_str() {
+                "success" | "neutral" | "skipped" => checks.passed += 1,
+                "failure" | "timed_out" | "cancelled" | "action_required" => checks.failed += 1,
+                _ => checks.pending += 1,
+            }
+        }
+    }
+
+    checks.total = checks.passed + checks.failed + checks.pending;
+    checks
 }
 
 fn parse_remote(
@@ -1729,18 +1868,37 @@ fn gitcode_commit_from_value(value: &Value) -> ReviewPlatformCommit {
 }
 
 fn github_review_decision(reviews: &Value) -> ReviewDecision {
-    let mut decision = ReviewDecision::Pending;
+    let mut latest_by_author: HashMap<String, String> = HashMap::new();
+    let mut anonymous_states = Vec::new();
     for review in array_items(reviews) {
-        match value_string(review, "state").as_str() {
-            "CHANGES_REQUESTED" => return ReviewDecision::ChangesRequested,
-            "APPROVED" => decision = ReviewDecision::Approved,
-            "COMMENTED" if decision == ReviewDecision::Pending => {
-                decision = ReviewDecision::Commented
-            }
-            _ => {}
+        let state = value_string(review, "state");
+        if state == "DISMISSED" || state.trim().is_empty() {
+            continue;
+        }
+        let author = nested_string(review, &["user", "login"]);
+        if author.trim().is_empty() {
+            anonymous_states.push(state);
+        } else {
+            latest_by_author.insert(author, state);
         }
     }
-    decision
+
+    let states = latest_by_author
+        .values()
+        .chain(anonymous_states.iter())
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+
+    if states.iter().any(|state| *state == "CHANGES_REQUESTED") {
+        return ReviewDecision::ChangesRequested;
+    }
+    if states.iter().any(|state| *state == "APPROVED") {
+        return ReviewDecision::Approved;
+    }
+    if states.iter().any(|state| *state == "COMMENTED") {
+        return ReviewDecision::Commented;
+    }
+    ReviewDecision::Pending
 }
 
 fn github_threads(reviews: &Value, comments: &Value) -> Vec<ReviewPlatformThread> {
@@ -1960,4 +2118,49 @@ fn first_line(value: &str) -> String {
 
 fn short_hash(hash: &str) -> String {
     hash.chars().take(7).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn github_review_decision_uses_latest_review_per_author() {
+        let reviews = json!([
+            {
+                "id": 1,
+                "state": "CHANGES_REQUESTED",
+                "user": { "login": "alice" }
+            },
+            {
+                "id": 2,
+                "state": "APPROVED",
+                "user": { "login": "alice" }
+            }
+        ]);
+
+        assert_eq!(github_review_decision(&reviews), ReviewDecision::Approved);
+    }
+
+    #[test]
+    fn github_review_decision_keeps_active_change_request_from_any_reviewer() {
+        let reviews = json!([
+            {
+                "id": 1,
+                "state": "APPROVED",
+                "user": { "login": "alice" }
+            },
+            {
+                "id": 2,
+                "state": "CHANGES_REQUESTED",
+                "user": { "login": "bob" }
+            }
+        ]);
+
+        assert_eq!(
+            github_review_decision(&reviews),
+            ReviewDecision::ChangesRequested
+        );
+    }
 }

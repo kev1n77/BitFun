@@ -2725,7 +2725,11 @@ impl ChatMode {
                 }
 
                 // Load historical messages from core.
-                let messages = agent.coordinator().get_messages(&sid).await.unwrap_or_default();
+                let messages = agent
+                    .coordinator()
+                    .get_messages(&sid)
+                    .await
+                    .unwrap_or_default();
 
                 let state = ChatState::from_core_messages(
                     sid.clone(),
@@ -2994,7 +2998,10 @@ impl ChatMode {
         let result = tokio::task::block_in_place(|| {
             rt_handle.block_on(async {
                 let workspace_path = agent.workspace_path_buf();
-                agent.coordinator().delete_session(&workspace_path, &sid).await
+                agent
+                    .coordinator()
+                    .delete_session(&workspace_path, &sid)
+                    .await
             })
         });
 
@@ -3133,8 +3140,7 @@ impl ChatMode {
 
         if success {
             chat_view.set_status(Some(format!("Model added: {}", result.name)));
-            chat_state.current_model_name =
-                format!("{} / {}", result.model_name, result.name);
+            chat_state.current_model_name = format!("{} / {}", result.model_name, result.name);
             tracing::info!("Added new AI model: {} ({})", model_id, result.model_name);
         } else {
             chat_view.set_status(Some("Failed to add model".to_string()));
@@ -3263,8 +3269,7 @@ impl ChatMode {
 
         if success {
             chat_view.set_status(Some(format!("Model updated: {}", result.name)));
-            chat_state.current_model_name =
-                format!("{} / {}", result.model_name, result.name);
+            chat_state.current_model_name = format!("{} / {}", result.model_name, result.name);
             tracing::info!("Updated AI model: {}", model_id);
         } else {
             chat_view.set_status(Some("Failed to update model".to_string()));

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronLeft,
@@ -30,8 +30,8 @@ import { createLogger } from '@/shared/utils/logger';
 import { notificationService } from '@/shared/notification-system';
 import { useDeepReviewConsent } from '@/flow_chat/components/DeepReviewConsentDialog';
 import {
-  buildDeepReviewLaunchFromSessionFiles,
-  buildDeepReviewPreviewFromSessionFiles,
+  buildDeepReviewLaunchFromPullRequestFiles,
+  buildDeepReviewPreviewFromPullRequestFiles,
   launchDeepReviewSession,
 } from '@/flow_chat/services/DeepReviewService';
 import { openBtwSessionInAuxPane, openMainSession } from '@/flow_chat/services/openBtwSession';
@@ -55,6 +55,8 @@ const PR_PAGE_SIZE = 10;
 const CACHE_TTL_MS = 2 * 60 * 1000;
 const REMOTE_STORAGE_PREFIX = 'bitfun:review-platform:last-remote:';
 const MAX_LINKED_REVIEW_SESSIONS = 6;
+const MAX_PR_DIFF_CONTEXT_CHARS = 24000;
+const MAX_PR_FILE_PATCH_CHARS = 5000;
 
 const REVIEW_EXCLUDED_EXTENSIONS = new Set([
   '.7z', '.avi', '.avif', '.bin', '.bmp', '.class', '.dll', '.doc', '.docx', '.eot', '.exe',
@@ -280,6 +282,7 @@ function emptySnapshot(): ReviewPlatformWorkspaceSnapshot {
       canMerge: false,
       supportsDraftReview: false,
     },
+    message: null,
   };
 }
 
@@ -415,8 +418,57 @@ function buildPrChatPrompt(params: {
   ].filter(Boolean).join('\n');
 }
 
+function truncateText(value: string, maxChars: number): { text: string; truncated: boolean } {
+  if (value.length <= maxChars) {
+    return { text: value, truncated: false };
+  }
+  return {
+    text: `${value.slice(0, Math.max(0, maxChars))}\n[Truncated after ${maxChars} characters]`,
+    truncated: true,
+  };
+}
+
+function buildPrDiffContext(detail: ReviewPlatformPullRequestDetail | null): string {
+  if (!detail?.files.length) {
+    return 'Provider diff: No file-level diff was loaded for this pull request.';
+  }
+
+  const sections: string[] = [];
+  let usedChars = 0;
+  let omittedFiles = 0;
+
+  for (const file of detail.files) {
+    const header = [
+      `File: ${file.path}`,
+      file.oldPath && file.oldPath !== file.path ? `Old path: ${file.oldPath}` : null,
+      `Status: ${file.status}`,
+      `Delta: +${file.additions} -${file.deletions}`,
+    ].filter(Boolean).join('\n');
+    const patch = file.patch?.trim()
+      ? truncateText(file.patch, MAX_PR_FILE_PATCH_CHARS)
+      : { text: '[No inline patch returned by provider]', truncated: false };
+    const section = `${header}\nPatch:\n${patch.text}${patch.truncated ? '\n[File patch truncated]' : ''}`;
+
+    if (usedChars + section.length > MAX_PR_DIFF_CONTEXT_CHARS) {
+      omittedFiles += 1;
+      continue;
+    }
+
+    sections.push(section);
+    usedChars += section.length;
+  }
+
+  const omitted = omittedFiles > 0
+    ? `\n\n[${omittedFiles} file diff section(s) omitted to keep the launch prompt bounded. Use the PR file list and provider page for the complete diff.]`
+    : '';
+
+  return `Provider diff source of truth:\n\n${sections.join('\n\n---\n\n')}${omitted}`;
+}
+
 export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ workspacePath }) => {
   const { confirmDeepReviewLaunch, deepReviewConsentDialog } = useDeepReviewConsent();
+  const snapshotRequestSeq = useRef(0);
+  const detailRequestSeq = useRef(0);
   const [snapshot, setSnapshot] = useState<ReviewPlatformWorkspaceSnapshot>(emptySnapshot);
   const [selectedRemoteId, setSelectedRemoteId] = useState<string | null>(null);
   const [selectedPrId, setSelectedPrId] = useState<string | null>(null);
@@ -425,6 +477,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
   const [activeTab, setActiveTab] = useState<DetailTab>('overview');
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [launchingDeepReview, setLaunchingDeepReview] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -466,11 +519,13 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
   );
 
   const loadSnapshot = useCallback(async (nextRemoteId?: string | null, options?: { force?: boolean; page?: number }) => {
+    const requestSeq = ++snapshotRequestSeq.current;
     if (!workspacePath) {
       setSnapshot(emptySnapshot());
       setSelectedRemoteId(null);
       setSelectedPrId(null);
       setDetail(null);
+      setDetailError(null);
       setError('No active workspace is available.');
       setLoading(false);
       return;
@@ -489,6 +544,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
       setPageIndex(Math.max(0, (cached.snapshot.pagination.page || requestedPage) - 1));
       setSelectedPrId(null);
       setDetail(null);
+      setDetailError(null);
       setError(null);
       setSnapshotCacheState(isFresh(cached.fetchedAt) ? 'cached' : 'refreshing');
       if (isFresh(cached.fetchedAt)) {
@@ -499,6 +555,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
       setSnapshot(emptySnapshot());
       setSelectedPrId(null);
       setDetail(null);
+      setDetailError(null);
       setSnapshotCacheState('none');
     }
 
@@ -506,6 +563,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
     setError(null);
     try {
       const next = await reviewPlatformAPI.getWorkspaceSnapshot(workspacePath, requestedRemoteId ?? null, requestedPage, PR_PAGE_SIZE);
+      if (snapshotRequestSeq.current !== requestSeq) return;
       setSnapshot(next);
       const remoteId = next.selectedRemoteId ?? next.remotes[0]?.id ?? null;
       setSelectedRemoteId(remoteId);
@@ -513,6 +571,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
       rememberRemote(workspacePath, remoteId);
       setSelectedPrId(null);
       setDetail(null);
+      setDetailError(null);
       const entry = { snapshot: next, fetchedAt: Date.now() };
       snapshotCache.set(requestedCacheKey, entry);
       if (remoteId) {
@@ -520,6 +579,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
       }
       setSnapshotCacheState('cached');
     } catch (err) {
+      if (snapshotRequestSeq.current !== requestSeq) return;
       const message = err instanceof Error ? err.message : 'Failed to load pull requests';
       setError(message);
       if (!cached) {
@@ -527,16 +587,22 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
       }
       log.error('Failed to load review platform snapshot', { workspacePath, error: err });
     } finally {
-      setLoading(false);
+      if (snapshotRequestSeq.current === requestSeq) {
+        setLoading(false);
+      }
     }
   }, [workspacePath]);
 
-  const loadDetail = useCallback(async (repo: ReviewPlatformRepositoryRef, remoteId: string, pullRequestId: string) => {
+  const loadDetail = useCallback(async (repo: ReviewPlatformRepositoryRef, remoteId: string, pullRequestId: string, options?: { force?: boolean }) => {
+    const requestSeq = ++detailRequestSeq.current;
     const repositoryPath = workspacePath || repo.workspacePath || '';
     const cacheKey = detailCacheKey(repositoryPath, remoteId, pullRequestId);
     const cached = detailCache.get(cacheKey);
+    const force = options?.force === true;
 
-    if (cached) {
+    setDetailError(null);
+
+    if (cached && !force) {
       setDetail(cached.detail);
       if (isFresh(cached.fetchedAt)) {
         setDetailLoading(false);
@@ -549,15 +615,20 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
     setDetailLoading(true);
     try {
       const nextDetail = await reviewPlatformAPI.getPullRequestDetail(repositoryPath, remoteId, pullRequestId);
+      if (detailRequestSeq.current !== requestSeq) return;
       setDetail(nextDetail);
       detailCache.set(cacheKey, { detail: nextDetail, fetchedAt: Date.now() });
     } catch (err) {
+      if (detailRequestSeq.current !== requestSeq) return;
       log.error('Failed to load pull request detail', { pullRequestId, error: err });
+      setDetailError(err instanceof Error ? err.message : 'Failed to load pull request details.');
       if (!cached) {
         setDetail(null);
       }
     } finally {
-      setDetailLoading(false);
+      if (detailRequestSeq.current === requestSeq) {
+        setDetailLoading(false);
+      }
     }
   }, [workspacePath]);
 
@@ -570,10 +641,12 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
   useEffect(() => {
     if (!selectedRemoteId) {
       setDetail(null);
+      setDetailError(null);
       return;
     }
     if (!repository || !selectedPrId) {
       setDetail(null);
+      setDetailError(null);
       return;
     }
     void loadDetail(repository, selectedRemoteId, selectedPrId);
@@ -711,6 +784,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
     setSelectedRemoteId(remoteId || null);
     setSelectedPrId(null);
     setDetail(null);
+    setDetailError(null);
     setPageIndex(0);
     rememberRemote(workspacePath, remoteId || null);
     void loadSnapshot(remoteId || null, { page: 1 });
@@ -720,6 +794,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
     const nextPage = Math.max(1, nextPageIndex + 1);
     setSelectedPrId(null);
     setDetail(null);
+    setDetailError(null);
     setPageIndex(nextPage - 1);
     void loadSnapshot(selectedRemoteId, { page: nextPage });
   }, [loadSnapshot, selectedRemoteId]);
@@ -813,7 +888,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
         selectedPr.webUrl ? `URL: ${selectedPr.webUrl}` : null,
         selectedRemote ? `Provider: ${providerLabel(selectedRemote)} ${selectedRemote.projectPath}` : null,
       ].filter(Boolean).join('\n');
-      const preview = await buildDeepReviewPreviewFromSessionFiles(reviewablePrFilePaths, workspacePath);
+      const preview = await buildDeepReviewPreviewFromPullRequestFiles(reviewablePrFilePaths, workspacePath);
       const confirmed = await confirmDeepReviewLaunch(preview, {
         sessionConcurrencyGuard: deriveDeepReviewSessionConcurrencyGuard(flowChatStore.getState(), parentSession.sessionId),
       });
@@ -828,9 +903,10 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
         );
       }
 
-      const { prompt, runManifest } = await buildDeepReviewLaunchFromSessionFiles(
+      const { prompt, runManifest } = await buildDeepReviewLaunchFromPullRequestFiles(
         reviewablePrFilePaths,
         extraContext,
+        buildPrDiffContext(detail),
         workspacePath,
       );
       const fileList = reviewablePrFilePaths.map(path => `- ${path}`).join('\n');
@@ -861,6 +937,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
     selectedPr,
     selectedRemote,
     skippedReviewFileCount,
+    detail,
     workspacePath,
   ]);
 
@@ -924,6 +1001,11 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
     }
   }, [refreshAuthSnapshot, selectedRemote]);
 
+  const handleRetryDetail = useCallback(() => {
+    if (!repository || !selectedRemoteId || !selectedPrId) return;
+    void loadDetail(repository, selectedRemoteId, selectedPrId, { force: true });
+  }, [loadDetail, repository, selectedPrId, selectedRemoteId]);
+
   const remoteStatus = selectedRemote
     ? `${providerLabel(selectedRemote)} · ${authLabel(account)}`
     : 'No remote detected';
@@ -931,7 +1013,8 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
   const checksText = displayPr && displayPr.checks.total > 0
     ? `${displayPr.checks.passed}/${displayPr.checks.total}`
     : 'N/A';
-  const emptyStateMessage = account?.message
+  const emptyStateMessage = snapshot.message
+    || account?.message
     || selectedRemote?.message
     || (snapshot.remotes.length ? 'No pull requests match the current filter.' : 'No supported remotes were detected.');
   const loadingLabel = loading
@@ -1011,9 +1094,9 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
 
       <div className="review-platform__subbar">
         <div className="review-platform__status-line">
-          <span><CircleDot size={12} /> {summary.open} open</span>
-          <span><GitPullRequestClosed size={12} /> {summary.merged} merged</span>
-          <span><Sparkles size={12} /> {summary.reviewRequired} review</span>
+          <span><CircleDot size={12} /> {summary.open} open on page</span>
+          <span><GitPullRequestClosed size={12} /> {summary.merged} merged on page</span>
+          <span><Sparkles size={12} /> {summary.reviewRequired} review on page</span>
           <span><Link2 size={12} /> {remoteStatus}</span>
           {loadingLabel && (
             <span className="review-platform__loading-inline">
@@ -1256,9 +1339,19 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
                       )}
                     </div>
                     <div className="review-platform__body-markdown">
-                      {detail?.body
-                        ? <MarkdownRenderer content={detail.body} basePath={workspacePath} />
-                        : <span className="review-platform__loading">Loading pull request summary...</span>}
+                      {detailError ? (
+                        <div className="review-platform__detail-error">
+                          <XCircle size={14} />
+                          <span>{detailError}</span>
+                          <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleRetryDetail}>
+                            Retry
+                          </Button>
+                        </div>
+                      ) : detail?.body ? (
+                        <MarkdownRenderer content={detail.body} basePath={workspacePath} />
+                      ) : (
+                        <span className="review-platform__loading">Loading pull request summary...</span>
+                      )}
                     </div>
                     <div className="review-platform__capability-row">
                       <span className="review-platform__capability-chip">State: {stateLabel(displayPr?.state ?? selectedPr.state)}</span>
@@ -1280,6 +1373,15 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
 
                 <TabPane tabKey="changes" label="Changes">
                   <section className="review-platform__tab-content review-platform__file-list">
+                    {detailError && (
+                      <div className="review-platform__detail-error">
+                        <XCircle size={14} />
+                        <span>{detailError}</span>
+                        <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleRetryDetail}>
+                          Retry
+                        </Button>
+                      </div>
+                    )}
                     {detailLoading && <span className="review-platform__loading">Loading files...</span>}
                     {detail?.files.map(file => {
                       const key = fileKey(file);
@@ -1328,6 +1430,15 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
 
                 <TabPane tabKey="commits" label="Commits">
                   <section className="review-platform__tab-content review-platform__timeline">
+                    {detailError && (
+                      <div className="review-platform__detail-error">
+                        <XCircle size={14} />
+                        <span>{detailError}</span>
+                        <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleRetryDetail}>
+                          Retry
+                        </Button>
+                      </div>
+                    )}
                     {detail?.commits.map(commit => (
                       <div key={commit.hash} className="review-platform__timeline-item">
                         <GitCommitHorizontal size={14} />
@@ -1343,6 +1454,15 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
 
                 <TabPane tabKey="reviews" label="Reviews">
                   <section className="review-platform__tab-content review-platform__threads">
+                    {detailError && (
+                      <div className="review-platform__detail-error">
+                        <XCircle size={14} />
+                        <span>{detailError}</span>
+                        <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleRetryDetail}>
+                          Retry
+                        </Button>
+                      </div>
+                    )}
                     {detail?.threads.map(thread => (
                       <article key={thread.id} className={`review-platform__thread${thread.resolved ? ' is-resolved' : ''}`}>
                         <div className="review-platform__thread-head">

@@ -133,6 +133,7 @@ export interface ReviewPlatformWorkspaceSnapshot {
   pullRequests: ReviewPlatformPullRequest[];
   pagination: ReviewPlatformPagination;
   capabilities: ReviewPlatformCapabilities;
+  message?: string | null;
 }
 
 export interface ReviewPlatformWorkspaceSnapshotRequest {
