@@ -216,6 +216,8 @@ function providerLabel(remote: ReviewPlatformRemote | ReviewPlatformAccount | nu
       return 'GitHub';
     case 'gitlab':
       return 'GitLab';
+    case 'codehub':
+      return 'CodeHub';
     case 'gitcode':
       return 'GitCode';
     default:

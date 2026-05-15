@@ -40,6 +40,7 @@ pub enum ReviewPlatformError {
 pub enum ReviewPlatformKind {
     Github,
     Gitlab,
+    Codehub,
     Gitcode,
     Unknown,
 }
@@ -49,6 +50,7 @@ impl ReviewPlatformKind {
         match self {
             Self::Github => "github",
             Self::Gitlab => "gitlab",
+            Self::Codehub => "codehub",
             Self::Gitcode => "gitcode",
             Self::Unknown => "unknown",
         }
@@ -498,6 +500,7 @@ fn provider_for(platform: ReviewPlatformKind) -> &'static dyn ReviewProvider {
     match platform {
         ReviewPlatformKind::Github => &GithubProvider,
         ReviewPlatformKind::Gitlab => &GitlabProvider,
+        ReviewPlatformKind::Codehub => &GitlabProvider,
         ReviewPlatformKind::Gitcode => &GitcodeProvider,
         ReviewPlatformKind::Unknown => &UnsupportedProvider,
     }
@@ -846,6 +849,7 @@ impl ReviewProvider for UnsupportedProvider {
 
 fn http_client() -> Result<reqwest::Client, ReviewPlatformError> {
     reqwest::Client::builder()
+        .use_native_tls()
         .timeout(Duration::from_secs(25))
         .build()
         .map_err(|error| ReviewPlatformError::Network(error.to_string()))
@@ -1124,6 +1128,7 @@ fn provider_context(
     let api_base_url = match remote.platform {
         ReviewPlatformKind::Github => "https://api.github.com".to_string(),
         ReviewPlatformKind::Gitlab => format!("https://{}/api/v4", remote.host),
+        ReviewPlatformKind::Codehub => "https://codehub-y.huawei.com/api/v4".to_string(),
         ReviewPlatformKind::Gitcode => "https://api.gitcode.com/api/v5".to_string(),
         ReviewPlatformKind::Unknown => {
             return Err(ReviewPlatformError::UnsupportedPlatform(remote.host));
@@ -1151,6 +1156,7 @@ fn env_token_for_platform(platform: ReviewPlatformKind) -> Option<String> {
     let names: &[&str] = match platform {
         ReviewPlatformKind::Github => &["GITHUB_TOKEN", "GH_TOKEN"],
         ReviewPlatformKind::Gitlab => &["GITLAB_TOKEN", "GITLAB_PRIVATE_TOKEN"],
+        ReviewPlatformKind::Codehub => &["CODEHUB_TOKEN"],
         ReviewPlatformKind::Gitcode => &["GITCODE_TOKEN"],
         ReviewPlatformKind::Unknown => &[],
     };
@@ -1353,7 +1359,11 @@ fn capabilities_for_remote(remote: &ReviewPlatformRemote) -> ReviewPlatformCapab
     ReviewPlatformCapabilities {
         can_create_review: has_token,
         can_reply_to_thread: has_token,
-        can_resolve_thread: has_token && remote.platform == ReviewPlatformKind::Gitlab,
+        can_resolve_thread: has_token
+            && matches!(
+                remote.platform,
+                ReviewPlatformKind::Gitlab | ReviewPlatformKind::Codehub
+            ),
         can_merge: false,
         supports_draft_review: remote.platform == ReviewPlatformKind::Github,
     }
@@ -1363,6 +1373,7 @@ fn platform_label(platform: ReviewPlatformKind) -> &'static str {
     match platform {
         ReviewPlatformKind::Github => "GitHub",
         ReviewPlatformKind::Gitlab => "GitLab",
+        ReviewPlatformKind::Codehub => "CodeHub",
         ReviewPlatformKind::Gitcode => "GitCode",
         ReviewPlatformKind::Unknown => "Git",
     }
@@ -1377,6 +1388,8 @@ fn parse_remote(
     let host_lower = parsed.host.to_ascii_lowercase();
     let platform = if host_lower.contains("github.com") {
         ReviewPlatformKind::Github
+    } else if host_lower.contains("-y") && host_lower.contains("codehub") {
+        ReviewPlatformKind::Codehub
     } else if host_lower.contains("gitlab") {
         ReviewPlatformKind::Gitlab
     } else if host_lower.contains("gitcode") {

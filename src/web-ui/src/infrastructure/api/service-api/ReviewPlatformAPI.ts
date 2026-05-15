@@ -4,7 +4,7 @@ import { createLogger } from '@/shared/utils/logger';
 
 const log = createLogger('ReviewPlatformAPI');
 
-export type ReviewPlatformKind = 'github' | 'gitlab' | 'gitcode' | 'unknown';
+export type ReviewPlatformKind = 'github' | 'gitlab' | 'codehub' | 'gitcode' | 'unknown';
 export type ReviewAuthState = 'not_connected' | 'not_required' | 'connected' | 'expired' | 'error' | 'unsupported';
 export type ReviewAuthSource = 'env' | 'stored' | 'none' | 'unsupported';
 export type ReviewItemState = 'open' | 'merged' | 'closed' | 'draft';
