@@ -176,6 +176,16 @@ export function useMessageSender(props: UseMessageSenderProps): UseMessageSender
               return `[Directory: ${ctx.directoryPath}]`;
             case 'code-snippet':
               return `[Code Snippet: ${ctx.filePath}:${ctx.startLine}-${ctx.endLine}]`;
+            case 'pull-request':
+              return [
+                `[Pull Request Context: ${ctx.label}]`,
+                ctx.repository ? `Repository: ${ctx.repository}` : '',
+                ctx.pullRequestNumber ? `Pull Request: #${ctx.pullRequestNumber}${ctx.pullRequestTitle ? ` ${ctx.pullRequestTitle}` : ''}` : '',
+                ctx.sourceUrl ? `URL: ${ctx.sourceUrl}` : '',
+                `Section: ${ctx.section}`,
+                '',
+                ctx.content,
+              ].filter(line => line !== '').join('\n');
             case 'image':
               // Images are sent out-of-band via `imageContexts` so the backend can attach them
               // for multimodal models or convert to text placeholders for text-only models. Avoid embedding

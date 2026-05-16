@@ -1,6 +1,7 @@
 @use '../../../../component-library/styles/tokens' as *;
 
 .review-platform {
+  container: review-platform / inline-size;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -19,6 +20,10 @@
     min-height: 44px;
     padding: 8px 12px;
     border-bottom: 1px solid var(--border-base);
+  }
+
+  &__topbar {
+    flex-wrap: wrap;
   }
 
   &__topbar {
@@ -93,11 +98,15 @@
 
   &__topbar-actions {
     gap: 8px;
+    min-width: 0;
     flex-shrink: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   &__remote-select {
     width: min(320px, 100%);
+    min-width: 180px;
   }
 
   &__account {
@@ -212,7 +221,7 @@
     min-height: 0;
     flex: 1;
     display: grid;
-    grid-template-columns: minmax(280px, 33%) minmax(0, 1fr);
+    grid-template-columns: minmax(260px, clamp(260px, 32cqi, 360px)) minmax(0, 1fr);
   }
 
   &--detail-only &__body {
@@ -431,6 +440,7 @@
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
+    min-width: 0;
     gap: 12px;
     padding: 12px 14px;
     border-bottom: 1px solid var(--border-base);
@@ -468,6 +478,8 @@
   &__detail-actions {
     gap: 6px;
     flex-shrink: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
 
     .btn {
       gap: 5px;
@@ -576,6 +588,49 @@
     margin-bottom: 14px;
   }
 
+  &__section-heading {
+    width: 100%;
+    min-height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+
+    > span {
+      min-width: 0;
+      color: var(--color-text-primary);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .btn {
+      flex-shrink: 0;
+      gap: 5px;
+    }
+  }
+
+  &__card-heading {
+    min-height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin: -2px 0 8px;
+
+    > span {
+      min-width: 0;
+      color: var(--color-text-primary);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .btn {
+      flex-shrink: 0;
+      gap: 5px;
+    }
+  }
+
   &__capability-chip {
     color: var(--color-text-secondary);
     background: color-mix(in srgb, var(--element-bg-soft) 76%, transparent);
@@ -649,6 +704,7 @@
   }
 
   &__tab-content {
+    box-sizing: border-box;
     height: 100%;
     overflow-y: auto;
     padding: 12px 14px;
@@ -656,7 +712,8 @@
 
   &__body-copy,
   &__body-markdown {
-    max-width: 760px;
+    width: min(100%, 1120px);
+    max-width: 100%;
     margin: 0 0 14px;
     color: var(--color-text-secondary);
     font-size: 12px;
@@ -848,9 +905,12 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+    align-items: stretch;
   }
 
   &__file-card {
+    flex: 0 0 auto;
+    min-width: 0;
     overflow: hidden;
     border: 1px solid var(--border-base);
     border-radius: 7px;
@@ -859,15 +919,27 @@
 
   &__file-row {
     display: grid;
-    grid-template-columns: 18px 72px minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
     gap: 8px;
     width: 100%;
     min-height: 34px;
     padding: 0 8px;
-    border: 0;
     border-bottom: 1px solid var(--border-base);
     background: color-mix(in srgb, var(--element-bg-soft) 42%, transparent);
+  }
+
+  &__file-main {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 18px 72px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 34px;
+    padding: 0;
+    border: 0;
+    background: transparent;
     color: inherit;
     font-size: 12px;
     text-align: left;
@@ -876,6 +948,12 @@
     &:hover {
       background: color-mix(in srgb, var(--element-bg-soft) 62%, transparent);
     }
+  }
+
+  &__file-add-button.btn {
+    min-height: 24px;
+    padding-inline: 8px;
+    flex-shrink: 0;
   }
 
   &__file-toggle {
@@ -910,6 +988,9 @@
   }
 
   &__diff-block {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
     margin: 0;
     max-height: 360px;
     overflow: auto;
@@ -1067,6 +1148,72 @@
     &__agent-link-actions {
       width: 100%;
       flex-wrap: wrap;
+    }
+  }
+
+  @container review-platform (max-width: 980px) {
+    &__body {
+      grid-template-columns: 1fr;
+    }
+
+    &__list {
+      max-height: 260px;
+      border-right: 0;
+      border-bottom: 1px solid var(--border-base);
+    }
+
+    &__summary-grid {
+      grid-template-columns: repeat(2, minmax(120px, 1fr));
+    }
+
+    &__summary-strip {
+      gap: 6px;
+    }
+
+    &__agent-link-panel,
+    &__detail-header {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+
+    &__agent-link-actions,
+    &__detail-actions {
+      width: 100%;
+      flex-wrap: wrap;
+      justify-content: flex-start;
+    }
+  }
+
+  @container review-platform (max-width: 560px) {
+    &__topbar-actions,
+    &__remote-select {
+      width: 100%;
+    }
+
+    &__summary-grid {
+      grid-template-columns: 1fr;
+    }
+
+    &__file-row {
+      align-items: stretch;
+      grid-template-columns: 1fr;
+      gap: 0;
+      padding-block: 4px;
+    }
+
+    &__file-main {
+      grid-template-columns: 18px 68px minmax(0, 1fr);
+      min-height: 30px;
+    }
+
+    &__file-delta {
+      grid-column: 3;
+      justify-self: start;
+    }
+
+    &__file-add-button.btn {
+      justify-self: flex-start;
+      margin-left: 98px;
     }
   }
 }

@@ -14,7 +14,6 @@ import {
   Link2,
   Loader2,
   MessageSquareText,
-  PanelRightOpen,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -24,22 +23,16 @@ import {
   XCircle,
 } from 'lucide-react';
 import { Button, IconButton, Input, MarkdownRenderer, Modal, Select, Tabs, TabPane, Tooltip, type SelectOption } from '@/component-library';
-import { reviewPlatformAPI, systemAPI, type ReviewPlatformAccount, type ReviewPlatformPullRequest, type ReviewPlatformPullRequestDetail, type ReviewPlatformRemote, type ReviewPlatformRepositoryRef, type ReviewPlatformWorkspaceSnapshot } from '@/infrastructure/api';
-import { globalEventBus } from '@/infrastructure/event-bus';
+import { reviewPlatformAPI, systemAPI, type ReviewPlatformAccount, type ReviewPlatformCommit, type ReviewPlatformFile, type ReviewPlatformPullRequest, type ReviewPlatformPullRequestDetail, type ReviewPlatformRemote, type ReviewPlatformRepositoryRef, type ReviewPlatformThread, type ReviewPlatformWorkspaceSnapshot } from '@/infrastructure/api';
 import { createLogger } from '@/shared/utils/logger';
 import { notificationService } from '@/shared/notification-system';
-import { useDeepReviewConsent } from '@/flow_chat/components/DeepReviewConsentDialog';
-import {
-  buildDeepReviewLaunchFromPullRequestFiles,
-  buildDeepReviewPreviewFromPullRequestFiles,
-  launchDeepReviewSession,
-} from '@/flow_chat/services/DeepReviewService';
-import { openBtwSessionInAuxPane, openMainSession } from '@/flow_chat/services/openBtwSession';
+import { openMainSession } from '@/flow_chat/services/openBtwSession';
 import { flowChatStore } from '@/flow_chat/store/FlowChatStore';
 import type { FlowToolItem, Session } from '@/flow_chat/types/flow-chat';
 import { findLatestCodeReviewResult, summarizeCodeReviewResult } from '@/flow_chat/utils/reviewSessionSummary';
-import { deriveDeepReviewSessionConcurrencyGuard } from '@/flow_chat/utils/deepReviewCapacityGuard';
 import { parsePullRequestUrl, remoteMatchesPullRequestLink } from '@/shared/utils/pullRequestLinks';
+import { useContextStore } from '@/shared/stores/contextStore';
+import type { PullRequestContext } from '@/shared/types/context';
 import './ReviewPlatformPanel.scss';
 
 const log = createLogger('ReviewPlatformPanel');
@@ -60,25 +53,6 @@ const PR_PAGE_SIZE = 10;
 const CACHE_TTL_MS = 2 * 60 * 1000;
 const REMOTE_STORAGE_PREFIX = 'bitfun:review-platform:last-remote:';
 const MAX_LINKED_REVIEW_SESSIONS = 6;
-const MAX_PR_DIFF_CONTEXT_CHARS = 24000;
-const MAX_PR_FILE_PATCH_CHARS = 5000;
-
-const REVIEW_EXCLUDED_EXTENSIONS = new Set([
-  '.7z', '.avi', '.avif', '.bin', '.bmp', '.class', '.dll', '.doc', '.docx', '.eot', '.exe',
-  '.gif', '.gz', '.ico', '.jar', '.jpeg', '.jpg', '.lock', '.map', '.min.js', '.min.css',
-  '.mov', '.mp3', '.mp4', '.otf', '.pdf', '.png', '.rar', '.so', '.svg', '.tar', '.tgz',
-  '.tiff', '.ttf', '.wav', '.webm', '.webp', '.woff', '.woff2', '.xz', '.zip',
-]);
-
-const REVIEW_EXCLUDED_FILENAMES = new Set([
-  'bun.lock', 'bun.lockb', 'Cargo.lock', 'composer.lock', 'Gemfile.lock', 'package-lock.json',
-  'pnpm-lock.yaml', 'poetry.lock', 'Podfile.lock', 'yarn.lock',
-]);
-
-const REVIEW_EXCLUDED_PATH_SEGMENTS = new Set([
-  '.cache', '.next', '.nuxt', '.output', '.parcel-cache', '.svelte-kit', '.turbo',
-  'build', 'coverage', 'dist', 'node_modules', 'out', 'target',
-]);
 
 interface SnapshotCacheEntry {
   snapshot: ReviewPlatformWorkspaceSnapshot;
@@ -311,33 +285,6 @@ function normalizePath(value: string): string {
   return value.replace(/\\/g, '/').trim();
 }
 
-function shouldReviewFile(filePath: string): boolean {
-  const normalizedPath = normalizePath(filePath);
-  const segments = normalizedPath
-    .split('/')
-    .map(segment => segment.trim().toLowerCase())
-    .filter(Boolean);
-
-  if (segments.some(segment => REVIEW_EXCLUDED_PATH_SEGMENTS.has(segment))) {
-    return false;
-  }
-
-  const fileName = normalizedPath.split('/').pop()?.trim() || normalizedPath;
-  const lowerFileName = fileName.toLowerCase();
-
-  if (REVIEW_EXCLUDED_FILENAMES.has(fileName) || REVIEW_EXCLUDED_FILENAMES.has(lowerFileName)) {
-    return false;
-  }
-
-  if (lowerFileName.endsWith('.min.js') || lowerFileName.endsWith('.min.css')) {
-    return false;
-  }
-
-  const extMatch = lowerFileName.match(/(\.[^.]+)$/);
-  const extension = extMatch?.[1];
-  return !(extension && REVIEW_EXCLUDED_EXTENSIONS.has(extension));
-}
-
 function uniquePaths(paths: string[]): string[] {
   const seen = new Set<string>();
   const next: string[] = [];
@@ -427,51 +374,84 @@ function buildPrChatPrompt(params: {
   ].filter(Boolean).join('\n');
 }
 
-function truncateText(value: string, maxChars: number): { text: string; truncated: boolean } {
-  if (value.length <= maxChars) {
-    return { text: value, truncated: false };
+function createContextId(prefix: string): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
   }
-  return {
-    text: `${value.slice(0, Math.max(0, maxChars))}\n[Truncated after ${maxChars} characters]`,
-    truncated: true,
-  };
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function buildPrDiffContext(detail: ReviewPlatformPullRequestDetail | null): string {
-  if (!detail?.files.length) {
-    return 'Provider diff: No file-level diff was loaded for this pull request.';
+function formatChecksText(pr: ReviewPlatformPullRequest): string {
+  return pr.checks.total > 0
+    ? `${pr.checks.passed}/${pr.checks.total} passed, ${pr.checks.failed} failed, ${pr.checks.pending} pending`
+    : 'No checks reported';
+}
+
+function buildPrOverviewContext(params: {
+  pr: ReviewPlatformPullRequest;
+  detail: ReviewPlatformPullRequestDetail | null;
+  remote: ReviewPlatformRemote | null;
+  repository: ReviewPlatformRepositoryRef | null;
+  filePaths: string[];
+  webUrl?: string;
+}): string {
+  const body = params.detail?.body?.trim() || 'No pull request description was returned by the provider.';
+  return [
+    buildPrChatPrompt(params),
+    '',
+    'Overview:',
+    body,
+    '',
+    `State: ${stateLabel(params.pr.state)}`,
+    `Review decision: ${decisionLabel(params.pr.reviewDecision)}`,
+    `Checks: ${formatChecksText(params.pr)}`,
+    `Comments: ${params.pr.comments}`,
+  ].join('\n');
+}
+
+function buildPrFileDiffContext(pr: ReviewPlatformPullRequest, file: ReviewPlatformFile): string {
+  return [
+    `Pull request file diff: PR #${pr.number} ${pr.title}`,
+    `File: ${file.path}`,
+    file.oldPath && file.oldPath !== file.path ? `Old path: ${file.oldPath}` : null,
+    `Status: ${file.status}`,
+    `Delta: +${file.additions} -${file.deletions}`,
+    '',
+    'Diff:',
+    file.patch?.trim() || 'No inline diff is available for this file.',
+  ].filter(Boolean).join('\n');
+}
+
+function buildPrCommitsContext(pr: ReviewPlatformPullRequest, commits: ReviewPlatformCommit[]): string {
+  if (!commits.length) {
+    return `Pull request commits: PR #${pr.number} ${pr.title}\n\nNo commits were returned by the provider.`;
   }
+  return [
+    `Pull request commits: PR #${pr.number} ${pr.title}`,
+    '',
+    ...commits.map(commit => [
+      `- ${commit.shortHash} ${commit.title}`,
+      `  Author: ${commit.author}`,
+      `  Committed: ${formatAbsoluteTime(commit.committedAt) || commit.committedAt}`,
+      `  Hash: ${commit.hash}`,
+    ].join('\n')),
+  ].join('\n');
+}
 
-  const sections: string[] = [];
-  let usedChars = 0;
-  let omittedFiles = 0;
-
-  for (const file of detail.files) {
-    const header = [
-      `File: ${file.path}`,
-      file.oldPath && file.oldPath !== file.path ? `Old path: ${file.oldPath}` : null,
-      `Status: ${file.status}`,
-      `Delta: +${file.additions} -${file.deletions}`,
-    ].filter(Boolean).join('\n');
-    const patch = file.patch?.trim()
-      ? truncateText(file.patch, MAX_PR_FILE_PATCH_CHARS)
-      : { text: '[No inline patch returned by provider]', truncated: false };
-    const section = `${header}\nPatch:\n${patch.text}${patch.truncated ? '\n[File patch truncated]' : ''}`;
-
-    if (usedChars + section.length > MAX_PR_DIFF_CONTEXT_CHARS) {
-      omittedFiles += 1;
-      continue;
-    }
-
-    sections.push(section);
-    usedChars += section.length;
+function buildPrReviewsContext(pr: ReviewPlatformPullRequest, threads: ReviewPlatformThread[]): string {
+  if (!threads.length) {
+    return `Pull request reviews: PR #${pr.number} ${pr.title}\n\nNo review threads were returned by the provider.`;
   }
-
-  const omitted = omittedFiles > 0
-    ? `\n\n[${omittedFiles} file diff section(s) omitted to keep the launch prompt bounded. Use the PR file list and provider page for the complete diff.]`
-    : '';
-
-  return `Provider diff source of truth:\n\n${sections.join('\n\n---\n\n')}${omitted}`;
+  return [
+    `Pull request reviews: PR #${pr.number} ${pr.title}`,
+    '',
+    ...threads.map(thread => [
+      `- ${thread.resolved ? 'Resolved' : 'Open'} thread by ${thread.author}`,
+      thread.filePath ? `  Location: ${thread.filePath}${thread.line ? `:${thread.line}` : ''}` : null,
+      `  Updated: ${formatAbsoluteTime(thread.updatedAt) || thread.updatedAt}`,
+      `  Body: ${thread.body}`,
+    ].filter(Boolean).join('\n')),
+  ].join('\n');
 }
 
 export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
@@ -481,7 +461,6 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
   initialPullRequestUrl,
   detailOnly = false,
 }) => {
-  const { confirmDeepReviewLaunch, deepReviewConsentDialog } = useDeepReviewConsent();
   const snapshotRequestSeq = useRef(0);
   const detailRequestSeq = useRef(0);
   const [snapshot, setSnapshot] = useState<ReviewPlatformWorkspaceSnapshot>(emptySnapshot);
@@ -493,7 +472,6 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [launchingDeepReview, setLaunchingDeepReview] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [stateFilter, setStateFilter] = useState<ListStateFilter>('all');
@@ -524,11 +502,6 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
     () => uniquePaths((detail?.files ?? []).map(file => file.path)),
     [detail?.files],
   );
-  const reviewablePrFilePaths = useMemo(
-    () => prFilePaths.filter(shouldReviewFile),
-    [prFilePaths],
-  );
-  const skippedReviewFileCount = Math.max(0, prFilePaths.length - reviewablePrFilePaths.length);
   const remoteOptions = useMemo<SelectOption[]>(
     () => snapshot.remotes.map(remote => ({
       value: remote.id,
@@ -892,117 +865,76 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
     await openMainSession(parentSession.sessionId);
   }, [parentSession]);
 
-  const handleFillPrContext = useCallback(async () => {
-    if (!selectedPr) return;
+  const addPullRequestContextToChat = useCallback(async (input: {
+    label: string;
+    section: PullRequestContext['section'];
+    content: string;
+  }) => {
     if (!parentSession) {
       notificationService.warning('Open or create a chat session before sending PR context.', { duration: 3500 });
       return;
     }
 
     await openMainSession(parentSession.sessionId);
-    globalEventBus.emit('fill-chat-input', {
-      content: buildPrChatPrompt({
+    const context: PullRequestContext = {
+      id: createContextId('pr'),
+      type: 'pull-request',
+      label: input.label,
+      section: input.section,
+      content: input.content,
+      timestamp: Date.now(),
+      sourceUrl: selectedPr?.webUrl || initialPullRequestUrl,
+      repository: repository?.projectPath ?? selectedRemote?.projectPath,
+      pullRequestNumber: selectedPr?.number,
+      pullRequestTitle: selectedPr?.title,
+    };
+
+    useContextStore.getState().addContext(context);
+    window.dispatchEvent(new CustomEvent('insert-context-tag', { detail: { context } }));
+  }, [initialPullRequestUrl, parentSession, repository?.projectPath, selectedPr, selectedRemote?.projectPath]);
+
+  const handleFillPrContext = useCallback(async () => {
+    if (!selectedPr) return;
+    await addPullRequestContextToChat({
+      label: `PR #${selectedPr.number} overview`,
+      section: 'overview',
+      content: buildPrOverviewContext({
         pr: selectedPr,
+        detail,
         remote: selectedRemote,
         repository,
         filePaths: prFilePaths,
         webUrl: selectedPr.webUrl,
       }),
-      mode: 'replace',
     });
-  }, [parentSession, prFilePaths, repository, selectedPr, selectedRemote]);
+  }, [addPullRequestContextToChat, detail, prFilePaths, repository, selectedPr, selectedRemote]);
 
-  const handleOpenLinkedReview = useCallback(async (linked: LinkedReviewSession) => {
-    const parentId = linked.parentSession?.sessionId ?? linked.childSession.parentSessionId ?? parentSession?.sessionId;
-    if (!parentId) {
-      notificationService.warning('The parent chat session for this review is unavailable.', { duration: 3500 });
-      return;
-    }
-
-    await openMainSession(parentId);
-    openBtwSessionInAuxPane({
-      childSessionId: linked.childSession.sessionId,
-      parentSessionId: parentId,
-      workspacePath: linked.childSession.workspacePath,
-      expand: true,
-    });
-  }, [parentSession?.sessionId]);
-
-  const handleRunDeepReview = useCallback(async () => {
+  const handleAddFileDiffContext = useCallback(async (file: ReviewPlatformFile) => {
     if (!selectedPr) return;
-    if (!parentSession) {
-      notificationService.warning('Open or create a chat session before launching Deep Review.', { duration: 3500 });
-      return;
-    }
-    if (!workspacePath) {
-      notificationService.warning('No active workspace is available for Deep Review.', { duration: 3500 });
-      return;
-    }
-    if (!reviewablePrFilePaths.length) {
-      notificationService.warning('No reviewable files are loaded for this pull request.', { duration: 3500 });
-      return;
-    }
+    await addPullRequestContextToChat({
+      label: `PR #${selectedPr.number} ${file.path}`,
+      section: 'file-diff',
+      content: buildPrFileDiffContext(selectedPr, file),
+    });
+  }, [addPullRequestContextToChat, selectedPr]);
 
-    setLaunchingDeepReview(true);
-    try {
-      const extraContext = [
-        `Pull request: #${selectedPr.number} ${selectedPr.title}`,
-        `Branch: ${selectedPr.sourceBranch} -> ${selectedPr.targetBranch}`,
-        selectedPr.webUrl ? `URL: ${selectedPr.webUrl}` : null,
-        selectedRemote ? `Provider: ${providerLabel(selectedRemote)} ${selectedRemote.projectPath}` : null,
-      ].filter(Boolean).join('\n');
-      const preview = await buildDeepReviewPreviewFromPullRequestFiles(reviewablePrFilePaths, workspacePath);
-      const confirmed = await confirmDeepReviewLaunch(preview, {
-        sessionConcurrencyGuard: deriveDeepReviewSessionConcurrencyGuard(flowChatStore.getState(), parentSession.sessionId),
-      });
-      if (!confirmed) {
-        return;
-      }
+  const handleAddCommitsContext = useCallback(async () => {
+    if (!selectedPr) return;
+    await addPullRequestContextToChat({
+      label: `PR #${selectedPr.number} commits`,
+      section: 'commits',
+      content: buildPrCommitsContext(selectedPr, detail?.commits ?? []),
+    });
+  }, [addPullRequestContextToChat, detail?.commits, selectedPr]);
 
-      if (skippedReviewFileCount > 0) {
-        notificationService.info(
-          `Deep Review will analyze ${reviewablePrFilePaths.length} files and skip ${skippedReviewFileCount} generated, binary, or lock files.`,
-          { duration: 4000 },
-        );
-      }
-
-      const { prompt, runManifest } = await buildDeepReviewLaunchFromPullRequestFiles(
-        reviewablePrFilePaths,
-        extraContext,
-        buildPrDiffContext(detail),
-        workspacePath,
-      );
-      const fileList = reviewablePrFilePaths.map(path => `- ${path}`).join('\n');
-      await launchDeepReviewSession({
-        parentSessionId: parentSession.sessionId,
-        workspacePath,
-        prompt,
-        displayMessage: `Deep review PR #${selectedPr.number}: ${selectedPr.title}\n\n${fileList}`,
-        runManifest,
-        childSessionName: `Deep review PR #${selectedPr.number}`,
-        requestedFiles: reviewablePrFilePaths,
-      });
-      notificationService.success('Deep Review started for this pull request.', { duration: 3000 });
-    } catch (err) {
-      log.error('Failed to launch PR Deep Review', {
-        pullRequestId: selectedPr.id,
-        parentSessionId: parentSession.sessionId,
-        error: err,
-      });
-      notificationService.error(err instanceof Error ? err.message : 'Failed to launch Deep Review.', { duration: 5000 });
-    } finally {
-      setLaunchingDeepReview(false);
-    }
-  }, [
-    confirmDeepReviewLaunch,
-    parentSession,
-    reviewablePrFilePaths,
-    selectedPr,
-    selectedRemote,
-    skippedReviewFileCount,
-    detail,
-    workspacePath,
-  ]);
+  const handleAddReviewsContext = useCallback(async () => {
+    if (!selectedPr) return;
+    await addPullRequestContextToChat({
+      label: `PR #${selectedPr.number} reviews`,
+      section: 'reviews',
+      content: buildPrReviewsContext(selectedPr, detail?.threads ?? []),
+    });
+  }, [addPullRequestContextToChat, detail?.threads, selectedPr]);
 
   const refreshAuthSnapshot = useCallback((remoteId: string | null) => {
     snapshotCache.clear();
@@ -1091,69 +1023,71 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
 
   return (
     <div className={`review-platform${detailOnly ? ' review-platform--detail-only' : ''}`}>
-      <div className="review-platform__topbar">
-        <div className="review-platform__brand">
-          <span className="review-platform__brand-icon"><GitPullRequest size={17} /></span>
-          <div className="review-platform__brand-copy">
-            <span className="review-platform__title">{panelTitle}</span>
-            <span className="review-platform__subtitle">{headerLabel}</span>
+      {!detailOnly && (
+        <div className="review-platform__topbar">
+          <div className="review-platform__brand">
+            <span className="review-platform__brand-icon"><GitPullRequest size={17} /></span>
+            <div className="review-platform__brand-copy">
+              <span className="review-platform__title">{panelTitle}</span>
+              <span className="review-platform__subtitle">{headerLabel}</span>
+            </div>
           </div>
-        </div>
 
-        <div className="review-platform__topbar-actions">
-          <div className="review-platform__remote-select">
-            <Select
-              size="small"
-              value={selectedRemoteId ?? ''}
-              options={remoteOptions}
-              placeholder="Select remote"
-              disabled={!remoteOptions.length || loading}
-              searchable
-              onChange={handleRemoteChange}
-            />
-          </div>
-          {account && (
-            <Tooltip content={`${account.label} · ${authSourceLabel(account.authSource)}`}>
-              <span className={`review-platform__account review-platform__account--${account.authState}`}>
-                <ShieldCheck size={13} />
-                <span>{authLabel(account)}</span>
-              </span>
-            </Tooltip>
-          )}
-          <IconButton
-            className="review-platform__icon-button"
-            size="xs"
-            variant="ghost"
-            tooltip={account?.authSource === 'stored' ? 'Update token' : 'Add token'}
-            disabled={!selectedRemote || selectedRemote.platform === 'unknown' || loading || authSaving}
-            onClick={handleOpenAuthModal}
-          >
-            <KeyRound size={14} />
-          </IconButton>
-          {account?.authSource === 'stored' && (
+          <div className="review-platform__topbar-actions">
+            <div className="review-platform__remote-select">
+              <Select
+                size="small"
+                value={selectedRemoteId ?? ''}
+                options={remoteOptions}
+                placeholder="Select remote"
+                disabled={!remoteOptions.length || loading}
+                searchable
+                onChange={handleRemoteChange}
+              />
+            </div>
+            {account && (
+              <Tooltip content={`${account.label} · ${authSourceLabel(account.authSource)}`}>
+                <span className={`review-platform__account review-platform__account--${account.authState}`}>
+                  <ShieldCheck size={13} />
+                  <span>{authLabel(account)}</span>
+                </span>
+              </Tooltip>
+            )}
             <IconButton
               className="review-platform__icon-button"
               size="xs"
               variant="ghost"
-              tooltip="Clear token"
-              disabled={!selectedRemote || loading || authSaving}
-              onClick={handleClearAuthToken}
+              tooltip={account?.authSource === 'stored' ? 'Update token' : 'Add token'}
+              disabled={!selectedRemote || selectedRemote.platform === 'unknown' || loading || authSaving}
+              onClick={handleOpenAuthModal}
             >
-              <Trash2 size={14} />
+              <KeyRound size={14} />
             </IconButton>
-          )}
-          <IconButton
-            className="review-platform__icon-button"
-            size="xs"
-            variant="ghost"
-            tooltip="Refresh"
-            onClick={() => void loadSnapshot(selectedRemoteId, { force: true, page: currentPageIndex + 1 })}
-            isLoading={loading}
-          >
-            <RefreshCw size={14} />
-          </IconButton>
+            {account?.authSource === 'stored' && (
+              <IconButton
+                className="review-platform__icon-button"
+                size="xs"
+                variant="ghost"
+                tooltip="Clear token"
+                disabled={!selectedRemote || loading || authSaving}
+                onClick={handleClearAuthToken}
+              >
+                <Trash2 size={14} />
+              </IconButton>
+            )}
+            <IconButton
+              className="review-platform__icon-button"
+              size="xs"
+              variant="ghost"
+              tooltip="Refresh"
+              onClick={() => void loadSnapshot(selectedRemoteId, { force: true, page: currentPageIndex + 1 })}
+              isLoading={loading}
+            >
+              <RefreshCw size={14} />
+            </IconButton>
+          </div>
         </div>
-      </div>
+      )}
 
       {!detailOnly && (
       <div className="review-platform__subbar">
@@ -1322,13 +1256,9 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
                   </div>
                 </div>
                 <div className="review-platform__detail-actions">
-                  <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleRunDeepReview} disabled={!selectedPr || detailLoading || !reviewablePrFilePaths.length || launchingDeepReview} isLoading={launchingDeepReview}>
-                    <Sparkles size={13} />
-                    Deep Review
-                  </Button>
                   <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleFillPrContext} disabled={!selectedPr}>
                     <MessageSquareText size={13} />
-                    Ask
+                    Add context
                   </Button>
                   <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleOpenExternal} disabled={!selectedPr.webUrl && !initialPullRequestUrl}>
                     <Link2 size={13} />
@@ -1361,8 +1291,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
                   <span className="review-platform__agent-link-label">Conversation link</span>
                   <strong>{parentSessionLabel}</strong>
                   <span>
-                    {reviewablePrFilePaths.length} reviewable files
-                    {skippedReviewFileCount > 0 ? ` · ${skippedReviewFileCount} skipped` : ''}
+                    {prFilePaths.length} changed files
                     {linkedReviewSessions.length > 0 ? ` · ${linkedReviewSessions.length} related review sessions` : ''}
                   </span>
                 </div>
@@ -1387,42 +1316,14 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
               >
                 <TabPane tabKey="overview" label="Overview">
                   <section className="review-platform__tab-content">
-                    <div className="review-platform__review-sessions">
-                      <div className="review-platform__review-sessions-head">
-                        <span>Review activity</span>
-                        <span>{linkedReviewSessions.length ? 'Synced from chat sessions' : 'No related review session yet'}</span>
-                      </div>
-                      {linkedReviewSessions.length > 0 ? (
-                        <div className="review-platform__review-session-list">
-                          {linkedReviewSessions.map((linked) => (
-                            <button
-                              key={linked.childSession.sessionId}
-                              type="button"
-                              className={`review-platform__review-session review-platform__review-session--${linked.lifecycle}`}
-                              onClick={() => void handleOpenLinkedReview(linked)}
-                            >
-                              <span className="review-platform__review-session-icon">
-                                {linked.kind === 'deep_review' ? <Sparkles size={14} /> : <ShieldCheck size={14} />}
-                              </span>
-                              <span className="review-platform__review-session-main">
-                                <strong>{linked.title}</strong>
-                                <span>
-                                  {linked.lifecycle}
-                                  {linked.issueCount > 0 ? ` · ${linked.issueCount} issues` : ' · no issues reported'}
-                                  {linked.riskLevel ? ` · ${linked.riskLevel} risk` : ''}
-                                </span>
-                              </span>
-                              <PanelRightOpen size={14} />
-                            </button>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="review-platform__review-session-empty">
-                          Start Deep Review to attach reviewer output and remediation actions to this PR.
-                        </div>
-                      )}
-                    </div>
                     <div className="review-platform__body-markdown">
+                      <div className="review-platform__card-heading">
+                        <span>Overview</span>
+                        <Button className="review-platform__panel-button" size="small" variant="ghost" onClick={handleFillPrContext} disabled={!selectedPr}>
+                          <MessageSquareText size={13} />
+                          Add to chat
+                        </Button>
+                      </div>
                       {detailError ? (
                         <div className="review-platform__detail-error">
                           <XCircle size={14} />
@@ -1472,24 +1373,30 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
                       const isExpanded = expandedFileKeys.has(key);
                       return (
                         <article key={key} className="review-platform__file-card">
-                          <button
-                            type="button"
-                            className="review-platform__file-row"
-                            aria-expanded={isExpanded}
-                            onClick={() => toggleFileExpanded(key)}
-                          >
-                            <span className="review-platform__file-toggle">
-                              {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                            </span>
-                            <span className={`review-platform__file-status review-platform__file-status--${file.status}`}>
-                              {file.status}
-                            </span>
-                            <span className="review-platform__file-path">{file.path}</span>
-                            <span className="review-platform__file-delta">
-                              <span className="review-platform__additions">+{file.additions}</span>
-                              <span className="review-platform__deletions">-{file.deletions}</span>
-                            </span>
-                          </button>
+                          <div className="review-platform__file-row">
+                            <button
+                              type="button"
+                              className="review-platform__file-main"
+                              aria-expanded={isExpanded}
+                              onClick={() => toggleFileExpanded(key)}
+                            >
+                              <span className="review-platform__file-toggle">
+                                {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                              </span>
+                              <span className={`review-platform__file-status review-platform__file-status--${file.status}`}>
+                                {file.status}
+                              </span>
+                              <span className="review-platform__file-path">{file.path}</span>
+                              <span className="review-platform__file-delta">
+                                <span className="review-platform__additions">+{file.additions}</span>
+                                <span className="review-platform__deletions">-{file.deletions}</span>
+                              </span>
+                            </button>
+                            <Button className="review-platform__panel-button review-platform__file-add-button" size="small" variant="ghost" onClick={() => void handleAddFileDiffContext(file)} disabled={!selectedPr}>
+                              <MessageSquareText size={13} />
+                              Add
+                            </Button>
+                          </div>
                           {isExpanded && (
                             file.patch ? (
                               <pre className="review-platform__diff-block" aria-label={`Diff for ${file.path}`}>
@@ -1514,6 +1421,13 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
 
                 <TabPane tabKey="commits" label="Commits">
                   <section className="review-platform__tab-content review-platform__timeline">
+                    <div className="review-platform__section-heading">
+                      <span>Commits</span>
+                      <Button className="review-platform__panel-button" size="small" variant="ghost" onClick={handleAddCommitsContext} disabled={!selectedPr || !detail}>
+                        <MessageSquareText size={13} />
+                        Add to chat
+                      </Button>
+                    </div>
                     {detailError && (
                       <div className="review-platform__detail-error">
                         <XCircle size={14} />
@@ -1538,6 +1452,13 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
 
                 <TabPane tabKey="reviews" label="Reviews">
                   <section className="review-platform__tab-content review-platform__threads">
+                    <div className="review-platform__section-heading">
+                      <span>Reviews</span>
+                      <Button className="review-platform__panel-button" size="small" variant="ghost" onClick={handleAddReviewsContext} disabled={!selectedPr || !detail}>
+                        <MessageSquareText size={13} />
+                        Add to chat
+                      </Button>
+                    </div>
                     {detailError && (
                       <div className="review-platform__detail-error">
                         <XCircle size={14} />
@@ -1632,7 +1553,6 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
           </div>
         </form>
       </Modal>
-      {deepReviewConsentDialog}
     </div>
   );
 };
