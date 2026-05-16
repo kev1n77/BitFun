@@ -95,6 +95,8 @@ export interface ReviewPlatformCommit {
 
 export interface ReviewPlatformThread {
   id: string;
+  providerThreadId?: string | null;
+  providerCommentId?: string | null;
   filePath?: string | null;
   line?: number | null;
   resolved: boolean;
@@ -112,8 +114,12 @@ export interface ReviewPlatformPullRequestDetail extends ReviewPlatformPullReque
 
 export interface ReviewPlatformCapabilities {
   canCreateReview: boolean;
+  canCreatePullRequest: boolean;
   canReplyToThread: boolean;
   canResolveThread: boolean;
+  canApprove: boolean;
+  canRevokeApproval: boolean;
+  canRequestChanges: boolean;
   canMerge: boolean;
   supportsDraftReview: boolean;
 }

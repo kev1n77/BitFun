@@ -282,8 +282,12 @@ function emptySnapshot(): ReviewPlatformWorkspaceSnapshot {
     },
     capabilities: {
       canCreateReview: false,
+      canCreatePullRequest: false,
       canReplyToThread: false,
       canResolveThread: false,
+      canApprove: false,
+      canRevokeApproval: false,
+      canRequestChanges: false,
       canMerge: false,
       supportsDraftReview: false,
     },

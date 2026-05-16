@@ -186,6 +186,8 @@ impl ToolRegistry {
 
         // Git version control tool
         self.register_tool(Arc::new(GitTool::new()));
+        // Hosted pull request / merge request operations
+        self.register_tool(Arc::new(ReviewPlatformTool::new()));
 
         // MiniApp Agent tool (single InitMiniApp)
         self.register_tool(Arc::new(InitMiniAppTool::new()));

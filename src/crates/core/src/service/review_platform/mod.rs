@@ -8,7 +8,7 @@ use crate::service::git::{execute_git_command, get_repository_root};
 use futures::{stream, StreamExt};
 use reqwest::header::{HeaderMap, ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -205,6 +205,8 @@ pub struct ReviewPlatformCommit {
 #[serde(rename_all = "camelCase")]
 pub struct ReviewPlatformThread {
     pub id: String,
+    pub provider_thread_id: Option<String>,
+    pub provider_comment_id: Option<String>,
     pub file_path: Option<String>,
     pub line: Option<i64>,
     pub resolved: bool,
@@ -228,10 +230,92 @@ pub struct ReviewPlatformPullRequestDetail {
 #[serde(rename_all = "camelCase")]
 pub struct ReviewPlatformCapabilities {
     pub can_create_review: bool,
+    pub can_create_pull_request: bool,
     pub can_reply_to_thread: bool,
     pub can_resolve_thread: bool,
+    pub can_approve: bool,
+    pub can_revoke_approval: bool,
+    pub can_request_changes: bool,
     pub can_merge: bool,
     pub supports_draft_review: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewSubmitEvent {
+    Comment,
+    Approve,
+    RequestChanges,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewPlatformCreatePullRequestRequest {
+    pub repository_path: String,
+    pub remote_id: Option<String>,
+    pub title: String,
+    pub source_branch: String,
+    pub target_branch: String,
+    pub body: Option<String>,
+    pub draft: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewPlatformReplyToThreadRequest {
+    pub repository_path: String,
+    pub remote_id: String,
+    pub pull_request_id: String,
+    pub thread_id: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewPlatformSubmitReviewRequest {
+    pub repository_path: String,
+    pub remote_id: String,
+    pub pull_request_id: String,
+    pub event: ReviewSubmitEvent,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewPlatformResolveThreadRequest {
+    pub repository_path: String,
+    pub remote_id: String,
+    pub pull_request_id: String,
+    pub thread_id: String,
+    pub resolved: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewPlatformApprovalRequest {
+    pub repository_path: String,
+    pub remote_id: String,
+    pub pull_request_id: String,
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewPlatformRequestChangesRequest {
+    pub repository_path: String,
+    pub remote_id: String,
+    pub pull_request_id: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewPlatformActionResult {
+    pub success: bool,
+    pub message: String,
+    pub web_url: Option<String>,
+    pub pull_request: Option<ReviewPlatformPullRequest>,
+    pub thread: Option<ReviewPlatformThread>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -458,6 +542,118 @@ impl ReviewPlatformService {
             .await
     }
 
+    pub async fn create_pull_request(
+        request: ReviewPlatformCreatePullRequestRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        let ctx = Self::provider_context_for_repository(
+            &request.repository_path,
+            request.remote_id.as_deref(),
+        )
+        .await?;
+        provider_for(ctx.remote.platform)
+            .create_pull_request(&ctx, &request)
+            .await
+    }
+
+    pub async fn reply_to_thread(
+        request: ReviewPlatformReplyToThreadRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        let ctx = Self::provider_context_for_repository(
+            &request.repository_path,
+            Some(request.remote_id.as_str()),
+        )
+        .await?;
+        provider_for(ctx.remote.platform)
+            .reply_to_thread(&ctx, &request)
+            .await
+    }
+
+    pub async fn submit_review(
+        request: ReviewPlatformSubmitReviewRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        let ctx = Self::provider_context_for_repository(
+            &request.repository_path,
+            Some(request.remote_id.as_str()),
+        )
+        .await?;
+        provider_for(ctx.remote.platform)
+            .submit_review(&ctx, &request)
+            .await
+    }
+
+    pub async fn resolve_thread(
+        request: ReviewPlatformResolveThreadRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        let ctx = Self::provider_context_for_repository(
+            &request.repository_path,
+            Some(request.remote_id.as_str()),
+        )
+        .await?;
+        provider_for(ctx.remote.platform)
+            .resolve_thread(&ctx, &request)
+            .await
+    }
+
+    pub async fn approve_pull_request(
+        request: ReviewPlatformApprovalRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        let ctx = Self::provider_context_for_repository(
+            &request.repository_path,
+            Some(request.remote_id.as_str()),
+        )
+        .await?;
+        provider_for(ctx.remote.platform)
+            .approve_pull_request(&ctx, &request)
+            .await
+    }
+
+    pub async fn revoke_approval(
+        request: ReviewPlatformApprovalRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        let ctx = Self::provider_context_for_repository(
+            &request.repository_path,
+            Some(request.remote_id.as_str()),
+        )
+        .await?;
+        provider_for(ctx.remote.platform)
+            .revoke_approval(&ctx, &request)
+            .await
+    }
+
+    pub async fn request_changes(
+        request: ReviewPlatformRequestChangesRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        let ctx = Self::provider_context_for_repository(
+            &request.repository_path,
+            Some(request.remote_id.as_str()),
+        )
+        .await?;
+        provider_for(ctx.remote.platform)
+            .request_changes(&ctx, &request)
+            .await
+    }
+
+    async fn provider_context_for_repository(
+        repository_path: &str,
+        remote_id: Option<&str>,
+    ) -> Result<ProviderContext, ReviewPlatformError> {
+        if crate::service::remote_ssh::workspace_state::is_remote_path(repository_path).await {
+            return Err(ReviewPlatformError::UnsupportedPlatform(
+                "remote SSH workspace".to_string(),
+            ));
+        }
+
+        let auth_tokens = load_stored_tokens().await?;
+        let root = get_repository_root(repository_path)
+            .map_err(|error| ReviewPlatformError::InvalidRepository(error.to_string()))?;
+        let remotes = Self::discover_remotes_with_tokens(&root, &auth_tokens).await?;
+        let remote = select_remote_for_action(&remotes, remote_id)?.clone();
+        if !remote.supported {
+            return Err(ReviewPlatformError::UnsupportedPlatform(remote.host));
+        }
+        provider_context(remote, &auth_tokens)
+    }
+
     pub async fn update_auth_token(
         platform: ReviewPlatformKind,
         host: &str,
@@ -495,7 +691,7 @@ impl ReviewPlatformService {
 }
 
 #[async_trait::async_trait]
-trait ReviewProvider {
+trait ReviewProvider: Sync {
     async fn list_pull_requests(
         &self,
         ctx: &ProviderContext,
@@ -507,10 +703,88 @@ trait ReviewProvider {
         ctx: &ProviderContext,
         pull_request_id: &str,
     ) -> Result<ReviewPlatformPullRequestDetail, ReviewPlatformError>;
+
+    async fn create_pull_request(
+        &self,
+        ctx: &ProviderContext,
+        _request: &ReviewPlatformCreatePullRequestRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        Err(ReviewPlatformError::UnsupportedPlatform(format!(
+            "{} pull request creation",
+            platform_label(ctx.remote.platform)
+        )))
+    }
+
+    async fn reply_to_thread(
+        &self,
+        ctx: &ProviderContext,
+        _request: &ReviewPlatformReplyToThreadRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        Err(ReviewPlatformError::UnsupportedPlatform(format!(
+            "{} thread replies",
+            platform_label(ctx.remote.platform)
+        )))
+    }
+
+    async fn submit_review(
+        &self,
+        ctx: &ProviderContext,
+        _request: &ReviewPlatformSubmitReviewRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        Err(ReviewPlatformError::UnsupportedPlatform(format!(
+            "{} review submission",
+            platform_label(ctx.remote.platform)
+        )))
+    }
+
+    async fn resolve_thread(
+        &self,
+        ctx: &ProviderContext,
+        _request: &ReviewPlatformResolveThreadRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        Err(ReviewPlatformError::UnsupportedPlatform(format!(
+            "{} thread resolution",
+            platform_label(ctx.remote.platform)
+        )))
+    }
+
+    async fn approve_pull_request(
+        &self,
+        ctx: &ProviderContext,
+        _request: &ReviewPlatformApprovalRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        Err(ReviewPlatformError::UnsupportedPlatform(format!(
+            "{} pull request approval",
+            platform_label(ctx.remote.platform)
+        )))
+    }
+
+    async fn revoke_approval(
+        &self,
+        ctx: &ProviderContext,
+        _request: &ReviewPlatformApprovalRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        Err(ReviewPlatformError::UnsupportedPlatform(format!(
+            "{} approval revocation",
+            platform_label(ctx.remote.platform)
+        )))
+    }
+
+    async fn request_changes(
+        &self,
+        ctx: &ProviderContext,
+        _request: &ReviewPlatformRequestChangesRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        Err(ReviewPlatformError::UnsupportedPlatform(format!(
+            "{} native change requests",
+            platform_label(ctx.remote.platform)
+        )))
+    }
 }
 
 struct GithubProvider;
 struct GitlabProvider;
+struct CodehubProvider;
 struct GitcodeProvider;
 struct UnsupportedProvider;
 
@@ -518,7 +792,7 @@ fn provider_for(platform: ReviewPlatformKind) -> &'static dyn ReviewProvider {
     match platform {
         ReviewPlatformKind::Github => &GithubProvider,
         ReviewPlatformKind::Gitlab => &GitlabProvider,
-        ReviewPlatformKind::Codehub => &GitlabProvider,
+        ReviewPlatformKind::Codehub => &CodehubProvider,
         ReviewPlatformKind::Gitcode => &GitcodeProvider,
         ReviewPlatformKind::Unknown => &UnsupportedProvider,
     }
@@ -548,14 +822,7 @@ impl ReviewProvider for GithubProvider {
         let items = response.value.as_array().ok_or_else(|| {
             ReviewPlatformError::Parse("GitHub pull response was not an array".to_string())
         })?;
-        let total = if link_header_last_page(&response.headers).is_some() {
-            None
-        } else {
-            Some(
-                u64::from(pagination.page.saturating_sub(1)) * u64::from(pagination.per_page)
-                    + items.len() as u64,
-            )
-        };
+        let total = pagination_total_from_links(&response.headers, pagination, items.len());
         let has_next = link_header_has_rel(&response.headers, "next");
 
         let pull_requests = items
@@ -649,6 +916,145 @@ impl ReviewProvider for GithubProvider {
             threads: github_threads(&reviews, &comments),
         })
     }
+
+    async fn create_pull_request(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformCreatePullRequestRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        let token = require_write_token(ctx, "Creating a pull request")?;
+        let url = format!(
+            "{}/repos/{}/{}/pulls",
+            ctx.api_base_url, ctx.remote.owner, ctx.remote.repository_name
+        );
+        let payload = json!({
+            "title": request.title,
+            "head": request.source_branch,
+            "base": request.target_branch,
+            "body": request.body.clone().unwrap_or_default(),
+            "draft": request.draft.unwrap_or(false),
+        });
+        let value =
+            send_json(github_post_request(http_client()?, &url, Some(token)).json(&payload))
+                .await?;
+        let pull_request = github_pull_request_from_value(&value);
+        let web_url = Some(pull_request.web_url.clone());
+        Ok(ReviewPlatformActionResult {
+            success: true,
+            message: format!("Created pull request #{}", pull_request.number),
+            web_url,
+            pull_request: Some(pull_request),
+            thread: None,
+        })
+    }
+
+    async fn reply_to_thread(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformReplyToThreadRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        let token = require_write_token(ctx, "Replying to a pull request thread")?;
+        let comment_id = parse_provider_comment_id(&request.thread_id).ok_or_else(|| {
+            ReviewPlatformError::Api(
+                "GitHub replies require a review comment thread id such as comment-123".to_string(),
+            )
+        })?;
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/comments/{}/replies",
+            ctx.api_base_url,
+            ctx.remote.owner,
+            ctx.remote.repository_name,
+            request.pull_request_id,
+            comment_id
+        );
+        let value = send_json(
+            github_post_request(http_client()?, &url, Some(token))
+                .json(&json!({ "body": request.body })),
+        )
+        .await?;
+        let thread = github_thread_from_comment(&value);
+        Ok(ReviewPlatformActionResult {
+            success: true,
+            message: "Replied to pull request thread".to_string(),
+            web_url: value
+                .get("html_url")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            pull_request: None,
+            thread: Some(thread),
+        })
+    }
+
+    async fn submit_review(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformSubmitReviewRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        let event = match request.event {
+            ReviewSubmitEvent::Comment => "COMMENT",
+            ReviewSubmitEvent::Approve => "APPROVE",
+            ReviewSubmitEvent::RequestChanges => "REQUEST_CHANGES",
+        };
+        github_submit_review(ctx, &request.pull_request_id, event, &request.body).await
+    }
+
+    async fn approve_pull_request(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformApprovalRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        github_submit_review(
+            ctx,
+            &request.pull_request_id,
+            "APPROVE",
+            request.body.as_deref().unwrap_or(""),
+        )
+        .await
+    }
+
+    async fn request_changes(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformRequestChangesRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        github_submit_review(
+            ctx,
+            &request.pull_request_id,
+            "REQUEST_CHANGES",
+            &request.body,
+        )
+        .await
+    }
+}
+
+async fn github_submit_review(
+    ctx: &ProviderContext,
+    pull_request_id: &str,
+    event: &str,
+    body: &str,
+) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+    let token = require_write_token(ctx, "Submitting a pull request review")?;
+    let url = format!(
+        "{}/repos/{}/{}/pulls/{}/reviews",
+        ctx.api_base_url, ctx.remote.owner, ctx.remote.repository_name, pull_request_id
+    );
+    let value = send_json(
+        github_post_request(http_client()?, &url, Some(token)).json(&json!({
+            "body": body,
+            "event": event,
+        })),
+    )
+    .await?;
+    Ok(ReviewPlatformActionResult {
+        success: true,
+        message: format!("Submitted GitHub review with event {}", event),
+        web_url: value
+            .get("html_url")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        pull_request: None,
+        thread: None,
+    })
 }
 
 #[async_trait::async_trait]
@@ -658,43 +1064,7 @@ impl ReviewProvider for GitlabProvider {
         ctx: &ProviderContext,
         pagination: PullRequestPagination,
     ) -> Result<ReviewPlatformPullRequestPage, ReviewPlatformError> {
-        let project = urlencoding::encode(&ctx.remote.project_path);
-        let url = format!("{}/projects/{}/merge_requests", ctx.api_base_url, project);
-        let per_page = pagination.per_page.to_string();
-        let page = pagination.page.to_string();
-        let response = send_json_response(
-            gitlab_request(http_client()?, &url, ctx.token.as_deref()).query(&[
-                ("state", "all"),
-                ("per_page", &per_page),
-                ("page", &page),
-            ]),
-        )
-        .await?;
-        let items = response.value.as_array().ok_or_else(|| {
-            ReviewPlatformError::Parse("GitLab merge request response was not an array".to_string())
-        })?;
-        let total = header_u64(&response.headers, "x-total");
-        let has_next = header_string(&response.headers, "x-next-page")
-            .is_some_and(|value| !value.trim().is_empty())
-            || total
-                .map(|total| u64::from(pagination.page) * u64::from(pagination.per_page) < total)
-                .unwrap_or(false);
-
-        let pull_requests = items
-            .iter()
-            .map(gitlab_pull_request_from_value)
-            .collect::<Vec<_>>();
-        let pull_requests = enrich_gitlab_pull_request_counts(ctx, pull_requests).await;
-
-        Ok(ReviewPlatformPullRequestPage {
-            items: pull_requests,
-            pagination: ReviewPlatformPagination {
-                page: pagination.page,
-                per_page: pagination.per_page,
-                total,
-                has_next,
-            },
-        })
+        gitlab_list_pull_requests(ctx, pagination).await
     }
 
     async fn pull_request_detail(
@@ -702,62 +1072,452 @@ impl ReviewProvider for GitlabProvider {
         ctx: &ProviderContext,
         pull_request_id: &str,
     ) -> Result<ReviewPlatformPullRequestDetail, ReviewPlatformError> {
-        let client = http_client()?;
-        let project = urlencoding::encode(&ctx.remote.project_path);
-        let base = format!(
-            "{}/projects/{}/merge_requests/{}",
-            ctx.api_base_url, project, pull_request_id
-        );
-        let detail = send_json(gitlab_request(client.clone(), &base, ctx.token.as_deref())).await?;
-        let changes = send_json(gitlab_request(
-            client.clone(),
-            &format!("{}/changes", base),
-            ctx.token.as_deref(),
-        ))
-        .await?;
-        let token = ctx.token.clone();
-        let commits_url = format!("{}/commits", base);
-        let commits = fetch_paginated_array(
-            |page| {
-                let page = page.to_string();
-                gitlab_request(client.clone(), &commits_url, token.as_deref())
-                    .query(&[("per_page", "100"), ("page", &page)])
-            },
-            gitlab_next_page,
-        )
-        .await?;
-        let token = ctx.token.clone();
-        let discussions_url = format!("{}/discussions", base);
-        let discussions = fetch_paginated_array(
-            |page| {
-                let page = page.to_string();
-                gitlab_request(client.clone(), &discussions_url, token.as_deref())
-                    .query(&[("per_page", "100"), ("page", &page)])
-            },
-            gitlab_next_page,
-        )
-        .await?;
-
-        let mut pull_request = gitlab_pull_request_from_value(&detail);
-        let files = gitlab_files(&changes);
-        pull_request.changed_files = files.len() as i32;
-        let (additions, deletions) = files.iter().fold((0, 0), |acc, file| {
-            (acc.0 + file.additions, acc.1 + file.deletions)
-        });
-        pull_request.additions = additions;
-        pull_request.deletions = deletions;
-
-        Ok(ReviewPlatformPullRequestDetail {
-            body: value_string(&detail, "description"),
-            pull_request,
-            files,
-            commits: array_items(&commits)
-                .iter()
-                .map(gitlab_commit_from_value)
-                .collect(),
-            threads: gitlab_threads(&discussions),
-        })
+        gitlab_pull_request_detail(ctx, pull_request_id).await
     }
+
+    async fn create_pull_request(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformCreatePullRequestRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        gitlab_create_pull_request(ctx, request, "merge request").await
+    }
+
+    async fn reply_to_thread(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformReplyToThreadRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        gitlab_reply_to_thread(ctx, request, "merge request").await
+    }
+
+    async fn submit_review(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformSubmitReviewRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        if request.event != ReviewSubmitEvent::Comment {
+            return Err(ReviewPlatformError::UnsupportedPlatform(
+                "GitLab submit_review supports comments only; use approve_pull_request for approvals"
+                    .to_string(),
+            ));
+        }
+        gitlab_add_merge_request_note(
+            ctx,
+            &request.pull_request_id,
+            &request.body,
+            "Added merge request comment",
+        )
+        .await
+    }
+
+    async fn resolve_thread(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformResolveThreadRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        gitlab_resolve_thread(ctx, request, "merge request").await
+    }
+
+    async fn approve_pull_request(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformApprovalRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        gitlab_approve_pull_request(ctx, request, "merge request").await
+    }
+
+    async fn revoke_approval(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformApprovalRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        gitlab_revoke_approval(ctx, request, "merge request").await
+    }
+}
+
+#[async_trait::async_trait]
+impl ReviewProvider for CodehubProvider {
+    async fn list_pull_requests(
+        &self,
+        ctx: &ProviderContext,
+        pagination: PullRequestPagination,
+    ) -> Result<ReviewPlatformPullRequestPage, ReviewPlatformError> {
+        gitlab_list_pull_requests(ctx, pagination).await
+    }
+
+    async fn pull_request_detail(
+        &self,
+        ctx: &ProviderContext,
+        pull_request_id: &str,
+    ) -> Result<ReviewPlatformPullRequestDetail, ReviewPlatformError> {
+        gitlab_pull_request_detail(ctx, pull_request_id).await
+    }
+
+    async fn create_pull_request(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformCreatePullRequestRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        gitlab_create_pull_request(ctx, request, "CodeHub merge request").await
+    }
+
+    async fn reply_to_thread(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformReplyToThreadRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        gitlab_reply_to_thread(ctx, request, "CodeHub merge request").await
+    }
+
+    async fn submit_review(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformSubmitReviewRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        if request.event != ReviewSubmitEvent::Comment {
+            return Err(ReviewPlatformError::UnsupportedPlatform(
+                "CodeHub submit_review supports comments only; use approve_pull_request if the host supports approvals"
+                    .to_string(),
+            ));
+        }
+        gitlab_add_merge_request_note(
+            ctx,
+            &request.pull_request_id,
+            &request.body,
+            "Added CodeHub merge request comment",
+        )
+        .await
+    }
+
+    async fn resolve_thread(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformResolveThreadRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        gitlab_resolve_thread(ctx, request, "CodeHub merge request").await
+    }
+
+    async fn approve_pull_request(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformApprovalRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        gitlab_approve_pull_request(ctx, request, "CodeHub merge request").await
+    }
+
+    async fn revoke_approval(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformApprovalRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        gitlab_revoke_approval(ctx, request, "CodeHub merge request").await
+    }
+}
+
+async fn gitlab_list_pull_requests(
+    ctx: &ProviderContext,
+    pagination: PullRequestPagination,
+) -> Result<ReviewPlatformPullRequestPage, ReviewPlatformError> {
+    let project = urlencoding::encode(&ctx.remote.project_path);
+    let url = format!("{}/projects/{}/merge_requests", ctx.api_base_url, project);
+    let per_page = pagination.per_page.to_string();
+    let page = pagination.page.to_string();
+    let response = send_json_response(
+        gitlab_request(http_client()?, &url, ctx.token.as_deref()).query(&[
+            ("state", "all"),
+            ("per_page", &per_page),
+            ("page", &page),
+        ]),
+    )
+    .await?;
+    let items = response.value.as_array().ok_or_else(|| {
+        ReviewPlatformError::Parse("GitLab merge request response was not an array".to_string())
+    })?;
+    let total = header_u64(&response.headers, "x-total");
+    let has_next = header_string(&response.headers, "x-next-page")
+        .is_some_and(|value| !value.trim().is_empty())
+        || total
+            .map(|total| u64::from(pagination.page) * u64::from(pagination.per_page) < total)
+            .unwrap_or(false);
+
+    let pull_requests = items
+        .iter()
+        .map(gitlab_pull_request_from_value)
+        .collect::<Vec<_>>();
+    let pull_requests = enrich_gitlab_pull_request_counts(ctx, pull_requests).await;
+
+    Ok(ReviewPlatformPullRequestPage {
+        items: pull_requests,
+        pagination: ReviewPlatformPagination {
+            page: pagination.page,
+            per_page: pagination.per_page,
+            total,
+            has_next,
+        },
+    })
+}
+
+async fn gitlab_pull_request_detail(
+    ctx: &ProviderContext,
+    pull_request_id: &str,
+) -> Result<ReviewPlatformPullRequestDetail, ReviewPlatformError> {
+    let client = http_client()?;
+    let project = urlencoding::encode(&ctx.remote.project_path);
+    let base = format!(
+        "{}/projects/{}/merge_requests/{}",
+        ctx.api_base_url, project, pull_request_id
+    );
+    let detail = send_json(gitlab_request(client.clone(), &base, ctx.token.as_deref())).await?;
+    let changes = send_json(gitlab_request(
+        client.clone(),
+        &format!("{}/changes", base),
+        ctx.token.as_deref(),
+    ))
+    .await?;
+    let token = ctx.token.clone();
+    let commits_url = format!("{}/commits", base);
+    let commits = fetch_paginated_array(
+        |page| {
+            let page = page.to_string();
+            gitlab_request(client.clone(), &commits_url, token.as_deref())
+                .query(&[("per_page", "100"), ("page", &page)])
+        },
+        gitlab_next_page,
+    )
+    .await?;
+    let token = ctx.token.clone();
+    let discussions_url = format!("{}/discussions", base);
+    let discussions = fetch_paginated_array(
+        |page| {
+            let page = page.to_string();
+            gitlab_request(client.clone(), &discussions_url, token.as_deref())
+                .query(&[("per_page", "100"), ("page", &page)])
+        },
+        gitlab_next_page,
+    )
+    .await?;
+
+    let mut pull_request = gitlab_pull_request_from_value(&detail);
+    let files = gitlab_files(&changes);
+    pull_request.changed_files = files.len() as i32;
+    let (additions, deletions) = files.iter().fold((0, 0), |acc, file| {
+        (acc.0 + file.additions, acc.1 + file.deletions)
+    });
+    pull_request.additions = additions;
+    pull_request.deletions = deletions;
+
+    Ok(ReviewPlatformPullRequestDetail {
+        body: value_string(&detail, "description"),
+        pull_request,
+        files,
+        commits: array_items(&commits)
+            .iter()
+            .map(gitlab_commit_from_value)
+            .collect(),
+        threads: gitlab_threads(&discussions),
+    })
+}
+
+async fn gitlab_create_pull_request(
+    ctx: &ProviderContext,
+    request: &ReviewPlatformCreatePullRequestRequest,
+    label: &str,
+) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+    let token = require_write_token(ctx, &format!("Creating a {}", label))?;
+    let project = urlencoding::encode(&ctx.remote.project_path);
+    let url = format!("{}/projects/{}/merge_requests", ctx.api_base_url, project);
+    let value = send_json(
+        gitlab_post_request(http_client()?, &url, Some(token)).json(&json!({
+            "title": request.title,
+            "source_branch": request.source_branch,
+            "target_branch": request.target_branch,
+            "description": request.body.clone().unwrap_or_default(),
+        })),
+    )
+    .await?;
+    let pull_request = gitlab_pull_request_from_value(&value);
+    let web_url = Some(pull_request.web_url.clone());
+    Ok(ReviewPlatformActionResult {
+        success: true,
+        message: format!("Created {} !{}", label, pull_request.number),
+        web_url,
+        pull_request: Some(pull_request),
+        thread: None,
+    })
+}
+
+async fn gitlab_reply_to_thread(
+    ctx: &ProviderContext,
+    request: &ReviewPlatformReplyToThreadRequest,
+    label: &str,
+) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+    let token = require_write_token(ctx, &format!("Replying to a {} thread", label))?;
+    let discussion_id = parse_provider_thread_id(&request.thread_id).ok_or_else(|| {
+        ReviewPlatformError::Api(
+            "Replies require a discussion thread id from pull request detail".to_string(),
+        )
+    })?;
+    let project = urlencoding::encode(&ctx.remote.project_path);
+    let url = format!(
+        "{}/projects/{}/merge_requests/{}/discussions/{}/notes",
+        ctx.api_base_url, project, request.pull_request_id, discussion_id
+    );
+    let value = send_json(
+        gitlab_post_request(http_client()?, &url, Some(token))
+            .json(&json!({ "body": request.body })),
+    )
+    .await?;
+    let thread = gitlab_thread_from_note(&value, Some(discussion_id.to_string()), false);
+    Ok(ReviewPlatformActionResult {
+        success: true,
+        message: format!("Replied to {} discussion", label),
+        web_url: None,
+        pull_request: None,
+        thread: Some(thread),
+    })
+}
+
+async fn gitlab_add_merge_request_note(
+    ctx: &ProviderContext,
+    pull_request_id: &str,
+    body: &str,
+    message: &str,
+) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+    let token = require_write_token(ctx, "Adding a merge request comment")?;
+    let project = urlencoding::encode(&ctx.remote.project_path);
+    let url = format!(
+        "{}/projects/{}/merge_requests/{}/notes",
+        ctx.api_base_url, project, pull_request_id
+    );
+    let value = send_json(
+        gitlab_post_request(http_client()?, &url, Some(token)).json(&json!({ "body": body })),
+    )
+    .await?;
+    let thread = gitlab_thread_from_note(&value, None, false);
+    Ok(ReviewPlatformActionResult {
+        success: true,
+        message: message.to_string(),
+        web_url: None,
+        pull_request: None,
+        thread: Some(thread),
+    })
+}
+
+async fn gitlab_resolve_thread(
+    ctx: &ProviderContext,
+    request: &ReviewPlatformResolveThreadRequest,
+    label: &str,
+) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+    let token = require_write_token(ctx, &format!("Resolving a {} thread", label))?;
+    let discussion_id = parse_provider_thread_id(&request.thread_id).ok_or_else(|| {
+        ReviewPlatformError::Api(
+            "Thread resolution requires a discussion thread id from pull request detail"
+                .to_string(),
+        )
+    })?;
+    let project = urlencoding::encode(&ctx.remote.project_path);
+    let url = format!(
+        "{}/projects/{}/merge_requests/{}/discussions/{}",
+        ctx.api_base_url, project, request.pull_request_id, discussion_id
+    );
+    send_json(
+        gitlab_put_request(http_client()?, &url, Some(token))
+            .json(&json!({ "resolved": request.resolved })),
+    )
+    .await?;
+    Ok(ReviewPlatformActionResult {
+        success: true,
+        message: if request.resolved {
+            format!("Resolved {} discussion", label)
+        } else {
+            format!("Reopened {} discussion", label)
+        },
+        web_url: None,
+        pull_request: None,
+        thread: None,
+    })
+}
+
+async fn gitlab_approve_pull_request(
+    ctx: &ProviderContext,
+    request: &ReviewPlatformApprovalRequest,
+    label: &str,
+) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+    let token = require_write_token(ctx, &format!("Approving a {}", label))?;
+    let project = urlencoding::encode(&ctx.remote.project_path);
+    let url = format!(
+        "{}/projects/{}/merge_requests/{}/approve",
+        ctx.api_base_url, project, request.pull_request_id
+    );
+    send_json(gitlab_post_request(http_client()?, &url, Some(token))).await?;
+    if let Some(body) = request
+        .body
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let _ = gitlab_add_merge_request_note(
+            ctx,
+            &request.pull_request_id,
+            body,
+            "Added approval note",
+        )
+        .await;
+    }
+    Ok(ReviewPlatformActionResult {
+        success: true,
+        message: format!("Approved {}", label),
+        web_url: None,
+        pull_request: None,
+        thread: None,
+    })
+}
+
+async fn gitlab_revoke_approval(
+    ctx: &ProviderContext,
+    request: &ReviewPlatformApprovalRequest,
+    label: &str,
+) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+    let token = require_write_token(ctx, &format!("Revoking approval for a {}", label))?;
+    let project = urlencoding::encode(&ctx.remote.project_path);
+    let url = format!(
+        "{}/projects/{}/merge_requests/{}/unapprove",
+        ctx.api_base_url, project, request.pull_request_id
+    );
+    send_json(gitlab_post_request(http_client()?, &url, Some(token))).await?;
+    Ok(ReviewPlatformActionResult {
+        success: true,
+        message: format!("Revoked approval for {}", label),
+        web_url: None,
+        pull_request: None,
+        thread: None,
+    })
+}
+
+async fn gitcode_add_pull_request_comment(
+    ctx: &ProviderContext,
+    pull_request_id: &str,
+    body: &str,
+) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+    let token = require_write_token(ctx, "Adding a GitCode pull request comment")?;
+    let url = format!(
+        "{}/repos/{}/{}/pulls/{}/comments",
+        ctx.api_base_url, ctx.remote.owner, ctx.remote.repository_name, pull_request_id
+    );
+    let value = send_json(
+        gitcode_post_request(http_client()?, &url, Some(token)).json(&json!({ "body": body })),
+    )
+    .await?;
+    let thread = gitcode_threads(&Value::Array(vec![value]))
+        .into_iter()
+        .next();
+    Ok(ReviewPlatformActionResult {
+        success: true,
+        message: "Added GitCode pull request comment".to_string(),
+        web_url: None,
+        pull_request: None,
+        thread,
+    })
 }
 
 #[async_trait::async_trait]
@@ -880,6 +1640,82 @@ impl ReviewProvider for GitcodeProvider {
                 .map(gitcode_commit_from_value)
                 .collect(),
             threads: gitcode_threads(&comments),
+        })
+    }
+
+    async fn create_pull_request(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformCreatePullRequestRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        let token = require_write_token(ctx, "Creating a GitCode pull request")?;
+        let url = format!(
+            "{}/repos/{}/{}/pulls",
+            ctx.api_base_url, ctx.remote.owner, ctx.remote.repository_name
+        );
+        let value = send_json(
+            gitcode_post_request(http_client()?, &url, Some(token)).json(&json!({
+                "title": request.title,
+                "head": request.source_branch,
+                "base": request.target_branch,
+                "body": request.body.clone().unwrap_or_default(),
+                "draft": request.draft.unwrap_or(false),
+            })),
+        )
+        .await?;
+        let pull_request = gitcode_pull_request_from_value(&value);
+        let web_url = Some(pull_request.web_url.clone());
+        Ok(ReviewPlatformActionResult {
+            success: true,
+            message: format!("Created GitCode pull request #{}", pull_request.number),
+            web_url,
+            pull_request: Some(pull_request),
+            thread: None,
+        })
+    }
+
+    async fn submit_review(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformSubmitReviewRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        if request.event != ReviewSubmitEvent::Comment {
+            return Err(ReviewPlatformError::UnsupportedPlatform(
+                "GitCode submit_review supports comments only; use approve_pull_request for review processing"
+                    .to_string(),
+            ));
+        }
+        gitcode_add_pull_request_comment(ctx, &request.pull_request_id, &request.body).await
+    }
+
+    async fn approve_pull_request(
+        &self,
+        ctx: &ProviderContext,
+        request: &ReviewPlatformApprovalRequest,
+    ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
+        let token = require_write_token(ctx, "Approving a GitCode pull request")?;
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/review",
+            ctx.api_base_url, ctx.remote.owner, ctx.remote.repository_name, request.pull_request_id
+        );
+        send_json(
+            gitcode_post_request(http_client()?, &url, Some(token))
+                .json(&json!({ "force": false })),
+        )
+        .await?;
+        if let Some(body) = request
+            .body
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            let _ = gitcode_add_pull_request_comment(ctx, &request.pull_request_id, body).await;
+        }
+        Ok(ReviewPlatformActionResult {
+            success: true,
+            message: "Approved GitCode pull request".to_string(),
+            web_url: None,
+            pull_request: None,
+            thread: None,
         })
     }
 }
@@ -1017,6 +1853,30 @@ fn link_header_last_page(headers: &HeaderMap) -> Option<u32> {
         return query_param_u32(url, "page");
     }
     None
+}
+
+fn pagination_total_from_links(
+    headers: &HeaderMap,
+    pagination: PullRequestPagination,
+    item_count: usize,
+) -> Option<u64> {
+    if let Some(last_page) = link_header_last_page(headers) {
+        if pagination.per_page == 1 {
+            return Some(u64::from(last_page));
+        }
+        if last_page == pagination.page {
+            return Some(
+                u64::from(pagination.page.saturating_sub(1)) * u64::from(pagination.per_page)
+                    + item_count as u64,
+            );
+        }
+        return None;
+    }
+
+    Some(
+        u64::from(pagination.page.saturating_sub(1)) * u64::from(pagination.per_page)
+            + item_count as u64,
+    )
 }
 
 fn github_next_page(headers: &HeaderMap, current_page: u32) -> Option<u32> {
@@ -1162,6 +2022,22 @@ fn github_request(
     request
 }
 
+fn github_post_request(
+    client: reqwest::Client,
+    url: &str,
+    token: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let mut request = client
+        .post(url)
+        .header(USER_AGENT, USER_AGENT_VALUE)
+        .header(ACCEPT, "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28");
+    if let Some(token) = token {
+        request = request.header(AUTHORIZATION, format!("Bearer {}", token));
+    }
+    request
+}
+
 fn gitlab_request(
     client: reqwest::Client,
     url: &str,
@@ -1169,6 +2045,36 @@ fn gitlab_request(
 ) -> reqwest::RequestBuilder {
     let mut request = client
         .get(url)
+        .header(USER_AGENT, USER_AGENT_VALUE)
+        .header(ACCEPT, "application/json");
+    if let Some(token) = token {
+        request = request.header("PRIVATE-TOKEN", token);
+    }
+    request
+}
+
+fn gitlab_post_request(
+    client: reqwest::Client,
+    url: &str,
+    token: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let mut request = client
+        .post(url)
+        .header(USER_AGENT, USER_AGENT_VALUE)
+        .header(ACCEPT, "application/json");
+    if let Some(token) = token {
+        request = request.header("PRIVATE-TOKEN", token);
+    }
+    request
+}
+
+fn gitlab_put_request(
+    client: reqwest::Client,
+    url: &str,
+    token: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let mut request = client
+        .put(url)
         .header(USER_AGENT, USER_AGENT_VALUE)
         .header(ACCEPT, "application/json");
     if let Some(token) = token {
@@ -1193,6 +2099,38 @@ fn gitcode_request(
             .query(&[("access_token", token)]);
     }
     request
+}
+
+fn gitcode_post_request(
+    client: reqwest::Client,
+    url: &str,
+    token: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let mut request = client
+        .post(url)
+        .header(USER_AGENT, USER_AGENT_VALUE)
+        .header(ACCEPT, "application/json");
+    if let Some(token) = token {
+        request = request
+            .header("PRIVATE-TOKEN", token)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .query(&[("access_token", token)]);
+    }
+    request
+}
+
+fn require_write_token<'a>(
+    ctx: &'a ProviderContext,
+    action: &str,
+) -> Result<&'a str, ReviewPlatformError> {
+    ctx.token.as_deref().ok_or_else(|| {
+        ReviewPlatformError::Api(format!(
+            "{} requires a {} token for {}",
+            action,
+            platform_label(ctx.remote.platform),
+            ctx.remote.host
+        ))
+    })
 }
 
 fn provider_context(
@@ -1352,6 +2290,40 @@ fn select_remote<'a>(
         .or_else(|| remotes.first())
 }
 
+fn select_remote_for_action<'a>(
+    remotes: &'a [ReviewPlatformRemote],
+    remote_id: Option<&str>,
+) -> Result<&'a ReviewPlatformRemote, ReviewPlatformError> {
+    if let Some(remote_id) = remote_id {
+        return remotes
+            .iter()
+            .find(|remote| remote.id == remote_id)
+            .ok_or_else(|| ReviewPlatformError::RemoteNotFound(remote_id.to_string()));
+    }
+
+    let supported = remotes
+        .iter()
+        .filter(|remote| remote.supported)
+        .collect::<Vec<_>>();
+    match supported.as_slice() {
+        [] => remotes
+            .first()
+            .ok_or_else(|| ReviewPlatformError::RemoteNotFound("default".to_string())),
+        [remote] => Ok(remote),
+        _ => Err(ReviewPlatformError::Api(format!(
+            "Multiple supported review platform remotes were found. Provide remote_id explicitly. Candidate remotes:\n{}",
+            supported
+                .iter()
+                .map(|remote| format!(
+                    "- remote_id: {} | name: {} | platform: {:?} | project: {} | url: {}",
+                    remote.id, remote.name, remote.platform, remote.project_path, remote.web_url
+                ))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ))),
+    }
+}
+
 fn empty_snapshot(
     remotes: Vec<ReviewPlatformRemote>,
     selected_remote_id: Option<String>,
@@ -1379,8 +2351,12 @@ fn empty_snapshot(
         },
         capabilities: ReviewPlatformCapabilities {
             can_create_review: false,
+            can_create_pull_request: false,
             can_reply_to_thread: false,
             can_resolve_thread: false,
+            can_approve: false,
+            can_revoke_approval: false,
+            can_request_changes: false,
             can_merge: false,
             supports_draft_review: false,
         },
@@ -1431,12 +2407,44 @@ fn account_for_remote(remote: &ReviewPlatformRemote) -> ReviewPlatformAccount {
 }
 
 fn capabilities_for_remote(_remote: &ReviewPlatformRemote) -> ReviewPlatformCapabilities {
+    let platform = _remote.platform;
     ReviewPlatformCapabilities {
-        can_create_review: false,
-        can_reply_to_thread: false,
-        can_resolve_thread: false,
+        can_create_review: matches!(
+            platform,
+            ReviewPlatformKind::Github
+                | ReviewPlatformKind::Gitlab
+                | ReviewPlatformKind::Codehub
+                | ReviewPlatformKind::Gitcode
+        ),
+        can_create_pull_request: matches!(
+            platform,
+            ReviewPlatformKind::Github
+                | ReviewPlatformKind::Gitlab
+                | ReviewPlatformKind::Codehub
+                | ReviewPlatformKind::Gitcode
+        ),
+        can_reply_to_thread: matches!(
+            platform,
+            ReviewPlatformKind::Github | ReviewPlatformKind::Gitlab | ReviewPlatformKind::Codehub
+        ),
+        can_resolve_thread: matches!(
+            platform,
+            ReviewPlatformKind::Gitlab | ReviewPlatformKind::Codehub
+        ),
+        can_approve: matches!(
+            platform,
+            ReviewPlatformKind::Github
+                | ReviewPlatformKind::Gitlab
+                | ReviewPlatformKind::Codehub
+                | ReviewPlatformKind::Gitcode
+        ),
+        can_revoke_approval: matches!(
+            platform,
+            ReviewPlatformKind::Gitlab | ReviewPlatformKind::Codehub
+        ),
+        can_request_changes: matches!(platform, ReviewPlatformKind::Github),
         can_merge: false,
-        supports_draft_review: false,
+        supports_draft_review: matches!(platform, ReviewPlatformKind::Github),
     }
 }
 
@@ -1910,6 +2918,10 @@ fn github_threads(reviews: &Value, comments: &Value) -> Vec<ReviewPlatformThread
         }
         threads.push(ReviewPlatformThread {
             id: format!("review-{}", value_i64(review, "id")),
+            provider_thread_id: None,
+            provider_comment_id: value_i64(review, "id")
+                .checked_abs()
+                .map(|id| id.to_string()),
             file_path: None,
             line: None,
             resolved: false,
@@ -1922,28 +2934,39 @@ fn github_threads(reviews: &Value, comments: &Value) -> Vec<ReviewPlatformThread
         });
     }
     for comment in array_items(comments) {
-        threads.push(ReviewPlatformThread {
-            id: format!("comment-{}", value_i64(comment, "id")),
-            file_path: comment
-                .get("path")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            line: comment
-                .get("line")
-                .and_then(Value::as_i64)
-                .or_else(|| comment.get("original_line").and_then(Value::as_i64)),
-            resolved: false,
-            author: nested_string(comment, &["user", "login"]),
-            body: value_string(comment, "body"),
-            updated_at: value_string(comment, "updated_at"),
-        });
+        threads.push(github_thread_from_comment(comment));
     }
     threads
+}
+
+fn github_thread_from_comment(comment: &Value) -> ReviewPlatformThread {
+    let comment_id = first_non_empty(&[
+        value_string(comment, "id"),
+        value_i64(comment, "id").to_string(),
+    ]);
+    ReviewPlatformThread {
+        id: format!("comment-{}", comment_id),
+        provider_thread_id: None,
+        provider_comment_id: Some(comment_id),
+        file_path: comment
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        line: comment
+            .get("line")
+            .and_then(Value::as_i64)
+            .or_else(|| comment.get("original_line").and_then(Value::as_i64)),
+        resolved: false,
+        author: nested_string(comment, &["user", "login"]),
+        body: value_string(comment, "body"),
+        updated_at: value_string(comment, "updated_at"),
+    }
 }
 
 fn gitlab_threads(value: &Value) -> Vec<ReviewPlatformThread> {
     let mut threads = Vec::new();
     for discussion in array_items(value) {
+        let discussion_id = value_string(discussion, "id");
         let resolved = value_bool(discussion, "resolved");
         let notes = discussion
             .get("notes")
@@ -1951,28 +2974,89 @@ fn gitlab_threads(value: &Value) -> Vec<ReviewPlatformThread> {
             .map(|notes| notes.as_slice())
             .unwrap_or(&[]);
         for note in notes {
-            threads.push(ReviewPlatformThread {
-                id: value_string(note, "id"),
-                file_path: nested_optional_string(note, &["position", "new_path"])
-                    .or_else(|| nested_optional_string(note, &["position", "old_path"])),
-                line: note
-                    .pointer("/position/new_line")
-                    .and_then(Value::as_i64)
-                    .or_else(|| note.pointer("/position/old_line").and_then(Value::as_i64)),
-                resolved: resolved || value_bool(note, "resolved"),
-                author: first_non_empty(&[
-                    nested_string(note, &["author", "username"]),
-                    nested_string(note, &["author", "name"]),
-                ]),
-                body: value_string(note, "body"),
-                updated_at: first_non_empty(&[
-                    value_string(note, "updated_at"),
-                    value_string(note, "created_at"),
-                ]),
-            });
+            threads.push(gitlab_thread_from_note(
+                note,
+                Some(discussion_id.clone()),
+                resolved,
+            ));
         }
     }
     threads
+}
+
+fn gitlab_thread_from_note(
+    note: &Value,
+    discussion_id: Option<String>,
+    discussion_resolved: bool,
+) -> ReviewPlatformThread {
+    let note_id = value_string(note, "id");
+    let id = match discussion_id.as_deref() {
+        Some(discussion_id) if !discussion_id.trim().is_empty() => {
+            format!("discussion-{}:note-{}", discussion_id, note_id)
+        }
+        _ => format!("note-{}", note_id),
+    };
+
+    ReviewPlatformThread {
+        id,
+        provider_thread_id: discussion_id,
+        provider_comment_id: Some(note_id),
+        file_path: nested_optional_string(note, &["position", "new_path"])
+            .or_else(|| nested_optional_string(note, &["position", "old_path"])),
+        line: note
+            .pointer("/position/new_line")
+            .and_then(Value::as_i64)
+            .or_else(|| note.pointer("/position/old_line").and_then(Value::as_i64)),
+        resolved: discussion_resolved || value_bool(note, "resolved"),
+        author: first_non_empty(&[
+            nested_string(note, &["author", "username"]),
+            nested_string(note, &["author", "name"]),
+        ]),
+        body: value_string(note, "body"),
+        updated_at: first_non_empty(&[
+            value_string(note, "updated_at"),
+            value_string(note, "created_at"),
+        ]),
+    }
+}
+
+fn parse_provider_comment_id(thread_id: &str) -> Option<&str> {
+    let trimmed = thread_id.trim();
+    trimmed
+        .strip_prefix("comment-")
+        .or_else(|| trimmed.strip_prefix("note-"))
+        .or_else(|| trimmed.split_once(":note-").map(|(_, note_id)| note_id))
+        .or_else(|| {
+            if trimmed.chars().all(|ch| ch.is_ascii_digit()) {
+                Some(trimmed)
+            } else {
+                None
+            }
+        })
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn parse_provider_thread_id(thread_id: &str) -> Option<&str> {
+    let trimmed = thread_id.trim();
+    trimmed
+        .strip_prefix("discussion-")
+        .map(|value| {
+            value
+                .split_once(":note-")
+                .map(|(id, _)| id)
+                .unwrap_or(value)
+        })
+        .or_else(|| {
+            if trimmed
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            {
+                Some(trimmed)
+            } else {
+                None
+            }
+        })
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn gitcode_threads(value: &Value) -> Vec<ReviewPlatformThread> {
@@ -1980,6 +3064,8 @@ fn gitcode_threads(value: &Value) -> Vec<ReviewPlatformThread> {
         .iter()
         .map(|comment| ReviewPlatformThread {
             id: value_string(comment, "id"),
+            provider_thread_id: None,
+            provider_comment_id: Some(value_string(comment, "id")),
             file_path: comment
                 .get("path")
                 .and_then(Value::as_str)
