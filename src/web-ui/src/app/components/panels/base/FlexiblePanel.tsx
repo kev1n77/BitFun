@@ -754,6 +754,19 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
           </React.Suspense>
         );
 
+      case 'review-platform-pr-detail':
+        return (
+          <React.Suspense fallback={<div className="bitfun-flexible-panel__loading">Loading pull request...</div>}>
+            <ReviewPlatformPanel
+              workspacePath={content.data?.workspacePath || workspacePath}
+              initialRemoteId={content.data?.remoteId}
+              initialPullRequestId={content.data?.pullRequestId}
+              initialPullRequestUrl={content.data?.pullRequestUrl}
+              detailOnly
+            />
+          </React.Suspense>
+        );
+
       case 'browser':
         return (
           <React.Suspense fallback={<div className="bitfun-flexible-panel__loading">{t('flexiblePanel.loading.terminal')}</div>}>

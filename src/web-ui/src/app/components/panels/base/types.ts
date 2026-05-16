@@ -28,6 +28,7 @@ export type PanelContentType =
   | 'btw-session'
   | 'session-usage'
   | 'review-platform'
+  | 'review-platform-pr-detail'
   | 'terminal'
   | 'generative-widget'
   | 'browser';

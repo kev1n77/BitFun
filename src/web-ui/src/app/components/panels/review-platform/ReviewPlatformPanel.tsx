@@ -39,12 +39,17 @@ import { flowChatStore } from '@/flow_chat/store/FlowChatStore';
 import type { FlowToolItem, Session } from '@/flow_chat/types/flow-chat';
 import { findLatestCodeReviewResult, summarizeCodeReviewResult } from '@/flow_chat/utils/reviewSessionSummary';
 import { deriveDeepReviewSessionConcurrencyGuard } from '@/flow_chat/utils/deepReviewCapacityGuard';
+import { parsePullRequestUrl, remoteMatchesPullRequestLink } from '@/shared/utils/pullRequestLinks';
 import './ReviewPlatformPanel.scss';
 
 const log = createLogger('ReviewPlatformPanel');
 
 interface ReviewPlatformPanelProps {
   workspacePath?: string;
+  initialRemoteId?: string;
+  initialPullRequestId?: string;
+  initialPullRequestUrl?: string;
+  detailOnly?: boolean;
 }
 
 type DetailTab = 'overview' | 'changes' | 'commits' | 'reviews';
@@ -465,7 +470,13 @@ function buildPrDiffContext(detail: ReviewPlatformPullRequestDetail | null): str
   return `Provider diff source of truth:\n\n${sections.join('\n\n---\n\n')}${omitted}`;
 }
 
-export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ workspacePath }) => {
+export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
+  workspacePath,
+  initialRemoteId,
+  initialPullRequestId,
+  initialPullRequestUrl,
+  detailOnly = false,
+}) => {
   const { confirmDeepReviewLaunch, deepReviewConsentDialog } = useDeepReviewConsent();
   const snapshotRequestSeq = useRef(0);
   const detailRequestSeq = useRef(0);
@@ -496,9 +507,14 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
     () => snapshot.remotes.find(remote => remote.id === selectedRemoteId) ?? snapshot.remotes[0] ?? null,
     [selectedRemoteId, snapshot.remotes],
   );
-  const selectedPr = useMemo(
+  const selectedPrFromList = useMemo(
     () => snapshot.pullRequests.find(pr => pr.id === selectedPrId) ?? null,
     [selectedPrId, snapshot.pullRequests],
+  );
+  const selectedPr = detail ?? selectedPrFromList;
+  const initialPullRequestTarget = useMemo(
+    () => initialPullRequestUrl ? parsePullRequestUrl(initialPullRequestUrl) : null,
+    [initialPullRequestUrl],
   );
   const prFilePaths = useMemo(
     () => uniquePaths((detail?.files ?? []).map(file => file.path)),
@@ -593,9 +609,9 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
     }
   }, [workspacePath]);
 
-  const loadDetail = useCallback(async (repo: ReviewPlatformRepositoryRef, remoteId: string, pullRequestId: string, options?: { force?: boolean }) => {
+  const loadDetail = useCallback(async (repo: ReviewPlatformRepositoryRef | null, remoteId: string, pullRequestId: string, options?: { force?: boolean }) => {
     const requestSeq = ++detailRequestSeq.current;
-    const repositoryPath = workspacePath || repo.workspacePath || '';
+    const repositoryPath = workspacePath || repo?.workspacePath || '';
     const cacheKey = detailCacheKey(repositoryPath, remoteId, pullRequestId);
     const cached = detailCache.get(cacheKey);
     const force = options?.force === true;
@@ -633,8 +649,8 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
   }, [workspacePath]);
 
   useEffect(() => {
-    void loadSnapshot();
-  }, [loadSnapshot]);
+    void loadSnapshot(detailOnly && initialRemoteId ? initialRemoteId : undefined);
+  }, [detailOnly, initialRemoteId, loadSnapshot]);
 
   useEffect(() => flowChatStore.subscribe(setFlowState), []);
 
@@ -644,13 +660,13 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
       setDetailError(null);
       return;
     }
-    if (!repository || !selectedPrId) {
+    if (!selectedPrId || (!repository && !workspacePath)) {
       setDetail(null);
       setDetailError(null);
       return;
     }
     void loadDetail(repository, selectedRemoteId, selectedPrId);
-  }, [loadDetail, repository, selectedPrId, selectedRemoteId]);
+  }, [loadDetail, repository, selectedPrId, selectedRemoteId, workspacePath]);
 
   useEffect(() => {
     if (!snapshot.remotes.length) return;
@@ -658,6 +674,48 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
       setSelectedRemoteId(snapshot.selectedRemoteId);
     }
   }, [selectedRemoteId, snapshot.remotes.length, snapshot.selectedRemoteId]);
+
+  useEffect(() => {
+    if (!detailOnly) return;
+    const targetPullRequestId = initialPullRequestId ?? initialPullRequestTarget?.pullRequestId ?? null;
+    if (!targetPullRequestId) {
+      if (initialPullRequestUrl) {
+        setDetailError('This link is not a supported pull request URL.');
+      }
+      return;
+    }
+
+    const matchedRemote = initialRemoteId
+      ? snapshot.remotes.find(remote => remote.id === initialRemoteId) ?? null
+      : initialPullRequestTarget
+        ? snapshot.remotes.find(remote => remoteMatchesPullRequestLink(remote, initialPullRequestTarget)) ?? null
+        : null;
+    const nextRemoteId = initialRemoteId
+      ?? matchedRemote?.id
+      ?? (snapshot.remotes.length === 1 ? snapshot.remotes[0].id : null)
+      ?? snapshot.selectedRemoteId
+      ?? selectedRemoteId;
+
+    if (nextRemoteId && selectedRemoteId !== nextRemoteId) {
+      setSelectedRemoteId(nextRemoteId);
+      rememberRemote(workspacePath, nextRemoteId);
+    }
+
+    if (selectedPrId !== targetPullRequestId) {
+      setSelectedPrId(targetPullRequestId);
+    }
+  }, [
+    detailOnly,
+    initialPullRequestId,
+    initialPullRequestTarget,
+    initialPullRequestUrl,
+    initialRemoteId,
+    selectedPrId,
+    selectedRemoteId,
+    snapshot.remotes,
+    snapshot.selectedRemoteId,
+    workspacePath,
+  ]);
 
   useEffect(() => {
     if (!detail) {
@@ -778,6 +836,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
   }, [snapshot.pullRequests]);
 
   const headerLabel = selectedRemote ? remoteLabel(selectedRemote) : repository ? repository.projectPath : 'No repository';
+  const panelTitle = detailOnly ? 'Pull Request' : 'Pull Requests';
 
   const handleRemoteChange = useCallback((value: string | number | (string | number)[]) => {
     const remoteId = Array.isArray(value) ? String(value[0] ?? '') : String(value);
@@ -812,14 +871,14 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
   }, []);
 
   const handleOpenExternal = useCallback(async () => {
-    const webUrl = selectedPr?.webUrl;
+    const webUrl = selectedPr?.webUrl || initialPullRequestUrl;
     if (!webUrl) return;
     try {
       await systemAPI.openExternal(webUrl);
     } catch (error) {
       log.error('Failed to open pull request URL', { error, webUrl });
     }
-  }, [selectedPr?.webUrl]);
+  }, [initialPullRequestUrl, selectedPr?.webUrl]);
 
   const handleOpenParentChat = useCallback(async () => {
     if (!parentSession) {
@@ -1002,9 +1061,9 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
   }, [refreshAuthSnapshot, selectedRemote]);
 
   const handleRetryDetail = useCallback(() => {
-    if (!repository || !selectedRemoteId || !selectedPrId) return;
+    if ((!repository && !workspacePath) || !selectedRemoteId || !selectedPrId) return;
     void loadDetail(repository, selectedRemoteId, selectedPrId, { force: true });
-  }, [loadDetail, repository, selectedPrId, selectedRemoteId]);
+  }, [loadDetail, repository, selectedPrId, selectedRemoteId, workspacePath]);
 
   const remoteStatus = selectedRemote
     ? `${providerLabel(selectedRemote)} · ${authLabel(account)}`
@@ -1027,12 +1086,12 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
   const parentSessionLabel = parentSession ? getSessionTitle(parentSession, 'Current chat') : 'No chat session linked';
 
   return (
-    <div className="review-platform">
+    <div className={`review-platform${detailOnly ? ' review-platform--detail-only' : ''}`}>
       <div className="review-platform__topbar">
         <div className="review-platform__brand">
           <span className="review-platform__brand-icon"><GitPullRequest size={17} /></span>
           <div className="review-platform__brand-copy">
-            <span className="review-platform__title">Pull Requests</span>
+            <span className="review-platform__title">{panelTitle}</span>
             <span className="review-platform__subtitle">{headerLabel}</span>
           </div>
         </div>
@@ -1092,6 +1151,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
         </div>
       </div>
 
+      {!detailOnly && (
       <div className="review-platform__subbar">
         <div className="review-platform__status-line">
           <span><CircleDot size={12} /> {summary.open} open on page</span>
@@ -1106,8 +1166,10 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
           )}
         </div>
       </div>
+      )}
 
       <div className="review-platform__body">
+        {!detailOnly && (
         <aside className="review-platform__list" aria-label="Pull request list">
           <div className="review-platform__list-toolbar">
             <Input
@@ -1213,9 +1275,27 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
             </div>
           )}
         </aside>
+        )}
 
         <main className="review-platform__detail">
-          {!selectedPr && !loading && (
+          {!selectedPr && detailOnly && (loading || detailLoading) && (
+            <div className="review-platform__detail-empty">
+              <Loader2 size={20} className="review-platform__loading-inline" />
+              <span>Loading pull request details...</span>
+            </div>
+          )}
+
+          {!selectedPr && detailOnly && !loading && !detailLoading && (detailError || error) && (
+            <div className="review-platform__detail-empty">
+              <XCircle size={24} />
+              <span>{detailError || error}</span>
+              <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleRetryDetail}>
+                Retry
+              </Button>
+            </div>
+          )}
+
+          {!selectedPr && !detailOnly && !loading && (
             <div className="review-platform__detail-empty">
               <GitPullRequest size={24} />
               <span>Select a pull request to inspect it.</span>
@@ -1246,7 +1326,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({ worksp
                     <MessageSquareText size={13} />
                     Ask
                   </Button>
-                  <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleOpenExternal} disabled={!selectedPr.webUrl}>
+                  <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleOpenExternal} disabled={!selectedPr.webUrl && !initialPullRequestUrl}>
                     <Link2 size={13} />
                     Open
                   </Button>

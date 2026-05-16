@@ -572,6 +572,7 @@ export interface MarkdownProps {
   onOpenVisualization?: (visualization: any) => void;
   onFileViewRequest?: (filePath: string, fileName: string, lineRange?: LineRange) => void;
   onTabOpen?: (tabInfo: any) => void;
+  onHttpLinkClick?: (url: string, event: React.MouseEvent<HTMLAnchorElement>) => boolean | void;
   onReproductionProceed?: () => void;
 }
 
@@ -584,6 +585,7 @@ export const Markdown = React.memo<MarkdownProps>(({
   onOpenVisualization,
   onFileViewRequest,
   onTabOpen,
+  onHttpLinkClick,
   onReproductionProceed
 }) => {
   const { isLight } = useTheme();
@@ -1031,6 +1033,9 @@ export const Markdown = React.memo<MarkdownProps>(({
             onClick={async (e) => {
               e.preventDefault();
               e.stopPropagation();
+              if (onHttpLinkClick?.(hrefValue, e)) {
+                return;
+              }
               try {
                 await systemAPI.openExternal(hrefValue);
               } catch (error) {
@@ -1124,6 +1129,7 @@ export const Markdown = React.memo<MarkdownProps>(({
     handleWebLinkContextMenu,
     handleOpenVisualization,
     handleTabOpen,
+    onHttpLinkClick,
     parseLineRange,
     syntaxTheme,
     isLight,

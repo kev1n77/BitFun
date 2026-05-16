@@ -23,6 +23,8 @@ import { useVirtualItems, useActiveSession, useVisibleTurnInfo, type VisibleTurn
 import type { FlowChatConfig } from '../../types/flow-chat';
 import type { LineRange } from '@/component-library';
 import { useWorkspaceContext } from '@/infrastructure/contexts/WorkspaceContext';
+import { parsePullRequestUrl } from '@/shared/utils/pullRequestLinks';
+import { createReviewPlatformPullRequestDetailTab } from '@/shared/utils/tabUtils';
 import { isAcpFlowSession } from '../../utils/acpSession';
 import './ModernFlowChatContainer.scss';
 
@@ -69,6 +71,20 @@ export const ModernFlowChatContainer: React.FC<ModernFlowChatContainerProps> = (
     workspacePath,
     onFileViewRequest,
   });
+  const handleHttpLinkClick = useCallback((url: string, _event: React.MouseEvent<HTMLAnchorElement>) => {
+    const pullRequestTarget = parsePullRequestUrl(url);
+    if (!pullRequestTarget) {
+      return false;
+    }
+
+    createReviewPlatformPullRequestDetailTab({
+      workspacePath: activeSession?.workspacePath || workspacePath,
+      pullRequestId: pullRequestTarget.pullRequestId,
+      pullRequestUrl: pullRequestTarget.webUrl,
+      title: `PR #${pullRequestTarget.pullRequestId}`,
+    });
+    return true;
+  }, [activeSession?.workspacePath, workspacePath]);
   const {
     searchQuery,
     onSearchChange,
@@ -94,6 +110,7 @@ export const ModernFlowChatContainer: React.FC<ModernFlowChatContainerProps> = (
   const contextValue: FlowChatContextValue = useMemo(() => ({
     onFileViewRequest: handleFileViewRequest,
     onTabOpen,
+    onHttpLinkClick: handleHttpLinkClick,
     onOpenVisualization,
     onSwitchToChatPanel,
     onToolConfirm: handleToolConfirm,
@@ -121,6 +138,7 @@ export const ModernFlowChatContainer: React.FC<ModernFlowChatContainerProps> = (
   }), [
     handleFileViewRequest,
     onTabOpen,
+    handleHttpLinkClick,
     onOpenVisualization,
     onSwitchToChatPanel,
     handleToolConfirm,

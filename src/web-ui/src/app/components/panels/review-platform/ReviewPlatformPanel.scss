@@ -215,6 +215,10 @@
     grid-template-columns: minmax(280px, 33%) minmax(0, 1fr);
   }
 
+  &--detail-only &__body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   &__list {
     min-width: 0;
     min-height: 0;

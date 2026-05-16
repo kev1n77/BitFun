@@ -216,6 +216,14 @@ export const PANEL_CONTENT_CONFIGS: Record<PanelContentType, PanelContentConfig>
     supportsDownload: false,
     showHeader: false
   },
+  'review-platform-pr-detail': {
+    type: 'review-platform-pr-detail',
+    displayName: 'Pull Request',
+    icon: GitPullRequest,
+    supportsCopy: false,
+    supportsDownload: false,
+    showHeader: false
+  },
   'terminal': {
     type: 'terminal',
     displayName: 'Terminal',
