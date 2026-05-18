@@ -97,6 +97,8 @@ export interface ReviewPlatformThread {
   id: string;
   providerThreadId?: string | null;
   providerCommentId?: string | null;
+  kind: 'review' | 'comment';
+  replyToProviderCommentId?: string | null;
   filePath?: string | null;
   line?: number | null;
   resolved: boolean;

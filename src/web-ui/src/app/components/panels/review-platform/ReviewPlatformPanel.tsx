@@ -50,7 +50,6 @@ type ListStateFilter = 'all' | 'open' | 'draft' | 'merged' | 'closed';
 type SnapshotCacheState = 'none' | 'cached' | 'refreshing';
 
 const PR_PAGE_SIZE = 10;
-const CACHE_TTL_MS = 2 * 60 * 1000;
 const REMOTE_STORAGE_PREFIX = 'bitfun:review-platform:last-remote:';
 const MAX_LINKED_REVIEW_SESSIONS = 6;
 
@@ -95,10 +94,7 @@ interface LinkedReviewSession {
 
 const snapshotCache = new Map<string, SnapshotCacheEntry>();
 const detailCache = new Map<string, DetailCacheEntry>();
-
-function isFresh(timestamp: number): boolean {
-  return Date.now() - timestamp < CACHE_TTL_MS;
-}
+const EMPTY_REVIEW_THREADS: ReviewPlatformThread[] = [];
 
 function snapshotCacheKey(workspacePath: string, remoteId: string | null, page: number, perPage: number): string {
   return `${workspacePath}::${remoteId ?? 'default'}::${page}::${perPage}`;
@@ -393,6 +389,7 @@ function buildPrOverviewContext(params: {
   remote: ReviewPlatformRemote | null;
   repository: ReviewPlatformRepositoryRef | null;
   filePaths: string[];
+  reviewItemCount: number;
   webUrl?: string;
 }): string {
   const body = params.detail?.body?.trim() || 'No pull request description was returned by the provider.';
@@ -405,7 +402,7 @@ function buildPrOverviewContext(params: {
     `State: ${stateLabel(params.pr.state)}`,
     `Review decision: ${decisionLabel(params.pr.reviewDecision)}`,
     `Checks: ${formatChecksText(params.pr)}`,
-    `Comments: ${params.pr.comments}`,
+    `Comments: ${params.reviewItemCount}`,
   ].join('\n');
 }
 
@@ -442,11 +439,19 @@ function buildPrReviewsContext(pr: ReviewPlatformPullRequest, threads: ReviewPla
   if (!threads.length) {
     return `Pull request reviews: PR #${pr.number} ${pr.title}\n\nNo review threads were returned by the provider.`;
   }
+  const threadByCommentId = new Map(
+    threads
+      .filter(thread => thread.providerCommentId)
+      .map(thread => [thread.providerCommentId as string, thread]),
+  );
   return [
     `Pull request reviews: PR #${pr.number} ${pr.title}`,
     '',
     ...threads.map(thread => [
-      `- ${thread.resolved ? 'Resolved' : 'Open'} thread by ${thread.author}`,
+      `- [${thread.kind === 'review' ? 'Review' : 'Comment'}] ${thread.resolved ? 'Resolved' : 'Open'} thread by ${thread.author}`,
+      thread.replyToProviderCommentId
+        ? `  Reply to: ${threadByCommentId.get(thread.replyToProviderCommentId)?.author ?? thread.replyToProviderCommentId}`
+        : null,
       thread.filePath ? `  Location: ${thread.filePath}${thread.line ? `:${thread.line}` : ''}` : null,
       `  Updated: ${formatAbsoluteTime(thread.updatedAt) || thread.updatedAt}`,
       `  Body: ${thread.body}`,
@@ -502,6 +507,16 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
     () => uniquePaths((detail?.files ?? []).map(file => file.path)),
     [detail?.files],
   );
+  const reviewThreads = detail?.threads ?? EMPTY_REVIEW_THREADS;
+  const reviewThreadByCommentId = useMemo(
+    () => new Map(
+      reviewThreads
+        .filter(thread => thread.providerCommentId)
+        .map(thread => [thread.providerCommentId as string, thread]),
+    ),
+    [reviewThreads],
+  );
+  const reviewItemCount = detail ? reviewThreads.length : (selectedPr?.comments ?? 0);
   const remoteOptions = useMemo<SelectOption[]>(
     () => snapshot.remotes.map(remote => ({
       value: remote.id,
@@ -539,11 +554,9 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
       setDetail(null);
       setDetailError(null);
       setError(null);
-      setSnapshotCacheState(isFresh(cached.fetchedAt) ? 'cached' : 'refreshing');
-      if (isFresh(cached.fetchedAt)) {
-        setLoading(false);
-        return;
-      }
+      setSnapshotCacheState('cached');
+      setLoading(false);
+      return;
     } else {
       setSnapshot(emptySnapshot());
       setSelectedPrId(null);
@@ -597,10 +610,8 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
 
     if (cached && !force) {
       setDetail(cached.detail);
-      if (isFresh(cached.fetchedAt)) {
-        setDetailLoading(false);
-        return;
-      }
+      setDetailLoading(false);
+      return;
     } else {
       setDetail(null);
     }
@@ -905,10 +916,11 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
         remote: selectedRemote,
         repository,
         filePaths: prFilePaths,
+        reviewItemCount,
         webUrl: selectedPr.webUrl,
       }),
     });
-  }, [addPullRequestContextToChat, detail, prFilePaths, repository, selectedPr, selectedRemote]);
+  }, [addPullRequestContextToChat, detail, prFilePaths, repository, reviewItemCount, selectedPr, selectedRemote]);
 
   const handleAddFileDiffContext = useCallback(async (file: ReviewPlatformFile) => {
     if (!selectedPr) return;
@@ -1364,7 +1376,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
                     </div>
                     <div className="review-platform__summary-grid">
                       <span><CheckCircle2 size={13} /> {checksText} checks</span>
-                      <span><MessageSquareText size={13} /> {displayPr?.comments ?? selectedPr.comments} comments</span>
+                      <span><MessageSquareText size={13} /> {reviewItemCount} review items</span>
                       <span><UserRound size={13} /> {displayPr?.author ?? selectedPr.author}</span>
                       <span><Clock3 size={13} /> {formatAbsoluteTime(displayPr?.updatedAt ?? selectedPr.updatedAt)}</span>
                     </div>
@@ -1469,6 +1481,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
                   <section className="review-platform__tab-content review-platform__threads">
                     <div className="review-platform__section-heading">
                       <span>Reviews</span>
+                      <span className="review-platform__section-count">{reviewItemCount} items</span>
                       <Button className="review-platform__panel-button" size="small" variant="ghost" onClick={handleAddReviewsContext} disabled={!selectedPr || !detail}>
                         <MessageSquareText size={13} />
                         Add to chat
@@ -1483,20 +1496,62 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
                         </Button>
                       </div>
                     )}
-                    {detail?.threads.map(thread => (
-                      <article key={thread.id} className={`review-platform__thread${thread.resolved ? ' is-resolved' : ''}`}>
-                        <div className="review-platform__thread-head">
-                          <span>{thread.author}</span>
-                          <span>{thread.resolved ? 'Resolved' : 'Open'}</span>
-                        </div>
-                        <p>{thread.body}</p>
-                        {thread.filePath && (
-                          <span className="review-platform__thread-anchor">
-                            {thread.filePath}{thread.line ? `:${thread.line}` : ''}
-                          </span>
-                        )}
-                      </article>
-                    ))}
+                    {detailLoading && (
+                      <div className={`review-platform__thread-loading${reviewThreads.length ? ' review-platform__thread-loading--refreshing' : ''}`} aria-live="polite">
+                        <Loader2 size={14} />
+                        <span>{reviewThreads.length ? 'Refreshing reviews...' : 'Loading reviews...'}</span>
+                      </div>
+                    )}
+                    {reviewThreads.map(thread => {
+                      const parent = thread.replyToProviderCommentId
+                        ? reviewThreadByCommentId.get(thread.replyToProviderCommentId)
+                        : null;
+                      return (
+                        <article
+                          key={thread.id}
+                          className={[
+                            'review-platform__thread',
+                            thread.resolved ? 'is-resolved' : '',
+                            `review-platform__thread--${thread.kind}`,
+                            parent ? 'review-platform__thread--reply' : '',
+                          ].filter(Boolean).join(' ')}
+                        >
+                          <div className="review-platform__thread-head">
+                            <div className="review-platform__thread-tags">
+                              <span className={`review-platform__thread-tag review-platform__thread-tag--${thread.kind}`}>
+                                {thread.kind === 'review' ? 'Review' : 'Comment'}
+                              </span>
+                              <span className={`review-platform__thread-tag review-platform__thread-tag--${thread.resolved ? 'resolved' : 'open'}`}>
+                                {thread.resolved ? 'Resolved' : 'Open'}
+                              </span>
+                            </div>
+                            <span>{formatRelativeTime(thread.updatedAt) || formatAbsoluteTime(thread.updatedAt)}</span>
+                          </div>
+                          <div className="review-platform__thread-meta">
+                            <strong>{thread.author}</strong>
+                          </div>
+                          {parent && (
+                            <div className="review-platform__thread-reply-block">
+                              <div className="review-platform__thread-reply-header">
+                                <span className="review-platform__thread-reply-label">Reply to</span>
+                                <span className="review-platform__thread-reply-author">@{parent.author}</span>
+                              </div>
+                              <div className="review-platform__thread-reply-body">
+                                <MarkdownRenderer content={parent.body} basePath={workspacePath} />
+                              </div>
+                            </div>
+                          )}
+                          <div className="review-platform__thread-body">
+                            <MarkdownRenderer content={thread.body} basePath={workspacePath} />
+                          </div>
+                          {thread.filePath && (
+                            <span className="review-platform__thread-anchor">
+                              {thread.filePath}{thread.line ? `:${thread.line}` : ''}
+                            </span>
+                          )}
+                        </article>
+                      );
+                    })}
                   </section>
                 </TabPane>
               </Tabs>

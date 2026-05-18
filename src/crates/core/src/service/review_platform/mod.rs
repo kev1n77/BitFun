@@ -201,12 +201,21 @@ pub struct ReviewPlatformCommit {
     pub committed_at: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewPlatformThreadKind {
+    Review,
+    Comment,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewPlatformThread {
     pub id: String,
     pub provider_thread_id: Option<String>,
     pub provider_comment_id: Option<String>,
+    pub kind: ReviewPlatformThreadKind,
+    pub reply_to_provider_comment_id: Option<String>,
     pub file_path: Option<String>,
     pub line: Option<i64>,
     pub resolved: bool,
@@ -887,11 +896,25 @@ impl ReviewProvider for GithubProvider {
         )
         .await?;
         let token = ctx.token.clone();
-        let comments_url = format!("{}/comments", base);
-        let comments = fetch_paginated_array(
+        let review_comments_url = format!("{}/comments", base);
+        let review_comments = fetch_paginated_array(
             |page| {
                 let page = page.to_string();
-                github_request(client.clone(), &comments_url, token.as_deref())
+                github_request(client.clone(), &review_comments_url, token.as_deref())
+                    .query(&[("per_page", "100"), ("page", &page)])
+            },
+            github_next_page,
+        )
+        .await?;
+        let token = ctx.token.clone();
+        let issue_comments_url = format!(
+            "{}/repos/{}/{}/issues/{}/comments",
+            ctx.api_base_url, ctx.remote.owner, ctx.remote.repository_name, pull_request_id
+        );
+        let issue_comments = fetch_paginated_array(
+            |page| {
+                let page = page.to_string();
+                github_request(client.clone(), &issue_comments_url, token.as_deref())
                     .query(&[("per_page", "100"), ("page", &page)])
             },
             github_next_page,
@@ -913,7 +936,7 @@ impl ReviewProvider for GithubProvider {
                 .iter()
                 .map(github_commit_from_value)
                 .collect(),
-            threads: github_threads(&reviews, &comments),
+            threads: github_threads(&reviews, &review_comments, &issue_comments),
         })
     }
 
@@ -972,7 +995,7 @@ impl ReviewProvider for GithubProvider {
                 .json(&json!({ "body": request.body })),
         )
         .await?;
-        let thread = github_thread_from_comment(&value);
+        let thread = github_thread_from_review_comment(&value);
         Ok(ReviewPlatformActionResult {
             success: true,
             message: "Replied to pull request thread".to_string(),
@@ -1297,6 +1320,17 @@ async fn gitlab_pull_request_detail(
         gitlab_next_page,
     )
     .await?;
+    let token = ctx.token.clone();
+    let notes_url = format!("{}/notes", base);
+    let notes = fetch_paginated_array(
+        |page| {
+            let page = page.to_string();
+            gitlab_request(client.clone(), &notes_url, token.as_deref())
+                .query(&[("per_page", "100"), ("page", &page)])
+        },
+        gitlab_next_page,
+    )
+    .await?;
 
     let mut pull_request = gitlab_pull_request_from_value(&detail);
     let files = gitlab_files(&changes);
@@ -1315,7 +1349,7 @@ async fn gitlab_pull_request_detail(
             .iter()
             .map(gitlab_commit_from_value)
             .collect(),
-        threads: gitlab_threads(&discussions),
+        threads: gitlab_threads(&discussions, &notes),
     })
 }
 
@@ -1368,7 +1402,13 @@ async fn gitlab_reply_to_thread(
             .json(&json!({ "body": request.body })),
     )
     .await?;
-    let thread = gitlab_thread_from_note(&value, Some(discussion_id.to_string()), false);
+    let thread = gitlab_thread_from_note(
+        &value,
+        Some(discussion_id.to_string()),
+        false,
+        ReviewPlatformThreadKind::Comment,
+        None,
+    );
     Ok(ReviewPlatformActionResult {
         success: true,
         message: format!("Replied to {} discussion", label),
@@ -1394,7 +1434,13 @@ async fn gitlab_add_merge_request_note(
         gitlab_post_request(http_client()?, &url, Some(token)).json(&json!({ "body": body })),
     )
     .await?;
-    let thread = gitlab_thread_from_note(&value, None, false);
+    let thread = gitlab_thread_from_note(
+        &value,
+        None,
+        false,
+        ReviewPlatformThreadKind::Comment,
+        None,
+    );
     Ok(ReviewPlatformActionResult {
         success: true,
         message: message.to_string(),
@@ -2909,19 +2955,22 @@ fn github_review_decision(reviews: &Value) -> ReviewDecision {
     ReviewDecision::Pending
 }
 
-fn github_threads(reviews: &Value, comments: &Value) -> Vec<ReviewPlatformThread> {
+fn github_threads(
+    reviews: &Value,
+    review_comments: &Value,
+    issue_comments: &Value,
+) -> Vec<ReviewPlatformThread> {
     let mut threads = Vec::new();
     for review in array_items(reviews) {
-        let body = value_string(review, "body");
-        if body.trim().is_empty() {
-            continue;
-        }
+        let body = github_review_body(review);
         threads.push(ReviewPlatformThread {
             id: format!("review-{}", value_i64(review, "id")),
             provider_thread_id: None,
             provider_comment_id: value_i64(review, "id")
                 .checked_abs()
                 .map(|id| id.to_string()),
+            kind: ReviewPlatformThreadKind::Review,
+            reply_to_provider_comment_id: None,
             file_path: None,
             line: None,
             resolved: false,
@@ -2933,13 +2982,30 @@ fn github_threads(reviews: &Value, comments: &Value) -> Vec<ReviewPlatformThread
             ]),
         });
     }
-    for comment in array_items(comments) {
-        threads.push(github_thread_from_comment(comment));
+    for comment in array_items(review_comments) {
+        threads.push(github_thread_from_review_comment(comment));
+    }
+    for comment in array_items(issue_comments) {
+        threads.push(github_thread_from_issue_comment(comment));
     }
     threads
 }
 
-fn github_thread_from_comment(comment: &Value) -> ReviewPlatformThread {
+fn github_review_body(review: &Value) -> String {
+    let body = value_string(review, "body");
+    if !body.trim().is_empty() {
+        return body;
+    }
+    match value_string(review, "state").as_str() {
+        "APPROVED" => "Approved this pull request.".to_string(),
+        "CHANGES_REQUESTED" => "Requested changes.".to_string(),
+        "COMMENTED" => "Submitted a pull request review.".to_string(),
+        state if !state.trim().is_empty() => format!("Submitted a {} review.", state),
+        _ => "Submitted a pull request review.".to_string(),
+    }
+}
+
+fn github_thread_from_review_comment(comment: &Value) -> ReviewPlatformThread {
     let comment_id = first_non_empty(&[
         value_string(comment, "id"),
         value_i64(comment, "id").to_string(),
@@ -2948,6 +3014,16 @@ fn github_thread_from_comment(comment: &Value) -> ReviewPlatformThread {
         id: format!("comment-{}", comment_id),
         provider_thread_id: None,
         provider_comment_id: Some(comment_id),
+        kind: ReviewPlatformThreadKind::Comment,
+        reply_to_provider_comment_id: value_i64(comment, "in_reply_to_id")
+            .checked_abs()
+            .map(|id| id.to_string())
+            .or_else(|| {
+                comment
+                    .get("in_reply_to_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }),
         file_path: comment
             .get("path")
             .and_then(Value::as_str)
@@ -2963,23 +3039,80 @@ fn github_thread_from_comment(comment: &Value) -> ReviewPlatformThread {
     }
 }
 
-fn gitlab_threads(value: &Value) -> Vec<ReviewPlatformThread> {
+fn github_thread_from_issue_comment(comment: &Value) -> ReviewPlatformThread {
+    let comment_id = first_non_empty(&[
+        value_string(comment, "id"),
+        value_i64(comment, "id").to_string(),
+    ]);
+    ReviewPlatformThread {
+        id: format!("issue-comment-{}", comment_id),
+        provider_thread_id: None,
+        provider_comment_id: Some(comment_id),
+        kind: ReviewPlatformThreadKind::Comment,
+        reply_to_provider_comment_id: None,
+        file_path: None,
+        line: None,
+        resolved: false,
+        author: nested_string(comment, &["user", "login"]),
+        body: value_string(comment, "body"),
+        updated_at: value_string(comment, "updated_at"),
+    }
+}
+
+fn gitlab_threads(discussions: &Value, notes: &Value) -> Vec<ReviewPlatformThread> {
     let mut threads = Vec::new();
-    for discussion in array_items(value) {
+    let mut seen_comment_ids = HashSet::new();
+    for discussion in array_items(discussions) {
         let discussion_id = value_string(discussion, "id");
         let resolved = value_bool(discussion, "resolved");
-        let notes = discussion
+        let discussion_notes = discussion
             .get("notes")
             .and_then(Value::as_array)
             .map(|notes| notes.as_slice())
             .unwrap_or(&[]);
-        for note in notes {
-            threads.push(gitlab_thread_from_note(
+        let mut root_comment_id: Option<String> = None;
+        for (index, note) in discussion_notes.iter().enumerate() {
+            let kind = if index == 0 {
+                ReviewPlatformThreadKind::Review
+            } else {
+                ReviewPlatformThreadKind::Comment
+            };
+            let reply_to = if index == 0 {
+                None
+            } else {
+                root_comment_id.clone()
+            };
+            let thread = gitlab_thread_from_note(
                 note,
                 Some(discussion_id.clone()),
                 resolved,
-            ));
+                kind,
+                reply_to,
+            );
+            if root_comment_id.is_none() {
+                root_comment_id = thread.provider_comment_id.clone();
+            }
+            if let Some(comment_id) = thread.provider_comment_id.clone() {
+                seen_comment_ids.insert(comment_id);
+            }
+            threads.push(thread);
         }
+    }
+    for note in array_items(notes) {
+        let thread = gitlab_thread_from_note(
+            note,
+            None,
+            false,
+            ReviewPlatformThreadKind::Comment,
+            None,
+        );
+        if let Some(comment_id) = thread.provider_comment_id.as_ref() {
+            if seen_comment_ids.contains(comment_id) {
+                continue;
+            }
+            seen_comment_ids.insert(comment_id.clone());
+        }
+        threads.push(thread);
     }
     threads
 }
@@ -2988,6 +3121,8 @@ fn gitlab_thread_from_note(
     note: &Value,
     discussion_id: Option<String>,
     discussion_resolved: bool,
+    kind: ReviewPlatformThreadKind,
+    reply_to_provider_comment_id: Option<String>,
 ) -> ReviewPlatformThread {
     let note_id = value_string(note, "id");
     let id = match discussion_id.as_deref() {
@@ -3001,6 +3136,8 @@ fn gitlab_thread_from_note(
         id,
         provider_thread_id: discussion_id,
         provider_comment_id: Some(note_id),
+        kind,
+        reply_to_provider_comment_id,
         file_path: nested_optional_string(note, &["position", "new_path"])
             .or_else(|| nested_optional_string(note, &["position", "old_path"])),
         line: note
@@ -3066,6 +3203,17 @@ fn gitcode_threads(value: &Value) -> Vec<ReviewPlatformThread> {
             id: value_string(comment, "id"),
             provider_thread_id: None,
             provider_comment_id: Some(value_string(comment, "id")),
+            kind: ReviewPlatformThreadKind::Comment,
+            reply_to_provider_comment_id: comment
+                .get("in_reply_to_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| {
+                    comment
+                        .get("in_reply_to_id")
+                        .and_then(Value::as_i64)
+                        .map(|id| id.to_string())
+                }),
             file_path: comment
                 .get("path")
                 .and_then(Value::as_str)
@@ -3247,6 +3395,158 @@ mod tests {
         assert_eq!(
             github_review_decision(&reviews),
             ReviewDecision::ChangesRequested
+        );
+    }
+
+    #[test]
+    fn github_threads_include_issue_comments_and_review_comments() {
+        let reviews = json!([]);
+        let review_comments = json!([
+            {
+                "id": 10,
+                "path": "src/lib.rs",
+                "line": 8,
+                "user": { "login": "alice" },
+                "body": "Inline comment",
+                "updated_at": "2026-05-18T01:00:00Z"
+            }
+        ]);
+        let issue_comments = json!([
+            {
+                "id": 20,
+                "user": { "login": "bob" },
+                "body": "Conversation comment",
+                "updated_at": "2026-05-18T02:00:00Z"
+            }
+        ]);
+
+        let threads = github_threads(&reviews, &review_comments, &issue_comments);
+
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[0].id, "comment-10");
+        assert_eq!(threads[0].file_path.as_deref(), Some("src/lib.rs"));
+        assert_eq!(threads[1].id, "issue-comment-20");
+        assert_eq!(threads[1].file_path, None);
+        assert_eq!(threads[1].body, "Conversation comment");
+    }
+
+    #[test]
+    fn github_threads_keep_empty_body_reviews_visible() {
+        let reviews = json!([
+            {
+                "id": 30,
+                "state": "APPROVED",
+                "user": { "login": "alice" },
+                "body": "",
+                "submitted_at": "2026-05-18T03:00:00Z"
+            }
+        ]);
+
+        let threads = github_threads(&reviews, &json!([]), &json!([]));
+
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].id, "review-30");
+        assert_eq!(threads[0].body, "Approved this pull request.");
+    }
+
+    #[test]
+    fn github_review_comment_replies_track_parent_comment() {
+        let threads = github_threads(
+            &json!([]),
+            &json!([
+                {
+                    "id": 40,
+                    "in_reply_to_id": 10,
+                    "user": { "login": "alice" },
+                    "body": "Reply",
+                    "updated_at": "2026-05-18T04:30:00Z"
+                }
+            ]),
+            &json!([]),
+        );
+
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].kind, ReviewPlatformThreadKind::Comment);
+        assert_eq!(
+            threads[0].reply_to_provider_comment_id.as_deref(),
+            Some("10")
+        );
+    }
+
+    #[test]
+    fn gitlab_threads_include_top_level_notes_without_duplication() {
+        let discussions = json!([
+            {
+                "id": "discussion-1",
+                "resolved": false,
+                "notes": [
+                    {
+                        "id": "100",
+                        "author": { "username": "alice" },
+                        "body": "Inline note",
+                        "updated_at": "2026-05-18T04:00:00Z",
+                        "position": { "new_path": "src/lib.rs", "new_line": 12 }
+                    }
+                ]
+            }
+        ]);
+        let notes = json!([
+            {
+                "id": "100",
+                "author": { "username": "alice" },
+                "body": "Inline note",
+                "updated_at": "2026-05-18T04:00:00Z",
+                "position": { "new_path": "src/lib.rs", "new_line": 12 }
+            },
+            {
+                "id": "200",
+                "author": { "username": "bob" },
+                "body": "Top-level note",
+                "updated_at": "2026-05-18T05:00:00Z"
+            }
+        ]);
+
+        let threads = gitlab_threads(&discussions, &notes);
+
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[0].id, "discussion-discussion-1:note-100");
+        assert_eq!(threads[1].id, "note-200");
+        assert_eq!(threads[1].file_path, None);
+        assert_eq!(threads[1].body, "Top-level note");
+    }
+
+    #[test]
+    fn gitlab_discussion_threads_mark_root_as_review_and_replies_as_comments() {
+        let discussions = json!([
+            {
+                "id": "discussion-2",
+                "resolved": false,
+                "notes": [
+                    {
+                        "id": "300",
+                        "author": { "username": "alice" },
+                        "body": "Root note",
+                        "updated_at": "2026-05-18T06:00:00Z"
+                    },
+                    {
+                        "id": "301",
+                        "author": { "username": "bob" },
+                        "body": "Reply note",
+                        "updated_at": "2026-05-18T06:05:00Z"
+                    }
+                ]
+            }
+        ]);
+
+        let threads = gitlab_threads(&discussions, &json!([]));
+
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[0].kind, ReviewPlatformThreadKind::Review);
+        assert_eq!(threads[0].reply_to_provider_comment_id, None);
+        assert_eq!(threads[1].kind, ReviewPlatformThreadKind::Comment);
+        assert_eq!(
+            threads[1].reply_to_provider_comment_id.as_deref(),
+            Some("300")
         );
     }
 }
