@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-use-before-define */
 import React, { useEffect, useCallback, useState, useRef } from 'react';
 import {
   ExternalLink, Copy, Check, ArrowLeft, Loader2, AlertTriangle,
@@ -10,6 +11,7 @@ import type { InsightsReport, InsightsReportMeta, InsightsStats } from '@/infras
 import { useInsightsStore } from './insightsStore';
 import { createLogger } from '@/shared/utils/logger';
 import { notificationService } from '@/shared/notification-system';
+import '@/app/components/GalleryLayout/GalleryLayout.scss';
 import './InsightsScene.scss';
 
 const log = createLogger('InsightsScene');
@@ -52,16 +54,25 @@ const InsightsScene: React.FC = () => {
           <div className="insights-scene__header-meta">
             <p className="insights-scene__header-subtitle">{t('insights.subtitle')}</p>
             <div className="insights-scene__header-actions">
-              <div className="insights-scene__day-selector">
-                {DAY_OPTIONS.map((d) => (
-                  <button
-                    key={d}
-                    className={`insights-scene__day-btn ${selectedDays === d ? 'is-active' : ''}`}
-                    onClick={() => setSelectedDays(d)}
-                  >
-                    {d} {t('insights.days')}
-                  </button>
-                ))}
+              <div className="insights-scene__day-filters">
+                <div className="insights-scene__day-filter-group">
+                  <span className="insights-scene__day-filter-label">
+                    {t('insights.rangeLabel')}
+                  </span>
+                  {DAY_OPTIONS.map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      className={[
+                        'gallery-cat-chip',
+                        selectedDays === d ? 'gallery-cat-chip--active' : '',
+                      ].filter(Boolean).join(' ')}
+                      onClick={() => setSelectedDays(d)}
+                    >
+                      <span>{d} {t('insights.days')}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
               {generating ? (
                 <button

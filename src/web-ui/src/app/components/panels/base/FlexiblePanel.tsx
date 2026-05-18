@@ -1,26 +1,44 @@
-import React, { useCallback, memo, useMemo } from 'react';
+import React, { useCallback, memo } from 'react';
 import { Download, Copy, X, AlertCircle } from 'lucide-react';
 import { MarkdownRenderer, IconButton } from '@/component-library';
 import { CodeEditor, MarkdownEditor, ImageViewer, DiffEditor } from '@/tools/editor';
 import { useI18n } from '@/infrastructure/i18n';
 import { createLogger } from '@/shared/utils/logger';
+import { globalEventBus } from '@/infrastructure/event-bus';
 
 const log = createLogger('FlexiblePanel');
 
+function updateGenerativeWidgetResultCode(result: unknown, widgetCode: string): unknown {
+  if (!result) {
+    return result;
+  }
+
+  if (typeof result === 'string') {
+    try {
+      const parsed = JSON.parse(result);
+      if (parsed && typeof parsed === 'object') {
+        return JSON.stringify({
+          ...(parsed as Record<string, unknown>),
+          widget_code: widgetCode,
+        });
+      }
+    } catch {
+      return result;
+    }
+  }
+
+  if (typeof result === 'object') {
+    return {
+      ...(result as Record<string, unknown>),
+      widget_code: widgetCode,
+    };
+  }
+
+  return result;
+}
+
 // Stable lazy components at module level to avoid re-creation on each render
-const MermaidPanel = React.lazy(() => 
-  import('@/tools/mermaid-editor/components').then(module => ({ default: module.MermaidPanel }))
-);
-
-const MermaidEditor = React.lazy(() => 
-  import('@/tools/mermaid-editor/components').then(module => ({ default: module.MermaidEditor }))
-);
-
-const MermaidErrorBoundary = React.lazy(() => 
-  import('@/tools/mermaid-editor/components').then(module => ({ default: module.MermaidErrorBoundary }))
-);
-
-const GitDiffView = React.lazy(() => 
+const GitDiffView = React.lazy(() =>
   import('@/tools/git/components/GitDiffView/GitDiffView')
 );
 
@@ -61,6 +79,10 @@ const BrowserPanel = React.lazy(() =>
   import('@/app/scenes/browser/BrowserPanel')
 );
 
+const GenerativeWidgetPanel = React.lazy(() =>
+  import('@/tools/generative-widget/GenerativeWidgetPanel')
+);
+
 const TaskDetailPanel = React.lazy(() => 
   import('@/flow_chat/components/TaskDetailPanel').then(module => ({ 
     default: module.TaskDetailPanel 
@@ -71,6 +93,16 @@ const BtwSessionPanel = React.lazy(() =>
   import('@/flow_chat/components/btw/BtwSessionPanel').then(module => ({
     default: module.BtwSessionPanel
   }))
+);
+
+const SessionUsagePanel = React.lazy(() =>
+  import('@/flow_chat/components/usage/SessionUsagePanel').then(module => ({
+    default: module.SessionUsagePanel
+  }))
+);
+
+const ReviewPlatformPanel = React.lazy(() =>
+  import('@/app/components/panels/review-platform/ReviewPlatformPanel')
 );
 
 // CodePreview, ChartRenderer and CodeNode removed - visualization features disabled
@@ -89,6 +121,8 @@ interface ExtendedFlexiblePanelProps extends FlexiblePanelProps {
   onDirtyStateChange?: (isDirty: boolean) => void;
   /** Whether this panel is the active/visible tab in its EditorGroup */
   isActive?: boolean;
+  /** File no longer exists on disk (from editor); drives tab "deleted" label */
+  onFileMissingFromDiskChange?: (missing: boolean) => void;
 }
 
 const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
@@ -100,6 +134,7 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
   onBeforeClose,
   onDirtyStateChange,
   isActive = true,
+  onFileMissingFromDiskChange,
 }) => {
   const { t } = useI18n('components');
 
@@ -107,11 +142,11 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
   const contentRef = React.useRef(content);
   React.useEffect(() => {
     contentRef.current = content;
-  }, [content]);
+  }, [content, onInteraction]);
 
   // Sync dirty state from MonacoModelManager on component mount
   React.useEffect(() => {
-    if (content?.type !== 'code-editor' && content?.type !== 'markdown-editor') {
+    if (content?.type !== 'code-editor') {
       return;
     }
     
@@ -157,7 +192,7 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
         onInteraction('copy', 'failed');
       }
     });
-  }, [content]);
+  }, [content, onInteraction]);
 
   const handleDownload = useCallback(() => {
     if (!content?.data) return;
@@ -181,46 +216,6 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
     URL.revokeObjectURL(url);
   }, [content]);
 
-  const mermaidEditorProps = useMemo(() => {
-    if (content?.type !== 'mermaid-editor') return null;
-    
-    const mermaidData = content.data || {};
-    return {
-      initialSourceCode: mermaidData.sourceCode || t('flexiblePanel.fallback.mermaidDefaultCode'),
-      onSave: async (sourceCode: string) => {
-        if (onContentChange) {
-          onContentChange({
-            ...content,
-            data: {
-              ...mermaidData,
-              sourceCode
-            }
-          });
-        }
-        
-        if (onDirtyStateChange) {
-          onDirtyStateChange(false);
-        }
-        
-        if (onInteraction) {
-          await onInteraction('save', JSON.stringify({
-            sourceCode,
-            filePath: mermaidData.filePath
-          }));
-        }
-      },
-      onExport: async (format: string, data: string) => {
-        if (onInteraction) {
-          await onInteraction('export', JSON.stringify({
-            format,
-            data,
-            fileName: content.title
-          }));
-        }
-      }
-    };
-  }, [content, onContentChange, onDirtyStateChange, onInteraction]);
-
   const renderContent = () => {
     if (!content || content.type === 'empty') {
       return (
@@ -235,7 +230,7 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
     }
 
     switch (content.type) {
-      case 'code-preview':
+      case 'code-preview': {
         const previewData = content.data || {};
         const hasFixNeeded = previewData.migrationContext?.hasUpgradePoints || previewData.needsFix || false;
         
@@ -244,6 +239,7 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
             <pre><code>{typeof content.data === 'string' ? content.data : t('flexiblePanel.fallback.noCodeContent')}</code></pre>
           </div>
         );
+      }
 
       case 'markdown-viewer':
         return (
@@ -252,7 +248,7 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
           </div>
         );
 
-      case 'markdown-editor':
+      case 'markdown-editor': {
         const markdownEditorData = content.data || {};
         const markdownFilePath = markdownEditorData.filePath;
         const markdownInitialContent = markdownEditorData.initialContent;
@@ -272,6 +268,8 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
                 readOnly={markdownEditorData.readOnly || false}
                 jumpToLine={markdownJumpToLine}
                 jumpToColumn={markdownJumpToColumn}
+                isActiveTab={isActive}
+                onFileMissingFromDiskChange={onFileMissingFromDiskChange}
                 onContentChange={(_newContent, hasChanges) => {
                   if (onDirtyStateChange) {
                     onDirtyStateChange(hasChanges);
@@ -291,98 +289,8 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
             )}
           </div>
         );
+      }
 
-
-      case 'mermaid-editor':
-        const mermaidData = content.data || {};
-        
-        if (mermaidData.mode || mermaidData.interactive_config || mermaidData.mermaid_code) {
-          return (
-            <div className="bitfun-flexible-panel__mermaid-container">
-            <React.Suspense fallback={<div>{t('flexiblePanel.loading.mermaidPanel')}</div>}>
-              <MermaidErrorBoundary>
-                <MermaidPanel
-                  data={{
-                    mermaid_code: mermaidData.mermaid_code || mermaidData.sourceCode || t('flexiblePanel.fallback.mermaidDefaultCode'),
-                    title: content.title || t('flexiblePanel.fallback.mermaidChartTitle'),
-                    session_id: mermaidData.session_id,
-                    mode: mermaidData.mode || 'editor',
-                    allow_mode_switch: mermaidData.allow_mode_switch !== false,
-                    editor_config: mermaidData.editor_config,
-                    interactive_config: mermaidData.interactive_config
-                  }}
-                  onDataChange={(newData) => {
-                    if (onContentChange) {
-                      onContentChange({
-                        ...content,
-                        data: {
-                          ...mermaidData,
-                          ...newData
-                        }
-                      });
-                    }
-                    // Write back updated mermaid code to flowChatStore and persist to disk.
-                    const source = mermaidData._source;
-                    if (source?.type === 'tool-call' && source.toolCallId && newData.mermaid_code) {
-                      import('@/flow_chat/store/FlowChatStore').then(({ flowChatStore }) => {
-                        import('@/flow_chat/services/FlowChatManager').then(({ flowChatManager }) => {
-                          const state = flowChatStore.getState();
-                          const activeSessionId = state.activeSessionId;
-                          if (!activeSessionId) return;
-
-                          const session = state.sessions.get(activeSessionId);
-                          if (!session) return;
-
-                          for (const turn of session.dialogTurns) {
-                            for (const round of turn.modelRounds) {
-                              const item = round.items.find(
-                                (it: any) =>
-                                  it.type === 'tool' &&
-                                  (it.toolCall?.id === source.toolCallId || it.id === source.toolItemId)
-                              );
-                              if (item) {
-                                const toolItem = item as any;
-                                flowChatStore.updateModelRoundItem(activeSessionId, turn.id, toolItem.id, {
-                                  toolCall: {
-                                    ...toolItem.toolCall,
-                                    input: {
-                                      ...toolItem.toolCall.input,
-                                      mermaid_code: newData.mermaid_code,
-                                    }
-                                  }
-                                } as any);
-                                flowChatManager.saveDialogTurn(activeSessionId, turn.id).catch(() => {});
-                                return;
-                              }
-                            }
-                          }
-                        });
-                      });
-                    }
-                  }}
-                  onInteraction={onInteraction}
-                />
-              </MermaidErrorBoundary>
-            </React.Suspense>
-            </div>
-          );
-        } else {
-          if (!mermaidEditorProps) return null;
-
-          return (
-            <div className="bitfun-flexible-panel__mermaid-container">
-            <React.Suspense fallback={<div>{t('flexiblePanel.loading.mermaidEditor')}</div>}>
-              <MermaidErrorBoundary>
-                <MermaidEditor
-                  initialSourceCode={mermaidEditorProps.initialSourceCode}
-                  onSave={mermaidEditorProps.onSave}
-                  onExport={mermaidEditorProps.onExport}
-                />
-              </MermaidErrorBoundary>
-            </React.Suspense>
-            </div>
-          );
-        }
 
       case 'text-viewer':
         return (
@@ -391,7 +299,7 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
           </div>
         );
 
-      case 'file-viewer':
+      case 'file-viewer': {
         const fileViewerData = content.data || {};
         const fileNeedsFix = fileViewerData.migrationContext?.hasUpgradePoints || fileViewerData.needsFix || false;
         const fileViewerClass = `bitfun-flexible-panel__panel-code-viewer ${fileNeedsFix ? 'needs-fix' : ''}`;
@@ -406,11 +314,14 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
               showMinimap={true}
               theme="vs-dark"
               className={fileViewerClass}
+              isActiveTab={isActive}
+              onFileMissingFromDiskChange={onFileMissingFromDiskChange}
             />
           </div>
         );
+      }
 
-      case 'image-viewer':
+      case 'image-viewer': {
         const imageViewerData = content.data || {};
         
         return (
@@ -423,8 +334,9 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
             />
           </div>
         );
+      }
 
-      case 'code-viewer':
+      case 'code-viewer': {
         const codeData = content.data || {};
         const migrationContext = codeData.migrationContext || {};
         const needsFix = migrationContext.hasUpgradePoints || codeData.needsFix || false;
@@ -441,17 +353,82 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
                 showMinimap={true}
                 theme="vs-dark"
                 onContentChange={codeData.onContentChange}
+                isActiveTab={isActive}
+                onFileMissingFromDiskChange={onFileMissingFromDiskChange}
               />
             </div>
           </div>
         );
+      }
 
-      case 'code-editor':
+      case 'code-editor': {
         const editorData = content.data || {};
         const filePath = editorData.filePath || '';
         const fileName = editorData.fileName || content.title;
         const editorLanguage = editorData.language;
         const editorWorkspacePath = editorData.workspacePath || workspacePath;
+        const syncGenerativeWidgetToolResult = async (nextWidgetCode: string, persistToSession: boolean) => {
+          const source = editorData._source;
+          if (
+            source?.type !== 'tool-call' ||
+            source.toolName !== 'GenerativeUI' ||
+            (!source.toolCallId && !source.toolItemId)
+          ) {
+            return;
+          }
+
+          const { flowChatStore } = await import('@/flow_chat/store/FlowChatStore');
+          const state = flowChatStore.getState();
+          const activeSessionId = source.sessionId || state.activeSessionId;
+          if (!activeSessionId) {
+            return;
+          }
+
+          const session = state.sessions.get(activeSessionId);
+          if (!session) {
+            return;
+          }
+
+          for (const turn of session.dialogTurns) {
+            for (const round of turn.modelRounds) {
+              const item = round.items.find(
+                (it: any) =>
+                  it.type === 'tool' &&
+                  (
+                    (source.toolCallId && it.toolCall?.id === source.toolCallId) ||
+                    (source.toolItemId && it.id === source.toolItemId)
+                  )
+              );
+
+              if (!item) {
+                continue;
+              }
+
+              const toolItem = item as any;
+              flowChatStore.updateModelRoundItem(activeSessionId, turn.id, toolItem.id, {
+                toolCall: {
+                  ...toolItem.toolCall,
+                  input: {
+                    ...toolItem.toolCall?.input,
+                    widget_code: nextWidgetCode,
+                  },
+                },
+                toolResult: toolItem.toolResult
+                  ? {
+                      ...toolItem.toolResult,
+                      result: updateGenerativeWidgetResultCode(toolItem.toolResult.result, nextWidgetCode),
+                    }
+                  : toolItem.toolResult,
+              } as any);
+
+              if (persistToSession) {
+                const { flowChatManager } = await import('@/flow_chat/services/FlowChatManager');
+                await flowChatManager.saveDialogTurn(activeSessionId, turn.id);
+              }
+              return;
+            }
+          }
+        };
 
         return (
           <CodeEditor
@@ -460,12 +437,17 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
             fileName={fileName}
             language={editorLanguage}
             readOnly={editorData.readOnly || false}
+            autoSave={editorData.autoSave === true}
+            autoSaveDelayMs={typeof editorData.autoSaveDelayMs === 'number' ? editorData.autoSaveDelayMs : undefined}
             showLineNumbers={editorData.showLineNumbers !== false}
             showMinimap={editorData.showMinimap !== false}
             theme={editorData.theme || 'vs-dark'}
             jumpToLine={editorData.jumpToLine}
             jumpToColumn={editorData.jumpToColumn}
             jumpToRange={editorData.jumpToRange}
+            navigationToken={editorData.navigationToken}
+            isActiveTab={isActive}
+            onFileMissingFromDiskChange={onFileMissingFromDiskChange}
             onContentChange={(newContent, hasChanges) => {
                 if (onContentChange) {
                   onContentChange({
@@ -481,6 +463,8 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
                 if (onDirtyStateChange) {
                   onDirtyStateChange(hasChanges);
                 }
+
+                void syncGenerativeWidgetToolResult(newContent, false);
               }}
               onSave={(content) => {
                 if (onInteraction) {
@@ -490,11 +474,14 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
                 if (onDirtyStateChange) {
                   onDirtyStateChange(false);
                 }
+
+                void syncGenerativeWidgetToolResult(content, true);
               }}
           />
         );
+      }
 
-      case 'diff-code-editor':
+      case 'diff-code-editor': {
         const diffData = content.data || {};
         const originalCode = diffData.originalCode || '';
         const modifiedCode = diffData.modifiedCode || originalCode;
@@ -561,6 +548,8 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
                 const { workspaceAPI } = await import('@/infrastructure/api');
                 await workspaceAPI.writeFileContent(targetWorkspacePath, diffFilePath, content);
 
+                globalEventBus.emit('file-tree:refresh');
+
                 if (onDirtyStateChange) {
                   onDirtyStateChange(false);
                 }
@@ -571,6 +560,7 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
             }}
           />
         );
+      }
 
       case 'git-diff':
         return (
@@ -667,15 +657,16 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
         );
 
 
-      case 'task-detail':
+      case 'task-detail': {
         const taskDetailData = content.data || {};
         return (
           <React.Suspense fallback={<div className="bitfun-flexible-panel__loading">{t('flexiblePanel.loading.taskDetail')}</div>}>
             <TaskDetailPanel data={taskDetailData} />
           </React.Suspense>
         );
+      }
 
-      case 'plan-viewer':
+      case 'plan-viewer': {
         const planViewerData = content.data || {};
         const planFilePath = planViewerData.filePath || '';
         const planFileName = planViewerData.fileName || content.title;
@@ -703,8 +694,9 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
             />
           </React.Suspense>
         );
+      }
 
-      case 'terminal':
+      case 'terminal': {
         // Terminal panel
         const terminalData = content.data || {};
         const sessionId = terminalData.sessionId;
@@ -729,6 +721,7 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
             </div>
           </React.Suspense>
         );
+      }
 
       case 'btw-session':
         return (
@@ -741,12 +734,126 @@ const FlexiblePanel: React.FC<ExtendedFlexiblePanelProps> = memo(({
           </React.Suspense>
         );
 
+      case 'session-usage':
+        return (
+          <React.Suspense fallback={<div className="bitfun-flexible-panel__loading">{t('flexiblePanel.loading.taskDetail')}</div>}>
+            <SessionUsagePanel
+              report={content.data?.report}
+              markdown={content.data?.markdown}
+              sessionId={content.data?.sessionId}
+              workspacePath={content.data?.workspacePath || workspacePath}
+              initialTab={content.data?.initialTab}
+            />
+          </React.Suspense>
+        );
+
+      case 'review-platform':
+        return (
+          <React.Suspense fallback={<div className="bitfun-flexible-panel__loading">Loading pull requests...</div>}>
+            <ReviewPlatformPanel workspacePath={content.data?.workspacePath || workspacePath} />
+          </React.Suspense>
+        );
+
+      case 'review-platform-pr-detail':
+        return (
+          <React.Suspense fallback={<div className="bitfun-flexible-panel__loading">Loading pull request...</div>}>
+            <ReviewPlatformPanel
+              workspacePath={content.data?.workspacePath || workspacePath}
+              initialRemoteId={content.data?.remoteId}
+              initialPullRequestId={content.data?.pullRequestId}
+              initialPullRequestUrl={content.data?.pullRequestUrl}
+              detailOnly
+            />
+          </React.Suspense>
+        );
+
       case 'browser':
         return (
           <React.Suspense fallback={<div className="bitfun-flexible-panel__loading">{t('flexiblePanel.loading.terminal')}</div>}>
             <BrowserPanel
               isActive={isActive}
               initialUrl={content.data?.url}
+            />
+          </React.Suspense>
+        );
+
+      case 'generative-widget':
+        return (
+          <React.Suspense fallback={<div className="bitfun-flexible-panel__loading">Loading widget preview...</div>}>
+            <GenerativeWidgetPanel
+              title={content.title}
+              widgetId={content.data?.widgetId}
+              widgetCode={content.data?.widgetCode}
+              onWidgetCodePersist={async (nextWidgetCode) => {
+                if (onContentChange) {
+                  onContentChange({
+                    ...content,
+                    data: {
+                      ...content.data,
+                      widgetCode: nextWidgetCode,
+                    },
+                  });
+                }
+
+                const source = content.data?._source;
+                if (
+                  source?.type !== 'tool-call' ||
+                  source.toolName !== 'GenerativeUI' ||
+                  (!source.toolCallId && !source.toolItemId)
+                ) {
+                  return;
+                }
+
+                const { flowChatStore } = await import('@/flow_chat/store/FlowChatStore');
+                const { flowChatManager } = await import('@/flow_chat/services/FlowChatManager');
+                const state = flowChatStore.getState();
+                const sessionId = source.sessionId || state.activeSessionId;
+                if (!sessionId) {
+                  return;
+                }
+
+                const session = state.sessions.get(sessionId);
+                if (!session) {
+                  return;
+                }
+
+                for (const turn of session.dialogTurns) {
+                  for (const round of turn.modelRounds) {
+                    const item = round.items.find(
+                      (it: any) =>
+                        it.type === 'tool' &&
+                        (
+                          (source.toolCallId && it.toolCall?.id === source.toolCallId) ||
+                          (source.toolItemId && it.id === source.toolItemId)
+                        )
+                    );
+
+                    if (!item) {
+                      continue;
+                    }
+
+                    const toolItem = item as any;
+                    flowChatStore.updateModelRoundItem(sessionId, turn.id, toolItem.id, {
+                      toolCall: {
+                        ...toolItem.toolCall,
+                        input: {
+                          ...toolItem.toolCall?.input,
+                          widget_code: nextWidgetCode,
+                        },
+                      },
+                      toolResult: toolItem.toolResult
+                        ? {
+                            ...toolItem.toolResult,
+                            result: updateGenerativeWidgetResultCode(toolItem.toolResult.result, nextWidgetCode),
+                          }
+                        : toolItem.toolResult,
+                    } as any);
+
+                    await flowChatManager.saveDialogTurn(sessionId, turn.id);
+                    return;
+                  }
+                }
+              }}
             />
           </React.Suspense>
         );

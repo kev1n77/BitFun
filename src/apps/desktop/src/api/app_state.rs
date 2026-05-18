@@ -1,18 +1,22 @@
 //! Application state management
 
+use crate::api::workspace_activation::spawn_workspace_background_warmup;
 use bitfun_core::agentic::side_question::SideQuestionRuntime;
 use bitfun_core::agentic::{agents, tools};
 use bitfun_core::infrastructure::ai::{AIClient, AIClientFactory};
-use bitfun_core::miniapp::{initialize_global_miniapp_manager, JsWorkerPool, MiniAppManager};
-use bitfun_core::service::{ai_rules, config, filesystem, mcp, token_usage, workspace};
-use bitfun_core::service::remote_ssh::{
-    init_remote_workspace_manager, SSHConnectionManager, RemoteFileService, RemoteTerminalManager,
+use bitfun_core::miniapp::{
+    initialize_global_miniapp_manager, seed_builtin_miniapps, JsWorkerPool, MiniAppManager,
 };
+use bitfun_core::service::remote_ssh::{
+    init_remote_workspace_manager, RemoteFileService, RemoteTerminalManager, SSHConnectionManager,
+};
+use bitfun_core::service::{announcement, config, filesystem, mcp, search, token_usage, workspace};
 use bitfun_core::util::errors::*;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
@@ -50,6 +54,8 @@ pub struct RemoteWorkspace {
     pub connection_id: String,
     pub connection_name: String,
     pub remote_path: String,
+    #[serde(default)]
+    pub ssh_host: String,
 }
 
 pub struct AppState {
@@ -62,9 +68,10 @@ pub struct AppState {
     pub workspace_path: Arc<RwLock<Option<std::path::PathBuf>>>,
     pub config_service: Arc<config::ConfigService>,
     pub filesystem_service: Arc<filesystem::FileSystemService>,
-    pub ai_rules_service: Arc<ai_rules::AIRulesService>,
+    pub workspace_search_service: Arc<search::WorkspaceSearchService>,
     pub agent_registry: Arc<agents::AgentRegistry>,
     pub mcp_service: Option<Arc<mcp::MCPService>>,
+    pub acp_client_service: Option<Arc<bitfun_acp::AcpClientService>>,
     pub token_usage_service: Arc<token_usage::TokenUsageService>,
     pub miniapp_manager: Arc<MiniAppManager>,
     pub js_worker_pool: Option<Arc<JsWorkerPool>>,
@@ -76,6 +83,8 @@ pub struct AppState {
     pub remote_file_service: Arc<RwLock<Option<RemoteFileService>>>,
     pub remote_terminal_manager: Arc<RwLock<Option<RemoteTerminalManager>>>,
     pub remote_workspace: Arc<RwLock<Option<RemoteWorkspace>>>,
+    pub active_searches: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    pub announcement_scheduler: Arc<announcement::AnnouncementScheduler>,
 }
 
 impl AppState {
@@ -106,22 +115,17 @@ impl AppState {
         );
         workspace::set_global_workspace_service(workspace_service.clone());
         let filesystem_service = Arc::new(filesystem::FileSystemServiceFactory::create_default());
-
-        ai_rules::initialize_global_ai_rules_service()
-            .await
-            .map_err(|e| {
-                BitFunError::service(format!("Failed to initialize AI rules service: {}", e))
-            })?;
-        let ai_rules_service = ai_rules::get_global_ai_rules_service()
-            .await
-            .map_err(|e| BitFunError::service(format!("Failed to get AI rules service: {}", e)))?;
+        let workspace_search_service = Arc::new(search::WorkspaceSearchService::new());
+        search::set_global_workspace_search_service(workspace_search_service.clone());
 
         let agent_registry = agents::get_agent_registry();
 
         let mcp_service = match mcp::MCPService::new(config_service.clone()) {
             Ok(service) => {
                 log::info!("MCP service initialized successfully");
-                Some(Arc::new(service))
+                let service = Arc::new(service);
+                mcp::set_global_mcp_service(service.clone());
+                Some(service)
             }
             Err(e) => {
                 log::warn!("Failed to initialize MCP service: {}", e);
@@ -129,12 +133,57 @@ impl AppState {
             }
         };
         let path_manager = workspace_service.path_manager().clone();
+        let acp_client_service = Some(
+            bitfun_acp::AcpClientService::new(config_service.clone(), path_manager.clone())
+                .map_err(|e| {
+                    BitFunError::service(format!("Failed to initialize ACP client service: {}", e))
+                })?,
+        );
+
+        let announcement_scheduler = Arc::new(
+            announcement::AnnouncementScheduler::new(&path_manager)
+                .await
+                .map_err(|e| {
+                    BitFunError::service(format!(
+                        "Failed to initialize announcement scheduler: {}",
+                        e
+                    ))
+                })?,
+        );
+
         let miniapp_manager = Arc::new(MiniAppManager::new(path_manager.clone()));
         initialize_global_miniapp_manager(miniapp_manager.clone());
+        match miniapp_manager.mark_stale_drafts_for_cleanup().await {
+            Ok(cleanup_targets) if !cleanup_targets.is_empty() => {
+                let cleanup_manager = miniapp_manager.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = cleanup_manager.cleanup_marked_drafts(cleanup_targets).await {
+                        log::warn!("Failed to clean marked miniapp drafts: {}", e);
+                    }
+                });
+            }
+            Ok(_) => {}
+            Err(e) => {
+                log::warn!("Failed to mark stale miniapp drafts for cleanup: {}", e);
+            }
+        }
+        if let Err(e) = seed_builtin_miniapps(&miniapp_manager).await {
+            log::warn!("Failed to seed built-in miniapps: {}", e);
+        }
 
-        let worker_host_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join("worker_host.js");
+        let worker_host_path = match resolve_worker_host_path() {
+            Some(p) => {
+                log::info!("Resolved worker_host.js at: {}", p.display());
+                p
+            }
+            None => {
+                log::warn!(
+                    "worker_host.js not found in any candidate location; \
+                     MiniApp Workers will not start"
+                );
+                std::path::PathBuf::from("worker_host.js")
+            }
+        };
         let js_worker_pool = JsWorkerPool::new(path_manager, worker_host_path)
             .ok()
             .map(Arc::new);
@@ -149,29 +198,10 @@ impl AppState {
             uptime_seconds: 0,
         }));
 
-        let initial_workspace_path = workspace_service
-            .get_current_workspace()
-            .await
-            .map(|workspace| workspace.root_path);
-
-        if let Some(workspace_path) = initial_workspace_path.clone() {
-            if let Err(e) =
-                bitfun_core::service::snapshot::initialize_snapshot_manager_for_workspace(
-                    workspace_path.clone(),
-                    None,
-                )
-                .await
-            {
-                log::warn!(
-                    "Failed to restore snapshot system on startup: path={}, error={}",
-                    workspace_path.display(),
-                    e
-                );
-            }
-            if let Err(e) = ai_rules_service.set_workspace(workspace_path).await {
-                log::warn!("Failed to restore AI rules workspace on startup: {}", e);
-            }
-        }
+        let initial_workspace = workspace_service.get_current_workspace().await;
+        let initial_workspace_path = initial_workspace
+            .as_ref()
+            .map(|workspace| workspace.root_path.clone());
 
         // Initialize SSH Remote services synchronously so they're ready before app starts
         let ssh_data_dir = dirs::data_local_dir()
@@ -202,6 +232,15 @@ impl AppState {
         // Load persisted remote workspaces (may be multiple)
         match manager.load_remote_workspace().await {
             Ok(_) => {
+                if let Err(e) = manager
+                    .prune_remote_workspaces_without_saved_connections()
+                    .await
+                {
+                    log::warn!(
+                        "Failed to prune stale persisted remote workspaces on startup: {}",
+                        e
+                    );
+                }
                 let workspaces = manager.get_remote_workspaces().await;
                 if !workspaces.is_empty() {
                     log::info!("Loaded {} persisted remote workspace(s)", workspaces.len());
@@ -211,6 +250,7 @@ impl AppState {
                         connection_id: first.connection_id.clone(),
                         remote_path: first.remote_path.clone(),
                         connection_name: first.connection_name.clone(),
+                        ssh_host: first.ssh_host.clone(),
                     };
                     *remote_workspace_clone.write().await = Some(app_workspace);
                 }
@@ -251,23 +291,28 @@ impl AppState {
             workspace_path: Arc::new(RwLock::new(initial_workspace_path)),
             config_service,
             filesystem_service,
-            ai_rules_service,
+            workspace_search_service,
             agent_registry,
             mcp_service,
+            acp_client_service,
             token_usage_service,
             miniapp_manager,
             js_worker_pool,
             statistics,
-            macos_edit_menu_mode: Arc::new(RwLock::new(
-                crate::macos_menubar::EditMenuMode::System,
-            )),
+            macos_edit_menu_mode: Arc::new(RwLock::new(crate::macos_menubar::EditMenuMode::System)),
             start_time,
             // SSH Remote connection state
             ssh_manager,
             remote_file_service,
             remote_terminal_manager,
             remote_workspace,
+            active_searches: Arc::new(Mutex::new(HashMap::new())),
+            announcement_scheduler,
         };
+
+        if let Some(workspace_info) = initial_workspace {
+            spawn_workspace_background_warmup(&app_state, workspace_info);
+        }
 
         log::info!("AppState initialized successfully");
         Ok(app_state)
@@ -282,6 +327,7 @@ impl AppState {
         services.insert("workspace_service".to_string(), true);
         services.insert("config_service".to_string(), true);
         services.insert("filesystem_service".to_string(), true);
+        services.insert("workspace_search_service".to_string(), true);
 
         let all_healthy = services.values().all(|&status| status);
 
@@ -318,24 +364,40 @@ impl AppState {
 
     /// Get SSH connection manager synchronously (must be called within async context)
     pub async fn get_ssh_manager_async(&self) -> Result<SSHConnectionManager, SSHServiceError> {
-        self.ssh_manager.read().await.clone()
+        self.ssh_manager
+            .read()
+            .await
+            .clone()
             .ok_or(SSHServiceError::ManagerNotInitialized)
     }
 
     /// Get remote file service synchronously (must be called within async context)
-    pub async fn get_remote_file_service_async(&self) -> Result<RemoteFileService, SSHServiceError> {
-        self.remote_file_service.read().await.clone()
+    pub async fn get_remote_file_service_async(
+        &self,
+    ) -> Result<RemoteFileService, SSHServiceError> {
+        self.remote_file_service
+            .read()
+            .await
+            .clone()
             .ok_or(SSHServiceError::FileServiceNotInitialized)
     }
 
     /// Get remote terminal manager synchronously (must be called within async context)
-    pub async fn get_remote_terminal_manager_async(&self) -> Result<RemoteTerminalManager, SSHServiceError> {
-        self.remote_terminal_manager.read().await.clone()
+    pub async fn get_remote_terminal_manager_async(
+        &self,
+    ) -> Result<RemoteTerminalManager, SSHServiceError> {
+        self.remote_terminal_manager
+            .read()
+            .await
+            .clone()
             .ok_or(SSHServiceError::TerminalManagerNotInitialized)
     }
 
     /// Set current remote workspace
-    pub async fn set_remote_workspace(&self, workspace: RemoteWorkspace) -> Result<(), SSHServiceError> {
+    pub async fn set_remote_workspace(
+        &self,
+        workspace: RemoteWorkspace,
+    ) -> Result<(), SSHServiceError> {
         // Update local state
         *self.remote_workspace.write().await = Some(workspace.clone());
 
@@ -345,6 +407,7 @@ impl AppState {
                 connection_id: workspace.connection_id.clone(),
                 remote_path: workspace.remote_path.clone(),
                 connection_name: workspace.connection_name.clone(),
+                ssh_host: workspace.ssh_host.clone(),
             };
             if let Err(e) = manager.set_remote_workspace(core_workspace).await {
                 log::warn!("Failed to persist remote workspace: {}", e);
@@ -364,15 +427,28 @@ impl AppState {
         state_manager.set_terminal_manager(terminal.clone()).await;
 
         // Register this workspace (does not overwrite other workspaces)
-        log::info!("register_remote_workspace: connection_id={}, remote_path={}, connection_name={}",
-            workspace.connection_id, workspace.remote_path, workspace.connection_name);
-        state_manager.register_remote_workspace(
-            workspace.remote_path.clone(),
-            workspace.connection_id.clone(),
-            workspace.connection_name.clone(),
-        ).await;
-        log::info!("Remote workspace registered: {} on {}",
-            workspace.remote_path, workspace.connection_name);
+        log::info!(
+            "register_remote_workspace: connection_id={}, remote_path={}, connection_name={}",
+            workspace.connection_id,
+            workspace.remote_path,
+            workspace.connection_name
+        );
+        state_manager
+            .register_remote_workspace(
+                workspace.remote_path.clone(),
+                workspace.connection_id.clone(),
+                workspace.connection_name.clone(),
+                workspace.ssh_host.clone(),
+            )
+            .await;
+        state_manager
+            .set_active_connection_hint(Some(workspace.connection_id.clone()))
+            .await;
+        log::info!(
+            "Remote workspace registered: {} on {}",
+            workspace.remote_path,
+            workspace.connection_name
+        );
         Ok(())
     }
 
@@ -381,36 +457,106 @@ impl AppState {
         self.remote_workspace.read().await.clone()
     }
 
-    /// Clear current remote workspace
-    pub async fn clear_remote_workspace(&self) {
-        // Get the remote_path before clearing so we can unregister the specific workspace
-        let remote_path = {
-            let guard = self.remote_workspace.read().await;
-            guard.as_ref().map(|w| w.remote_path.clone())
-        };
-
-        // Clear local state
-        *self.remote_workspace.write().await = None;
-
-        // Remove this specific workspace from persistence (not all of them)
-        if let Some(path) = &remote_path {
-            if let Ok(manager) = self.get_ssh_manager_async().await {
-                if let Err(e) = manager.remove_remote_workspace(path).await {
-                    log::warn!("Failed to remove persisted remote workspace: {}", e);
-                }
-            }
-
-            // Unregister from the global registry
-            if let Some(state_manager) = bitfun_core::service::remote_ssh::get_remote_workspace_manager() {
-                state_manager.unregister_remote_workspace(path).await;
+    /// Remove one remote workspace from persistence + registry (`connection_id` + `remote_path`).
+    pub async fn unregister_remote_workspace_entry(&self, connection_id: &str, remote_path: &str) {
+        let rp = bitfun_core::service::remote_ssh::normalize_remote_workspace_path(remote_path);
+        if let Ok(manager) = self.get_ssh_manager_async().await {
+            if let Err(e) = manager.remove_remote_workspace(connection_id, &rp).await {
+                log::warn!("Failed to remove persisted remote workspace: {}", e);
             }
         }
+        if let Some(state_manager) =
+            bitfun_core::service::remote_ssh::get_remote_workspace_manager()
+        {
+            state_manager
+                .unregister_remote_workspace(connection_id, &rp)
+                .await;
+        }
+        let mut slot = self.remote_workspace.write().await;
+        let clear_slot = slot
+            .as_ref()
+            .map(|w| {
+                w.connection_id == connection_id
+                    && bitfun_core::service::remote_ssh::normalize_remote_workspace_path(
+                        &w.remote_path,
+                    ) == rp
+            })
+            .unwrap_or(false);
+        if clear_slot {
+            *slot = None;
+            if let Some(m) = bitfun_core::service::remote_ssh::get_remote_workspace_manager() {
+                m.set_active_connection_hint(None).await;
+            }
+        }
+        log::info!(
+            "Remote workspace entry removed: connection_id={}, remote_path={}",
+            connection_id,
+            rp
+        );
+    }
 
-        log::info!("Remote workspace unregistered: {:?}", remote_path);
+    /// Clear current remote pointer and remove its persisted/registry entry (legacy SSH "close").
+    pub async fn clear_remote_workspace(&self) {
+        let snap = { self.remote_workspace.read().await.clone() };
+        if let Some(w) = snap {
+            self.unregister_remote_workspace_entry(&w.connection_id, &w.remote_path)
+                .await;
+        }
     }
 
     /// Check if currently in a remote workspace
     pub async fn is_remote_workspace(&self) -> bool {
         self.remote_workspace.read().await.is_some()
     }
+}
+
+/// Try every layout we know about for `worker_host.js`, dev or bundled:
+///   1. `CARGO_MANIFEST_DIR/resources/worker_host.js` — `cargo run` / `tauri dev`.
+///   2. `<exe_dir>/resources/worker_host.js` — generic side-by-side bundle.
+///   3. `<exe_dir>/../Resources/resources/worker_host.js` — macOS `.app` (Tauri
+///      copies bundle.resources into `Contents/Resources/`).
+///   4. `<exe_dir>/../Resources/worker_host.js` — flat macOS layout fallback.
+///   5. `<exe_dir>/../lib/<bin>/resources/worker_host.js` — typical Linux deb/AppImage.
+///   6. `<exe_dir>/../share/<bin>/resources/worker_host.js` — alt Linux layout.
+fn resolve_worker_host_path() -> Option<std::path::PathBuf> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+
+    candidates.push(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("worker_host.js"),
+    );
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            candidates.push(exe_dir.join("resources").join("worker_host.js"));
+            if let Some(parent) = exe_dir.parent() {
+                candidates.push(
+                    parent
+                        .join("Resources")
+                        .join("resources")
+                        .join("worker_host.js"),
+                );
+                candidates.push(parent.join("Resources").join("worker_host.js"));
+                if let Some(bin_name) = exe.file_name().and_then(|s| s.to_str()) {
+                    candidates.push(
+                        parent
+                            .join("lib")
+                            .join(bin_name)
+                            .join("resources")
+                            .join("worker_host.js"),
+                    );
+                    candidates.push(
+                        parent
+                            .join("share")
+                            .join(bin_name)
+                            .join("resources")
+                            .join("worker_host.js"),
+                    );
+                }
+            }
+        }
+    }
+
+    candidates.into_iter().find(|p| p.exists())
 }

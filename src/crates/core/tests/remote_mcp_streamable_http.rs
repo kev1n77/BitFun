@@ -24,6 +24,9 @@ struct TestState {
     sse_connected: Arc<AtomicBool>,
     sse_connected_notify: Arc<Notify>,
     saw_session_header: Arc<AtomicBool>,
+    saw_roots_capability: Arc<AtomicBool>,
+    saw_sampling_capability: Arc<AtomicBool>,
+    saw_elicitation_capability: Arc<AtomicBool>,
 }
 
 async fn sse_handler(
@@ -64,6 +67,23 @@ async fn post_handler(
 
     match method {
         "initialize" => {
+            let capabilities = body
+                .get("params")
+                .and_then(|params| params.get("capabilities"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            if capabilities.get("roots").is_some() {
+                state.saw_roots_capability.store(true, Ordering::SeqCst);
+            }
+            if capabilities.get("sampling").is_some() {
+                state.saw_sampling_capability.store(true, Ordering::SeqCst);
+            }
+            if capabilities.get("elicitation").is_some() {
+                state
+                    .saw_elicitation_capability
+                    .store(true, Ordering::SeqCst);
+            }
+
             let response = json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -102,8 +122,28 @@ async fn post_handler(
                     "tools": [
                         {
                             "name": "hello",
+                            "title": "Hello Tool",
                             "description": "test tool",
-                            "inputSchema": { "type": "object", "properties": {} }
+                            "inputSchema": { "type": "object", "properties": {} },
+                            "outputSchema": { "type": "object", "properties": { "message": { "type": "string" } } },
+                            "annotations": {
+                                "title": "Hello",
+                                "readOnlyHint": true,
+                                "destructiveHint": false,
+                                "openWorldHint": true
+                            },
+                            "icons": [
+                                {
+                                    "src": "https://example.com/tool.png",
+                                    "mimeType": "image/png",
+                                    "sizes": ["32x32"]
+                                }
+                            ],
+                            "_meta": {
+                                "ui": {
+                                    "resourceUri": "ui://hello/widget"
+                                }
+                            }
                         }
                     ],
                     "nextCursor": null
@@ -147,19 +187,26 @@ async fn remote_mcp_streamable_http_accepts_202_and_delivers_response_via_sse() 
     });
 
     let url = format!("http://{addr}/mcp");
-    let connection = MCPConnection::new_remote(url, Default::default());
+    let connection = MCPConnection::new_remote("test-server", url, Default::default(), false)
+        .await
+        .expect("remote connection should be created");
 
     connection
         .initialize("BitFunTest", "0.0.0")
         .await
         .expect("initialize should succeed");
 
-    tokio::time::timeout(
-        Duration::from_secs(2),
-        state.sse_connected_notify.notified(),
-    )
-    .await
-    .expect("SSE stream should connect");
+    // `Notify::notify_waiters` only wakes tasks already waiting. The rmcp client may open the
+    // SSE GET during `initialize` and fire notify before we await `notified()`, which would
+    // drop the wakeup and time out. The atomic records that the handler ran at least once.
+    if !state.sse_connected.load(Ordering::SeqCst) {
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            state.sse_connected_notify.notified(),
+        )
+        .await
+        .expect("SSE stream should connect");
+    }
 
     let tools = connection
         .list_tools(None)
@@ -167,9 +214,37 @@ async fn remote_mcp_streamable_http_accepts_202_and_delivers_response_via_sse() 
         .expect("tools/list should resolve via SSE");
     assert_eq!(tools.tools.len(), 1);
     assert_eq!(tools.tools[0].name, "hello");
+    assert_eq!(tools.tools[0].title.as_deref(), Some("Hello Tool"));
+    assert_eq!(
+        tools.tools[0]
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.read_only_hint),
+        Some(true)
+    );
+    assert_eq!(
+        tools.tools[0]
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.ui.as_ref())
+            .and_then(|ui| ui.resource_uri.as_deref()),
+        Some("ui://hello/widget")
+    );
 
     assert!(
         state.saw_session_header.load(Ordering::SeqCst),
         "client should forward session id header on subsequent requests"
+    );
+    assert!(
+        state.saw_roots_capability.load(Ordering::SeqCst),
+        "client should advertise roots capability"
+    );
+    assert!(
+        state.saw_sampling_capability.load(Ordering::SeqCst),
+        "client should advertise sampling capability"
+    );
+    assert!(
+        state.saw_elicitation_capability.load(Ordering::SeqCst),
+        "client should advertise elicitation capability"
     );
 }

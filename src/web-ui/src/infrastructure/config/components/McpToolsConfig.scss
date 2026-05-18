@@ -14,7 +14,7 @@
   &__json-editor-header {
     h3 {
       margin: 0 0 $size-gap-1;
-      font-size: $font-size-sm;
+      font-size: var(--font-size-sm);
       font-weight: $font-weight-semibold;
       color: var(--color-text-primary);
     }
@@ -22,14 +22,14 @@
 
   &__json-hint {
     margin: 0;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     line-height: $line-height-relaxed;
   }
 
   &__json-textarea {
     font-family: $font-family-mono;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     line-height: 1.6;
   }
 
@@ -45,7 +45,7 @@
 
     h4 {
       margin: 0 0 $size-gap-2;
-      font-size: $font-size-xs;
+      font-size: var(--font-size-xs);
       font-weight: $font-weight-semibold;
       color: var(--color-text-muted);
       text-transform: uppercase;
@@ -60,7 +60,7 @@
 
     h5 {
       margin: 0 0 $size-gap-1;
-      font-size: $font-size-xs;
+      font-size: var(--font-size-xs);
       font-weight: $font-weight-medium;
       color: var(--color-text-secondary);
     }
@@ -72,7 +72,7 @@
       border: 1px solid var(--border-subtle);
       border-radius: $size-radius-sm;
       font-family: $font-family-mono;
-      font-size: $font-size-xs;
+      font-size: var(--font-size-xs);
       color: var(--color-text-primary);
       line-height: 1.6;
       white-space: pre-wrap;
@@ -88,7 +88,7 @@
     flex-shrink: 0;
     padding: 1px 7px;
     border-radius: $size-radius-sm;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-weight: $font-weight-medium;
     white-space: nowrap;
     border: 1px solid transparent;
@@ -142,13 +142,13 @@
   }
 
   &__server-detail-label {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-muted);
   }
 
   &__server-detail-value {
     font-family: $font-family-mono;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-secondary);
     word-break: break-all;
   }

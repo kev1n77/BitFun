@@ -348,20 +348,6 @@ describe('L1 File Tree', () => {
     });
   });
 
-  describe('Git status indicators', () => {
-    it('files should have git status class if in git repo', async function () {
-      if (!hasWorkspace) {
-        this.skip();
-        return;
-      }
-
-      const gitStatusNodes = await browser.$$('[class*="git-modified"], [class*="git-added"], [class*="git-deleted"]');
-      console.log('[L1] Files with git status:', gitStatusNodes.length);
-
-      expect(gitStatusNodes.length).toBeGreaterThanOrEqual(0);
-    });
-  });
-
   afterEach(async function () {
     if (this.currentTest?.state === 'failed') {
       await saveFailureScreenshot(`l1-file-tree-${this.currentTest.title}`);

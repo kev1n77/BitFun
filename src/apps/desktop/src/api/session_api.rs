@@ -1,10 +1,16 @@
 //! Session persistence API
 
-use bitfun_core::agentic::persistence::PersistenceManager;
+use crate::api::app_state::AppState;
+use crate::api::session_storage_path::desktop_effective_session_storage_path;
+use bitfun_core::agentic::persistence::{
+    PersistenceManager, SessionBranchRequest, SessionBranchResult,
+};
 use bitfun_core::infrastructure::PathManager;
-use bitfun_core::service::remote_ssh::workspace_state::get_effective_session_path;
 use bitfun_core::service::session::{
     DialogTurnData, SessionMetadata, SessionTranscriptExport, SessionTranscriptExportOptions,
+};
+use bitfun_core::service::session_usage::{
+    generate_session_usage_report, SessionUsageReport, SessionUsageReportRequest,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -13,12 +19,20 @@ use tauri::State;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListPersistedSessionsRequest {
     pub workspace_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_connection_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_ssh_host: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoadSessionTurnsRequest {
     pub session_id: String,
     pub workspace_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_connection_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_ssh_host: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
 }
@@ -27,18 +41,30 @@ pub struct LoadSessionTurnsRequest {
 pub struct SaveSessionTurnRequest {
     pub turn_data: DialogTurnData,
     pub workspace_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_connection_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_ssh_host: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveSessionMetadataRequest {
     pub metadata: SessionMetadata,
     pub workspace_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_connection_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_ssh_host: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportSessionTranscriptRequest {
     pub session_id: String,
     pub workspace_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_connection_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_ssh_host: Option<String>,
     #[serde(default = "default_tools")]
     pub tools: bool,
     #[serde(default)]
@@ -57,26 +83,68 @@ fn default_tools() -> bool {
 pub struct DeletePersistedSessionRequest {
     pub session_id: String,
     pub workspace_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_connection_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_ssh_host: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TouchSessionActivityRequest {
     pub session_id: String,
     pub workspace_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_connection_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_ssh_host: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoadPersistedSessionMetadataRequest {
     pub session_id: String,
     pub workspace_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_connection_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_ssh_host: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSessionUsageReportRequest {
+    pub session_id: String,
+    pub workspace_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_connection_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_ssh_host: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForkSessionRequest {
+    pub source_session_id: String,
+    pub source_turn_id: String,
+    pub workspace_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_connection_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_ssh_host: Option<String>,
+}
+
+pub type ForkSessionResponse = SessionBranchResult;
 
 #[tauri::command]
 pub async fn list_persisted_sessions(
     request: ListPersistedSessionsRequest,
+    app_state: State<'_, AppState>,
     path_manager: State<'_, Arc<PathManager>>,
 ) -> Result<Vec<SessionMetadata>, String> {
-    let workspace_path = get_effective_session_path(&request.workspace_path).await;
+    let workspace_path = desktop_effective_session_storage_path(
+        &app_state,
+        &request.workspace_path,
+        request.remote_connection_id.as_deref(),
+        request.remote_ssh_host.as_deref(),
+    )
+    .await;
     let manager = PersistenceManager::new(path_manager.inner().clone())
         .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
 
@@ -89,9 +157,16 @@ pub async fn list_persisted_sessions(
 #[tauri::command]
 pub async fn load_session_turns(
     request: LoadSessionTurnsRequest,
+    app_state: State<'_, AppState>,
     path_manager: State<'_, Arc<PathManager>>,
 ) -> Result<Vec<DialogTurnData>, String> {
-    let workspace_path = get_effective_session_path(&request.workspace_path).await;
+    let workspace_path = desktop_effective_session_storage_path(
+        &app_state,
+        &request.workspace_path,
+        request.remote_connection_id.as_deref(),
+        request.remote_ssh_host.as_deref(),
+    )
+    .await;
     let manager = PersistenceManager::new(path_manager.inner().clone())
         .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
 
@@ -109,11 +184,55 @@ pub async fn load_session_turns(
 }
 
 #[tauri::command]
+pub async fn get_session_usage_report(
+    request: GetSessionUsageReportRequest,
+    app_state: State<'_, AppState>,
+    path_manager: State<'_, Arc<PathManager>>,
+) -> Result<SessionUsageReport, String> {
+    let storage_workspace_path = desktop_effective_session_storage_path(
+        &app_state,
+        &request.workspace_path,
+        request.remote_connection_id.as_deref(),
+        request.remote_ssh_host.as_deref(),
+    )
+    .await;
+    let manager = PersistenceManager::new(path_manager.inner().clone())
+        .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
+
+    let mut report = generate_session_usage_report(
+        &manager,
+        Some(app_state.token_usage_service.as_ref()),
+        SessionUsageReportRequest {
+            session_id: request.session_id,
+            workspace_path: Some(storage_workspace_path.to_string_lossy().to_string()),
+            remote_connection_id: request.remote_connection_id.clone(),
+            remote_ssh_host: request.remote_ssh_host.clone(),
+            include_hidden_subagents: true,
+        },
+    )
+    .await
+    .map_err(|e| format!("Failed to generate session usage report: {}", e))?;
+
+    report.workspace.path_label = Some(request.workspace_path);
+    report.workspace.remote_connection_id = request.remote_connection_id;
+    report.workspace.remote_ssh_host = request.remote_ssh_host;
+
+    Ok(report)
+}
+
+#[tauri::command]
 pub async fn save_session_turn(
     request: SaveSessionTurnRequest,
+    app_state: State<'_, AppState>,
     path_manager: State<'_, Arc<PathManager>>,
 ) -> Result<(), String> {
-    let workspace_path = get_effective_session_path(&request.workspace_path).await;
+    let workspace_path = desktop_effective_session_storage_path(
+        &app_state,
+        &request.workspace_path,
+        request.remote_connection_id.as_deref(),
+        request.remote_ssh_host.as_deref(),
+    )
+    .await;
     let manager = PersistenceManager::new(path_manager.inner().clone())
         .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
 
@@ -126,9 +245,16 @@ pub async fn save_session_turn(
 #[tauri::command]
 pub async fn save_session_metadata(
     request: SaveSessionMetadataRequest,
+    app_state: State<'_, AppState>,
     path_manager: State<'_, Arc<PathManager>>,
 ) -> Result<(), String> {
-    let workspace_path = get_effective_session_path(&request.workspace_path).await;
+    let workspace_path = desktop_effective_session_storage_path(
+        &app_state,
+        &request.workspace_path,
+        request.remote_connection_id.as_deref(),
+        request.remote_ssh_host.as_deref(),
+    )
+    .await;
     let manager = PersistenceManager::new(path_manager.inner().clone())
         .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
 
@@ -141,9 +267,16 @@ pub async fn save_session_metadata(
 #[tauri::command]
 pub async fn export_session_transcript(
     request: ExportSessionTranscriptRequest,
+    app_state: State<'_, AppState>,
     path_manager: State<'_, Arc<PathManager>>,
 ) -> Result<SessionTranscriptExport, String> {
-    let workspace_path = get_effective_session_path(&request.workspace_path).await;
+    let workspace_path = desktop_effective_session_storage_path(
+        &app_state,
+        &request.workspace_path,
+        request.remote_connection_id.as_deref(),
+        request.remote_ssh_host.as_deref(),
+    )
+    .await;
     let manager = PersistenceManager::new(path_manager.inner().clone())
         .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
 
@@ -165,9 +298,16 @@ pub async fn export_session_transcript(
 #[tauri::command]
 pub async fn delete_persisted_session(
     request: DeletePersistedSessionRequest,
+    app_state: State<'_, AppState>,
     path_manager: State<'_, Arc<PathManager>>,
 ) -> Result<(), String> {
-    let workspace_path = get_effective_session_path(&request.workspace_path).await;
+    let workspace_path = desktop_effective_session_storage_path(
+        &app_state,
+        &request.workspace_path,
+        request.remote_connection_id.as_deref(),
+        request.remote_ssh_host.as_deref(),
+    )
+    .await;
     let manager = PersistenceManager::new(path_manager.inner().clone())
         .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
 
@@ -180,9 +320,16 @@ pub async fn delete_persisted_session(
 #[tauri::command]
 pub async fn touch_session_activity(
     request: TouchSessionActivityRequest,
+    app_state: State<'_, AppState>,
     path_manager: State<'_, Arc<PathManager>>,
 ) -> Result<(), String> {
-    let workspace_path = get_effective_session_path(&request.workspace_path).await;
+    let workspace_path = desktop_effective_session_storage_path(
+        &app_state,
+        &request.workspace_path,
+        request.remote_connection_id.as_deref(),
+        request.remote_ssh_host.as_deref(),
+    )
+    .await;
     let manager = PersistenceManager::new(path_manager.inner().clone())
         .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
 
@@ -195,14 +342,51 @@ pub async fn touch_session_activity(
 #[tauri::command]
 pub async fn load_persisted_session_metadata(
     request: LoadPersistedSessionMetadataRequest,
+    app_state: State<'_, AppState>,
     path_manager: State<'_, Arc<PathManager>>,
 ) -> Result<Option<SessionMetadata>, String> {
-    let workspace_path = get_effective_session_path(&request.workspace_path).await;
+    let workspace_path = desktop_effective_session_storage_path(
+        &app_state,
+        &request.workspace_path,
+        request.remote_connection_id.as_deref(),
+        request.remote_ssh_host.as_deref(),
+    )
+    .await;
+    let manager = PersistenceManager::new(path_manager.inner().clone())
+        .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
+
+    let metadata = manager
+        .load_session_metadata(&workspace_path, &request.session_id)
+        .await
+        .map_err(|e| format!("Failed to load persisted session metadata: {}", e))?;
+
+    Ok(metadata.filter(|metadata| !metadata.should_hide_from_user_lists()))
+}
+
+#[tauri::command]
+pub async fn fork_session(
+    request: ForkSessionRequest,
+    app_state: State<'_, AppState>,
+    path_manager: State<'_, Arc<PathManager>>,
+) -> Result<ForkSessionResponse, String> {
+    let workspace_path = desktop_effective_session_storage_path(
+        &app_state,
+        &request.workspace_path,
+        request.remote_connection_id.as_deref(),
+        request.remote_ssh_host.as_deref(),
+    )
+    .await;
     let manager = PersistenceManager::new(path_manager.inner().clone())
         .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
 
     manager
-        .load_session_metadata(&workspace_path, &request.session_id)
+        .branch_session(
+            &workspace_path,
+            &SessionBranchRequest {
+                source_session_id: request.source_session_id,
+                source_turn_id: request.source_turn_id,
+            },
+        )
         .await
-        .map_err(|e| format!("Failed to load persisted session metadata: {}", e))
+        .map_err(|e| format!("Failed to fork session: {}", e))
 }

@@ -20,11 +20,11 @@ $color-text-disabled: #666666;
 
 // ==================== Neutral surface system ====================
 $element-bg-subtle: rgba(255, 255, 255, 0.05);
-$element-bg-soft: rgba(255, 255, 255, 0.08);
-$element-bg-base: rgba(255, 255, 255, 0.11);
-$element-bg-medium: rgba(255, 255, 255, 0.14);
-$element-bg-strong: rgba(255, 255, 255, 0.17);
-$element-bg-elevated: rgba(255, 255, 255, 0.20);
+$element-bg-soft: rgba(255, 255, 255, 0.07);
+$element-bg-base: rgba(255, 255, 255, 0.095);
+$element-bg-medium: rgba(255, 255, 255, 0.125);
+$element-bg-strong: rgba(255, 255, 255, 0.155);
+$element-bg-elevated: rgba(255, 255, 255, 0.19);
 
 // ==================== Blue system ====================
 $color-accent-50: rgba(96, 165, 250, 0.04);
@@ -301,14 +301,14 @@ $font-weight-bold: 600; // Optimized: use 600 instead of 700; Bold font removed
 $font-size-xxs: 10px;
 $font-size-2xs: 11px;
 $font-size-xs: 12px;
-$font-size-sm: 14px;
-$font-size-base: 15px;
-$font-size-lg: 16px;
-$font-size-xl: 18px;
-$font-size-2xl: 20px;
-$font-size-3xl: 24px;
-$font-size-4xl: 30px;
-$font-size-5xl: 36px;
+$font-size-sm: 13px;
+$font-size-base: 14px;
+$font-size-lg: 15px;
+$font-size-xl: 16px;
+$font-size-2xl: 18px;
+$font-size-3xl: 22px;
+$font-size-4xl: 26px;
+$font-size-5xl: 32px;
 
 $line-height-tight: 1.2;
 $line-height-base: 1.5;
@@ -403,7 +403,7 @@ $modal-backdrop: rgba(0, 0, 0, 0.85);
 $badge-border-radius: $size-radius-sm;
 $badge-padding-x: $size-gap-2;
 $badge-padding-y: 2px;
-$badge-font-size: $font-size-xs;
+$badge-font-size: var(--font-size-xs);
 $badge-font-weight: $font-weight-medium;
 
 $badge-neutral-bg: $element-bg-base;
@@ -659,7 +659,7 @@ $badge-info-text: $color-info;
   justify-content: center;
   padding: $badge-padding-y $badge-padding-x;
   border-radius: $badge-border-radius;
-  font-size: $badge-font-size;
+  font-size: var(--badge-font-size, #{$badge-font-size});
   font-weight: $badge-font-weight;
   line-height: 1;
   border: none;
@@ -933,6 +933,37 @@ $badge-info-text: $color-info;
   --font-size-3xl: #{$font-size-3xl};
   --font-size-4xl: #{$font-size-4xl};
   --font-size-5xl: #{$font-size-5xl};
+
+  /* Flow chat: mirrors UI scale until font preference overwrites (independent mode). */
+  --flowchat-font-size-xxs: var(--font-size-xxs);
+  --flowchat-font-size-2xs: var(--font-size-2xs);
+  --flowchat-font-size-xs: var(--font-size-xs);
+  --flowchat-font-size-sm: var(--font-size-sm);
+  --flowchat-font-size-base: var(--font-size-base);
+  --flowchat-font-size-lg: var(--font-size-lg);
+  --flowchat-font-size-xl: var(--font-size-xl);
+  --flowchat-font-size-2xl: var(--font-size-2xl);
+  --flowchat-font-size-3xl: var(--font-size-3xl);
+  --flowchat-font-size-4xl: var(--font-size-4xl);
+  --flowchat-font-size-5xl: var(--font-size-5xl);
+  --flowchat-flow-item-gap: 0.45rem;
+  --flowchat-turn-gap: 0.4rem;
+  --flowchat-text-line-height: 1.62;
+  --flowchat-link-color: #60a5fa;
+  --flowchat-link-hover-color: #93c5fd;
+
+  /* Left nav: one baseline step below flow-chat scale (overwritten by FontPreferenceService). */
+  --nav-font-size-xxs: var(--font-size-xxs);
+  --nav-font-size-2xs: var(--font-size-2xs);
+  --nav-font-size-xs: var(--font-size-xs);
+  --nav-font-size-sm: var(--font-size-sm);
+  --nav-font-size-base: var(--font-size-base);
+  --nav-font-size-lg: var(--font-size-lg);
+  --nav-font-size-xl: var(--font-size-xl);
+  --nav-font-size-2xl: var(--font-size-2xl);
+  --nav-font-size-3xl: var(--font-size-3xl);
+  --nav-font-size-4xl: var(--font-size-4xl);
+  --nav-font-size-5xl: var(--font-size-5xl);
   
   --line-height-tight: #{$line-height-tight};
   --line-height-base: #{$line-height-base};
@@ -982,4 +1013,11 @@ $badge-info-text: $color-info;
   --card-bg-accent-hover: #{$card-bg-accent-hover};
   --card-bg-purple: #{$card-bg-purple};
   --card-bg-purple-hover: #{$card-bg-purple-hover};
+}
+
+:root[data-theme="light"],
+:root[data-theme-type="light"],
+[data-theme-type="light"] {
+  --flowchat-link-color: #0969da;
+  --flowchat-link-hover-color: #0550ae;
 }

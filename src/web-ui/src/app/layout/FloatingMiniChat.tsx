@@ -25,11 +25,18 @@ import type { FlowChatState } from '../../flow_chat/types/flow-chat';
 import { compareSessionsForDisplay } from '../../flow_chat/utils/sessionOrdering';
 import { ModernFlowChatContainer } from '../../flow_chat/components/modern/ModernFlowChatContainer';
 import { Tooltip, Input } from '@/component-library';
+import { useImeEnterGuard } from '../../flow_chat/hooks/useImeEnterGuard';
+import { i18nService } from '@/infrastructure/i18n';
+import { resolveSessionTitle } from '../../flow_chat/utils/sessionTitle';
+import { useSceneStore } from '@/app/stores/sceneStore';
+import { useMiniAppStore } from '@/app/scenes/miniapps/miniAppStore';
 import './FloatingMiniChat.scss';
 
 export const FloatingMiniChat: React.FC = () => {
   const { t } = useTranslation('flow-chat');
   const { toolbarState } = useToolbarModeContext();
+  const activeTabId = useSceneStore((state) => state.activeTabId);
+  const customizingAppIds = useMiniAppStore((state) => state.customizingAppIds);
 
   const [isOpen, setIsOpen] = useState(false);
   const [inputValue, setInputValue] = useState('');
@@ -37,6 +44,7 @@ export const FloatingMiniChat: React.FC = () => {
   const [flowChatState, setFlowChatState] = useState<FlowChatState>(() =>
     flowChatStore.getState()
   );
+  const { isImeEnter, handleCompositionStart, handleCompositionEnd } = useImeEnterGuard();
   const panelRef = useRef<HTMLDivElement>(null);
   const sessionPickerRef = useRef<HTMLDivElement>(null);
 
@@ -51,8 +59,8 @@ export const FloatingMiniChat: React.FC = () => {
     const activeSession = flowChatState.activeSessionId
       ? flowChatState.sessions.get(flowChatState.activeSessionId)
       : undefined;
-    return activeSession?.title || t('session.new');
-  }, [flowChatState, t]);
+    return resolveSessionTitle(activeSession, (key, options) => i18nService.t(key, options));
+  }, [flowChatState]);
 
   const sessions = useMemo(() => {
     return Array.from(flowChatState.sessions.values())
@@ -70,11 +78,32 @@ export const FloatingMiniChat: React.FC = () => {
     }
 
     const lastTurn = activeSession.dialogTurns[activeSession.dialogTurns.length - 1];
-    const isStreaming = lastTurn.status === 'processing' || lastTurn.status === 'image_analyzing';
+    const isStreaming =
+      lastTurn.status === 'processing' ||
+      lastTurn.status === 'finishing' ||
+      lastTurn.status === 'image_analyzing';
     return { isStreaming };
   }, [flowChatState]);
 
-  const handleOpen = useCallback(() => setIsOpen(true), []);
+  const activeMiniAppId = useMemo(
+    () => (typeof activeTabId === 'string' && activeTabId.startsWith('miniapp:')
+      ? activeTabId.slice('miniapp:'.length)
+      : null),
+    [activeTabId]
+  );
+  const shouldAvoidMiniAppCustomizer = Boolean(
+    activeMiniAppId && customizingAppIds.includes(activeMiniAppId)
+  );
+
+  const handleOpen = useCallback(() => {
+    // Sync the active session into modernFlowChatStore so the panel shows
+    // up-to-date content (it may have been streaming while the panel was closed).
+    const state = flowChatStore.getState();
+    if (state.activeSessionId) {
+      syncSessionToModernStore(state.activeSessionId);
+    }
+    setIsOpen(true);
+  }, []);
 
   const handleClose = useCallback(() => {
     setIsOpen(false);
@@ -128,6 +157,7 @@ export const FloatingMiniChat: React.FC = () => {
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === 'Enter' && !e.shiftKey) {
+        if (isImeEnter(e)) return;
         e.preventDefault();
         handleSendMessage();
       }
@@ -140,7 +170,7 @@ export const FloatingMiniChat: React.FC = () => {
         }
       }
     },
-    [handleSendMessage, showSessionPicker, handleClose]
+    [handleSendMessage, showSessionPicker, handleClose, isImeEnter]
   );
 
   // Close session picker when clicking outside it
@@ -175,7 +205,11 @@ export const FloatingMiniChat: React.FC = () => {
     .join(' ');
 
   return (
-    <div className={`bitfun-fmc ${isOpen ? 'bitfun-fmc--open' : ''}`}>
+    <div className={[
+      'bitfun-fmc',
+      isOpen && 'bitfun-fmc--open',
+      shouldAvoidMiniAppCustomizer && 'bitfun-fmc--miniapp-customizing',
+    ].filter(Boolean).join(' ')}>
       {/* Fullscreen backdrop to catch outside clicks */}
       {isOpen && (
         <div
@@ -236,7 +270,7 @@ export const FloatingMiniChat: React.FC = () => {
                     }`}
                     onMouseDown={(e) => handleSwitchSession(e, session.sessionId)}
                   >
-                    {session.title || t('session.new')}
+                    {resolveSessionTitle(session, (key, options) => i18nService.t(key, options))}
                   </button>
                 ))}
               </div>
@@ -274,9 +308,11 @@ export const FloatingMiniChat: React.FC = () => {
           </Tooltip>
         </div>
 
-        {/* FlowChat body */}
+        {/* FlowChat body — only mounted while the panel is open to avoid
+            running a second VirtualMessageList and store sync in the background
+            while the agent is actively streaming in another scene. */}
         <div className="bitfun-fmc__body">
-          <ModernFlowChatContainer />
+          {isOpen && <ModernFlowChatContainer />}
         </div>
 
         {/* Input bar */}
@@ -288,6 +324,8 @@ export const FloatingMiniChat: React.FC = () => {
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
+            onCompositionStart={handleCompositionStart}
+            onCompositionEnd={handleCompositionEnd}
             placeholder={
               currentStreamState.isStreaming
                 ? t('toolCards.toolbar.aiProcessing')

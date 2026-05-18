@@ -2,29 +2,36 @@
 //! BitFun Desktop - Tauri-based desktop application with TransportAdapter architecture
 
 pub mod api;
+pub mod computer_use;
 pub mod logging;
 pub mod macos_menubar;
 pub mod theme;
+pub mod tray;
 
+use bitfun_core::agentic::tools::computer_use_capability::set_computer_use_desktop_available;
+use bitfun_core::agentic::tools::computer_use_host::ComputerUseHostRef;
 use bitfun_core::infrastructure::ai::AIClientFactory;
 use bitfun_core::infrastructure::{get_path_manager_arc, try_get_path_manager_arc};
+use bitfun_core::service::search::get_global_workspace_search_service;
 use bitfun_core::service::workspace::get_global_workspace_service;
+use bitfun_core::util::{elapsed_ms, TimingCollector};
 use bitfun_transport::{TauriTransportAdapter, TransportAdapter};
+use serde::Deserialize;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-#[cfg(target_os = "macos")]
+use std::time::Instant;
 use tauri::Emitter;
 use tauri::Manager;
-use tauri_plugin_log::{RotationStrategy, TimezoneStrategy};
 
 // Re-export API
 pub use api::*;
 
-use api::ai_rules_api::*;
+use api::acp_client_api::*;
 use api::clipboard_file_api::*;
 use api::commands::*;
+use api::computer_use_api::*;
 use api::config_api::*;
 use api::cron_api::*;
 use api::diff_api::*;
@@ -34,7 +41,9 @@ use api::i18n_api::*;
 use api::lsp_api::*;
 use api::lsp_workspace_api::*;
 use api::mcp_api::*;
+use api::review_platform_api::*;
 use api::runtime_api::*;
+use api::search_api::*;
 use api::session_api::*;
 use api::skill_api::*;
 use api::snapshot_service::*;
@@ -42,7 +51,6 @@ use api::startchat_agent_api::*;
 use api::storage_commands::*;
 use api::subagent_api::*;
 use api::system_api::*;
-use api::token_usage_api::*;
 use api::tool_api::*;
 
 /// Agentic Coordinator state
@@ -57,9 +65,137 @@ pub struct SchedulerState {
     pub scheduler: Arc<bitfun_core::agentic::coordination::DialogScheduler>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WebdriverBridgeResultRequest {
+    payload: serde_json::Value,
+}
+
+#[cfg(target_os = "macos")]
+static MAIN_WINDOW_HIDDEN_ON_MACOS: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "macos")]
+static MAIN_WINDOW_CLOSE_PENDING_ON_MACOS: AtomicBool = AtomicBool::new(false);
+
+const MAIN_WINDOW_CLOSE_REQUESTED_EVENT: &str = "bitfun_main_window_close_requested";
+
+#[cfg(target_os = "macos")]
+const MAIN_WINDOW_CLOSE_FALLBACK_HIDE_MS: u64 = 2_500;
+
+// ─── Close-button behavior ────────────────────────────────────────────────────
+// The close-button behavior is owned by the frontend; the Rust window-event
+// handler only emits a notification event and the frontend decides what to do.
+// No per-platform caching needed here.
+
+#[cfg(target_os = "macos")]
+pub(crate) fn mark_main_window_hidden_on_macos(hidden: bool) {
+    MAIN_WINDOW_HIDDEN_ON_MACOS.store(hidden, Ordering::SeqCst);
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn cancel_main_window_close_request_on_macos() {
+    MAIN_WINDOW_CLOSE_PENDING_ON_MACOS.store(false, Ordering::SeqCst);
+}
+
+#[cfg(target_os = "macos")]
+fn begin_main_window_close_request_on_macos() -> bool {
+    MAIN_WINDOW_CLOSE_PENDING_ON_MACOS
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+}
+
+#[cfg(target_os = "macos")]
+fn take_main_window_close_request_on_macos() -> bool {
+    MAIN_WINDOW_CLOSE_PENDING_ON_MACOS
+        .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+}
+
+#[cfg(target_os = "macos")]
+fn hide_main_window_on_macos(app: &tauri::AppHandle, reason: &str) -> Result<(), String> {
+    let Some(main_window) = app.get_webview_window("main") else {
+        mark_main_window_hidden_on_macos(false);
+        return Err("Main window not found".to_string());
+    };
+
+    main_window.hide().map_err(|error| {
+        mark_main_window_hidden_on_macos(false);
+        log::warn!(
+            "Failed to hide main window on macOS close request: reason={}, error={}",
+            reason,
+            error
+        );
+        format!("Failed to hide main window: {}", error)
+    })?;
+
+    mark_main_window_hidden_on_macos(true);
+    log::info!(
+        "Main window close requested on macOS; hid window instead of exiting: reason={}",
+        reason
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn show_main_window_on_macos(app: &tauri::AppHandle, reason: &str) {
+    cancel_main_window_close_request_on_macos();
+
+    let Some(main_window) = app.get_webview_window("main") else {
+        log::warn!(
+            "Failed to show main window on macOS reopen event: reason={}, error=main window not found",
+            reason
+        );
+        return;
+    };
+
+    let _ = main_window.unminimize();
+    if let Err(error) = main_window.show() {
+        mark_main_window_hidden_on_macos(false);
+        log::warn!(
+            "Failed to show main window on macOS reopen event: reason={}, error={}",
+            reason,
+            error
+        );
+        return;
+    }
+
+    mark_main_window_hidden_on_macos(false);
+    if let Err(error) = main_window.set_focus() {
+        log::warn!(
+            "Failed to focus main window on macOS reopen event: reason={}, error={}",
+            reason,
+            error
+        );
+    }
+}
+
+#[tauri::command]
+async fn hide_main_window_after_close_request(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if take_main_window_close_request_on_macos() {
+            hide_main_window_on_macos(&app, "frontend_ack")?;
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn webdriver_bridge_result(request: WebdriverBridgeResultRequest) -> Result<(), String> {
+    log::debug!("webdriver_bridge_result command invoked");
+    bitfun_webdriver::handle_bridge_result(request.payload)
+}
+
 /// Tauri application entry point
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub async fn run() {
+    let startup_started = Instant::now();
+    let mut startup_timings = TimingCollector::default();
     let in_debug = cfg!(debug_assertions) || std::env::var("DEBUG").unwrap_or_default() == "1";
     let log_config = logging::LogConfig::new(in_debug);
     let log_targets = logging::build_log_targets(&log_config);
@@ -67,18 +203,41 @@ pub async fn run() {
 
     eprintln!("=== BitFun Desktop Starting ===");
 
+    let step_started = Instant::now();
     if let Err(e) = bitfun_core::service::config::initialize_global_config().await {
         log::error!("Failed to initialize global config service: {}", e);
         return;
     }
+    startup_timings.record_elapsed("initialize_global_config", step_started);
+
+    // Initialize global I18nService so bot/remote-connect language is always in sync.
+    {
+        use bitfun_core::service::config::get_global_config_service;
+        use bitfun_core::service::i18n::initialize_global_i18n_service;
+        let step_started = Instant::now();
+        match get_global_config_service().await {
+            Ok(config_service) => {
+                if let Err(e) = initialize_global_i18n_service(Some(config_service)).await {
+                    log::error!("Failed to initialize global I18nService: {}", e);
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to get config service for I18nService init: {}", e);
+            }
+        }
+        startup_timings.record_elapsed("initialize_global_i18n_service", step_started);
+    }
 
     let startup_log_level = resolve_runtime_log_level(log_config.level).await;
 
+    let step_started = Instant::now();
     if let Err(e) = AIClientFactory::initialize_global().await {
         log::error!("Failed to initialize global AIClientFactory: {}", e);
         return;
     }
+    startup_timings.record_elapsed("initialize_global_ai_client_factory", step_started);
 
+    let step_started = Instant::now();
     let (coordinator, scheduler, event_queue, event_router, ai_client_factory, token_usage_service) =
         match init_agentic_system().await {
             Ok(state) => state,
@@ -87,12 +246,20 @@ pub async fn run() {
                 return;
             }
         };
+    startup_timings.record_elapsed("init_agentic_system", step_started);
 
+    let step_started = Instant::now();
     if let Err(e) = init_function_agents(ai_client_factory.clone()).await {
         log::error!("Failed to initialize function agents: {}", e);
         return;
     }
+    startup_timings.record_elapsed("init_function_agents", step_started);
 
+    let workspace_search_enabled =
+        bitfun_core::service::search::workspace_search_feature_enabled().await;
+    let startup_flashgrep_path = configure_workspace_search_daemon_env();
+
+    let step_started = Instant::now();
     let app_state = match AppState::new_async(token_usage_service).await {
         Ok(state) => state,
         Err(e) => {
@@ -100,6 +267,7 @@ pub async fn run() {
             return;
         }
     };
+    startup_timings.record_elapsed("initialize_app_state", step_started);
 
     let coordinator_state = CoordinatorState {
         coordinator: coordinator.clone(),
@@ -115,22 +283,8 @@ pub async fn run() {
 
     setup_panic_hook();
 
-    let run_result = tauri::Builder::default()
-        .plugin(
-            tauri_plugin_log::Builder::new()
-                .level(log::LevelFilter::Trace)
-                .level_for("ignore", log::LevelFilter::Off)
-                .level_for("ignore::walk", log::LevelFilter::Off)
-                .level_for("globset", log::LevelFilter::Off)
-                .level_for("hyper_util", log::LevelFilter::Info)
-                .level_for("h2", log::LevelFilter::Info)
-                .targets(log_targets)
-                .rotation_strategy(RotationStrategy::KeepSome(30))
-                .max_file_size(10 * 1024 * 1024)
-                .timezone_strategy(TimezoneStrategy::UseLocal)
-                .clear_format()
-                .build(),
-        )
+    let app = tauri::Builder::default()
+        .plugin(logging::build_log_plugin(log_targets))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -139,6 +293,8 @@ pub async fn run() {
                 .app_name("BitFun")
                 .build(),
         )
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(app_state)
         .manage(coordinator_state)
         .manage(scheduler_state)
@@ -147,6 +303,7 @@ pub async fn run() {
         .manage(scheduler)
         .manage(terminal_state)
         .setup(move |app| {
+            let setup_started = Instant::now();
             #[cfg(target_os = "macos")]
             {
                 app.on_menu_event(|app, event| {
@@ -160,6 +317,59 @@ pub async fn run() {
             }
 
             logging::register_runtime_log_state(startup_log_level, session_log_dir.clone());
+            for step in startup_timings.steps() {
+                log::debug!(
+                    "Desktop startup step completed: step={}, duration_ms={}",
+                    step.name,
+                    step.duration_ms
+                );
+            }
+
+            if workspace_search_enabled {
+                let flashgrep_path = startup_flashgrep_path.clone().or_else(|| {
+                    let binary_names =
+                        bitfun_core::service::search::workspace_search_daemon_binary_names();
+                    for binary_name in binary_names {
+                        let primary = format!("flashgrep/{}", binary_name);
+                        if let Ok(path) = app
+                            .path()
+                            .resolve(&primary, tauri::path::BaseDirectory::Resource)
+                        {
+                            if path.exists() {
+                                return Some(path);
+                            }
+                        }
+                    }
+
+                    if let Ok(resource_dir) = app.path().resource_dir() {
+                        for binary_name in binary_names {
+                            for candidate in [
+                                resource_dir.join("flashgrep").join(binary_name),
+                                resource_dir.join("resources").join("flashgrep").join(binary_name),
+                                resource_dir.join(binary_name),
+                            ] {
+                                if candidate.exists() {
+                                    return Some(candidate);
+                                }
+                            }
+                        }
+                    }
+
+                    None
+                });
+                if let Some(path) = flashgrep_path {
+                    std::env::set_var("FLASHGREP_DAEMON_BIN", &path);
+                    log::info!(
+                        "Workspace search daemon startup check passed: path={}",
+                        path.display()
+                    );
+                } else {
+                    log::warn!(
+                        "Workspace search daemon startup check failed: {}",
+                        bitfun_core::service::search::workspace_search_daemon_missing_hint()
+                    );
+                }
+            }
 
             // Register bundled mobile-web resource path for remote connect.
             // tauri.conf.json maps "../../mobile-web/dist" -> "mobile-web/dist",
@@ -204,7 +414,18 @@ pub async fn run() {
             }
 
             let app_handle = app.handle().clone();
+            let window_started = Instant::now();
             theme::create_main_window(&app_handle);
+            log::debug!(
+                "Desktop startup step completed: step=create_main_window, duration_ms={}",
+                elapsed_ms(window_started)
+            );
+            bitfun_webdriver::maybe_start(app_handle.clone());
+            log::debug!(
+                "Desktop startup timing: phase=tauri_setup, duration_ms={}, since_process_start_ms={}",
+                elapsed_ms(setup_started),
+                elapsed_ms(startup_started)
+            );
 
             #[cfg(target_os = "macos")]
             {
@@ -259,31 +480,71 @@ pub async fn run() {
             }
 
             init_mcp_servers(app_handle.clone());
+            init_acp_clients(app_handle.clone());
 
             init_services(app_handle.clone(), startup_log_level);
 
             logging::spawn_log_cleanup_task();
 
+            // Set up system tray icon.
+            if let Err(error) = crate::tray::setup_tray(app) {
+                log::warn!("Failed to set up system tray: {}", error);
+            }
+
             log::info!("BitFun Desktop started successfully");
             Ok(())
         })
         .on_window_event({
-            static CLEANUP_DONE: AtomicBool = AtomicBool::new(false);
-
             move |window, event| {
+                if let tauri::WindowEvent::CloseRequested { api: _api, .. } = event {
+                    if window.label() == "main" {
+                        #[cfg(target_os = "macos")]
+                        {
+                            _api.prevent_close();
+                            if !begin_main_window_close_request_on_macos() {
+                                return;
+                            }
+
+                            if let Err(error) = window.emit(MAIN_WINDOW_CLOSE_REQUESTED_EVENT, ()) {
+                                log::warn!(
+                                    "Failed to emit macOS main window close request event: {}",
+                                    error
+                                );
+                            }
+
+                            let app_handle = window.app_handle().clone();
+                            tauri::async_runtime::spawn(async move {
+                                tokio::time::sleep(std::time::Duration::from_millis(
+                                    MAIN_WINDOW_CLOSE_FALLBACK_HIDE_MS,
+                                ))
+                                .await;
+
+                                if take_main_window_close_request_on_macos() {
+                                    if let Err(error) =
+                                        hide_main_window_on_macos(&app_handle, "frontend_timeout")
+                                    {
+                                        log::warn!(
+                                            "macOS close fallback hide failed after frontend timeout: {}",
+                                            error
+                                        );
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+
+                #[cfg(not(target_os = "macos"))]
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     if window.label() == "main" {
-                        if CLEANUP_DONE
-                            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                            .is_ok()
-                        {
-                            log::info!("Main window close requested, cleaning up");
-                            bitfun_core::util::process_manager::cleanup_all_processes();
-                            api::remote_connect_api::cleanup_on_exit();
-
-                            window.app_handle().exit(0);
-                        } else {
-                            api.prevent_close();
+                        // Prevent the OS from closing the window; let the frontend
+                        // decide whether to minimize to tray, show a dialog, or quit.
+                        api.prevent_close();
+                        if let Err(error) = window.emit(MAIN_WINDOW_CLOSE_REQUESTED_EVENT, ()) {
+                            log::warn!(
+                                "Failed to emit main window close request event: {}",
+                                error
+                            );
                         }
                     }
                 }
@@ -291,21 +552,29 @@ pub async fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             theme::show_main_window,
+            hide_main_window_after_close_request,
             api::agentic_api::create_session,
             api::agentic_api::update_session_model,
+            api::agentic_api::update_session_title,
+            api::agentic_api::ensure_coordinator_session,
             api::agentic_api::start_dialog_turn,
+            api::agentic_api::compact_session,
             api::agentic_api::ensure_assistant_bootstrap,
             api::agentic_api::cancel_dialog_turn,
+            api::agentic_api::steer_dialog_turn,
+            api::agentic_api::control_deep_review_queue,
+            api::agentic_api::cancel_session,
+            api::agentic_api::set_subagent_timeout,
             api::agentic_api::delete_session,
             api::agentic_api::restore_session,
+            webdriver_bridge_result,
             api::agentic_api::list_sessions,
-            api::agentic_api::get_session_messages,
             api::agentic_api::confirm_tool_execution,
             api::agentic_api::reject_tool_execution,
             api::agentic_api::cancel_tool,
             api::agentic_api::generate_session_title,
             api::agentic_api::get_available_modes,
-            api::btw_api::btw_ask,
+            api::agentic_api::get_default_review_team_definition,
             api::btw_api::btw_ask_stream,
             api::btw_api::btw_cancel,
             api::editor_ai_api::editor_ai_stream,
@@ -316,7 +585,6 @@ pub async fn run() {
             get_tool_info,
             validate_tool_input,
             execute_tool,
-            is_tool_enabled,
             submit_user_answers,
             initialize_global_state,
             get_available_tools,
@@ -326,25 +594,44 @@ pub async fn run() {
             test_ai_connection,
             test_ai_config_connection,
             list_ai_models_by_config,
+            discover_cli_credentials,
+            refresh_cli_credential,
             initialize_ai,
             set_agent_model,
             get_agent_models,
             refresh_model_client,
-            fix_mermaid_code,
             get_app_state,
             update_app_status,
+            theme::show_agent_companion_desktop_pet,
+            theme::hide_agent_companion_desktop_pet,
+            theme::resize_agent_companion_desktop_pet,
+            list_agent_companion_pets,
+            import_agent_companion_pet_package,
+            delete_agent_companion_pet_package,
             read_file_content,
             write_file_content,
             reset_workspace_persona_files,
             check_path_exists,
             get_file_metadata,
+            get_file_editor_sync_hash,
             rename_file,
             export_local_file_to_path,
             reveal_in_explorer,
             get_file_tree,
+            explorer_get_file_tree,
             get_directory_children,
+            explorer_get_children,
             get_directory_children_paginated,
+            explorer_get_children_paginated,
             search_files,
+            search_filenames,
+            search_file_contents,
+            search_get_repo_status,
+            search_build_index,
+            search_rebuild_index,
+            start_search_filenames_stream,
+            start_search_file_contents_stream,
+            cancel_search,
             delete_file,
             delete_directory,
             create_file,
@@ -356,6 +643,9 @@ pub async fn run() {
             get_clipboard_files,
             paste_files,
             get_config,
+            computer_use_get_status,
+            computer_use_request_permissions,
+            computer_use_open_system_settings,
             set_config,
             reset_config,
             export_config,
@@ -370,24 +660,35 @@ pub async fn run() {
             get_mode_config,
             set_mode_config,
             reset_mode_config,
-            get_subagent_configs,
-            set_subagent_config,
             list_subagents,
+            list_visible_subagents,
+            list_manageable_subagents,
+            get_subagent_detail,
             delete_subagent,
             create_subagent,
+            update_subagent,
             reload_subagents,
             list_agent_tool_names,
             update_subagent_config,
             get_skill_configs,
+            get_mode_skill_configs,
             list_skill_market,
             search_skill_market,
             download_skill_market,
-            set_skill_enabled,
+            set_mode_skill_disabled,
+            replace_mode_skill_selection,
+            reset_mode_skill_selection,
             validate_skill_path,
             add_skill,
             delete_skill,
             git_is_repository,
             git_get_repository,
+            review_platform_get_workspace_snapshot,
+            review_platform_get_pull_request_detail,
+            review_platform_get_pull_request_detail_page,
+            review_platform_get_pull_request_ci_log,
+            review_platform_update_auth_token,
+            review_platform_clear_auth_token,
             git_get_status,
             git_get_branches,
             git_get_enhanced_branches,
@@ -400,6 +701,7 @@ pub async fn run() {
             git_create_branch,
             git_delete_branch,
             git_get_diff,
+            git_get_changed_files,
             git_reset_files,
             git_reset_to_commit,
             git_get_file_content,
@@ -434,6 +736,7 @@ pub async fn run() {
             get_turn_files,
             get_file_diff,
             get_operation_diff,
+            get_session_file_diff_stats,
             get_operation_summary,
             get_session_operations,
             accept_operation,
@@ -441,7 +744,6 @@ pub async fn run() {
             get_session_stats,
             get_snapshot_system_stats,
             get_snapshot_sessions,
-            cleanup_snapshot_data,
             check_git_isolation,
             get_file_change_history,
             get_all_modified_files,
@@ -452,30 +754,17 @@ pub async fn run() {
             cleanup_storage_with_policy,
             get_storage_statistics,
             initialize_project_storage,
-            get_ai_rules,
-            get_ai_rule,
-            create_ai_rule,
-            update_ai_rule,
-            delete_ai_rule,
-            get_ai_rules_stats,
-            build_ai_rules_system_prompt,
-            reload_ai_rules,
-            toggle_ai_rule,
             // Session persistence API
             list_persisted_sessions,
             load_session_turns,
+            get_session_usage_report,
             save_session_turn,
             save_session_metadata,
             export_session_transcript,
             delete_persisted_session,
             touch_session_activity,
             load_persisted_session_metadata,
-            // AI Memory API
-            api::ai_memory_api::get_all_memories,
-            api::ai_memory_api::add_memory,
-            api::ai_memory_api::update_memory,
-            api::ai_memory_api::delete_memory,
-            api::ai_memory_api::toggle_memory,
+            fork_session,
             api::project_context_api::get_document_statuses,
             api::project_context_api::toggle_document_enabled,
             api::project_context_api::create_context_document,
@@ -493,6 +782,10 @@ pub async fn run() {
             initialize_mcp_servers,
             api::mcp_api::initialize_mcp_servers_non_destructive,
             get_mcp_servers,
+            api::mcp_api::list_mcp_resources,
+            api::mcp_api::read_mcp_resource,
+            api::mcp_api::list_mcp_prompts,
+            api::mcp_api::get_mcp_prompt,
             start_mcp_server,
             stop_mcp_server,
             restart_mcp_server,
@@ -502,6 +795,27 @@ pub async fn run() {
             get_mcp_tool_ui_uri,
             fetch_mcp_app_resource,
             send_mcp_app_message,
+            submit_mcp_interaction_response,
+            update_mcp_remote_auth,
+            clear_mcp_remote_auth,
+            api::mcp_api::delete_mcp_server,
+            api::mcp_api::start_mcp_remote_oauth,
+            api::mcp_api::get_mcp_remote_oauth_session,
+            api::mcp_api::cancel_mcp_remote_oauth,
+            initialize_acp_clients,
+            get_acp_clients,
+            probe_acp_client_requirements,
+            predownload_acp_client_adapter,
+            install_acp_client_cli,
+            stop_acp_client,
+            load_acp_json_config,
+            save_acp_json_config,
+            submit_acp_permission_response,
+            create_acp_flow_session,
+            start_acp_dialog_turn,
+            cancel_acp_dialog_turn,
+            get_acp_session_options,
+            set_acp_session_model,
             lsp_initialize,
             lsp_start_server_for_file,
             lsp_stop_server,
@@ -550,6 +864,7 @@ pub async fn run() {
             subscribe_config_updates,
             get_model_configs,
             get_recent_workspaces,
+            remove_recent_workspace,
             cleanup_invalid_workspaces,
             get_opened_workspaces,
             open_workspace,
@@ -566,7 +881,7 @@ pub async fn run() {
             create_cron_job,
             update_cron_job,
             delete_cron_job,
-            api::config_api::sync_tool_configs,
+            api::config_api::canonicalize_mode_configs,
             api::terminal_api::terminal_get_shells,
             api::terminal_api::terminal_create,
             api::terminal_api::terminal_get,
@@ -582,6 +897,14 @@ pub async fn run() {
             api::terminal_api::terminal_shutdown_all,
             api::terminal_api::terminal_get_history,
             get_system_info,
+            get_app_version,
+            check_for_updates,
+            install_update,
+            restart_app,
+            send_system_notification,
+            api::system_api::quit_app,
+            api::system_api::minimize_to_tray,
+            api::system_api::toggle_main_window_fullscreen,
             check_command_exists,
             check_commands_exist,
             run_system_command,
@@ -591,14 +914,6 @@ pub async fn run() {
             i18n_get_supported_languages,
             i18n_get_config,
             i18n_set_config,
-            // Token Usage
-            record_token_usage,
-            get_model_token_stats,
-            get_all_model_token_stats,
-            get_session_token_stats,
-            query_token_usage,
-            clear_model_token_stats,
-            clear_all_token_stats,
             // Remote Connect
             api::remote_connect_api::remote_connect_get_device_info,
             api::remote_connect_api::remote_connect_get_lan_ip,
@@ -630,6 +945,7 @@ pub async fn run() {
             api::miniapp_api::grant_miniapp_path,
             api::miniapp_api::miniapp_runtime_status,
             api::miniapp_api::miniapp_worker_call,
+            api::miniapp_api::miniapp_host_call,
             api::miniapp_api::miniapp_worker_stop,
             api::miniapp_api::miniapp_worker_list_running,
             api::miniapp_api::miniapp_install_deps,
@@ -637,9 +953,32 @@ pub async fn run() {
             api::miniapp_api::miniapp_dialog_message,
             api::miniapp_api::miniapp_import_from_path,
             api::miniapp_api::miniapp_sync_from_fs,
-            // Browser API
+            api::miniapp_api::miniapp_create_draft,
+            api::miniapp_api::miniapp_get_draft,
+            api::miniapp_api::miniapp_sync_draft_from_fs,
+            api::miniapp_api::miniapp_set_draft_permissions,
+            api::miniapp_api::miniapp_permission_diff_for_draft,
+            api::miniapp_api::miniapp_apply_draft,
+            api::miniapp_api::miniapp_discard_draft,
+            api::miniapp_api::get_miniapp_draft_storage,
+            api::miniapp_api::set_miniapp_draft_storage,
+            api::miniapp_api::miniapp_draft_worker_call,
+            api::miniapp_api::miniapp_draft_host_call,
+            api::miniapp_api::miniapp_draft_worker_stop,
+            api::miniapp_api::miniapp_get_customization_metadata,
+            api::miniapp_api::miniapp_ai_complete,
+            api::miniapp_api::miniapp_ai_chat,
+            api::miniapp_api::miniapp_ai_cancel,
+            api::miniapp_api::miniapp_ai_list_models,
+            // Browser API (embedded webview)
             api::browser_api::browser_webview_eval,
             api::browser_api::browser_get_url,
+            // Browser Control API (CDP-based user browser control)
+            api::browser_control_api::browser_control_list_browsers,
+            api::browser_control_api::browser_control_get_status,
+            api::browser_control_api::browser_control_launch,
+            api::browser_control_api::browser_control_restart_with_cdp,
+            api::browser_control_api::browser_control_create_launcher,
             // Insights API
             api::insights_api::generate_insights,
             api::insights_api::get_latest_insights,
@@ -650,10 +989,12 @@ pub async fn run() {
             api::ssh_api::ssh_list_saved_connections,
             api::ssh_api::ssh_save_connection,
             api::ssh_api::ssh_delete_connection,
+            api::ssh_api::ssh_has_stored_password,
             api::ssh_api::ssh_connect,
             api::ssh_api::ssh_disconnect,
             api::ssh_api::ssh_disconnect_all,
             api::ssh_api::ssh_is_connected,
+            api::ssh_api::ssh_get_server_info,
             api::ssh_api::ssh_get_config,
             api::ssh_api::ssh_list_config_hosts,
             api::ssh_api::remote_read_file,
@@ -669,11 +1010,46 @@ pub async fn run() {
             api::ssh_api::remote_execute,
             api::ssh_api::remote_open_workspace,
             api::ssh_api::remote_close_workspace,
+            api::ssh_api::remote_remove_workspace,
             api::ssh_api::remote_get_workspace_info,
+            // Announcement / feature-demo / tips API
+            api::announcement_api::get_pending_announcements,
+            api::announcement_api::mark_announcement_seen,
+            api::announcement_api::dismiss_announcement,
+            api::announcement_api::never_show_announcement,
+            api::announcement_api::trigger_announcement,
+            api::announcement_api::get_announcement_tips,
+            // Debug API (no-op stubs in release builds)
+            api::debug_api::debug_element_picked,
+            api::debug_api::debug_open_devtools,
+            api::debug_api::debug_close_devtools,
         ])
-        .run(tauri::generate_context!());
-    if let Err(e) = run_result {
-        log::error!("Error while running tauri application: {}", e);
+        .build(tauri::generate_context!());
+
+    match app {
+        Ok(app) => {
+            app.run(|_app_handle, event| match event {
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                    perform_process_exit_cleanup();
+                }
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen {
+                    has_visible_windows,
+                    ..
+                } => {
+                    let reason = if has_visible_windows {
+                        "dock_reopen_with_visible_aux_window"
+                    } else {
+                        "dock_reopen_no_visible_windows"
+                    };
+                    show_main_window_on_macos(_app_handle, reason);
+                }
+                _ => {}
+            });
+        }
+        Err(e) => {
+            log::error!("Error while running tauri application: {}", e);
+        }
     }
 }
 
@@ -695,37 +1071,26 @@ async fn init_agentic_system() -> anyhow::Result<(
     let path_manager = try_get_path_manager_arc()?;
     let persistence_manager = Arc::new(persistence::PersistenceManager::new(path_manager.clone())?);
 
-    let history_manager = Arc::new(session::MessageHistoryManager::new(
-        persistence_manager.clone(),
-        session::HistoryConfig {
-            enable_persistence: false,
-            ..Default::default()
-        },
-    ));
-
-    let compression_manager = Arc::new(session::CompressionManager::new(
-        persistence_manager.clone(),
-        session::CompressionConfig {
-            enable_persistence: false,
-            ..Default::default()
-        },
-    ));
+    let context_store = Arc::new(session::SessionContextStore::new());
+    let context_compressor = Arc::new(session::ContextCompressor::new(Default::default()));
 
     let session_manager = Arc::new(session::SessionManager::new(
-        history_manager,
-        compression_manager,
+        context_store,
         persistence_manager,
         Default::default(),
     ));
 
     let tool_registry = tools::registry::get_global_tool_registry();
     let tool_state_manager = Arc::new(tools::pipeline::ToolStateManager::new(event_queue.clone()));
-    let image_context_provider = Arc::new(api::context_upload_api::create_image_context_provider());
+
+    let computer_use_host: ComputerUseHostRef =
+        Arc::new(computer_use::DesktopComputerUseHost::new());
+    set_computer_use_desktop_available(true);
 
     let tool_pipeline = Arc::new(tools::pipeline::ToolPipeline::new(
         tool_registry,
         tool_state_manager,
-        Some(image_context_provider),
+        Some(computer_use_host),
     ));
 
     let stream_processor = Arc::new(execution::StreamProcessor::new(event_queue.clone()));
@@ -734,11 +1099,30 @@ async fn init_agentic_system() -> anyhow::Result<(
         event_queue.clone(),
         tool_pipeline.clone(),
     ));
+
+    // Get execution config from global settings
+    let exec_config = match bitfun_core::service::config::get_global_config_service().await {
+        Ok(config_service) => {
+            match config_service
+                .get_config::<bitfun_core::service::config::types::GlobalConfig>(None)
+                .await
+            {
+                Ok(global_config) => execution::ExecutionEngineConfig {
+                    max_rounds: global_config.ai.max_rounds,
+                    ..Default::default()
+                },
+                Err(_) => Default::default(),
+            }
+        }
+        Err(_) => Default::default(),
+    };
+
     let execution_engine = Arc::new(execution::ExecutionEngine::new(
         round_executor,
         event_queue.clone(),
         session_manager.clone(),
-        Default::default(),
+        context_compressor,
+        exec_config,
     ));
 
     let coordinator = Arc::new(coordination::ConversationCoordinator::new(
@@ -769,6 +1153,7 @@ async fn init_agentic_system() -> anyhow::Result<(
         coordination::DialogScheduler::new(coordinator.clone(), session_manager.clone());
     coordinator.set_scheduler_notifier(scheduler.outcome_sender());
     coordinator.set_round_preempt_source(scheduler.preempt_monitor());
+    coordinator.set_round_steering_source(scheduler.steering_monitor());
     coordination::set_global_scheduler(scheduler.clone());
 
     let cron_service =
@@ -812,6 +1197,17 @@ fn init_mcp_servers(app_handle: tauri::AppHandle) {
     });
 }
 
+fn init_acp_clients(app_handle: tauri::AppHandle) {
+    tokio::spawn(async move {
+        let state: tauri::State<'_, api::AppState> = app_handle.state();
+        if let Some(service) = state.acp_client_service.as_ref() {
+            if let Err(error) = service.initialize_all().await {
+                log::warn!("Failed to initialize ACP clients: {}", error);
+            }
+        }
+    });
+}
+
 fn setup_panic_hook() {
     std::panic::set_hook(Box::new(move |panic_info| {
         let location = panic_info
@@ -839,9 +1235,7 @@ fn setup_panic_hook() {
         // continue instead of killing the process.
         // See: https://github.com/tauri-apps/wry/pull/1554
         if location.contains("wry") && location.contains("wkwebview") {
-            log::warn!(
-                "Suppressed non-fatal wry/wkwebview panic, application continues"
-            );
+            log::warn!("Suppressed non-fatal wry/wkwebview panic, application continues");
             return;
         }
 
@@ -853,8 +1247,35 @@ fn setup_panic_hook() {
             log::error!("  3) Run as administrator");
         }
 
+        perform_process_exit_cleanup();
         std::process::exit(1);
     }));
+}
+
+pub(crate) fn perform_process_exit_cleanup() -> bool {
+    static CLEANUP_DONE: AtomicBool = AtomicBool::new(false);
+
+    if CLEANUP_DONE
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return false;
+    }
+
+    if let Some(search_service) = get_global_workspace_search_service() {
+        search_service.shutdown_blocking();
+    }
+    bitfun_core::util::process_manager::cleanup_all_processes();
+    api::remote_connect_api::cleanup_on_exit();
+    true
+}
+
+fn configure_workspace_search_daemon_env() -> Option<std::path::PathBuf> {
+    let path = bitfun_core::service::search::resolve_workspace_search_daemon_program_path();
+    if let Some(path) = path.as_ref() {
+        std::env::set_var("FLASHGREP_DAEMON_BIN", path);
+    }
+    path
 }
 
 fn start_event_loop_with_transport(
@@ -865,9 +1286,12 @@ fn start_event_loop_with_transport(
     tokio::spawn(async move {
         loop {
             event_queue.wait_for_events().await;
-            let batch = event_queue.dequeue_batch(10).await;
+            loop {
+                let batch = event_queue.dequeue_configured_batch().await;
+                if batch.is_empty() {
+                    break;
+                }
 
-            if !batch.is_empty() {
                 for envelope in batch {
                     // Route to internal subscribers (e.g. RemoteSessionStateTracker)
                     // sequentially so that text chunks are appended in order.
@@ -889,6 +1313,7 @@ fn init_services(app_handle: tauri::AppHandle, default_log_level: log::LevelFilt
 
     spawn_ingest_server_with_config_listener();
     spawn_runtime_log_level_listener(default_log_level);
+    spawn_workspace_search_feature_listener(app_handle.clone());
 
     tokio::spawn(async move {
         let transport = Arc::new(TauriTransportAdapter::new(app_handle.clone()));
@@ -900,7 +1325,7 @@ fn init_services(app_handle: tauri::AppHandle, default_log_level: log::LevelFilt
 
         service::snapshot::initialize_snapshot_event_emitter(emitter.clone());
 
-        infrastructure::initialize_file_watcher(emitter.clone());
+        bitfun_core::service::initialize_file_watch_service(emitter.clone());
 
         if let Err(e) = workspace_identity_watch_service
             .set_event_emitter(emitter.clone())
@@ -985,6 +1410,93 @@ fn create_event_emitter(
 ) -> Arc<dyn bitfun_core::infrastructure::events::EventEmitter> {
     use bitfun_core::infrastructure::events::TransportEmitter;
     Arc::new(TransportEmitter::new(transport))
+}
+
+fn spawn_workspace_search_feature_listener(app_handle: tauri::AppHandle) {
+    use bitfun_core::service::config::{subscribe_config_updates, ConfigUpdateEvent};
+
+    let app_state: tauri::State<'_, api::AppState> = app_handle.state();
+    let workspace_search_service = app_state.workspace_search_service.clone();
+    let workspace_path = app_state.workspace_path.clone();
+
+    tokio::spawn(async move {
+        let mut feature_enabled =
+            bitfun_core::service::search::workspace_search_feature_enabled().await;
+
+        let Some(mut receiver) = subscribe_config_updates() else {
+            log::warn!("Config update subscription unavailable for workspace search listener");
+            return;
+        };
+
+        loop {
+            match receiver.recv().await {
+                Ok(ConfigUpdateEvent::AppUpdated) | Ok(ConfigUpdateEvent::ConfigReloaded) => {
+                    let next_enabled =
+                        bitfun_core::service::search::workspace_search_feature_enabled().await;
+
+                    if next_enabled == feature_enabled {
+                        continue;
+                    }
+
+                    if !next_enabled {
+                        workspace_search_service.stop_all_daemons().await;
+                        log::info!(
+                            "Workspace search feature disabled; stopped flashgrep daemon and cleared sessions"
+                        );
+                        feature_enabled = false;
+                        continue;
+                    }
+
+                    let resolved_path = configure_workspace_search_daemon_env();
+                    if !bitfun_core::service::search::workspace_search_daemon_available() {
+                        log::warn!(
+                            "Workspace search feature enabled but daemon is unavailable: path={:?}, hint={}",
+                            resolved_path.as_ref().map(|path| path.display().to_string()),
+                            bitfun_core::service::search::workspace_search_daemon_missing_hint()
+                        );
+                        feature_enabled = true;
+                        continue;
+                    }
+
+                    let current_workspace = workspace_path.read().await.clone();
+                    if let Some(current_workspace) = current_workspace {
+                        let workspace_str = current_workspace.to_string_lossy().to_string();
+                        if !bitfun_core::service::remote_ssh::workspace_state::is_remote_path(
+                            workspace_str.trim(),
+                        )
+                        .await
+                        {
+                            match workspace_search_service.open_repo(&current_workspace).await {
+                                Ok(_) => {
+                                    log::info!(
+                                        "Workspace search feature enabled; warmed current workspace: path={}",
+                                        current_workspace.display()
+                                    );
+                                }
+                                Err(error) => {
+                                    log::warn!(
+                                        "Workspace search feature enabled but failed to warm current workspace: path={}, error={}",
+                                        current_workspace.display(),
+                                        error
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    feature_enabled = true;
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    log::warn!("Workspace search feature listener channel closed");
+                    break;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    log::warn!("Workspace search feature listener lagged by {} messages", n);
+                }
+            }
+        }
+    });
 }
 
 fn spawn_ingest_server_with_config_listener() {

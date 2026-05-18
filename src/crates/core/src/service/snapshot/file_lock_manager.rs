@@ -1,8 +1,9 @@
 use crate::service::snapshot::types::{SnapshotError, SnapshotResult};
+use crate::service::workspace_runtime::WorkspaceRuntimeContext;
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tokio::sync::RwLock;
 
@@ -34,27 +35,22 @@ pub struct FileLockStatus {
 pub struct FileLockManager {
     locks: RwLock<HashMap<PathBuf, FileLock>>,
     waiting_queue: RwLock<HashMap<PathBuf, Vec<WaitingQueueItem>>>,
-    bitfun_dir: PathBuf,
+    runtime_context: WorkspaceRuntimeContext,
 }
 
 impl FileLockManager {
     /// Creates a new file lock manager.
-    pub fn new(bitfun_dir: PathBuf) -> Self {
+    pub fn new(runtime_context: WorkspaceRuntimeContext) -> Self {
         Self {
             locks: RwLock::new(HashMap::new()),
             waiting_queue: RwLock::new(HashMap::new()),
-            bitfun_dir,
+            runtime_context,
         }
     }
 
     /// Initializes the file lock manager.
     pub async fn initialize(&self) -> SnapshotResult<()> {
         info!("Initializing file lock manager");
-
-        let locks_dir = self.bitfun_dir.join("locks");
-        if !locks_dir.exists() {
-            std::fs::create_dir_all(&locks_dir)?;
-        }
 
         self.load_lock_state().await?;
 
@@ -203,7 +199,7 @@ impl FileLockManager {
     /// Adds an item to the waiting queue.
     async fn add_to_waiting_queue(
         &self,
-        file_path: &PathBuf,
+        file_path: &Path,
         session_id: &str,
         tool_name: &str,
     ) -> SnapshotResult<()> {
@@ -216,7 +212,7 @@ impl FileLockManager {
         };
 
         waiting_queue
-            .entry(file_path.clone())
+            .entry(file_path.to_path_buf())
             .or_insert_with(Vec::new)
             .push(queue_item);
 
@@ -245,7 +241,7 @@ impl FileLockManager {
 
     /// Loads lock state.
     async fn load_lock_state(&self) -> SnapshotResult<()> {
-        let locks_file = self.bitfun_dir.join("locks").join("file_locks.json");
+        let locks_file = self.runtime_context.locks_dir.join("file_locks.json");
 
         if !locks_file.exists() {
             return Ok(());
@@ -272,7 +268,7 @@ impl FileLockManager {
     /// Saves lock state.
     async fn save_lock_state(&self) -> SnapshotResult<()> {
         let lock_status = self.get_full_lock_status().await;
-        let locks_file = self.bitfun_dir.join("locks").join("file_locks.json");
+        let locks_file = self.runtime_context.locks_dir.join("file_locks.json");
 
         let content = serde_json::to_string_pretty(&lock_status)?;
         std::fs::write(&locks_file, content)?;

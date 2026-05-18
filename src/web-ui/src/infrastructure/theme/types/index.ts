@@ -11,6 +11,10 @@ export type ColorValue = string; // hex, rgb, rgba, hsl, hsla
  
 export type ThemeId = string;
 
+/** Reserved config value: follow OS light/dark (maps to bitfun-light / bitfun-dark). */
+export const SYSTEM_THEME_ID = 'system' as const;
+export type ThemeSelectionId = ThemeId | typeof SYSTEM_THEME_ID;
+
 
 
  
@@ -430,6 +434,14 @@ export interface ThemeConfig {
   
   // Monaco Editor
   monaco?: MonacoThemeConfig;
+
+  /**
+   * Workbench chrome (nav + scene). Per-theme toggles; omitted keys use product defaults.
+   */
+  layout?: {
+    /** Outer border around the main scene viewport (right panel). Default true. */
+    sceneViewportBorder?: boolean;
+  };
 }
 
 

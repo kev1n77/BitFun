@@ -51,8 +51,8 @@
     "chatPanel": "Chat",
     "showChatPanel": "Show Chat Panel",
     "hideChatPanel": "Hide Chat Panel",
-    "switchToToolbar": "Switch to Toolbar Mode",
-    "remoteConnect": "Remote Control (Beta)",
+    "switchToToolbar": "Floating window mode",
+    "remoteConnect": "Remote Control",
     "modeSwitchAriaLabel": "View mode switch",
     "modeCowork": "Cowork",
     "modeCoder": "Coder",
@@ -77,7 +77,7 @@
     "items": {
       "sessions": "Sessions",
       "project": "Directory",
-      "persona": "Nursery",
+      "persona": "Assistant",
       "agents": "Agents",
       "skills": "Skills",
       "tools": "Tools",
@@ -87,15 +87,28 @@
       "insights": "Insights"
     },
     "tooltips": {
-      "persona": "Nursery — create and manage all assistant instances",
-      "agents": "Which Agents and Agent Teams it can call",
+      "persona": "Assistant — create and manage all assistant instances",
+      "agents": "Which agents it can call",
       "skills": "What it knows — specialized knowledge files",
-      "tools": "What it can use — built-in tools & MCP services"
+      "tools": "What it can use — built-in tools & MCP services",
+      "addWorkspace": "Add workspace"
     },
     "sections": {
       "workspace": "Workspace",
-      "myAgent": "My Agent",
-      "shell": "Shell"
+      "extensions": "Customize",
+      "shell": "Shell",
+      "assistantSessions": "Assistant Sessions"
+    },
+    "search": {
+      "triggerPlaceholder": "Search",
+      "triggerTooltip": "Search (Ctrl+K, Alt+F)",
+      "inputPlaceholder": "Search workspaces, assistants, sessions...",
+      "groupWorkspaces": "Open Workspaces",
+      "groupAssistants": "Assistants",
+      "groupSessions": "All Sessions",
+      "empty": "No results found",
+      "sessionSearchHintDefault": "Type a keyword to search sessions in open workspaces",
+      "sessionWorkspaceHint": "in {{workspace}}"
     },
     "displayModes": {
       "pro": "Expert Mode",
@@ -106,7 +119,7 @@
       "assistantDesc": "Best for ongoing work with context and personal preferences."
     },
     "myAgent": {
-      "title": "My Agent",
+      "title": "Extensions",
       "categories": {
         "agents": "Agents",
         "extensions": "Extensions",
@@ -116,39 +129,40 @@
     "shell": {
       "title": "Shell",
       "views": {
-        "all": "All",
-        "hub": "Hub"
+        "manual": "Mine",
+        "agent": "Agent"
       },
       "actions": {
         "newTerminal": "New Terminal",
-        "newHubTerminal": "New Hub Terminal",
-        "addWorktree": "Add Worktree",
         "refresh": "Refresh"
       },
       "context": {
         "start": "Start",
         "stop": "Stop",
-        "edit": "Edit",
         "editConfig": "Edit Config",
+        "saveConfig": "Save Config",
+        "deleteSavedTerminal": "Delete Saved Terminal",
         "delete": "Delete",
-        "close": "Close",
-        "rename": "Rename",
-        "promoteToHub": "Save to Hub",
-        "newWorktreeTerminal": "New Terminal",
-        "removeWorktree": "Remove Worktree"
+        "close": "Close"
       },
       "badges": {
-        "startupCommand": "cmd"
+        "startupCommand": "cmd",
+        "saved": "saved",
+        "default": "Default"
       },
       "empty": {
-        "all": "Create a terminal from the menu to get started",
-        "hub": "No Hub terminals yet"
+        "manual": "No user terminals yet",
+        "agent": "No agent terminals yet",
+        "quickNew": "Quick new terminal"
       }
     },
     "sessions": {
       "newSession": "New session",
       "newCodeSession": "New Code session",
       "newCoworkSession": "New Cowork session",
+      "newCodeSessionShort": "Code Session",
+      "newCoworkSessionShort": "Cowork Session",
+      "newExternalAgentSessionShort": "{{agentName}} Session",
       "newClawSession": "New Claw session",
       "modeCode": "Code",
       "modeCowork": "Cowork",
@@ -161,7 +175,21 @@
       "cancelEdit": "Cancel",
       "showMore": "{{count}} more sessions",
       "showAll": "{{count}} more (show all)",
-      "showLess": "Show less"
+      "showLess": "Show less",
+      "assistantOwner": "Assistant: {{name}}",
+      "parentSession": "Parent session",
+      "childSourceWithoutTurn": "From {{parentTitle}}",
+      "childSourceWithTurn": "From {{parentTitle}} · Turn {{turnIndex}}",
+      "reviewRunning": "Reviewing",
+      "deepReviewRunning": "Reviewing",
+      "unreadCompleted": "Completed — unread",
+      "unreadError": "Failed — unread",
+      "unreadInterrupted": "Interrupted — retry needed",
+      "needsUserInput": "Needs your input",
+      "needsToolConfirm": "Needs confirmation",
+      "badgeNeedsInput": "Waiting",
+      "badgeNeedsConfirm": "Confirm",
+      "needProjectWorkspaceForSession": "Open or add a project workspace first. Code and Cowork sessions cannot be created in the assistant area."
     },
     "scheduledJobs": {
       "title": "Scheduled Jobs",
@@ -220,7 +248,8 @@
         "edit": "Edit job",
         "delete": "Delete job",
         "save": "Save changes",
-        "create": "Create job"
+        "create": "Create job",
+        "cancel": "Cancel"
       },
       "editor": {
         "editTitle": "Edit job",
@@ -267,8 +296,15 @@
       "revealFailed": "Failed to reveal workspace folder",
       "copyPathFailed": "Failed to copy path",
       "createSessionFailed": "Failed to create session",
+      "creatingAcpSession": "Starting {{agentName}} session...",
+      "restoringAcpSession": "Restoring {{agentName}} session...",
+      "initSessionFailed": "Failed to start AGENTS.md initialization session",
       "worktreeCreated": "Worktree created",
+      "worktreeCreatedAndOpened": "Worktree created and opened",
       "worktreeCreateFailed": "Failed to create worktree: {{error}}",
+      "worktreeCreateOrOpenFailed": "Worktree was created, but opening it as a workspace failed: {{error}}",
+      "worktreeDeleted": "Worktree deleted",
+      "deleteWorktreeFailed": "Failed to delete worktree",
       "expandSessions": "Expand sessions",
       "collapseSessions": "Collapse sessions",
       "groups": {
@@ -278,12 +314,12 @@
       "actions": {
         "more": "More actions",
         "newSession": "New session",
-        "newCodeSession": "New Code session",
-        "newCoworkSession": "New Cowork session",
         "newAssistant": "New personal assistant",
         "deleteAssistant": "Delete personal assistant",
         "resetWorkspace": "Reset workspace",
+        "initAgents": "Initialize AGENTS.md",
         "newWorktree": "New worktree",
+        "deleteWorktree": "Delete worktree",
         "copyPath": "Copy path",
         "reveal": "Reveal in explorer",
         "close": "Close workspace"
@@ -297,13 +333,17 @@
         "title": "Reset {{name}}?",
         "message": "This will clear everything inside the workspace directory and restore the default persona files without deleting the workspace directory itself.",
         "pathLabel": "Workspace path"
+      },
+      "deleteWorktreeDialog": {
+        "title": "Delete {{name}}?",
+        "message": "This will close the workspace and remove the worktree directory.",
+        "pathLabel": "Worktree path"
       }
     },
     "agents": {
       "allAgents": "All Agents",
       "newAgent": "New Agent",
-      "agentsOverview": "Agents",
-      "expertTeams": "Expert Teams"
+      "agentsOverview": "Agents"
     },
     "skills": {
       "allSkills": "All Skills",
@@ -314,7 +354,8 @@
       "mcpServices": "MCP Services"
     },
     "actions": {
-      "openMyAgent": "My Agent"
+      "openMyAgent": "My Agent",
+      "customize": "Customize"
     },
     "moreOptions": "More options",
     "multimodalTools": "Multimodal Tools",
@@ -325,6 +366,11 @@
     "maximize": "Maximize",
     "restore": "Restore",
     "close": "Close"
+  },
+  "browserView": {
+    "addressPlaceholder": "Enter a URL, for example {{exampleUrl}}",
+    "startElementSelection": "Select element",
+    "stopElementSelection": "Exit element selection"
   },
   "newProject": {
     "title": "New Project",
@@ -344,7 +390,7 @@
     "errorCreateFailed": "Failed to create project"
   },
   "remoteConnect": {
-    "title": "Remote Control (Beta)",
+    "title": "Remote Control",
     "tabLan": "LAN",
     "tabBitfunServer": "BitFun Server",
     "tabNgrok": "NAT Traversal",
@@ -410,7 +456,7 @@
     "openNgrokSetup": "Open ngrok setup page",
     "disclaimerTitle": "Remote Connect Disclaimer",
     "disclaimerIntro": "Before enabling Remote Connect, please read and accept the following:",
-    "disclaimerItemBeta": "Remote Connect is currently in Beta. It may contain undiscovered security vulnerabilities, functional defects, or incompatible changes. Please use it with full awareness of the risks.",
+    "disclaimerItemGeneralRisk": "Remote Connect may contain undiscovered security vulnerabilities, functional defects, or incompatible changes. Please use it with full awareness of the risks.",
     "disclaimerItemSecurity": "Remote Connect enables network communication paths (including but not limited to LAN, third-party relay, self-hosted relay, bot channels, and other pathways). Use it only on trusted devices and networks.",
     "disclaimerItemEncryption": "Remote message payloads are protected with end-to-end encryption (X25519 ECDH + AES-256-GCM with ephemeral key pairs per session); relay servers cannot decrypt message content. However, required metadata (such as device name, connection state, service endpoint, and other connection-context details) is not covered by business-message encryption and may still be visible to network paths, service nodes, or other infrastructure.",
     "disclaimerItemOpenSource": "BitFun's Remote Connect encryption implementation is fully open-source. You are free to audit the source code to verify its security.",
@@ -439,7 +485,46 @@
     "buildDate": "Build Date",
     "commit": "Commit",
     "branch": "Branch",
-    "copyright": "© 2025 BitFun. All rights reserved."
+    "copyright": "© 2025 BitFun. All rights reserved.",
+    "updateSectionTitle": "App updates",
+    "updateSectionHint": "Keep BitFun up to date for the latest fixes and features."
+  },
+  "update": {
+    "checkForUpdates": "Check for updates",
+    "checking": "Checking…",
+    "noUpdate": "You are on the latest version.",
+    "checkFailed": "Update check failed.",
+    "availableTitle": "Update available",
+    "availableSubtitle": "A newer release is ready to install.",
+    "currentVersion": "Current",
+    "latestVersion": "Latest",
+    "releaseNotes": "Release notes",
+    "later": "Later",
+    "skipVersion": "Skip this version",
+    "cancel": "Cancel",
+    "install": "Download and install",
+    "backgroundInstall": "Download in background",
+    "downloadingTitle": "Downloading update",
+    "downloadFailedTitle": "Update could not be installed",
+    "installedTitle": "Update installed",
+    "installedMessage": "The update has been installed. Restart BitFun to start using the new version.",
+    "progressPercent": "{{percent}}%",
+    "progressUnknown": "Downloading…",
+    "backgroundDownloading": "Downloading in background",
+    "backgroundDownloadHint": "You can keep using BitFun. Restart will be offered after installation finishes.",
+    "restartHint": "The app will need to restart after installation completes.",
+    "restartNow": "Restart now",
+    "restartLater": "Later",
+    "desktopOnly": "Updates are available in the desktop app only.",
+    "errors": {
+      "unknown": "Something went wrong. Please try again later.",
+      "network": "Could not reach the update server. Check your internet connection and try again.",
+      "signature": "The update file could not be verified. If this continues, download the latest installer from the website.",
+      "noUpdateAvailable": "No update package is available right now. Try again later.",
+      "notFound": "The update information was not found on the server. The release may still be publishing.",
+      "tls": "A secure connection to the update server could not be established.",
+      "generic": "Update failed: {{detail}}"
+    }
   },
   "actions": {
     "confirm": "Confirm",
@@ -663,7 +748,8 @@
     "renameSymbol": "Rename Symbol",
     "quickFix": "Quick Fix...",
     "goToSymbol": "Go to Symbol...",
-    "highlightAllOccurrences": "Highlight All Occurrences"
+    "highlightAllOccurrences": "Highlight All Occurrences",
+    "addToChat": "Add to Chat"
   },
   "document": {
     "delete": "Delete Document"
@@ -717,6 +803,7 @@
   },
   "tabs": {
     "configCenter": "Config Center",
+    "diff": "Diff",
     "fixPreview": "Fix Preview",
     "gitDiff": "Git Diff",
     "gitSettings": "Git Settings",
@@ -724,13 +811,12 @@
     "fileBrowser": "File Browser",
     "editor": "Editor",
     "markdown": "Markdown",
-    "mermaidChart": "Mermaid Chart",
     "settings": "Settings",
     "settingsWithSection": "Settings - {{section}}"
   },
   "welcome": {
-    "greetingMorning": "Good Morning, Flow Developer",
-    "greetingAfternoon": "Welcome Back to the Flow Zone",
+    "greetingMorning": "Good morning, creator",
+    "greetingAfternoon": "Welcome back — let's build",
     "greetingEvening": "Good Evening, Creator",
     "greetingNight": "Hello Night Owl, Code Poet",
     "subtitleMorning": "\"A new day, new possibilities. Let's create something amazing.\"",
@@ -762,14 +848,17 @@
     "settings": "Settings",
     "fileViewer": "File Viewer",
     "projectContext": "Profile",
-    "capabilities": "Capabilities",
     "agents": "Agents",
     "skills": "Skills",
     "miniApps": "Mini App",
     "browser": "Browser",
-    "mermaidEditor": "Mermaid",
-    "myAgent": "My Agent",
-    "shell": "Shell"
+    "insights": "Insights",
+    "assistant": "Assistant",
+    "shell": "Shell",
+    "panelView": "Panel View"
+  },
+  "loading": {
+    "scenes": "Loading scene"
   },
   "welcomeScene": {
     "tabLabel": "Welcome",
@@ -778,7 +867,7 @@
     "quickStart": "Start",
     "heroBadge": "BitFun Workspace",
     "heroTitle": "A real workspace, not just a chat box",
-    "heroDescription": "An AI assistant with personality, memory, and real execution power. Sessions, agent teams, and mini apps all work around the same workflow, so AI is doing work, not just replying.",
+    "heroDescription": "An AI assistant with personality, memory, and real execution power. Sessions and mini apps all work around the same workflow, so AI is doing work, not just replying.",
     "newCodeSession": "New Code Session",
     "newCodeSessionDesc": "Start coding, debug issues, or open a project and jump straight into building",
     "newCoworkSession": "New Cowork Session",
@@ -816,6 +905,7 @@
     "comingSoon": "Coming Soon",
     "recentWorkspaces": "Switch Workspace",
     "openOtherProject": "Open",
+    "removeFromRecent": "Remove from recent",
     "newProject": "New",
     "noOtherWorkspaces": "No other workspaces",
     "emptyHint": "Pick a scene and let's build something great",
@@ -837,6 +927,7 @@
     "generating": "Generating insights...",
     "generateNew": "Generate New Report",
     "generateBtn": "Generate",
+    "rangeLabel": "Range",
     "history": "Report History",
     "noReports": "No reports yet. Generate your first insights report above.",
     "backToList": "Back to list",
@@ -906,10 +997,13 @@
       "authMethod": "Authentication Method",
       "password": "Password",
       "privateKey": "Private Key",
-      "sshAgent": "SSH Agent",
-      "privateKeyPath": "Private Key Path",
+      "privateKeyPath": "Private Key File Path",
+      "browsePrivateKey": "Choose private key file",
+      "pickPrivateKeyDialogTitle": "Select SSH private key",
       "passphrase": "Passphrase",
       "passphraseOptional": "Leave empty if none",
+      "homeFolder": "Home folder",
+      "clickToEditPath": "Click to edit path",
       "selectWorkspace": "Select Workspace Directory",
       "openWorkspace": "Open as Workspace",
       "selected": "Selected",
@@ -926,6 +1020,7 @@
       "enterPassword": "Enter Password",
       "enterKeyPath": "Enter Private Key Path",
       "keyPathDescription": "Enter the private key file path",
+      "authPromptTitle": "SSH authentication",
       "disconnectConfirm": "Are you sure you want to disconnect?",
       "disconnectWorkspaceConfirm": "Are you sure you want to close the remote workspace? This will disconnect from the remote server.",
       "newFile": "New File",
@@ -942,5 +1037,20 @@
       "transferNeedsDesktop": "Upload and download require the desktop app.",
       "transferring": "Transferring..."
     }
+  },
+  "notify": {
+    "dialogCompleted": "AI agent has finished the task.",
+    "dialogCompletedTitle": "BitFun task finished",
+    "dialogCompletedWithSession": "\"{{sessionTitle}}\" is ready. Return to BitFun to review the result.",
+    "dialogCompletedFallback": "A BitFun session is ready. Return to BitFun to review the result.",
+    "dialogFailedTitle": "BitFun task stopped",
+    "dialogFailedWithSession": "\"{{sessionTitle}}\" stopped unexpectedly. Return to BitFun to review the reason.",
+    "dialogFailedFallback": "A BitFun session stopped unexpectedly. Return to BitFun to review the reason."
+  },
+  "closeDialog": {
+    "title": "Close BitFun",
+    "message": "Choose what happens when you click the close button: quit exits the app completely, or minimize to tray keeps it running in the background.",
+    "quit": "Quit",
+    "minimizeToTray": "Minimize to Tray"
   }
 }

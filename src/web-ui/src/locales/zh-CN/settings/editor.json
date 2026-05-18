@@ -21,7 +21,6 @@
   },
   "appearance": {
     "font": "字体",
-    "fontHint": "选择首选等宽字体",
     "fontWeight": "字体粗细",
     "fontWeightNormal": "正常",
     "fontWeightBold": "粗体",

@@ -45,8 +45,8 @@
     align-items: center;
     justify-content: center;
     border-radius: 50%;
-    background: var(--color-info-bg);
-    color: var(--color-info);
+    background: rgba(234, 179, 8, 0.18);
+    color: #ca8a04;
   }
 
   &__spinner {
@@ -91,16 +91,16 @@
   }
 
   &__title {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-weight: $font-weight-semibold;
     color: var(--color-text-primary);
     line-height: 1.3;
   }
 
   &__percentage {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-weight: $font-weight-semibold;
-    color: var(--color-info);
+    color: #ca8a04;
     font-variant-numeric: tabular-nums;
     font-family: $font-family-mono;
   }

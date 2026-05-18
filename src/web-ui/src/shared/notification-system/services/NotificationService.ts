@@ -17,7 +17,7 @@ import {
   LoadingController,
   ProgressMode
 } from '../types';
-import { i18nService } from '@/infrastructure/i18n';
+import { i18nService } from '@/infrastructure/i18n/core/I18nService';
 
 class NotificationService {
   private idCounter = 0;
@@ -34,7 +34,10 @@ class NotificationService {
 
    
   error(message: string, options?: ToastOptions): string {
-    return this.toast('error', message, options);
+    return this.toast('error', message, {
+      ...options,
+      duration: options?.duration ?? 0
+    });
   }
 
    
@@ -58,6 +61,7 @@ class NotificationService {
       variant: 'toast',
       title: options?.title || this.getDefaultTitle(type),
       message,
+      messageNode: options?.messageNode,
       timestamp: Date.now(),
       duration: options?.duration ?? state.config.defaultDuration,
       closable: options?.closable ?? true,

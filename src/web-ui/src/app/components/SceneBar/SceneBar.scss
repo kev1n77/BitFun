@@ -36,21 +36,13 @@ $_tab-v-margin: 6px;   // symmetric top/bottom gap inside SceneBar
   }
 }
 
+// macOS only (Windows always renders WindowControls on the right).
+// Keep the tabs flush with the SceneViewport edge below — symmetric with the left side.
 .bitfun-scene-bar--no-controls {
-  padding-right: $size-gap-3;
+  padding-right: 0;
 
   .bitfun-scene-bar__tabs {
-    padding-right: calc(#{$size-gap-2} + 4px);
-  }
-}
-
-// On macOS the cube button is fixed at the top-right corner.
-// Reserve extra space so the right-side scene tab (Settings/Model) does not crowd it.
-.bitfun-app-layout--macos .bitfun-scene-bar--no-controls {
-  padding-right: 36px;
-
-  .bitfun-scene-bar__tabs {
-    padding-right: 16px;
+    padding-right: 2px;
   }
 }
 
@@ -63,10 +55,12 @@ $_tab-v-margin: 6px;   // symmetric top/bottom gap inside SceneBar
   position: relative;
   cursor: pointer;
   color: var(--color-text-muted);
-  font-size: $font-size-sm;
+  font-size: var(--font-size-sm);
   font-weight: 400;
   white-space: nowrap;
-  background: var(--element-bg-soft);
+  // Slightly lift off --color-bg-primary so tabs never disappear into the chrome
+  // (dark presets often set tertiary === primary; mixing secondary fixes that).
+  background: color-mix(in srgb, var(--color-bg-secondary) 44%, var(--color-bg-primary));
   // Full radius — tab floats symmetrically inside the bar
   border-radius: $size-radius-sm;
   transition: color $motion-fast $easing-standard,
@@ -87,37 +81,47 @@ $_tab-v-margin: 6px;   // symmetric top/bottom gap inside SceneBar
 
   &:hover {
     color: var(--color-text-secondary);
-    background: var(--element-bg-medium);
+    background: color-mix(in srgb, var(--color-bg-secondary) 68%, var(--color-bg-primary));
 
     .bitfun-scene-tab__close {
       opacity: 1;
     }
   }
 
-  // Single tab: no default background, but hover still shows
-  &:only-child,
-  &:only-child#{&}--active {
-    background: transparent;
-    cursor: default;
-  }
-
-  &:only-child:hover {
-    background: transparent;
-    cursor: default;
-  }
-
-  // Active state
+  // Active state — same fill as .bitfun-nav-panel__item.is-active (no left rail on horizontal tabs)
   &--active {
     color: var(--color-text-primary);
     font-weight: 500;
-    background: var(--element-bg-base);
+    background: var(--element-bg-soft);
 
     .bitfun-scene-tab__icon {
-      color: var(--color-primary);
+      color: var(--color-text-primary);
+      opacity: 1;
     }
 
     &:hover .bitfun-scene-tab__close {
       opacity: 1;
+    }
+  }
+
+  // Single tab: no pill background (same whether active or not).
+  &:only-child {
+    cursor: default;
+    background: transparent;
+    box-shadow: none;
+
+    &:hover {
+      background: transparent;
+      color: var(--color-text-secondary);
+    }
+
+    &.bitfun-scene-tab--active {
+      background: transparent;
+      box-shadow: none;
+
+      &:hover {
+        background: transparent;
+      }
     }
   }
 
@@ -154,13 +158,13 @@ $_tab-v-margin: 6px;   // symmetric top/bottom gap inside SceneBar
 
   &__sep {
     color: var(--color-text-disabled);
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     flex-shrink: 0;
   }
 
   &__subtitle {
     color: var(--color-text-muted);
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -223,6 +227,68 @@ $_tab-v-margin: 6px;   // symmetric top/bottom gap inside SceneBar
     &:hover {
       background: var(--element-bg-medium);
       opacity: 1 !important;
+    }
+  }
+}
+
+[data-theme='bitfun-slate'] .bitfun-scene-tab__icon {
+  opacity: 0.94;
+}
+
+// Light themes: inactive = former active (soft tint on chrome); active = former inactive (lifted pill + edge).
+:root[data-theme-type='light'] .bitfun-scene-tab {
+  background: var(--element-bg-soft);
+  color: var(--color-text-primary);
+  box-shadow: none;
+
+  &:hover {
+    background: var(--element-bg-medium);
+    color: var(--color-text-primary);
+    box-shadow: none;
+  }
+
+  .bitfun-scene-tab__icon {
+    opacity: 1;
+  }
+
+  &--active {
+    background: var(--color-bg-secondary);
+    color: color-mix(in srgb, var(--color-text-primary) 86%, var(--color-text-muted));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--border-subtle) 38%, transparent);
+
+    &:hover {
+      background: color-mix(in srgb, var(--color-bg-secondary) 82%, var(--color-bg-quaternary));
+      color: color-mix(in srgb, var(--color-text-primary) 90%, var(--color-text-muted));
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--border-subtle) 48%, transparent);
+    }
+
+    .bitfun-scene-tab__icon {
+      color: inherit;
+    }
+
+    .bitfun-scene-tab__subtitle {
+      color: var(--color-text-muted);
+    }
+  }
+
+  &:only-child {
+    background: transparent;
+    box-shadow: none;
+    color: color-mix(in srgb, var(--color-text-primary) 86%, var(--color-text-muted));
+
+    &:hover {
+      background: transparent;
+      color: color-mix(in srgb, var(--color-text-primary) 90%, var(--color-text-muted));
+    }
+
+    &.bitfun-scene-tab--active {
+      background: transparent;
+      box-shadow: none;
+      color: var(--color-text-primary);
+
+      &:hover {
+        background: transparent;
+      }
     }
   }
 }

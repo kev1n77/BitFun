@@ -36,13 +36,13 @@
     "clarificationBatchCompleted": "批量澄清处理完成"
   },
   "header": {
-    "openProject": "打开工程",
-    "newProject": "新建工程",
+    "openProject": "打开工作区",
+    "newProject": "新建工作区",
     "goHome": "返回首页",
     "about": "关于",
     "openMenu": "打开菜单",
     "closeMenu": "关闭菜单",
-    "selectProjectDirectory": "选择要打开的工程目录",
+    "selectProjectDirectory": "选择要打开的工作区目录",
     "configCenter": "配置中心",
     "expandLeftPanel": "展开左侧面板",
     "collapseLeftPanel": "收起左侧面板",
@@ -51,8 +51,8 @@
     "chatPanel": "聊天",
     "showChatPanel": "显示聊天面板",
     "hideChatPanel": "隐藏聊天面板",
-    "switchToToolbar": "切换到工具栏模式",
-    "remoteConnect": "远程控制 (Beta)",
+    "switchToToolbar": "悬浮窗模式",
+    "remoteConnect": "远程控制",
     "modeSwitchAriaLabel": "视图模式切换",
     "modeCowork": "Cowork",
     "modeCoder": "Coder",
@@ -88,14 +88,27 @@
     },
     "tooltips": {
       "persona": "助理 — 创建与管理所有助理实例",
-      "agents": "它能调用哪些 Agent 与 Agent Team",
+      "agents": "它能调用哪些 Agent",
       "skills": "它懂什么专项知识 — 技能知识文件",
-      "tools": "它能用什么工具 — 内置工具与 MCP 服务"
+      "tools": "它能用什么工具 — 内置工具与 MCP 服务",
+      "addWorkspace": "添加工作区"
     },
     "sections": {
       "workspace": "工作区",
-      "myAgent": "我的智能体",
-      "shell": "Shell"
+      "extensions": "定制",
+      "shell": "Shell",
+      "assistantSessions": "助理会话"
+    },
+    "search": {
+      "triggerPlaceholder": "搜索",
+      "triggerTooltip": "搜索 (Ctrl+K、Alt+F)",
+      "inputPlaceholder": "搜索工作区、助理、会话...",
+      "groupWorkspaces": "已打开工作区",
+      "groupAssistants": "助理",
+      "groupSessions": "所有会话",
+      "empty": "未找到相关结果",
+      "sessionSearchHintDefault": "输入关键词，搜索已打开工作区内的会话",
+      "sessionWorkspaceHint": "位于 {{workspace}}"
     },
     "displayModes": {
       "pro": "专业模式",
@@ -106,7 +119,7 @@
       "assistantDesc": "适合持续推进、需要延续上下文和个人偏好的任务。"
     },
     "myAgent": {
-      "title": "我的智能体",
+      "title": "扩展",
       "categories": {
         "agents": "智能体",
         "extensions": "扩展",
@@ -116,39 +129,40 @@
     "shell": {
       "title": "Shell",
       "views": {
-        "all": "全部",
-        "hub": "Hub"
+        "manual": "我的",
+        "agent": "Agent"
       },
       "actions": {
         "newTerminal": "新建终端",
-        "newHubTerminal": "新建 Hub 终端",
-        "addWorktree": "添加 Worktree",
         "refresh": "刷新"
       },
       "context": {
         "start": "启动",
         "stop": "停止",
-        "edit": "编辑",
         "editConfig": "编辑配置",
+        "saveConfig": "保存配置",
+        "deleteSavedTerminal": "删除已保存终端",
         "delete": "删除",
-        "close": "关闭",
-        "rename": "重命名",
-        "promoteToHub": "保存到 Hub",
-        "newWorktreeTerminal": "新建终端",
-        "removeWorktree": "移除 Worktree"
+        "close": "关闭"
       },
       "badges": {
-        "startupCommand": "cmd"
+        "startupCommand": "cmd",
+        "saved": "已保存",
+        "default": "默认"
       },
       "empty": {
-        "all": "从菜单里创建一个终端开始使用",
-        "hub": "还没有 Hub 终端"
+        "manual": "还没有用户终端",
+        "agent": "还没有 Agent 终端",
+        "quickNew": "快速新建"
       }
     },
     "sessions": {
       "newSession": "新建会话",
       "newCodeSession": "新建 Code 会话",
       "newCoworkSession": "新建 Cowork 会话",
+      "newCodeSessionShort": "编码会话",
+      "newCoworkSessionShort": "办公会话",
+      "newExternalAgentSessionShort": "{{agentName}} 会话",
       "newClawSession": "新建 Claw 会话",
       "modeCode": "Code",
       "modeCowork": "Cowork",
@@ -161,7 +175,21 @@
       "cancelEdit": "取消",
       "showMore": "还有 {{count}} 个会话",
       "showAll": "还有 {{count}} 个（展开全部）",
-      "showLess": "收起"
+      "showLess": "收起",
+      "assistantOwner": "所属助理：{{name}}",
+      "parentSession": "父会话",
+      "childSourceWithoutTurn": "来自 {{parentTitle}}",
+      "childSourceWithTurn": "来自 {{parentTitle}} · 第 {{turnIndex}} 轮",
+      "reviewRunning": "审核中",
+      "deepReviewRunning": "审核中",
+      "unreadCompleted": "已完成 — 未读",
+      "unreadError": "执行失败 — 未读",
+      "unreadInterrupted": "输出中断 — 需重试",
+      "needsUserInput": "等待你的输入",
+      "needsToolConfirm": "等待确认",
+      "badgeNeedsInput": "等待中",
+      "badgeNeedsConfirm": "待确认",
+      "needProjectWorkspaceForSession": "请先打开或添加项目工作区。编码与工作（Cowork）会话不能在助理区域创建。"
     },
     "scheduledJobs": {
       "title": "定时任务",
@@ -220,7 +248,8 @@
         "edit": "编辑任务",
         "delete": "删除任务",
         "save": "保存修改",
-        "create": "创建任务"
+        "create": "创建任务",
+        "cancel": "取消"
       },
       "editor": {
         "editTitle": "编辑任务",
@@ -267,8 +296,15 @@
       "revealFailed": "打开工作区目录失败",
       "copyPathFailed": "复制路径失败",
       "createSessionFailed": "新建会话失败",
+      "creatingAcpSession": "正在启动 {{agentName}} 会话...",
+      "restoringAcpSession": "正在恢复 {{agentName}} 会话...",
+      "initSessionFailed": "初始化 AGENTS.md 会话失败",
       "worktreeCreated": "已创建 worktree",
+      "worktreeCreatedAndOpened": "已创建并打开 worktree",
       "worktreeCreateFailed": "创建 worktree 失败：{{error}}",
+      "worktreeCreateOrOpenFailed": "worktree 已创建，但作为工作区打开失败：{{error}}",
+      "worktreeDeleted": "已删除 worktree",
+      "deleteWorktreeFailed": "删除 worktree 失败",
       "expandSessions": "展开会话列表",
       "collapseSessions": "收起会话列表",
       "groups": {
@@ -278,12 +314,12 @@
       "actions": {
         "more": "更多操作",
         "newSession": "新建会话",
-        "newCodeSession": "新建 Code 会话",
-        "newCoworkSession": "新建 Cowork 会话",
         "newAssistant": "新建个人助理",
         "deleteAssistant": "删除个人助理",
         "resetWorkspace": "重置工作区",
+        "initAgents": "初始化 AGENTS.md",
         "newWorktree": "新建 worktree",
+        "deleteWorktree": "删除 worktree",
         "copyPath": "复制路径",
         "reveal": "在资源管理器中打开",
         "close": "关闭工作区"
@@ -297,13 +333,17 @@
         "title": "重置 {{name}}？",
         "message": "此操作会清空该工作区目录下的所有内容，并恢复默认 persona 文件；不会删除工作区目录本身。",
         "pathLabel": "工作区路径"
+      },
+      "deleteWorktreeDialog": {
+        "title": "删除 {{name}}？",
+        "message": "此操作会关闭该工作区，并删除对应的 worktree 目录。",
+        "pathLabel": "Worktree 路径"
       }
     },
     "agents": {
       "allAgents": "全部子智能体",
       "newAgent": "新建子智能体",
-      "agentsOverview": "Agent 总览",
-      "expertTeams": "专家团队"
+      "agentsOverview": "Agent 总览"
     },
     "skills": {
       "allSkills": "全部技能",
@@ -314,7 +354,8 @@
       "mcpServices": "MCP 服务"
     },
     "actions": {
-      "openMyAgent": "我的智能体"
+      "openMyAgent": "我的智能体",
+      "customize": "自定义"
     },
     "moreOptions": "更多选项",
     "multimodalTools": "多模态工具",
@@ -326,25 +367,30 @@
     "restore": "还原",
     "close": "关闭"
   },
+  "browserView": {
+    "addressPlaceholder": "输入网址，例如 {{exampleUrl}}",
+    "startElementSelection": "选取元素",
+    "stopElementSelection": "退出元素选取"
+  },
   "newProject": {
-    "title": "新建工程",
+    "title": "新建工作区",
     "subtitle": "创建一个新的工作区目录",
     "parentDirectory": "父目录",
     "parentDirectoryPlaceholder": "点击右侧按钮选择父目录",
-    "selectParentDirectory": "选择新工程的父目录位置",
+    "selectParentDirectory": "选择新工作区的父目录位置",
     "select": "选择",
-    "projectName": "工程名称",
-    "projectNamePlaceholder": "请输入工程名称，例如：my-project",
+    "projectName": "工作区名称",
+    "projectNamePlaceholder": "请输入工作区名称，例如：my-project",
     "fullPath": "完整路径",
     "cancel": "取消",
     "create": "创建",
     "creating": "创建中...",
     "errorSelectParent": "请选择父目录",
-    "errorEnterName": "请输入工程名称",
-    "errorCreateFailed": "创建工程失败"
+    "errorEnterName": "请输入工作区名称",
+    "errorCreateFailed": "创建工作区失败"
   },
   "remoteConnect": {
-    "title": "远程控制 (Beta)",
+    "title": "远程控制",
     "tabLan": "局域网",
     "tabBitfunServer": "BitFun服务器",
     "tabNgrok": "内网穿透",
@@ -410,7 +456,7 @@
     "openNgrokSetup": "打开 ngrok 安装与配置页面",
     "disclaimerTitle": "远程连接免责声明",
     "disclaimerIntro": "启用远程连接前，请确认你已理解并接受以下事项：",
-    "disclaimerItemBeta": "远程连接目前为 Beta 版本，可能存在未发现的安全漏洞、功能缺陷或不兼容变更，请在充分了解风险后使用。",
+    "disclaimerItemGeneralRisk": "远程连接可能存在未发现的安全漏洞、功能缺陷或不兼容变更，请在充分了解风险后使用。",
     "disclaimerItemSecurity": "远程连接会开启与网络通信相关的能力（包括但不限于局域网、第三方中继、自建服务、机器人通道等），请仅在可信网络和可信设备上使用。",
     "disclaimerItemEncryption": "远程连接采用端到端加密（X25519 ECDH + AES-256-GCM，每次会话生成临时密钥对）传输业务消息，中继服务器无法解密消息内容；但设备名称、连接状态、服务地址等必要元数据及其他连接上下文信息不属于业务消息密文范畴，仍可能被网络路径、服务节点或其他基础设施感知。",
     "disclaimerItemOpenSource": "BitFun 远程连接的加密实现完全开源，你可以自行审计源码以验证安全性。",
@@ -439,7 +485,46 @@
     "buildDate": "构建日期",
     "commit": "提交",
     "branch": "分支",
-    "copyright": "© 2025 BitFun. All rights reserved."
+    "copyright": "© 2025 BitFun. All rights reserved.",
+    "updateSectionTitle": "应用更新",
+    "updateSectionHint": "保持 BitFun 为最新版本，以获取修复与新功能。"
+  },
+  "update": {
+    "checkForUpdates": "检查更新",
+    "checking": "正在检查…",
+    "noUpdate": "当前已是最新版本。",
+    "checkFailed": "检查更新失败。",
+    "availableTitle": "发现新版本",
+    "availableSubtitle": "有新版本可供安装。",
+    "currentVersion": "当前版本",
+    "latestVersion": "最新版本",
+    "releaseNotes": "更新说明",
+    "later": "稍后",
+    "skipVersion": "跳过此版本",
+    "cancel": "取消",
+    "install": "下载并安装",
+    "backgroundInstall": "后台下载",
+    "downloadingTitle": "正在下载更新",
+    "downloadFailedTitle": "无法完成更新",
+    "installedTitle": "更新已安装",
+    "installedMessage": "更新已安装。重启 BitFun 后即可使用新版本。",
+    "progressPercent": "{{percent}}%",
+    "progressUnknown": "正在下载…",
+    "backgroundDownloading": "正在后台下载",
+    "backgroundDownloadHint": "下载完成后会提示重启，期间可以继续使用 BitFun。",
+    "restartHint": "安装完成后需要重启应用。",
+    "restartNow": "立即重启",
+    "restartLater": "稍后",
+    "desktopOnly": "仅桌面客户端支持应用内更新。",
+    "errors": {
+      "unknown": "出了点问题，请稍后再试。",
+      "network": "无法连接更新服务器，请检查网络后重试。",
+      "signature": "更新包校验未通过。若持续出现，请到官网下载最新安装包。",
+      "noUpdateAvailable": "当前没有可用的更新包，请稍后再试。",
+      "notFound": "服务器上未找到更新信息，发布可能尚未完成。",
+      "tls": "无法与更新服务器建立安全连接。",
+      "generic": "更新失败：{{detail}}"
+    }
   },
   "actions": {
     "confirm": "确认",
@@ -663,7 +748,8 @@
     "renameSymbol": "重命名符号",
     "quickFix": "快速修复...",
     "goToSymbol": "转到符号...",
-    "highlightAllOccurrences": "高亮所有出现位置"
+    "highlightAllOccurrences": "高亮所有出现位置",
+    "addToChat": "添加到聊天"
   },
   "document": {
     "delete": "删除文档"
@@ -717,6 +803,7 @@
   },
   "tabs": {
     "configCenter": "配置中心",
+    "diff": "Diff",
     "fixPreview": "修复预览",
     "gitDiff": "Git Diff",
     "gitSettings": "Git 设置",
@@ -724,13 +811,12 @@
     "fileBrowser": "文件浏览器",
     "editor": "编辑器",
     "markdown": "Markdown",
-    "mermaidChart": "Mermaid 图表",
     "settings": "设置",
     "settingsWithSection": "设置 - {{section}}"
   },
   "welcome": {
-    "greetingMorning": "早安，心流开发者",
-    "greetingAfternoon": "欢迎回到心流之境",
+    "greetingMorning": "早安，创造者",
+    "greetingAfternoon": "欢迎回来，一起开工",
     "greetingEvening": "傍晚好，创造者",
     "greetingNight": "深夜问好，代码诗人",
     "subtitleMorning": "「新的一天，新的可能，让我们一起创造些什么」",
@@ -762,14 +848,17 @@
     "settings": "设置",
     "fileViewer": "文件查看",
     "projectContext": "项目概况",
-    "capabilities": "能力配置",
     "agents": "智能体",
     "skills": "技能",
     "miniApps": "小应用",
     "browser": "浏览器",
-    "mermaidEditor": "Mermaid 图表",
-    "myAgent": "我的智能体",
-    "shell": "Shell"
+    "insights": "洞察",
+    "assistant": "助理",
+    "shell": "Shell",
+    "panelView": "面板视图"
+  },
+  "loading": {
+    "scenes": "正在加载场景"
   },
   "welcomeScene": {
     "tabLabel": "欢迎使用",
@@ -778,7 +867,7 @@
     "quickStart": "开始",
     "heroBadge": "BitFun Workspace",
     "heroTitle": "真实工作台，而不只是一个聊天框",
-    "heroDescription": "有个性，有记忆，帮你做事的 AI 助理。会话流、Agent 团队与小应用围绕同一个工作流协同展开，AI 在做事，不只是回答。",
+    "heroDescription": "有个性，有记忆，帮你做事的 AI 助理。会话流与小应用围绕同一个工作流协同展开，AI 在做事，不只是回答。",
     "newCodeSession": "新建 Code 会话",
     "newCodeSessionDesc": "开始代码任务、调试问题，或打开一个项目进入开发状态",
     "newCoworkSession": "新建 Cowork 会话",
@@ -816,6 +905,7 @@
     "comingSoon": "即将推出",
     "recentWorkspaces": "切换工作区",
     "openOtherProject": "打开",
+    "removeFromRecent": "从最近列表移除",
     "newProject": "新建",
     "noOtherWorkspaces": "暂无其他工作区",
     "emptyHint": "选一个场景，开始今天的创作吧",
@@ -837,6 +927,7 @@
     "generating": "正在生成洞察...",
     "generateNew": "生成新报告",
     "generateBtn": "生成",
+    "rangeLabel": "统计范围",
     "history": "历史报告",
     "noReports": "暂无报告，点击上方按钮生成第一份洞察报告。",
     "backToList": "返回列表",
@@ -890,7 +981,7 @@
   "ssh": {
     "remote": {
       "title": "远程 SSH",
-      "connect": "连接远程工程",
+      "connect": "连接远程工作区",
       "connecting": "连接中...",
       "connected": "已连接",
       "disconnect": "断开连接",
@@ -906,10 +997,13 @@
       "authMethod": "认证方式",
       "password": "密码",
       "privateKey": "私钥",
-      "sshAgent": "SSH Agent",
-      "privateKeyPath": "私钥路径",
+      "privateKeyPath": "私钥文件路径",
+      "browsePrivateKey": "选择私钥文件",
+      "pickPrivateKeyDialogTitle": "选择 SSH 私钥",
       "passphrase": "密码短语",
       "passphraseOptional": "留空表示无密码短语",
+      "homeFolder": "主目录",
+      "clickToEditPath": "点击编辑路径",
       "selectWorkspace": "选择工作区目录",
       "openWorkspace": "打开为工作区",
       "selected": "已选择",
@@ -926,6 +1020,7 @@
       "enterPassword": "请输入密码",
       "enterKeyPath": "请输入私钥路径",
       "keyPathDescription": "输入私钥文件路径",
+      "authPromptTitle": "SSH 认证",
       "disconnectConfirm": "确定要断开连接吗？",
       "disconnectWorkspaceConfirm": "确定要关闭远程工作区吗？这将断开与远程服务器的连接。",
       "newFile": "新建文件",
@@ -942,5 +1037,20 @@
       "transferNeedsDesktop": "上传与下载仅适用于桌面版应用。",
       "transferring": "正在传输…"
     }
+  },
+  "notify": {
+    "dialogCompleted": "AI 助手已完成任务。",
+    "dialogCompletedTitle": "BitFun 任务已完成",
+    "dialogCompletedWithSession": "“{{sessionTitle}}” 已完成，可以回到 BitFun 查看结果。",
+    "dialogCompletedFallback": "有一个 BitFun 会话已完成，可以回到应用查看结果。",
+    "dialogFailedTitle": "BitFun 任务已中断",
+    "dialogFailedWithSession": "“{{sessionTitle}}” 已异常停止，可以回到 BitFun 查看原因。",
+    "dialogFailedFallback": "有一个 BitFun 会话已异常停止，可以回到应用查看原因。"
+  },
+  "closeDialog": {
+    "title": "关闭 BitFun",
+    "message": "请选择关闭操作：退出程序将完全停止运行，最小化到托盘可保持后台运行随时唤回。",
+    "quit": "退出程序",
+    "minimizeToTray": "最小化到托盘"
   }
 }

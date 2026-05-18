@@ -95,6 +95,9 @@
         }
 
         .monaco-scrollable-element > .scrollbar {
+          background: transparent !important;
+          box-shadow: none !important;
+
           .slider {
             background: linear-gradient(135deg,
               rgba(225, 171, 128, 0.35),

@@ -121,20 +121,3 @@ export interface EditorInstance {
   /** Whether there are unsaved changes */
   isDirty?: boolean
 }
-
-/**
- * Markdown render options
- */
-export interface RenderOptions {
-  math?: boolean
-  highlight?: boolean
-  emoji?: boolean
-  taskList?: boolean
-  table?: boolean
-  linkify?: boolean
-  /**
-   * Directory path of the Markdown file.
-   * Used to resolve relative image paths.
-   */
-  basePath?: string
-}

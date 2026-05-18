@@ -117,7 +117,7 @@
   }
 
   &__template-name {
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     font-weight: $font-weight-medium;
     color: var(--color-text-primary);
     white-space: nowrap;
@@ -149,7 +149,7 @@
   }
 
   &__template-label {
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     font-weight: $font-weight-medium;
     color: var(--color-text-secondary);
   }
@@ -171,7 +171,7 @@
   }
 
   &__template-note {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     line-height: $line-height-relaxed;
   }

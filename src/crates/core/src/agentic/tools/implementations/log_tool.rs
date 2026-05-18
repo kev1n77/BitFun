@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use tokio::fs;
 use tokio::io::AsyncReadExt;
 
-use crate::agentic::tools::framework::{Tool, ToolResult, ToolUseContext};
+use crate::agentic::tools::framework::{Tool, ToolExposure, ToolResult, ToolUseContext};
 use crate::util::errors::{BitFunError, BitFunResult};
 
 /// LogTool - log viewing and analysis tool
@@ -23,6 +23,12 @@ pub struct LogToolInput {
     pub lines: Option<usize>, // Number of lines to read (for tail operation)
     pub pattern: Option<String>, // Search pattern (for search operation)
     pub level: Option<String>, // Log level filter: "error", "warn", "info", "debug"
+}
+
+impl Default for LogTool {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LogTool {
@@ -90,7 +96,7 @@ impl LogTool {
         }
 
         if results.is_empty() {
-            Ok(format!("No matching log records found"))
+            Ok("No matching log records found".to_string())
         } else {
             Ok(format!(
                 "Found {} matching records:\n{}",
@@ -179,6 +185,14 @@ Usage examples:
    Log(action="read", log_path="/var/log/app.log")
 
 The tool will return the log content or analysis results that you can use to diagnose issues."#.to_string())
+    }
+
+    fn short_description(&self) -> String {
+        "Read and analyze log files for debugging and monitoring.".to_string()
+    }
+
+    fn default_exposure(&self) -> ToolExposure {
+        ToolExposure::Collapsed
     }
 
     fn input_schema(&self) -> Value {
@@ -317,6 +331,7 @@ The tool will return the log content or analysis results that you can use to dia
         Ok(vec![ToolResult::Result {
             data: result,
             result_for_assistant: Some(result_for_assistant),
+            image_attachments: None,
         }])
     }
 }

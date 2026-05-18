@@ -55,14 +55,6 @@
     }
   }
 
-  &__btw-create {
-    flex: 0 0 auto;
-
-    &:not(:disabled):hover {
-      background: color-mix(in srgb, var(--element-bg-soft) 82%, transparent);
-    }
-  }
-
   &__turn-nav {
     position: relative;
     display: flex;
@@ -76,6 +68,104 @@
     &:not(:disabled):hover,
     &--active {
       background: color-mix(in srgb, var(--element-bg-soft) 82%, transparent);
+    }
+  }
+
+  &__search-btn,
+  &__review-platform-btn,
+  &__search-close {
+    flex: 0 0 auto;
+
+    &:not(:disabled):hover {
+      background: color-mix(in srgb, var(--element-bg-soft) 82%, transparent);
+    }
+  }
+
+  &__search {
+    display: flex;
+    align-items: center;
+    gap: $size-gap-1;
+    min-width: min(320px, 38vw);
+    max-width: min(420px, 42vw);
+  }
+
+  &__search-field {
+    flex: 1;
+    min-width: 0;
+
+    &.bitfun-input-wrapper {
+      gap: 0;
+    }
+
+    .bitfun-input-container {
+      padding-right: 2px;
+    }
+
+    .bitfun-input-suffix {
+      display: flex;
+      align-items: center;
+      padding: 0;
+    }
+  }
+
+  &__search-prefix-icon {
+    flex-shrink: 0;
+    color: var(--color-text-secondary);
+    opacity: 0.75;
+  }
+
+  &__search-inline-controls {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    padding-left: 2px;
+    margin-left: 2px;
+    border-left: 1px solid var(--color-border-subtle, rgba(128, 128, 128, 0.2));
+  }
+
+  &__search-count {
+    flex-shrink: 0;
+    padding: 0 3px;
+    color: var(--color-text-secondary);
+    font-size: var(--flowchat-font-size-xs);
+    white-space: nowrap;
+
+    &:empty {
+      display: none;
+    }
+  }
+
+  &__search-nav {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    overflow: hidden;
+    border-radius: 3px;
+  }
+
+  &__search-nav-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 10px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    opacity: 0.8;
+    transition: opacity $motion-base $easing-standard, background $motion-base $easing-standard;
+    line-height: 0;
+
+    &:hover:not(:disabled) {
+      opacity: 1;
+      background: var(--element-bg-soft, rgba(128, 128, 128, 0.1));
+    }
+
+    &:disabled {
+      opacity: 0.25;
+      cursor: default;
     }
   }
 
@@ -104,7 +194,7 @@
     gap: $size-gap-2;
     padding: $size-gap-2 $size-gap-3;
     border-bottom: 1px solid var(--border-base);
-    font-size: $font-size-xs;
+    font-size: var(--flowchat-font-size-xs);
     color: var(--color-text-secondary);
   }
 
@@ -147,7 +237,7 @@
     border-radius: 999px;
     background: color-mix(in srgb, var(--element-bg-soft) 82%, transparent);
     color: var(--color-text-secondary);
-    font-size: $font-size-xs;
+    font-size: var(--flowchat-font-size-xs);
     line-height: 1;
     white-space: nowrap;
   }
@@ -155,7 +245,7 @@
   &__turn-list-title {
     min-width: 0;
     flex: 1;
-    font-size: $font-size-sm;
+    font-size: var(--flowchat-font-size-sm);
     color: inherit;
     white-space: nowrap;
     overflow: hidden;
@@ -172,6 +262,19 @@
     justify-content: center;
     gap: $size-gap-2;
     overflow: hidden;
+    cursor: pointer;
+    border-radius: $size-radius-base;
+    transition: background $motion-base $easing-standard;
+
+    &:hover {
+      background: color-mix(in srgb, var(--element-bg-soft) 70%, transparent);
+    }
+
+    &:focus-visible {
+      outline: none;
+      background: color-mix(in srgb, var(--element-bg-soft) 82%, transparent);
+      box-shadow: 0 0 0 1.5px var(--border-strong);
+    }
   }
 
   &__turn-badge {
@@ -183,14 +286,14 @@
     border-radius: 999px;
     background: color-mix(in srgb, var(--element-bg-soft) 82%, transparent);
     color: var(--color-text-secondary);
-    font-size: $font-size-xs;
+    font-size: var(--flowchat-font-size-xs);
     line-height: 1;
     white-space: nowrap;
   }
 
   &__message-text {
     min-width: 0;
-    font-size: $font-size-sm;
+    font-size: var(--flowchat-font-size-sm);
     color: var(--color-text-primary);
     white-space: nowrap;
     overflow: hidden;
@@ -206,7 +309,17 @@
     flex-shrink: 0;
 
     &--left {
+      position: relative;
+      z-index: 2;
       margin-right: $size-gap-2;
+      overflow: visible;
+    }
+  }
+
+  @media (max-width: 900px) {
+    &__search {
+      min-width: min(220px, 52vw);
+      max-width: min(300px, 56vw);
     }
   }
 }

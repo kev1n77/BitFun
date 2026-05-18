@@ -11,7 +11,7 @@ This directory contains BitFun’s **Web UI** (React + TypeScript). The same fro
 
 ## Tech stack
 
-- React 19
+- React 18.3
 - TypeScript 5.8
 - Vite 7
 - SCSS
@@ -59,7 +59,7 @@ One UI, two runtimes:
 - **Desktop**: Tauri API (`invoke`, `listen`)
 - **Server/Web**: WebSocket / Fetch API
 
-### Adapter pattern (simplified)
+### Adapter pattern (conceptual example)
 
 ```ts
 const adapter = IS_TAURI ? TauriAdapter : WebSocketAdapter;
@@ -73,31 +73,29 @@ adapter.listen("agentic://text-chunk", callback);
 ### Start the dev server
 
 ```bash
-cd src/web-ui
-
 # Desktop
-pnpm run dev
+pnpm --dir src/web-ui run dev
 
 # Server/Web
-VITE_BUILD_TARGET=web pnpm run dev
+VITE_BUILD_TARGET=web pnpm --dir src/web-ui run dev
 ```
 
 ### Build
 
 ```bash
 # Desktop
-pnpm run build
+pnpm --dir src/web-ui run build
 
 # Server/Web
-VITE_BUILD_TARGET=web pnpm run build
+VITE_BUILD_TARGET=web pnpm --dir src/web-ui run build
 # output: dist/
 ```
 
 ## Related docs (within this package)
 
-- `LOGGING.md`
-- `src/component-library/README.md`
-- `src/infrastructure/i18n/README.md`
+- [Logging guide](LOGGING.md)
+- [Component library README](src/component-library/README.md)
+- [i18n README](src/infrastructure/i18n/README.md)
 
 ## Notes
 

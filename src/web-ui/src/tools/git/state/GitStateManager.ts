@@ -32,6 +32,8 @@ import {
   GitStateChangedEventData,
 } from './types';
 import { createLogger } from '@/shared/utils/logger';
+import { sendDebugProbe } from '@/shared/utils/debugProbe';
+import { elapsedMs, nowMs } from '@/shared/utils/timing';
 import { i18nService } from '@/infrastructure/i18n';
 
 const log = createLogger('GitStateManager');
@@ -54,7 +56,7 @@ export class GitStateManager {
 
   private states = new Map<string, GitState>();
   private subscribers = new Map<string, Set<SubscriberEntry>>();
-  private visibleRepositories = new Set<string>();
+  private windowFocusRefreshCounts = new Map<string, number>();
   private refreshDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private refreshLocks = new Map<string, Promise<void>>();
   private pendingRefreshes = new Map<string, PendingRefresh>();
@@ -155,31 +157,22 @@ export class GitStateManager {
   }
 
   /**
-   * Track panel visibility for a repository.
-   *
-   * Note: this does not trigger a refresh. Refresh scheduling is owned by `useGitState`
-   * to avoid duplicate refreshes.
+   * Register a consumer that wants automatic refresh on window focus.
+   * Multiple concurrent consumers for the same repository are reference-counted.
    */
-  setVisibility(repositoryPath: string, visible: boolean): void {
+  registerWindowFocusRefresh(repositoryPath: string): () => void {
     const normalizedPath = this.normalizePath(repositoryPath);
-    const wasVisible = this.visibleRepositories.has(normalizedPath);
+    const nextCount = (this.windowFocusRefreshCounts.get(normalizedPath) ?? 0) + 1;
+    this.windowFocusRefreshCounts.set(normalizedPath, nextCount);
 
-    if (visible) {
-      if (!wasVisible) {
-        this.visibleRepositories.add(normalizedPath);
+    return () => {
+      const currentCount = this.windowFocusRefreshCounts.get(normalizedPath) ?? 0;
+      if (currentCount <= 1) {
+        this.windowFocusRefreshCounts.delete(normalizedPath);
+        return;
       }
-    } else {
-      if (wasVisible) {
-        this.visibleRepositories.delete(normalizedPath);
-      }
-    }
-  }
-
-  /**
-   * Whether the repository is currently visible.
-   */
-  isVisible(repositoryPath: string): boolean {
-    return this.visibleRepositories.has(this.normalizePath(repositoryPath));
+      this.windowFocusRefreshCounts.set(normalizedPath, currentCount - 1);
+    };
   }
 
   /**
@@ -227,7 +220,7 @@ export class GitStateManager {
 
     this.states.clear();
 
-    this.visibleRepositories.clear();
+    this.windowFocusRefreshCounts.clear();
   }
 
   // -------------------------------------------------------------------------
@@ -341,6 +334,11 @@ export class GitStateManager {
       return;
     }
 
+    const startedAt = nowMs();
+    const shouldProbeReason =
+      reason === 'window-focus' || reason === 'visibility' || reason === 'mount';
+    let probeError: string | null = null;
+    let probeOutcome = 'completed';
 
     let state = this.getOrCreateState(repositoryPath);
     const prevState = { ...state };
@@ -352,6 +350,15 @@ export class GitStateManager {
       : layers.filter((layer) => this.isCacheExpired(state, layer, now));
 
     if (layersToRefresh.length === 0) {
+      if (shouldProbeReason) {
+        sendDebugProbe('GitStateManager.ts:doRefresh', 'Git refresh skipped by cache', {
+          repositoryPath,
+          reason,
+          force,
+          silent,
+          requestedLayers: layers,
+        });
+      }
       return;
     }
 
@@ -401,6 +408,8 @@ export class GitStateManager {
         this.emitStateChanged(repositoryPath, finalState, layersToRefresh, reason);
 
       } catch (error) {
+        probeOutcome = 'error';
+        probeError = error instanceof Error ? error.message : String(error);
         const errorMessage = error instanceof Error ? error.message : i18nService.t('panels/git:errors.refreshFailed');
         log.error('Refresh failed', { repositoryPath, layersToRefresh, error });
 
@@ -412,6 +421,20 @@ export class GitStateManager {
 
         throw error;
       } finally {
+        const durationMs = elapsedMs(startedAt);
+        if (probeError || shouldProbeReason || durationMs >= 80) {
+          sendDebugProbe('GitStateManager.ts:doRefresh', 'Git refresh completed', {
+            repositoryPath,
+            reason,
+            force,
+            silent,
+            requestedLayers: layers,
+            refreshedLayers: layersToRefresh,
+            durationMs,
+            outcome: probeOutcome,
+            error: probeError,
+          });
+        }
         this.refreshLocks.delete(repositoryPath);
       }
     })();
@@ -644,7 +667,12 @@ export class GitStateManager {
   }
 
   private handleWindowFocus = (): void => {
-    for (const repoPath of this.visibleRepositories) {
+    const repositories = Array.from(this.windowFocusRefreshCounts.keys());
+    sendDebugProbe('GitStateManager.ts:handleWindowFocus', 'Git window focus refresh queued', {
+      participatingRepositoryCount: repositories.length,
+      repositories,
+    });
+    for (const repoPath of repositories) {
       this.refresh(repoPath, {
         layers: ['basic', 'status'],
         reason: 'window-focus',

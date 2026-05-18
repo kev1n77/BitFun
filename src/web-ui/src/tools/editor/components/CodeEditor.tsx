@@ -24,7 +24,21 @@ import { EditorConfig as EditorConfigType } from '@/infrastructure/config/types'
 import { CubeLoading } from '@/component-library';
 import { getMonacoLanguage } from '@/infrastructure/language-detection';
 import { createLogger } from '@/shared/utils/logger';
+import { sendDebugProbe } from '@/shared/utils/debugProbe';
+import { elapsedMs, nowMs } from '@/shared/utils/timing';
 import { isSamePath } from '@/shared/utils/pathUtils';
+import {
+  diskContentMatchesEditorForExternalSync,
+  diskVersionFromMetadata,
+  diskVersionsDiffer,
+  editorSyncContentSha256Hex,
+  type DiskFileVersion,
+} from '../utils/diskFileVersion';
+import { confirmDialog } from '@/component-library/components/ConfirmDialog/confirmService';
+import {
+  isFileMissingFromMetadata,
+  isLikelyFileNotFoundError,
+} from '@/shared/utils/fsErrorUtils';
 import { useI18n } from '@/infrastructure/i18n';
 import { EditorBreadcrumb } from './EditorBreadcrumb';
 import { EditorStatusBar } from './EditorStatusBar';
@@ -70,6 +84,16 @@ export interface CodeEditorProps {
   jumpToColumn?: number;
   /** Jump to line range (preferred, supports single or multi-line selection) */
   jumpToRange?: import('@/component-library/components/Markdown').LineRange;
+  /** Unique token for repeated jump requests to the same location. */
+  navigationToken?: number;
+  /** When false, disk sync polling is paused (e.g. background editor tab). */
+  isActiveTab?: boolean;
+  /** File path is not an existing file on disk (drives tab "deleted" label). */
+  onFileMissingFromDiskChange?: (missing: boolean) => void;
+  /** Persist changes automatically after a short debounce. */
+  autoSave?: boolean;
+  /** Debounce used when autoSave is enabled. */
+  autoSaveDelayMs?: number;
 }
 
 const LARGE_FILE_SIZE_THRESHOLD_BYTES = 1 * 1024 * 1024; // 1MB
@@ -77,6 +101,17 @@ const LARGE_FILE_MAX_LINE_LENGTH = 20000;
 const LARGE_FILE_RENDER_LINE_LIMIT = 10000;
 const LARGE_FILE_MAX_TOKENIZATION_LINE_LENGTH = 2000;
 const LARGE_FILE_EXPANSION_LABELS = ['show more', '显示更多', '展开更多'];
+
+/** Poll disk metadata for open file; only while tab is active (see isActiveTab). */
+const FILE_SYNC_POLL_INTERVAL_MS = 1000;
+
+function getPollOffsetMs(filePath: string): number {
+  let hash = 0;
+  for (let i = 0; i < filePath.length; i++) {
+    hash = ((hash << 5) - hash + filePath.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash) % 400;
+}
 
 function hasVeryLongLine(content: string, maxLineLength: number): boolean {
   let currentLineLength = 0;
@@ -117,7 +152,12 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
   enableLsp = true,
   jumpToLine,
   jumpToColumn,
-  jumpToRange
+  jumpToRange,
+  navigationToken,
+  isActiveTab = true,
+  onFileMissingFromDiskChange,
+  autoSave = false,
+  autoSaveDelayMs = 800,
 }) => {
   // Decode URL-encoded paths (e.g. d%3A/path -> d:/path)
   const filePath = useMemo(() => {
@@ -196,7 +236,23 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
   const modelRef = useRef<monaco.editor.ITextModel | null>(null);
   const isUnmountedRef = useRef(false);
   const isCheckingFileRef = useRef(false);
-  const lastModifiedTimeRef = useRef<number>(0);
+  /** Last disk state known to match loaded/saved editor content (mtime + size; local + remote). */
+  const diskVersionRef = useRef<DiskFileVersion | null>(null);
+  const lastReportedMissingRef = useRef<boolean | undefined>(undefined);
+
+  const reportFileMissingFromDisk = useCallback(
+    (missing: boolean) => {
+      if (!onFileMissingFromDiskChange) {
+        return;
+      }
+      if (lastReportedMissingRef.current === missing) {
+        return;
+      }
+      lastReportedMissingRef.current = missing;
+      onFileMissingFromDiskChange(missing);
+    },
+    [onFileMissingFromDiskChange]
+  );
   const contentChangeListenerRef = useRef<monaco.IDisposable | null>(null);
   const ctrlDecorationsRef = useRef<string[]>([]);
   const lastHoverWordRef = useRef<string | null>(null);
@@ -215,6 +271,25 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
   const largeFileExpansionBlockedLogRef = useRef(false);
   const pendingModelContentRef = useRef<string | null>(null);
   const macosEditorBindingCleanupRef = useRef<(() => void) | null>(null);
+  const workspacePathRuntimeRef = useRef(workspacePath);
+  const readOnlyRuntimeRef = useRef(readOnly);
+  const showLineNumbersRuntimeRef = useRef(showLineNumbers);
+  const showMinimapRuntimeRef = useRef(showMinimap);
+  const onContentChangeRef = useRef(onContentChange);
+  const tRef = useRef(t);
+  const contentRef = useRef(content);
+  const loadingRef = useRef(loading);
+  const editorConfigRuntimeRef = useRef(editorConfig);
+
+  workspacePathRuntimeRef.current = workspacePath;
+  readOnlyRuntimeRef.current = readOnly;
+  showLineNumbersRuntimeRef.current = showLineNumbers;
+  showMinimapRuntimeRef.current = showMinimap;
+  onContentChangeRef.current = onContentChange;
+  tRef.current = t;
+  contentRef.current = content;
+  loadingRef.current = loading;
+  editorConfigRuntimeRef.current = editorConfig;
 
   const detectLargeFileMode = useCallback((nextContent: string, fileSizeBytes?: number): boolean => {
     const size = typeof fileSizeBytes === 'number' && fileSizeBytes >= 0
@@ -261,6 +336,42 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
       }
     });
   }, []);
+
+  const applyDiskSnapshotToEditor = useCallback(
+    (
+      fileContent: string,
+      version: DiskFileVersion | null,
+      options?: { restoreCursor?: monaco.IPosition | null }
+    ) => {
+      updateLargeFileMode(fileContent);
+      if (isUnmountedRef.current) {
+        return;
+      }
+      isLoadingContentRef.current = true;
+      setContent(fileContent);
+      originalContentRef.current = fileContent;
+      setHasChanges(false);
+      hasChangesRef.current = false;
+      if (version) {
+        diskVersionRef.current = version;
+      }
+      applyExternalContentToModel(fileContent);
+      const pos = options?.restoreCursor;
+      if (pos && editorRef.current) {
+        editorRef.current.setPosition(pos);
+      }
+      onContentChange?.(fileContent, false);
+      reportFileMissingFromDisk(false);
+      queueMicrotask(() => {
+        isLoadingContentRef.current = false;
+        if (modelRef.current && !isUnmountedRef.current && filePath) {
+          savedVersionIdRef.current = modelRef.current.getAlternativeVersionId();
+          monacoModelManager.markAsSaved(filePath);
+        }
+      });
+    },
+    [applyExternalContentToModel, filePath, onContentChange, reportFileMissingFromDisk, updateLargeFileMode]
+  );
 
   const shouldBlockLargeFileExpansionClick = useCallback((target: EventTarget | null): boolean => {
     if (!(target instanceof HTMLElement)) {
@@ -444,6 +555,7 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
       return;
     }
 
+    const container = containerRef.current;
     let editor: monaco.editor.IStandaloneCodeEditor | null = null;
     let model: monaco.editor.ITextModel | null = null;
 
@@ -455,8 +567,8 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
         }
         
         let createFontSize = 14;
-        let createFontFamily = editorConfig.font_family || "'Fira Code', 'Noto Sans SC', Consolas, 'Courier New', monospace";
-        let createFontWeight = editorConfig.font_weight || 'normal';
+        let createFontFamily = editorConfigRuntimeRef.current.font_family || "'Fira Code', 'Noto Sans SC', Consolas, 'Courier New', monospace";
+        let createFontWeight = editorConfigRuntimeRef.current.font_weight || 'normal';
         let createLineHeight = 0;
         const applyFontConfig = (c: Partial<EditorConfigType>) => {
           createFontSize = c.font_size ?? 14;
@@ -475,8 +587,8 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
         model = monacoModelManager.getOrCreateModel(
           filePath,
           detectedLanguage,
-          content || '',
-          workspacePath
+          contentRef.current || '',
+          workspacePathRuntimeRef.current
         );
         
         modelRef.current = model;
@@ -494,14 +606,14 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
           savedVersionIdRef.current = modelMetadata.savedVersionId;
           originalContentRef.current = modelMetadata.originalContent;
           
-          if (isDirty && onContentChange) {
-            onContentChange(modelContent, true);
+          if (isDirty && onContentChangeRef.current) {
+            onContentChangeRef.current(modelContent, true);
           }
         } else {
           savedVersionIdRef.current = model.getAlternativeVersionId();
         }
         
-        if (modelContent && modelContent !== content) {
+        if (modelContent && modelContent !== contentRef.current) {
           setContent(modelContent);
           if (!modelMetadata) {
             originalContentRef.current = modelContent;
@@ -526,21 +638,21 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
           model: model,
           theme: themeId,
           automaticLayout: true,
-          readOnly: readOnly,
-          lineNumbers: showLineNumbers ? 'on' : (editorConfig.line_numbers as any) || 'on',
+          readOnly: readOnlyRuntimeRef.current,
+          lineNumbers: showLineNumbersRuntimeRef.current ? 'on' : (editorConfigRuntimeRef.current.line_numbers as any) || 'on',
           minimap: { 
-            enabled: showMinimap && !initialLargeFileMode,
-            side: (editorConfig.minimap?.side as any) || 'right',
-            size: (editorConfig.minimap?.size as any) || 'proportional'
+            enabled: showMinimapRuntimeRef.current && !initialLargeFileMode,
+            side: (editorConfigRuntimeRef.current.minimap?.side as any) || 'right',
+            size: (editorConfigRuntimeRef.current.minimap?.size as any) || 'proportional'
           },
           fontSize: createFontSize,
           fontFamily: createFontFamily,
           fontWeight: createFontWeight,
-          lineHeight: createLineHeight || (editorConfig.line_height ? Math.round(createFontSize * editorConfig.line_height) : 0),
+          lineHeight: createLineHeight || (editorConfigRuntimeRef.current.line_height ? Math.round(createFontSize * editorConfigRuntimeRef.current.line_height) : 0),
           scrollBeyondLastLine: false,
-          wordWrap: (editorConfig.word_wrap as any) || 'off',
-          tabSize: editorConfig.tab_size || 2,
-          insertSpaces: editorConfig.insert_spaces !== undefined ? editorConfig.insert_spaces : true,
+          wordWrap: (editorConfigRuntimeRef.current.word_wrap as any) || 'off',
+          tabSize: editorConfigRuntimeRef.current.tab_size || 2,
+          insertSpaces: editorConfigRuntimeRef.current.insert_spaces !== undefined ? editorConfigRuntimeRef.current.insert_spaces : true,
           contextmenu: false,
           links: true,
           gotoLocation: {
@@ -615,7 +727,7 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
           }
         };
 
-        editor = monaco.editor.create(containerRef.current, editorOptions);
+        editor = monaco.editor.create(container, editorOptions);
         editorRef.current = editor;
         setEditorInstance(editor);
         const editTarget = createMonacoEditTarget(editor);
@@ -639,7 +751,7 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
         };
         // #endregion
         
-        (containerRef.current as any).__monacoEditor = editor;
+        (container as any).__monacoEditor = editor;
         
         if (model) {
           const { lspDocumentService } = await import('@/tools/lsp/services/LspDocumentService');
@@ -710,7 +822,7 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
                   normalizedPath,
                   targetLine,
                   targetColumn,
-                  { workspacePath }
+                  { workspacePath: workspacePathRuntimeRef.current }
                 );
               } catch (error) {
                 log.error('Cross-file jump failed', error);
@@ -733,7 +845,7 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
           setHasChanges(changed);
           hasChangesRef.current = changed;
           
-          onContentChange?.(newContent, changed);
+          onContentChangeRef.current?.(newContent, changed);
         });
 
         editor.onDidChangeCursorPosition((e) => {
@@ -758,16 +870,16 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
         });
 
         const updateCursorPosition = (e: monaco.editor.IEditorMouseEvent) => {
-          if (e.target.position && containerRef.current?.parentElement?.parentElement) {
+          if (e.target.position && container.parentElement?.parentElement) {
             // containerRef -> .code-editor-tool__content -> .code-editor-tool (has data-monaco-editor)
-            const container = containerRef.current.parentElement.parentElement;
+            const editorContainer = container.parentElement.parentElement;
             const newLine = String(e.target.position.lineNumber);
             const newColumn = String(e.target.position.column);
             
-            if (container.getAttribute('data-cursor-line') !== newLine || 
-                container.getAttribute('data-cursor-column') !== newColumn) {
-              container.setAttribute('data-cursor-line', newLine);
-              container.setAttribute('data-cursor-column', newColumn);
+            if (editorContainer.getAttribute('data-cursor-line') !== newLine || 
+                editorContainer.getAttribute('data-cursor-column') !== newColumn) {
+              editorContainer.setAttribute('data-cursor-line', newLine);
+              editorContainer.setAttribute('data-cursor-column', newColumn);
             }
           }
         };
@@ -795,7 +907,7 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
             if (ctrlDecorationsRef.current.length > 0) {
               try {
                 ctrlDecorationsRef.current = editor!.deltaDecorations(ctrlDecorationsRef.current, []);
-              } catch (err) {
+              } catch (_err) {
                 ctrlDecorationsRef.current = [];
               }
               lastHoverWordRef.current = null;
@@ -837,13 +949,13 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
           log.error('Failed to load EditorReadyManager', err);
         });
         
-        if (!loading && content) {
+        if (!loadingRef.current && contentRef.current) {
           setLspReady(true);
         }
 
       } catch (error) {
         log.error('Failed to initialize editor', error);
-        setError(t('editor.codeEditor.initFailedWithMessage', { message: String(error) }));
+        setError(tRef.current('editor.codeEditor.initFailedWithMessage', { message: String(error) }));
       }
     };
 
@@ -875,9 +987,9 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
         editorRef.current = null;
         setEditorInstance(null);
       }
-      
-      if (containerRef.current) {
-        delete (containerRef.current as any).__monacoEditor;
+
+      if (container) {
+        delete (container as any).__monacoEditor;
       }
 
       monacoModelManager.releaseModel(filePath);
@@ -970,6 +1082,61 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
     });
   }, []);
 
+  const isJumpStillApplied = useCallback((
+    editor: any,
+    model: any,
+    line: number,
+    column: number,
+    endLine?: number
+  ): boolean => {
+    const lineCount = model.getLineCount();
+    const targetLine = Math.min(line, Math.max(1, lineCount));
+    const targetEndLine = endLine ? Math.min(endLine, Math.max(1, lineCount)) : undefined;
+    const maxColumnForLine = model.getLineMaxColumn(targetLine);
+    const targetColumn = Math.min(Math.max(1, column), maxColumnForLine);
+    const requiredEndLine = targetEndLine ?? targetLine;
+    const visibleRanges = typeof editor.getVisibleRanges === 'function'
+      ? editor.getVisibleRanges()
+      : [];
+    const isTargetVisible = visibleRanges.some((range: monaco.Range) =>
+      range.startLineNumber <= targetLine && range.endLineNumber >= requiredEndLine
+    );
+
+    if (!isTargetVisible) {
+      return false;
+    }
+
+    const selection = typeof editor.getSelection === 'function' ? editor.getSelection() : null;
+
+    if (targetEndLine && targetEndLine > targetLine) {
+      if (!selection) {
+        return false;
+      }
+
+      const endLineMaxColumn = model.getLineMaxColumn(targetEndLine);
+      return (
+        selection.startLineNumber === targetLine &&
+        selection.startColumn === 1 &&
+        selection.endLineNumber === targetEndLine &&
+        selection.endColumn === endLineMaxColumn
+      );
+    }
+
+    const position = typeof editor.getPosition === 'function' ? editor.getPosition() : null;
+    if (!position || !selection) {
+      return false;
+    }
+
+    return (
+      position.lineNumber === targetLine &&
+      position.column === targetColumn &&
+      selection.startLineNumber === targetLine &&
+      selection.startColumn === targetColumn &&
+      selection.endLineNumber === targetLine &&
+      selection.endColumn === targetColumn
+    );
+  }, []);
+
   // Handle initial jump (after content load). If the model has fewer lines than requested,
   // wait for content to sync into the model; otherwise we clamp to line 1, set lastJump,
   // and dedupe blocks a correct jump after the real text arrives.
@@ -991,7 +1158,8 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
       lastJump &&
       lastJump.filePath === filePath &&
       lastJump.line === finalRange.start &&
-      lastJump.endLine === finalRange.end
+      lastJump.endLine === finalRange.end &&
+      isJumpStillApplied(editor, model, finalRange.start, targetColumn, finalRange.end)
     ) {
       return;
     }
@@ -1063,7 +1231,7 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
         timeoutId = null;
       }
     };
-  }, [jumpToRange, jumpToLine, jumpToColumn, monacoReady, loading, content, filePath, performJump]);
+  }, [jumpToRange, jumpToLine, jumpToColumn, navigationToken, monacoReady, loading, content, filePath, performJump, isJumpStillApplied]);
 
   // Status bar popover: open and confirm
   const openStatusBarPopover = useCallback((type: 'position' | 'indent' | 'encoding' | 'language', e: React.MouseEvent) => {
@@ -1107,6 +1275,11 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
     });
   }, []);
 
+  const fetchFileMetadata = useCallback(async () => {
+    const { workspaceAPI } = await import('@/infrastructure/api');
+    return workspaceAPI.getFileMetadata(filePath);
+  }, [filePath]);
+
   const handleEncodingConfirm = useCallback(async (newEncoding: string) => {
     setEncoding(newEncoding);
     if (!filePath) return;
@@ -1119,6 +1292,23 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
       setHasChanges(false);
       hasChangesRef.current = false;
       applyExternalContentToModel(content);
+      try {
+        const fileInfo = await fetchFileMetadata();
+        if (isFileMissingFromMetadata(fileInfo)) {
+          reportFileMissingFromDisk(true);
+        } else {
+          reportFileMissingFromDisk(false);
+          const v = diskVersionFromMetadata(fileInfo);
+          if (v) {
+            diskVersionRef.current = v;
+          }
+        }
+      } catch (err) {
+        if (isLikelyFileNotFoundError(err)) {
+          reportFileMissingFromDisk(true);
+        }
+        log.warn('Failed to sync disk version after encoding change', err);
+      }
       queueMicrotask(() => {
         if (modelRef.current && !isUnmountedRef.current) {
           savedVersionIdRef.current = modelRef.current.getAlternativeVersionId();
@@ -1126,9 +1316,12 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
         }
       });
     } catch (err) {
+      if (isLikelyFileNotFoundError(err)) {
+        reportFileMissingFromDisk(true);
+      }
       log.warn('Failed to reload file with new encoding', err);
     }
-  }, [applyExternalContentToModel, filePath, updateLargeFileMode]);
+  }, [applyExternalContentToModel, fetchFileMetadata, filePath, reportFileMissingFromDisk, updateLargeFileMode]);
 
   const handleLanguageConfirm = useCallback((languageId: string) => {
     userLanguageOverrideRef.current = true;
@@ -1150,14 +1343,20 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
       setLoading(false);
       void (async () => {
         try {
-          const { invoke } = await import('@tauri-apps/api/core');
-          const fileInfo: any = await invoke('get_file_metadata', {
-            request: { path: filePath }
-          });
-          if (typeof fileInfo?.modified === 'number') {
-            lastModifiedTimeRef.current = fileInfo.modified;
+          const fileInfo = await fetchFileMetadata();
+          if (isFileMissingFromMetadata(fileInfo)) {
+            reportFileMissingFromDisk(true);
+            return;
+          }
+          reportFileMissingFromDisk(false);
+          const v = diskVersionFromMetadata(fileInfo);
+          if (v) {
+            diskVersionRef.current = v;
           }
         } catch (err) {
+          if (isLikelyFileNotFoundError(err)) {
+            reportFileMissingFromDisk(true);
+          }
           log.warn('Failed to sync file metadata when skipping load', err);
         }
       })();
@@ -1170,23 +1369,31 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
 
     try {
       const { workspaceAPI } = await import('@/infrastructure/api');
-      const { invoke } = await import('@tauri-apps/api/core');
+
+      const fileContent = await workspaceAPI.readFileContent(filePath);
+      reportFileMissingFromDisk(false);
       let fileSizeBytes: number | undefined;
       try {
-        const fileInfo: any = await invoke('get_file_metadata', {
-          request: { path: filePath }
-        });
-        if (typeof fileInfo?.modified === 'number') {
-          lastModifiedTimeRef.current = fileInfo.modified;
+        const fileInfoAfter = await fetchFileMetadata();
+        if (isFileMissingFromMetadata(fileInfoAfter)) {
+          reportFileMissingFromDisk(true);
+        } else {
+          reportFileMissingFromDisk(false);
+          const v = diskVersionFromMetadata(fileInfoAfter);
+          if (v) {
+            diskVersionRef.current = v;
+          }
         }
-        if (typeof fileInfo?.size === 'number') {
-          fileSizeBytes = fileInfo.size;
+        if (typeof fileInfoAfter?.size === 'number') {
+          fileSizeBytes = fileInfoAfter.size;
         }
       } catch (err) {
+        if (isLikelyFileNotFoundError(err)) {
+          reportFileMissingFromDisk(true);
+        }
         log.warn('Failed to get file metadata', err);
       }
 
-      const fileContent = await workspaceAPI.readFileContent(filePath);
       updateLargeFileMode(fileContent, fileSizeBytes);
       
       setContent(fileContent);
@@ -1221,13 +1428,16 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
       }
       setError(displayError);
       log.error('Failed to load file', err);
+      if (errStr.includes('does not exist') || errStr.includes('No such file')) {
+        reportFileMissingFromDisk(true);
+      }
     } finally {
       setLoading(false);
       queueMicrotask(() => {
         isLoadingContentRef.current = false;
       });
     }
-  }, [applyExternalContentToModel, filePath, detectedLanguage, t, updateLargeFileMode]);
+  }, [applyExternalContentToModel, fetchFileMetadata, filePath, reportFileMissingFromDisk, t, updateLargeFileMode]);
 
   // Save file content
   const saveFileContent = useCallback(async () => {
@@ -1247,36 +1457,62 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
 
     try {
       const { workspaceAPI } = await import('@/infrastructure/api');
-      const { invoke } = await import('@tauri-apps/api/core');
 
-      // Use latest content read from model
+      const fileInfoPre = await fetchFileMetadata();
+      if (isFileMissingFromMetadata(fileInfoPre)) {
+        reportFileMissingFromDisk(true);
+      } else {
+        reportFileMissingFromDisk(false);
+      }
+      const diskNow = diskVersionFromMetadata(fileInfoPre);
+      const baseline = diskVersionRef.current;
+
+      if (diskNow && baseline && diskVersionsDiffer(diskNow, baseline)) {
+        const overwrite = await confirmDialog({
+          title: t('editor.codeEditor.saveConflictTitle'),
+          message: t('editor.codeEditor.saveConflictDetail'),
+          type: 'warning',
+          confirmText: t('editor.codeEditor.overwriteSave'),
+          cancelText: t('editor.codeEditor.reloadFromDisk'),
+          confirmDanger: true,
+        });
+        if (!overwrite) {
+          const diskContent = await workspaceAPI.readFileContent(filePath);
+          const fileInfoAfter = await fetchFileMetadata();
+          const vAfter = diskVersionFromMetadata(fileInfoAfter);
+          applyDiskSnapshotToEditor(diskContent, vAfter);
+          return;
+        }
+      }
+
       await workspaceAPI.writeFileContent(workspacePath || '', filePath, currentContent);
-      
-      // Use MonacoGlobalManager to mark as saved
+
       monacoModelManager.markAsSaved(filePath);
-      
+
       originalContentRef.current = currentContent;
       setHasChanges(false);
       hasChangesRef.current = false;
-      
-      // Sync local versionId
+
       if (modelRef.current) {
         savedVersionIdRef.current = modelRef.current.getAlternativeVersionId();
       }
-      
-      // Call onSave callback to clear dirty state
+
       onSave?.(currentContent);
 
-      // Update file modification time
       try {
-        const fileInfo: any = await invoke('get_file_metadata', {
-          request: { path: filePath }
-        });
-        lastModifiedTimeRef.current = fileInfo.modified;
+        const fileInfo = await fetchFileMetadata();
+        if (!isFileMissingFromMetadata(fileInfo)) {
+          reportFileMissingFromDisk(false);
+          const v = diskVersionFromMetadata(fileInfo);
+          if (v) {
+            diskVersionRef.current = v;
+          }
+        }
       } catch (err) {
-        log.warn('Failed to update file modification time', err);
+        log.warn('Failed to update file disk version after save', err);
       }
-      
+
+      globalEventBus.emit('file-tree:refresh');
     } catch (err) {
       const errorMsg = t('editor.common.saveFailedWithMessage', { message: String(err) });
       setError(errorMsg);
@@ -1284,11 +1520,25 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
     } finally {
       setSaving(false);
     }
-  }, [filePath, workspacePath, content, hasChanges, onSave, t]);
+  }, [applyDiskSnapshotToEditor, fetchFileMetadata, filePath, onSave, reportFileMissingFromDisk, t, workspacePath]);
   
   useEffect(() => {
     saveFileContentRef.current = saveFileContent;
   }, [saveFileContent]);
+
+  useEffect(() => {
+    if (!autoSave || !filePath || !hasChanges || loading || saving) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      saveFileContentRef.current?.();
+    }, autoSaveDelayMs);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [autoSave, autoSaveDelayMs, filePath, hasChanges, loading, saving, content]);
 
   // Container-level keyboard event handler, solves global conflict issues with multiple editor instances
   const handleContainerKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -1330,71 +1580,155 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
     }
   }, []);
 
-  // Check file modifications
   const checkFileModification = useCallback(async () => {
-    if (!filePath || isCheckingFileRef.current) return;
+    if (!filePath || !isActiveTab || isCheckingFileRef.current) {
+      return;
+    }
 
     isCheckingFileRef.current = true;
+    const startedAt = nowMs();
+    let outcome = 'started';
+    let usedHashFallback = false;
+    let probeError: string | null = null;
 
     try {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        outcome = 'skipped-hidden';
+        return;
+      }
+
       const { invoke } = await import('@tauri-apps/api/core');
-      const fileInfo: any = await invoke('get_file_metadata', {
-        request: { path: filePath }
-      });
+      const fileInfo = await fetchFileMetadata();
+      if (isFileMissingFromMetadata(fileInfo)) {
+        outcome = 'missing-on-disk';
+        reportFileMissingFromDisk(true);
+        return;
+      }
+      reportFileMissingFromDisk(false);
+      const currentVersion = diskVersionFromMetadata(fileInfo);
+      if (!currentVersion) {
+        outcome = 'missing-version';
+        return;
+      }
 
-      const currentModifiedTime = fileInfo.modified;
+      const baseline = diskVersionRef.current;
+      if (!baseline) {
+        diskVersionRef.current = currentVersion;
+        outcome = 'initialized-baseline';
+        return;
+      }
 
-      if (lastModifiedTimeRef.current !== 0 && currentModifiedTime > lastModifiedTimeRef.current) {
-        log.info('File modified externally', { filePath });
+      if (!diskVersionsDiffer(currentVersion, baseline)) {
+        outcome = 'no-change';
+        return;
+      }
 
-        if (hasChanges) {
-          const shouldReload = window.confirm(
-            t('editor.codeEditor.externalModifiedConfirm')
-          );
-          if (!shouldReload) {
-            lastModifiedTimeRef.current = currentModifiedTime;
+      const bufferBeforeRead = modelRef.current?.getValue();
+      try {
+        const hashRes: any = await invoke('get_file_editor_sync_hash', {
+          request: { path: filePath },
+        });
+        const diskHash =
+          typeof hashRes?.hash === 'string' ? hashRes.hash.toLowerCase() : '';
+        const editorMid = modelRef.current?.getValue();
+        if (
+          bufferBeforeRead !== undefined &&
+          editorMid !== undefined &&
+          bufferBeforeRead !== editorMid
+        ) {
+          outcome = 'editor-changed-before-hash';
+          return;
+        }
+        if (diskHash && editorMid !== undefined) {
+          const editorHash = await editorSyncContentSha256Hex(editorMid);
+          if (editorHash === diskHash) {
+            diskVersionRef.current = currentVersion;
+            outcome = 'hash-match';
             return;
           }
         }
-
-        const { workspaceAPI } = await import('@/infrastructure/api');
-        const fileContent = await workspaceAPI.readFileContent(filePath);
-        updateLargeFileMode(fileContent);
-
-        if (!isUnmountedRef.current) {
-          isLoadingContentRef.current = true;
-          setContent(fileContent);
-          originalContentRef.current = fileContent;
-          setHasChanges(false);
-          hasChangesRef.current = false;
-          lastModifiedTimeRef.current = currentModifiedTime;
-          applyExternalContentToModel(fileContent);
-          
-          onContentChange?.(fileContent, false);
-          
-          queueMicrotask(() => {
-            isLoadingContentRef.current = false;
-            if (modelRef.current && !isUnmountedRef.current) {
-              savedVersionIdRef.current = modelRef.current.getAlternativeVersionId();
-              monacoModelManager.markAsSaved(filePath);
-            }
-          });
-        }
-      } else {
-        lastModifiedTimeRef.current = currentModifiedTime;
+      } catch (hashErr) {
+        usedHashFallback = true;
+        log.warn('get_file_editor_sync_hash failed, falling back to full read', {
+          filePath,
+          error: hashErr,
+        });
       }
+
+      const { workspaceAPI } = await import('@/infrastructure/api');
+      const editorBuffer = modelRef.current?.getValue();
+      if (
+        bufferBeforeRead !== undefined &&
+        editorBuffer !== undefined &&
+        bufferBeforeRead !== editorBuffer
+      ) {
+        outcome = 'editor-changed-before-read';
+        return;
+      }
+      if (editorBuffer === undefined) {
+        outcome = 'missing-editor-buffer';
+        return;
+      }
+
+      const fileContent = await workspaceAPI.readFileContent(filePath);
+      if (diskContentMatchesEditorForExternalSync(fileContent, editorBuffer)) {
+        diskVersionRef.current = currentVersion;
+        outcome = 'content-match';
+        return;
+      }
+
+      log.info('File modified externally', { filePath });
+
+      if (hasChangesRef.current) {
+        const shouldReload = await confirmDialog({
+          title: t('editor.codeEditor.externalModifiedTitle'),
+          message: t('editor.codeEditor.externalModifiedDetail'),
+          type: 'warning',
+          confirmText: t('editor.codeEditor.discardAndReload'),
+          cancelText: t('editor.codeEditor.keepLocalEdits'),
+          confirmDanger: true,
+        });
+        if (!shouldReload) {
+          diskVersionRef.current = currentVersion;
+          outcome = 'kept-local-changes';
+          return;
+        }
+      }
+
+      applyDiskSnapshotToEditor(fileContent, currentVersion);
+      outcome = 'reloaded-from-disk';
     } catch (err) {
+      outcome = 'error';
+      probeError = err instanceof Error ? err.message : String(err);
+      if (isLikelyFileNotFoundError(err)) {
+        reportFileMissingFromDisk(true);
+      }
       log.error('Failed to check file modification', err);
     } finally {
+      const durationMs = elapsedMs(startedAt);
+      if (probeError || outcome !== 'no-change' || durationMs >= 80) {
+        sendDebugProbe(
+          'CodeEditor.tsx:checkFileModification',
+          'Code editor disk sync completed',
+          {
+            filePath,
+            outcome,
+            durationMs,
+            usedHashFallback,
+            error: probeError,
+          }
+        );
+      }
       isCheckingFileRef.current = false;
     }
-  }, [applyExternalContentToModel, filePath, hasChanges, onContentChange, t, updateLargeFileMode]);
+  }, [applyDiskSnapshotToEditor, fetchFileMetadata, filePath, isActiveTab, reportFileMissingFromDisk, t]);
 
   // Initial file load - only run once when filePath changes
   const loadFileContentCalledRef = useRef(false);
   useEffect(() => {
-    // Reset the flag when filePath changes
     loadFileContentCalledRef.current = false;
+    diskVersionRef.current = null;
+    lastReportedMissingRef.current = undefined;
   }, [filePath]);
   
   useEffect(() => {
@@ -1404,16 +1738,28 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
     }
   }, [loadFileContent]);
 
-  // Periodic file modification check
   useEffect(() => {
-    const intervalId = setInterval(() => {
-      checkFileModification();
-    }, 5000);
+    if (!filePath || !isActiveTab) {
+      return;
+    }
+
+    const tick = () => {
+      void checkFileModification();
+    };
+    const pollOffsetMs = getPollOffsetMs(filePath);
+    let intervalId: number | null = null;
+    const timeoutId = window.setTimeout(() => {
+      tick();
+      intervalId = window.setInterval(tick, FILE_SYNC_POLL_INTERVAL_MS + pollOffsetMs);
+    }, 250 + pollOffsetMs);
 
     return () => {
-      clearInterval(intervalId);
+      window.clearTimeout(timeoutId);
+      if (intervalId !== null) {
+        window.clearInterval(intervalId);
+      }
     };
-  }, [checkFileModification]);
+  }, [checkFileModification, filePath, isActiveTab]);
 
   useEffect(() => {
     const editor = editorRef.current;
@@ -1588,64 +1934,97 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
       }
 
       try {
+        const { workspaceAPI } = await import('@/infrastructure/api');
+        const { invoke } = await import('@tauri-apps/api/core');
+        const bufferBeforeRead = modelRef.current?.getValue();
+        try {
+          const hashRes: any = await invoke('get_file_editor_sync_hash', {
+            request: { path: filePath },
+          });
+          const diskHash =
+            typeof hashRes?.hash === 'string' ? hashRes.hash.toLowerCase() : '';
+          const editorMid = modelRef.current?.getValue();
+          if (
+            bufferBeforeRead !== undefined &&
+            editorMid !== undefined &&
+            bufferBeforeRead !== editorMid
+          ) {
+            return;
+          }
+          if (diskHash && editorMid !== undefined) {
+            const editorHash = await editorSyncContentSha256Hex(editorMid);
+            if (editorHash === diskHash) {
+              try {
+                const fileInfo = await fetchFileMetadata();
+                const v = diskVersionFromMetadata(fileInfo);
+                if (v) {
+                  diskVersionRef.current = v;
+                }
+              } catch (err) {
+                log.warn('Failed to sync disk version after noop file-changed', err);
+              }
+              return;
+            }
+          }
+        } catch (hashErr) {
+          log.warn('get_file_editor_sync_hash failed in file-changed handler', {
+            filePath,
+            error: hashErr,
+          });
+        }
+
+        const diskContent = await workspaceAPI.readFileContent(filePath);
+        const editorBuffer = modelRef.current?.getValue();
+        if (
+          bufferBeforeRead !== undefined &&
+          editorBuffer !== undefined &&
+          bufferBeforeRead !== editorBuffer
+        ) {
+          return;
+        }
+        if (
+          editorBuffer !== undefined &&
+          diskContentMatchesEditorForExternalSync(diskContent, editorBuffer)
+        ) {
+          try {
+            const fileInfo = await fetchFileMetadata();
+            const v = diskVersionFromMetadata(fileInfo);
+            if (v) {
+              diskVersionRef.current = v;
+            }
+          } catch (err) {
+            log.warn('Failed to sync disk version after noop file-changed', err);
+          }
+          return;
+        }
+
         if (hasChangesRef.current) {
-          const shouldReload = window.confirm(
-            t('editor.codeEditor.externalModifiedConfirm')
-          );
+          const shouldReload = await confirmDialog({
+            title: t('editor.codeEditor.externalModifiedTitle'),
+            message: t('editor.codeEditor.externalModifiedDetail'),
+            type: 'warning',
+            confirmText: t('editor.codeEditor.discardAndReload'),
+            cancelText: t('editor.codeEditor.keepLocalEdits'),
+            confirmDanger: true,
+          });
           if (!shouldReload) {
             try {
-              const { invoke } = await import('@tauri-apps/api/core');
-              const fileInfo: any = await invoke('get_file_metadata', {
-                request: { path: filePath }
-              });
-              if (typeof fileInfo?.modified === 'number') {
-                lastModifiedTimeRef.current = fileInfo.modified;
+              const fileInfo = await fetchFileMetadata();
+              const v = diskVersionFromMetadata(fileInfo);
+              if (v) {
+                diskVersionRef.current = v;
               }
             } catch (err) {
-              log.warn('Failed to sync mtime after declining external reload', err);
+              log.warn('Failed to sync disk version after declining external reload', err);
             }
             return;
           }
         }
 
-        const { workspaceAPI } = await import('@/infrastructure/api');
-        const { invoke } = await import('@tauri-apps/api/core');
-        const fileContent = await workspaceAPI.readFileContent(filePath);
-        updateLargeFileMode(fileContent);
-
-        const currentPosition = editor?.getPosition();
-
-        isLoadingContentRef.current = true;
-        setContent(fileContent);
-        originalContentRef.current = fileContent;
-        setHasChanges(false);
-        hasChangesRef.current = false;
-        applyExternalContentToModel(fileContent);
-
-        try {
-          const fileInfo: any = await invoke('get_file_metadata', {
-            request: { path: filePath }
-          });
-          if (typeof fileInfo?.modified === 'number') {
-            lastModifiedTimeRef.current = fileInfo.modified;
-          }
-        } catch (err) {
-          log.warn('Failed to update file modification time after external reload', err);
-        }
-
-        if (editor && currentPosition) {
-          editor.setPosition(currentPosition);
-        }
-
-        onContentChange?.(fileContent, false);
-
-        queueMicrotask(() => {
-          isLoadingContentRef.current = false;
-          if (modelRef.current && !isUnmountedRef.current) {
-            savedVersionIdRef.current = modelRef.current.getAlternativeVersionId();
-            monacoModelManager.markAsSaved(filePath);
-          }
-        });
+        const fileInfo = await fetchFileMetadata();
+        const ver = diskVersionFromMetadata(fileInfo);
+        const currentPosition = editor?.getPosition() ?? null;
+        applyDiskSnapshotToEditor(diskContent, ver, { restoreCursor: currentPosition });
       } catch (error) {
         log.error('Failed to reload file', error);
       }
@@ -1662,7 +2041,7 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
     return () => {
       unsubscribers.forEach(unsub => unsub());
     };
-  }, [applyExternalContentToModel, monacoReady, filePath, updateLargeFileMode, onContentChange, t]);
+  }, [applyDiskSnapshotToEditor, fetchFileMetadata, monacoReady, filePath, t, workspacePath]);
 
   useEffect(() => {
     userLanguageOverrideRef.current = false;
@@ -1729,7 +2108,7 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
         workspacePath={workspacePath}
       />
       
-      <div className="code-editor-tool__content">
+      <div className="code-editor-tool__content" data-shortcut-scope="editor">
         <div 
           ref={containerRef} 
           style={{ 

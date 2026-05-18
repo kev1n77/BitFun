@@ -9,6 +9,14 @@ import { i18nService } from '@/infrastructure/i18n';
 const log = createLogger('AIService');
 // ToolExecution types are handled by backend now
 
+function localizeInitializationError(errorMessage: string): string {
+  if (errorMessage.toLowerCase().includes('primary model not configured')) {
+    return i18nService.t('errors:ai.primaryModelNotConfigured');
+  }
+
+  return errorMessage;
+}
+
 interface AIServiceOptions {
   sessionId: string;
   conversationId: string;
@@ -83,10 +91,13 @@ class AIService {
       }));
       
       
-      notificationService.warning(errorMessage, {
+      notificationService.warning(localizeInitializationError(errorMessage), {
         title: i18nService.t('errors:ai.initializeFailedTitle'),
         duration: 8000,
-        closable: true
+        closable: true,
+        metadata: {
+          rawError: errorMessage
+        }
       });
       
       log.error('AI client initialization failed', error);
@@ -130,7 +141,7 @@ class AIService {
   }
 
   async sendMessage(content: string, options: AIServiceOptions): Promise<{ response: string, sessionId: string }> {
-    const { onToolExecution } = options;
+    const { onToolExecution: _onToolExecution } = options;
 
     try {
       
@@ -143,11 +154,6 @@ class AIService {
         message: content,
         context: workspacePath ? { workspacePath } : undefined,
       });
-
-      
-      if (onToolExecution) {
-        
-      }
 
       return {
         response: result || '',

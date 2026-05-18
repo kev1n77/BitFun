@@ -4,7 +4,11 @@
  * Used by session lists and persistence metadata in the frontend.
  */
 
-export type SessionKind = 'normal' | 'btw';
+import type { ReviewTeamRunManifest } from '@/shared/services/reviewTeamService';
+
+export type SessionKind = 'normal' | 'btw' | 'review' | 'deep_review' | 'miniapp';
+export type PersistedSessionKind = 'standard' | 'subagent';
+export type SessionTitleSource = 'text' | 'i18n';
 
 export interface SessionCustomMetadata extends Record<string, unknown> {
   kind?: SessionKind;
@@ -12,13 +16,22 @@ export interface SessionCustomMetadata extends Record<string, unknown> {
   parentRequestId?: string | null;
   parentDialogTurnId?: string | null;
   parentTurnIndex?: number | null;
+  forkOrigin?: {
+    sessionId?: string | null;
+    turnId?: string | null;
+    turnIndex?: number | null;
+  } | null;
   lastFinishedAt?: number | null;
+  titleSource?: SessionTitleSource | null;
+  titleKey?: string | null;
+  titleParams?: Record<string, unknown> | null;
 }
 
 export interface SessionMetadata {
   sessionId: string;
   sessionName: string;
   agentType: string;
+  sessionKind?: PersistedSessionKind;
   modelName: string;
   createdAt: number;
   lastActiveAt: number;
@@ -31,9 +44,55 @@ export interface SessionMetadata {
   customMetadata?: SessionCustomMetadata;
   todos?: any[];
   workspacePath?: string;
+  remoteConnectionId?: string;
+  remoteSshHost?: string;
+  /** Backend unified workspace identity field: localhost for local, SSH host for remote. */
+  workspaceHostname?: string;
+  /**
+   * Unread completion status for the session.
+   * 'completed' → green dot, 'error' → red dot, 'interrupted' → red dot (partial stream recovery).
+   */
+  unreadCompletion?: 'completed' | 'error' | 'interrupted';
+  /**
+   * High-priority attention status for the session.
+   * 'ask_user' → pending AskUserQuestion waiting for answer.
+   * 'tool_confirm' → pending tool confirmations.
+   * Takes precedence over unreadCompletion in the UI.
+   */
+  needsUserAttention?: 'ask_user' | 'tool_confirm';
+  /**
+   * Persisted review action bar state for code review / deep review sessions.
+   * Allows restoring the review action bar across app restarts.
+   */
+  reviewActionState?: ReviewActionPersistedState;
+  /**
+   * The per-run Deep Review reviewer manifest used to launch this session.
+   * Continuation and later backend gates use this as the source of truth.
+   */
+  deepReviewRunManifest?: ReviewTeamRunManifest;
+}
+
+export interface ReviewActionPersistedState {
+  version: number;
+  phase: string;
+  completedRemediationIds: string[];
+  minimized: boolean;
+  customInstructions: string;
+  persistedAt: number;
 }
 
 export type SessionStatus = 'active' | 'archived' | 'completed';
+export type DialogTurnKind = 'user_dialog' | 'manual_compaction' | 'local_command';
+
+export interface LocalCommandMetadata {
+  localCommandKind: 'usage_report';
+  reportId: string;
+  schemaVersion: number;
+  generatedAt: number;
+  modelVisible: false;
+  usageReport?: Record<string, any>;
+  usageReportStatus?: 'loading' | 'completed';
+}
 
 export interface SessionList {
   sessions: SessionMetadata[];
@@ -46,6 +105,7 @@ export interface DialogTurnData {
   turnIndex: number;
   sessionId: string;
   timestamp: number;
+  kind?: DialogTurnKind;
   userMessage: UserMessageData;
   modelRounds: ModelRoundData[];
   startTime: number;
@@ -66,12 +126,27 @@ export interface ModelRoundData {
   turnId: string;
   roundIndex: number;
   timestamp: number;
+  renderHints?: ModelRoundRenderHints;
   textItems: TextItemData[];
   toolItems: ToolItemData[];
   thinkingItems?: ThinkingItemData[];
   startTime: number;
   endTime?: number;
+  durationMs?: number;
+  providerId?: string;
+  modelId?: string;
+  modelAlias?: string;
+  firstChunkMs?: number;
+  firstVisibleOutputMs?: number;
+  streamDurationMs?: number;
+  attemptCount?: number;
+  failureCategory?: string;
+  tokenDetails?: unknown;
   status: string;
+}
+
+export interface ModelRoundRenderHints {
+  disableExploreGrouping?: boolean;
 }
 
 export interface TextItemData {
@@ -79,6 +154,12 @@ export interface TextItemData {
   content: string;
   isStreaming: boolean;
   timestamp: number;
+  status?: string;
+  orderIndex?: number;
+  isMarkdown?: boolean;
+  isSubagentItem?: boolean;
+  parentTaskToolId?: string;
+  subagentSessionId?: string;
 }
 
 export interface ThinkingItemData {
@@ -89,6 +170,9 @@ export interface ThinkingItemData {
   timestamp: number;
   orderIndex?: number;
   status?: string;
+  isSubagentItem?: boolean;
+  parentTaskToolId?: string;
+  subagentSessionId?: string;
 }
 
 export interface ToolItemData {
@@ -100,6 +184,16 @@ export interface ToolItemData {
   startTime: number;
   endTime?: number;
   durationMs?: number;
+  queueWaitMs?: number;
+  preflightMs?: number;
+  confirmationWaitMs?: number;
+  executionMs?: number;
+  orderIndex?: number;
+  status?: string;
+  interruptionReason?: 'app_restart';
+  isSubagentItem?: boolean;
+  parentTaskToolId?: string;
+  subagentSessionId?: string;
 }
 
 export interface ToolCallData {

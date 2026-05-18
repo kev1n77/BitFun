@@ -21,7 +21,6 @@
   },
   "appearance": {
     "font": "Font",
-    "fontHint": "Select preferred monospace font",
     "fontWeight": "Font Weight",
     "fontWeightNormal": "Normal",
     "fontWeightBold": "Bold",

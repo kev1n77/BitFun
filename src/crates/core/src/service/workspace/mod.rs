@@ -2,7 +2,6 @@
 //!
 //! Full workspace management system: open, manage, scan, statistics, etc.
 
-pub mod context_generator;
 pub mod factory;
 pub mod identity_watch;
 pub mod manager;
@@ -10,11 +9,6 @@ pub mod provider;
 pub mod service;
 
 // Re-export main components
-pub use context_generator::{
-    ContextGenerationOptions, ContextLanguage, GeneratedWorkspaceContext,
-    GitInfo as ContextGitInfo, WorkspaceContextGenerator,
-    WorkspaceStatistics as ContextWorkspaceStatistics,
-};
 pub use factory::WorkspaceFactory;
 pub use identity_watch::WorkspaceIdentityWatchService;
 pub use manager::{

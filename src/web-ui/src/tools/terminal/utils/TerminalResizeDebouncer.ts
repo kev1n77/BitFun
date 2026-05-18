@@ -115,7 +115,13 @@ export class TerminalResizeDebouncer {
 
     if (immediate || bufferLength < START_DEBOUNCING_THRESHOLD) {
       this.clearPendingJobs();
-      this.executeResize(cols, rows, true);
+      if (this.isNewApi) {
+        const opts = this.options as ResizeDebounceOptions;
+        opts.onXtermResize(cols, rows);
+        this.scheduleBackendResize(cols, rows);
+      } else {
+        this.executeResize(cols, rows, true);
+      }
       return;
     }
 

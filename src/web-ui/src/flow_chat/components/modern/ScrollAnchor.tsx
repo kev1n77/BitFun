@@ -143,8 +143,6 @@ export const ScrollAnchor: React.FC<ScrollAnchorProps> = ({
     return content.substring(0, maxLength) + '...';
   };
 
-  if (anchorPoints.length === 0) return null;
-
   const handleContainerMouseEnter = useCallback(() => {
     setIsHovering(true);
   }, []);
@@ -152,6 +150,8 @@ export const ScrollAnchor: React.FC<ScrollAnchorProps> = ({
   const handleContainerMouseLeave = useCallback(() => {
     setIsHovering(false);
   }, []);
+
+  if (anchorPoints.length === 0) return null;
 
   return (
     <>

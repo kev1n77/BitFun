@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-use-before-define */
 /** Git commit graph view (branch graph). */
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
@@ -45,7 +46,7 @@ export const GitGraphView: React.FC<GitGraphViewProps> = ({
   className = ''
 }) => {
   const { t } = useTranslation('panels/git');
-  const viewConfig = { ...DEFAULT_CONFIG, ...config };
+  const viewConfig = useMemo(() => ({ ...DEFAULT_CONFIG, ...config }), [config]);
 
 
   const [graphData, setGraphData] = useState<GitGraph | null>(null);
@@ -628,7 +629,7 @@ function drawNodeWithInfo(
   ctx.textAlign = 'left';
   
   let displayText = node.message;
-  let textWidth = ctx.measureText(displayText).width;
+  const textWidth = ctx.measureText(displayText).width;
   
   if (textWidth > maxTextWidth) {
     while (ctx.measureText(displayText + '…').width > maxTextWidth && displayText.length > 0) {
@@ -779,4 +780,3 @@ const HitArea = React.memo<HitAreaProps>(({
 HitArea.displayName = 'HitArea';
 
 export default GitGraphView;
-

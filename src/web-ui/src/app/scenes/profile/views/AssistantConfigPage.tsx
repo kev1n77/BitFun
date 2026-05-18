@@ -1,167 +1,232 @@
 import React, {
   useCallback, useEffect, useMemo, useRef, useState,
+  lazy,
+  Suspense,
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  ArrowLeft, RefreshCw, Zap, Star, Wrench, Puzzle, ListChecks, Smile, Radar,
+  ArrowLeft,
+  FileText,
+  RefreshCw,
+  X,
 } from 'lucide-react';
 import {
-  ConfirmDialog, Input, Select, Switch, type SelectOption,
+  Button,
+  IconButton,
+  Input,
 } from '@/component-library';
-import { Tabs, TabPane } from '@/component-library';
-import { AIRulesAPI, RuleLevel, type AIRule } from '@/infrastructure/api/service-api/AIRulesAPI';
-import { getAllMemories, type AIMemory } from '@/infrastructure/api/aiMemoryApi';
-import { configAPI } from '@/infrastructure/api/service-api/ConfigAPI';
-import { configManager } from '@/infrastructure/config/services/ConfigManager';
-import type { AIModelConfig, ModeConfigItem, SkillInfo } from '@/infrastructure/config/types';
+import { workspaceAPI } from '@/infrastructure/api/service-api/WorkspaceAPI';
 import { notificationService } from '@/shared/notification-system';
 import { createLogger } from '@/shared/utils/logger';
 import { useWorkspaceContext } from '@/infrastructure/contexts/WorkspaceContext';
+import { WorkspaceKind } from '@/shared/types';
+import { useMyAgentStore } from '@/app/scenes/my-agent/myAgentStore';
 import { useAgentIdentityDocument } from '@/app/scenes/my-agent/useAgentIdentityDocument';
-import { MEditor } from '@/tools/editor/meditor';
 import { useTheme } from '@/infrastructure/theme/hooks/useTheme';
-import { PersonaRadar } from './PersonaRadar';
+import { MEditor } from '@/tools/editor/meditor';
+import SessionsSection from '@/app/components/NavPanel/sections/sessions/SessionsSection';
+import AssistantQuickInput from './AssistantQuickInput';
 import { useNurseryStore } from '../nurseryStore';
-import { useTokenEstimate, formatTokenCount } from './useTokenEstimate';
 
 const log = createLogger('AssistantConfigPage');
 
-interface ToolInfo { name: string; description: string; is_readonly: boolean; }
+const AssistantScheduleView = lazy(() => import('@/app/scenes/my-agent/AssistantScheduleView'));
 
-const MODEL_SLOTS = ['primary', 'fast'] as const;
-type ModelSlot = typeof MODEL_SLOTS[number];
+const PERSONA_DOC_FILES = ['IDENTITY.md', 'SOUL.md', 'USER.md'] as const;
+type PersonaDocFile = typeof PERSONA_DOC_FILES[number];
+
+function personaDocFullPath(workspaceRoot: string, fileName: PersonaDocFile): string {
+  const root = workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+  return `${root}/${fileName}`;
+}
+
+function isFileMissingError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /does not exist|no such file|not found/i.test(message);
+}
 
 const DEFAULT_AGENT_NAME = 'BitFun Agent';
 
-// ── Radar dim computation (same formula as original PersonaView L894-902) ──────
-function computeRadarDims(
-  rules: AIRule[],
-  memories: AIMemory[],
-  agenticConfig: ModeConfigItem | null,
-  skills: SkillInfo[],
-  t: (k: string) => string,
-) {
-  const skillEn  = skills.filter((s) => s.enabled);
-  const memEn    = memories.filter((m) => m.enabled).length;
-  const rulesEn  = rules.filter((r) => r.enabled);
-  const avgImp   = memEn > 0
-    ? memories.filter((m) => m.enabled).reduce((s, m) => s + m.importance, 0) / memEn
-    : 0;
-  const enabledTools = agenticConfig?.available_tools?.length ?? 0;
+type RightPanelView = 'info' | 'personaDoc';
 
-  return [
-    { label: t('radar.dims.creativity'),   value: Math.min(10, skillEn.length * 0.9) },
-    { label: t('radar.dims.rigor'),        value: Math.min(10, rulesEn.length * 1.5) },
-    { label: t('radar.dims.autonomy'),     value: agenticConfig?.enabled
-      ? Math.min(10, 4 + enabledTools * 0.25)
-      : Math.min(10, enabledTools * 0.3) },
-    { label: t('radar.dims.memory'),       value: Math.min(10, memEn * 0.7 + avgImp * 0.3) },
-    { label: t('radar.dims.expression'),   value: Math.min(10, skillEn.length * 0.8 + skillEn.length * 0.4) },
-    { label: t('radar.dims.adaptability'), value: Math.min(10, skillEn.length * 1.2) },
-  ];
+interface PersonaDocState {
+  fileName: PersonaDocFile;
+  content: string;
+  loading: boolean;
+  error: string | null;
 }
 
 const AssistantConfigPage: React.FC = () => {
   const { t } = useTranslation('scenes/profile');
   const { isLight } = useTheme();
   const { openGallery, activeWorkspaceId } = useNurseryStore();
-  const { assistantWorkspacesList } = useWorkspaceContext();
+  const selectedAssistantWorkspaceId = useMyAgentStore((s) => s.selectedAssistantWorkspaceId);
+  const { assistantWorkspacesList, currentWorkspace } = useWorkspaceContext();
+
+  const effectiveWorkspaceId = useMemo(() => {
+    const inList = (id: string | null | undefined) =>
+      id && assistantWorkspacesList.some((w) => w.id === id) ? id : null;
+
+    // Explicit selection from nursery gallery takes highest priority,
+    // followed by the selected assistant store, then the active workspace.
+    return (
+      inList(activeWorkspaceId) ??
+      inList(selectedAssistantWorkspaceId) ??
+      (currentWorkspace?.workspaceKind === WorkspaceKind.Assistant ? inList(currentWorkspace.id) : null) ??
+      null
+    );
+  }, [
+    activeWorkspaceId,
+    assistantWorkspacesList,
+    currentWorkspace?.id,
+    currentWorkspace?.workspaceKind,
+    selectedAssistantWorkspaceId,
+  ]);
 
   const workspace = useMemo(
-    () => assistantWorkspacesList.find((w) => w.id === activeWorkspaceId) ?? null,
-    [assistantWorkspacesList, activeWorkspaceId],
+    () =>
+      effectiveWorkspaceId
+        ? assistantWorkspacesList.find((w) => w.id === effectiveWorkspaceId) ?? null
+        : null,
+    [assistantWorkspacesList, effectiveWorkspaceId],
   );
   const workspacePath = workspace?.rootPath ?? '';
 
   const {
     document: identityDocument,
     updateField: updateIdentityField,
-    resetPersonaFiles,
-    loading: identityLoading,
+    reload: reloadIdentityDocument,
   } = useAgentIdentityDocument(workspacePath);
 
-  // ── Identity edit state ────────────────────────────────────────────────────
+  const displayIdentity = useMemo(() => {
+    const api = workspace?.identity;
+    return {
+      name: identityDocument.name.trim() || api?.name?.trim() || '',
+      creature: identityDocument.creature.trim() || api?.creature?.trim() || '',
+      vibe: identityDocument.vibe.trim() || api?.vibe?.trim() || '',
+      emoji: identityDocument.emoji.trim() || api?.emoji?.trim() || '',
+    };
+  }, [identityDocument, workspace?.identity]);
+
   const [editingField, setEditingField] = useState<'name' | 'emoji' | 'creature' | 'vibe' | null>(null);
   const [editValue, setEditValue] = useState('');
   const nameInputRef = useRef<HTMLInputElement>(null);
   const metaInputRef = useRef<HTMLInputElement>(null);
-  const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
+  const [rightView, setRightView] = useState<RightPanelView>('info');
+  const [personaDoc, setPersonaDoc] = useState<PersonaDocState | null>(null);
+  const personaSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const personaPendingRef = useRef<{ file: PersonaDocFile; content: string } | null>(null);
 
-  // ── Capability state ───────────────────────────────────────────────────────
-  const [models, setModels] = useState<AIModelConfig[]>([]);
-  const [, setFuncAgentModels] = useState<Record<string, string>>({});
-  const [agenticConfig, setAgenticConfig] = useState<ModeConfigItem | null>(null);
-  const [availableTools, setAvailableTools] = useState<ToolInfo[]>([]);
-  const [toolsLoading, setToolsLoading] = useState<Record<string, boolean>>({});
-
-  // ── Memory state ───────────────────────────────────────────────────────────
-  const [rules, setRules] = useState<AIRule[]>([]);
-  const [memories, setMemories] = useState<AIMemory[]>([]);
-  const [skills, setSkills] = useState<SkillInfo[]>([]);
-  const [capsLoaded, setCapsLoaded] = useState(false);
-  const [memLoaded, setMemLoaded] = useState(false);
-
-  // ── Active tab ─────────────────────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState('identity');
-
-  // ── Body edit debounce ─────────────────────────────────────────────────────
-  const bodyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const handleBodyChange = useCallback((newBody: string) => {
-    if (bodyTimerRef.current) clearTimeout(bodyTimerRef.current);
-    bodyTimerRef.current = setTimeout(() => updateIdentityField('body', newBody), 600);
-  }, [updateIdentityField]);
-
-  // Load models/tools/skills on first visit to personality or ability tab
-  useEffect(() => {
-    if ((activeTab === 'personality' || activeTab === 'ability') && !capsLoaded) {
-      (async () => {
-        try {
-          const { invoke } = await import('@tauri-apps/api/core');
-          const [allModels, funcModels, modeConf, tools, sks] = await Promise.all([
-            (configManager.getConfig<AIModelConfig[]>('ai.models')).catch(() => [] as AIModelConfig[]),
-            (configManager.getConfig<Record<string, string>>('ai.func_agent_models')).catch(() => ({} as Record<string, string>)),
-            configAPI.getModeConfig('agentic').catch(() => null as ModeConfigItem | null),
-            invoke<ToolInfo[]>('get_all_tools_info').catch(() => [] as ToolInfo[]),
-            configAPI.getSkillConfigs({ workspacePath: workspacePath || undefined }).catch(() => [] as SkillInfo[]),
-          ]);
-          setModels(allModels ?? []);
-          setFuncAgentModels(funcModels ?? {});
-          setAgenticConfig(modeConf);
-          setAvailableTools(tools);
-          setSkills(sks);
-          setCapsLoaded(true);
-        } catch (e) { log.error('caps load', e); }
-      })();
+  const flushPersonaWrite = useCallback(async (file: PersonaDocFile, content: string) => {
+    if (!workspacePath) return;
+    const fullPath = personaDocFullPath(workspacePath, file);
+    try {
+      await workspaceAPI.writeFileContent(workspacePath, fullPath, content);
+      if (file === 'IDENTITY.md') {
+        await reloadIdentityDocument();
+      }
+    } catch (e) {
+      log.error('persona doc save', e);
+      notificationService.error(t('nursery.assistant.personaDocSaveFailed'));
     }
-  }, [activeTab, capsLoaded, workspacePath]);
+  }, [workspacePath, reloadIdentityDocument, t]);
 
-  // Load rules and memories on first visit to personality or memory tab
-  useEffect(() => {
-    if ((activeTab === 'personality' || activeTab === 'memory') && !memLoaded) {
-      (async () => {
-        try {
-          const [u, p, m] = await Promise.all([
-            AIRulesAPI.getRules(RuleLevel.User),
-            AIRulesAPI.getRules(RuleLevel.Project, workspacePath || undefined),
-            getAllMemories(),
-          ]);
-          setRules([...u, ...p]);
-          setMemories(m);
-          setMemLoaded(true);
-        } catch (e) { log.error('memory/rules load', e); }
-      })();
+  const flushPersonaWriteRef = useRef(flushPersonaWrite);
+  flushPersonaWriteRef.current = flushPersonaWrite;
+
+  const openPersonaDoc = useCallback((fileName: PersonaDocFile) => {
+    if (personaDoc?.fileName === fileName) {
+      setRightView('info');
+      setPersonaDoc(null);
+      return;
     }
-  }, [activeTab, memLoaded, workspacePath]);
 
-  // ── Identity edit helpers ──────────────────────────────────────────────────
+    setPersonaDoc({ fileName, content: '', loading: true, error: null });
+    setRightView('personaDoc');
+    personaPendingRef.current = null;
+
+    if (!workspacePath) return;
+    const fullPath = personaDocFullPath(workspacePath, fileName);
+    workspaceAPI.readFileContent(fullPath)
+      .then((content) => {
+        setPersonaDoc((prev) => prev?.fileName === fileName ? { ...prev, content, loading: false } : prev);
+        personaPendingRef.current = { file: fileName, content };
+      })
+      .catch((err) => {
+        if (isFileMissingError(err)) {
+          setPersonaDoc((prev) => prev?.fileName === fileName ? { ...prev, content: '', loading: false } : prev);
+          personaPendingRef.current = { file: fileName, content: '' };
+        } else {
+          setPersonaDoc((prev) => prev?.fileName === fileName
+            ? { ...prev, content: '', loading: false, error: err instanceof Error ? err.message : String(err) }
+            : prev);
+        }
+      });
+  }, [personaDoc, workspacePath]);
+
+  const handlePersonaDocChange = useCallback((value: string) => {
+    if (!personaDoc) return;
+    const { fileName } = personaDoc;
+    setPersonaDoc((prev) => prev ? { ...prev, content: value } : prev);
+    personaPendingRef.current = { file: fileName, content: value };
+    if (personaSaveTimerRef.current) {
+      clearTimeout(personaSaveTimerRef.current);
+    }
+    personaSaveTimerRef.current = setTimeout(() => {
+      personaSaveTimerRef.current = null;
+      const pending = personaPendingRef.current;
+      if (!pending || pending.file !== fileName || !workspacePath) return;
+      void flushPersonaWrite(pending.file, pending.content);
+    }, 600);
+  }, [personaDoc, workspacePath, flushPersonaWrite]);
+
+  const closePersonaDoc = useCallback(() => {
+    if (personaDoc && personaPendingRef.current) {
+      const { file, content } = personaPendingRef.current;
+      void flushPersonaWriteRef.current(file, content);
+    }
+    if (personaSaveTimerRef.current) {
+      clearTimeout(personaSaveTimerRef.current);
+      personaSaveTimerRef.current = null;
+    }
+    personaPendingRef.current = null;
+    setPersonaDoc(null);
+    setRightView('info');
+  }, [personaDoc]);
+
+  useEffect(() => {
+    return () => {
+      if (personaSaveTimerRef.current) clearTimeout(personaSaveTimerRef.current);
+      const pending = personaPendingRef.current;
+      if (pending && workspacePath) {
+        void flushPersonaWriteRef.current(pending.file, pending.content);
+      }
+    };
+  }, [workspacePath]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && rightView === 'personaDoc') closePersonaDoc();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [rightView, closePersonaDoc]);
+
   const startEdit = useCallback((field: 'name' | 'emoji' | 'creature' | 'vibe') => {
     setEditingField(field);
-    setEditValue(field === 'name' ? identityDocument.name : identityDocument[field as keyof typeof identityDocument] as string);
+    setEditValue(
+      field === 'name'
+        ? displayIdentity.name
+        : field === 'emoji'
+          ? displayIdentity.emoji
+          : field === 'creature'
+            ? displayIdentity.creature
+            : displayIdentity.vibe,
+    );
     setTimeout(() => {
       (field === 'name' ? nameInputRef : metaInputRef).current?.focus();
     }, 10);
-  }, [identityDocument]);
+  }, [displayIdentity]);
 
   const commitEdit = useCallback(() => {
     if (!editingField) return;
@@ -174,378 +239,240 @@ const AssistantConfigPage: React.FC = () => {
     if (e.key === 'Escape') setEditingField(null);
   }, [commitEdit]);
 
-  // ── Model helpers ──────────────────────────────────────────────────────────
-  const INHERIT_VALUE = '__inherit__';
+  const identityName = displayIdentity.name || DEFAULT_AGENT_NAME;
 
-  const buildModelOptions = useCallback((slot: ModelSlot): SelectOption[] => {
-    const inheritLabel = slot === 'primary' ? t('nursery.assistant.inheritPrimary') : t('nursery.assistant.inheritFast');
-    const modelOptions: SelectOption[] = models
-      .filter((m) => m.enabled && !!m.id)
-      .map((m) => ({ value: m.id!, label: m.name, group: t('modelGroups.models') }));
-    return [
-      { value: INHERIT_VALUE, label: inheritLabel, group: t('nursery.assistant.inheritGroup') },
-      ...modelOptions,
-    ];
-  }, [models, t]);
+  // ── Right panel: identity info ──────────────────────────────────────────
 
-  const getModelValue = useCallback((slot: ModelSlot): string => {
-    const override = slot === 'primary' ? identityDocument.modelPrimary : identityDocument.modelFast;
-    return override || INHERIT_VALUE;
-  }, [identityDocument]);
+  const renderInfoPanel = () => (
+    <div className="acp-right-info">
+      <div className="acp-right-shell">
+        {/* Persona docs */}
+        <div className="acp-section acp-section--nested">
+          <div className="acp-section__head">
+            <span className="acp-section__title">{t('nursery.assistant.personaDocsTitle')}</span>
+          </div>
+          <div className="acp-persona-doc-list">
+            {PERSONA_DOC_FILES.map((fileName) => {
+              const selected = personaDoc?.fileName === fileName && rightView === 'personaDoc';
+              const labelKey = fileName.replace(/\.md$/i, '') as 'SOUL' | 'USER' | 'IDENTITY';
+              return (
+                <Button
+                  key={fileName}
+                  type="button"
+                  variant="ghost"
+                  size="small"
+                  className={`acp-persona-doc-row${selected ? ' acp-persona-doc-row--selected' : ''}`}
+                  onClick={() => openPersonaDoc(fileName)}
+                >
+                  <span className="acp-persona-doc-row__icon"><FileText size={12} /></span>
+                  <span className="acp-persona-doc-row__label">{t(`nursery.assistant.personaDocs.${labelKey}`)}</span>
+                  <span className="acp-persona-doc-row__file">{fileName}</span>
+                </Button>
+              );
+            })}
+          </div>
+        </div>
 
-  const handleModelChange = useCallback(async (slot: ModelSlot, raw: string | number | (string | number)[]) => {
-    if (Array.isArray(raw)) return;
-    const val = String(raw) === INHERIT_VALUE ? '' : String(raw);
-    updateIdentityField(slot === 'primary' ? 'modelPrimary' : 'modelFast', val);
-  }, [updateIdentityField]);
+        <div className="acp-right-shell__divider" role="separator" aria-hidden="true" />
 
-  // ── Tool helpers ───────────────────────────────────────────────────────────
-  const handleToolToggle = useCallback(async (toolName: string) => {
-    if (!agenticConfig) return;
-    setToolsLoading((p) => ({ ...p, [toolName]: true }));
-    const current = agenticConfig.available_tools ?? [];
-    const isOn = current.includes(toolName);
-    const newTools = isOn ? current.filter((n) => n !== toolName) : [...current, toolName];
-    const newConf = { ...agenticConfig, available_tools: newTools };
-    setAgenticConfig(newConf);
-    try {
-      await configAPI.setModeConfig('agentic', newConf);
-      const { globalEventBus } = await import('@/infrastructure/event-bus');
-      globalEventBus.emit('mode:config:updated');
-    } catch (e) {
-      log.error('tool toggle', e);
-      notificationService.error(t('notifications.toggleFailed'));
-      setAgenticConfig(agenticConfig);
-    } finally {
-      setToolsLoading((p) => ({ ...p, [toolName]: false }));
-    }
-  }, [agenticConfig, t]);
-
-  // ── Radar ──────────────────────────────────────────────────────────────────
-  const radarDims = useMemo(
-    () => computeRadarDims(rules, memories, agenticConfig, skills, t),
-    [rules, memories, agenticConfig, skills, t],
-  );
-
-  // ── Token estimate ─────────────────────────────────────────────────────────
-  const enabledToolCount = agenticConfig?.available_tools?.length ?? 0;
-  const enabledRulesCount = rules.filter((r) => r.enabled).length;
-  const enabledMemCount   = memories.filter((m) => m.enabled).length;
-  const tokenBreakdown = useTokenEstimate(
-    identityDocument.body,
-    enabledToolCount,
-    enabledRulesCount,
-    enabledMemCount,
-  );
-
-  const identityName = identityDocument.name || DEFAULT_AGENT_NAME;
-
-  const metaItems = useMemo(() => [
-    { key: 'emoji'    as const, label: t('identity.emoji'),    value: identityDocument.emoji,   placeholder: t('identity.emojiPlaceholder') },
-    { key: 'creature' as const, label: t('identity.creature'), value: identityDocument.creature, placeholder: t('identity.creaturePlaceholderShort') },
-    { key: 'vibe'     as const, label: t('identity.vibe'),     value: identityDocument.vibe,    placeholder: t('identity.vibePlaceholderShort') },
-  ] as const, [identityDocument.emoji, identityDocument.creature, identityDocument.vibe, t]);
-
-  return (
-    <div className="nursery-page">
-      <div className="nursery-page__bar">
-        <button type="button" className="nursery-page__back" onClick={openGallery}>
-          <ArrowLeft size={14} />
-          <span>{t('nursery.backToGallery')}</span>
-        </button>
-        <h2 className="nursery-page__title">
-          {identityDocument.emoji && <span>{identityDocument.emoji} </span>}
-          {identityName}
-        </h2>
-        {identityDocument.creature && (
-          <span className="nursery-page__subtitle">{identityDocument.creature}</span>
-        )}
-        <button
-          type="button"
-          className="nursery-page__reset"
-          title={t('identity.resetTooltip')}
-          onClick={() => setIsResetDialogOpen(true)}
-        >
-          <RefreshCw size={13} />
-        </button>
-      </div>
-
-      <div className="nursery-page__body">
-      <Tabs
-        type="line"
-        size="small"
-        activeKey={activeTab}
-        onChange={setActiveTab}
-        className="nursery-tabs"
-      >
-        {/* Identity tab */}
-        <TabPane tabKey="identity" label={t('nursery.tabs.identity')} icon={<Smile size={13} />}>
-          <div className="nursery-tab-content">
-            {identityLoading ? (
-              <div className="nursery-page__loading"><RefreshCw size={16} className="nursery-spinning" /></div>
+        {/* Scheduled tasks — title/toolbar live inside AssistantScheduleView */}
+        <div className="acp-section acp-section--nested acp-section--schedule">
+          <div className="acp-section__schedule-body">
+            {!workspacePath ? (
+              <p className="acp-empty">{t('nursery.assistant.scheduledSessionsNoWorkspace')}</p>
             ) : (
-              <>
-                {/* Name row */}
-                <div className="nursery-identity__name-row">
-                  {editingField === 'name' ? (
-                    <Input
-                      ref={nameInputRef}
-                      value={editValue}
-                      onChange={(e) => setEditValue(e.target.value)}
-                      onBlur={commitEdit}
-                      onKeyDown={onEditKey}
-                      className="nursery-identity__name-input"
-                    />
-                  ) : (
-                    <h3
-                      className="nursery-identity__name"
-                      onClick={() => startEdit('name')}
-                      title={t('hero.editNameTitle')}
-                    >
-                      {identityName}
-                    </h3>
-                  )}
-                </div>
-
-                {/* Meta pills */}
-                <div className="nursery-identity__meta-row">
-                  {metaItems.map((item) => (
-                    <div key={item.key} className="nursery-identity__meta-pill">
-                      <span className="nursery-identity__meta-label">{item.label}</span>
-                      {editingField === item.key ? (
-                        <Input
-                          ref={metaInputRef}
-                          value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          onBlur={commitEdit}
-                          onKeyDown={onEditKey}
-                          size="small"
-                        />
-                      ) : (
-                        <span
-                          className={`nursery-identity__meta-value${!item.value ? ' is-empty' : ''}`}
-                          onClick={() => startEdit(item.key)}
-                        >
-                          {item.value || item.placeholder}
-                        </span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-
-                {/* Body editor */}
-                <div className="nursery-identity__body">
-                  <MEditor
-                    value={identityDocument.body}
-                    onChange={handleBodyChange}
-                    mode="ir"
-                    theme={isLight ? 'light' : 'dark'}
-                  />
-                </div>
-              </>
+              <Suspense
+                fallback={(
+                  <div className="acp-loading">
+                    <RefreshCw size={14} className="nursery-spinning" />
+                  </div>
+                )}
+              >
+                <AssistantScheduleView
+                  workspacePath={workspacePath}
+                  assistantName={identityName}
+                />
+              </Suspense>
             )}
           </div>
-        </TabPane>
+        </div>
+      </div>
+    </div>
+  );
 
-        {/* Personality tab */}
-        <TabPane tabKey="personality" label={t('nursery.tabs.personality')} icon={<Radar size={13} />}>
-          <div className="nursery-tab-content nursery-tab-content--centered">
-            <PersonaRadar dims={radarDims} size={240} />
-            <div className="nursery-radar__dims">
-              {radarDims.map((d) => (
-                <div key={d.label} className="nursery-radar__dim-row">
-                  <span className="nursery-radar__dim-label">{d.label}</span>
-                  <div className="nursery-radar__dim-bar">
-                    <div
-                      className="nursery-radar__dim-fill"
-                      style={{ width: `${(d.value / 10) * 100}%` }}
-                    />
-                  </div>
-                  <span className="nursery-radar__dim-val">{d.value.toFixed(1)}</span>
-                </div>
-              ))}
+  // ── Right panel: persona doc editor ────────────────────────────────────
+
+  const renderPersonaDocPanel = () => {
+    if (!personaDoc) return null;
+    const { fileName, content, loading, error } = personaDoc;
+    const docLabelKey = fileName.replace(/\.md$/i, '') as 'SOUL' | 'USER' | 'IDENTITY';
+    return (
+      <div className="acp-right-info">
+        <div className="acp-right-shell acp-right-shell--editor">
+          <div className="acp-persona-editor">
+            <div className="acp-persona-editor__head">
+              <IconButton
+                type="button"
+                size="xs"
+                className="acp-persona-editor__back"
+                onClick={closePersonaDoc}
+                aria-label={t('nursery.template.closeDetail')}
+                tooltip={t('nursery.template.closeDetail')}
+              >
+                <ArrowLeft size={13} />
+              </IconButton>
+              <span className="acp-persona-editor__title">{t(`nursery.assistant.personaDocs.${docLabelKey}`)}</span>
+              <IconButton
+                type="button"
+                size="xs"
+                variant="danger"
+                className="acp-persona-editor__close"
+                onClick={closePersonaDoc}
+                aria-label={t('nursery.template.closeDetail')}
+                tooltip={t('nursery.template.closeDetail')}
+              >
+                <X size={13} />
+              </IconButton>
             </div>
-            <p className="nursery-radar__hint">{t('radar.subtitle')}</p>
+            <div className="acp-persona-editor__body">
+              {error && <p className="acp-persona-editor__error">{t('nursery.assistant.personaDocLoadFailed')}: {error}</p>}
+              {loading ? (
+                <div className="acp-loading"><RefreshCw size={14} className="nursery-spinning" /></div>
+              ) : (
+                <MEditor
+                  key={fileName}
+                  value={content}
+                  onChange={handlePersonaDocChange}
+                  theme={isLight ? 'light' : 'dark'}
+                  toolbar={false}
+                  mode="ir"
+                  height="100%"
+                  className="acp-persona-editor__meditor"
+                />
+              )}
+            </div>
           </div>
-        </TabPane>
+        </div>
+      </div>
+    );
+  };
 
-        {/* Ability tab */}
-        <TabPane tabKey="ability" label={t('nursery.tabs.ability')} icon={<Wrench size={13} />}>
-          <div className="nursery-tab-content">
-            {/* Model overrides */}
-            <section className="nursery-section">
-              <div className="nursery-section__head">
-                <Star size={13} />
-                <span className="nursery-section__title">{t('cards.model')}</span>
-              </div>
-              <div className="nursery-model-grid">
-                {MODEL_SLOTS.map((slot) => {
-                  const Icon = slot === 'primary' ? Star : Zap;
-                  return (
-                    <div key={slot} className="nursery-model-cell">
-                      <div className="nursery-model-cell__meta">
-                        <Icon size={13} />
-                        <span className="nursery-model-cell__label">
-                          {t(`modelSlots.${slot}.label`)}
-                        </span>
-                      </div>
-                      <Select
-                        size="small"
-                        options={buildModelOptions(slot)}
-                        value={getModelValue(slot)}
-                        onChange={(v) => handleModelChange(slot, v)}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-
-            {/* Token breakdown */}
-            <section className="nursery-section">
-              <div className="nursery-section__head">
-                <span className="nursery-section__title">{t('nursery.template.tokenTitle')}</span>
-              </div>
-              <div className="nursery-token-breakdown">
-                <div className="nursery-token-row">
-                  <span>{t('nursery.template.tokenSystemPrompt')}</span>
-                  <span>~{formatTokenCount(tokenBreakdown.systemPrompt)} tok</span>
-                </div>
-                <div className="nursery-token-row">
-                  <span>{t('nursery.template.tokenToolInjection')}</span>
-                  <span>~{formatTokenCount(tokenBreakdown.toolInjection)} tok</span>
-                </div>
-                <div className="nursery-token-row">
-                  <span>{t('nursery.template.tokenRules')} ({enabledRulesCount})</span>
-                  <span>~{formatTokenCount(tokenBreakdown.rules)} tok</span>
-                </div>
-                <div className="nursery-token-row">
-                  <span>{t('nursery.template.tokenMemories')} ({enabledMemCount})</span>
-                  <span>~{formatTokenCount(tokenBreakdown.memories)} tok</span>
-                </div>
-                <div className="nursery-token-row nursery-token-row--total">
-                  <span>{t('nursery.template.tokenTotal')}</span>
-                  <span>~{formatTokenCount(tokenBreakdown.total)} tok ({tokenBreakdown.percentage})</span>
-                </div>
-                <div className="nursery-token-bar">
-                  <div
-                    className="nursery-token-bar__fill"
-                    style={{ width: `${Math.min(100, (tokenBreakdown.total / tokenBreakdown.contextWindowSize) * 100)}%` }}
-                  />
-                </div>
-              </div>
-            </section>
-
-            {/* Tools */}
-            <section className="nursery-section">
-              <div className="nursery-section__head">
-                <Wrench size={13} />
-                <span className="nursery-section__title">{t('cards.toolsMcp')}</span>
-                <span className="nursery-section__count">
-                  {enabledToolCount}/{availableTools.length}
-                </span>
-              </div>
-              <div className="nursery-tool-list">
-                {availableTools.map((tool) => {
-                  const enabled = agenticConfig?.available_tools?.includes(tool.name) ?? false;
-                  return (
-                    <div key={tool.name} className="nursery-tool-row">
-                      <div className="nursery-tool-row__meta">
-                        <span className="nursery-tool-row__name">{tool.name}</span>
-                        <span className="nursery-tool-row__desc">{tool.description}</span>
-                      </div>
-                      <Switch
-                        size="small"
-                        checked={enabled}
-                        loading={toolsLoading[tool.name]}
-                        onChange={() => handleToolToggle(tool.name)}
-                        aria-label={tool.name}
-                      />
-                    </div>
-                  );
-                })}
-                {availableTools.length === 0 && (
-                  <span className="nursery-empty">{t('empty.tools')}</span>
-                )}
-              </div>
-            </section>
-          </div>
-        </TabPane>
-
-        {/* Memory tab */}
-        <TabPane tabKey="memory" label={t('nursery.tabs.memory')} icon={<ListChecks size={13} />}>
-          <div className="nursery-tab-content">
-            {/* Rules */}
-            <section className="nursery-section">
-              <div className="nursery-section__head">
-                <ListChecks size={13} />
-                <span className="nursery-section__title">{t('cards.rules')}</span>
-                <span className="nursery-section__count">
-                  {rules.filter((r) => r.enabled).length}/{rules.length}
-                </span>
-              </div>
-              <div className="nursery-rule-list">
-                {rules.length === 0 ? (
-                  <span className="nursery-empty">{t('empty.rules')}</span>
-                ) : (
-                  rules.map((rule) => (
-                    <div key={`${rule.level}-${rule.name}`} className="nursery-rule-row">
-                      <span className="nursery-rule-row__name">{rule.name}</span>
-                      <span className="nursery-rule-row__level">
-                        {rule.level === RuleLevel.User ? 'user' : 'project'}
-                      </span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </section>
-
-            {/* Skills */}
-            <section className="nursery-section">
-              <div className="nursery-section__head">
-                <Puzzle size={13} />
-                <span className="nursery-section__title">{t('cards.skills')}</span>
-                <span className="nursery-section__count">
-                  {skills.filter((s) => s.enabled).length}/{skills.length}
-                </span>
-              </div>
-              <div className="nursery-skill-grid">
-                {skills.length === 0 ? (
-                  <span className="nursery-empty">{t('empty.skills')}</span>
-                ) : (
-                  skills.map((skill) => (
-                    <div
-                      key={skill.name}
-                      className={`nursery-skill-chip${skill.enabled ? ' is-on' : ''}`}
-                      title={skill.description}
-                    >
-                      {skill.name}
-                    </div>
-                  ))
-                )}
-              </div>
-            </section>
-          </div>
-        </TabPane>
-      </Tabs>
+  return (
+    <div className="nursery-page acp-page">
+      {/* Top bar — back only */}
+      <div className="nursery-page__bar acp-page__bar">
+        <IconButton
+          type="button"
+          size="small"
+          className="nursery-page__back"
+          onClick={openGallery}
+          aria-label={t('nursery.backToGallery')}
+          tooltip={t('nursery.backToGallery')}
+        >
+          <ArrowLeft size={13} />
+        </IconButton>
       </div>
 
-      <ConfirmDialog
-        isOpen={isResetDialogOpen}
-        title={t('identity.resetConfirmTitle')}
-        message={t('identity.resetConfirmMessage')}
-        confirmText={t('identity.resetConfirmAction')}
-        cancelText={t('identity.resetCancel')}
-        confirmDanger
-        onClose={() => setIsResetDialogOpen(false)}
-        onConfirm={() => {
-          setIsResetDialogOpen(false);
-          resetPersonaFiles()
-            .then(() => notificationService.success(t('identity.resetSuccess')))
-            .catch(() => notificationService.error(t('identity.resetFailed')));
-        }}
-        onCancel={() => setIsResetDialogOpen(false)}
-      />
+      {/* Two-column layout */}
+      <div className="acp-layout">
+        {/* Left: identity header + quick input + sessions */}
+        <div className="acp-layout__left">
+          {/* Identity header above the input */}
+          <div className="acp-left-header">
+            <div className="acp-left-header__info">
+              {editingField === 'name' ? (
+                <Input
+                  ref={nameInputRef}
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  onBlur={commitEdit}
+                  onKeyDown={onEditKey}
+                  className="acp-left-header__name-input"
+                />
+              ) : (
+                <span
+                  className="acp-left-header__name"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => startEdit('name')}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startEdit('name'); } }}
+                  title={t('hero.editNameTitle')}
+                >
+                  {identityName}
+                </span>
+              )}
+              <div className="acp-left-header__meta">
+                {editingField === 'creature' ? (
+                  <Input
+                    ref={metaInputRef}
+                    value={editValue}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    onBlur={commitEdit}
+                    onKeyDown={onEditKey}
+                    size="small"
+                    className="acp-left-header__meta-input"
+                  />
+                ) : (
+                  <span
+                    className={`acp-left-header__meta-tag${!displayIdentity.creature ? ' is-empty' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => startEdit('creature')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startEdit('creature'); } }}
+                  >
+                    {displayIdentity.creature || t('identity.creaturePlaceholderShort')}
+                  </span>
+                )}
+                {(displayIdentity.creature || displayIdentity.vibe) && (
+                  <span className="acp-left-header__meta-dot" aria-hidden>·</span>
+                )}
+                {editingField === 'vibe' ? (
+                  <Input
+                    ref={metaInputRef}
+                    value={editValue}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    onBlur={commitEdit}
+                    onKeyDown={onEditKey}
+                    size="small"
+                    className="acp-left-header__meta-input"
+                  />
+                ) : (
+                  <span
+                    className={`acp-left-header__meta-tag${!displayIdentity.vibe ? ' is-empty' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => startEdit('vibe')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startEdit('vibe'); } }}
+                  >
+                    {displayIdentity.vibe || t('identity.vibePlaceholderShort')}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <AssistantQuickInput
+            workspacePath={workspacePath}
+            workspaceId={workspace?.id}
+            assistantName={identityName}
+          />
+          <div className="acp-sessions-area">
+            <h2 className="acp-sessions-area__title">{t('nursery.assistant.sessionsSectionTitle')}</h2>
+            <SessionsSection
+              workspaceId={workspace?.id}
+              workspacePath={workspacePath}
+              assistantLabel={identityName}
+              isActiveWorkspace
+              showSessionModeIcon={false}
+            />
+          </div>
+        </div>
+
+        {/* Right: persona docs + schedule */}
+        <div className="acp-layout__right">
+          {rightView === 'personaDoc' ? renderPersonaDocPanel() : renderInfoPanel()}
+        </div>
+      </div>
     </div>
   );
 };

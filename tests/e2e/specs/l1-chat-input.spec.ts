@@ -8,6 +8,7 @@ import { ChatPage } from '../page-objects/ChatPage';
 import { ChatInput } from '../page-objects/components/ChatInput';
 import { Header } from '../page-objects/components/Header';
 import { StartupPage } from '../page-objects/StartupPage';
+import { ensureCodeSessionOpen, openWorkspace } from '../helpers/workspace-helper';
 import { saveScreenshot, saveFailureScreenshot, saveStepScreenshot } from '../helpers/screenshot-utils';
 
 describe('L1 Chat Input Validation', () => {
@@ -33,28 +34,16 @@ describe('L1 Chat Input Validation', () => {
     hasWorkspace = !startupVisible;
 
     if (!hasWorkspace) {
-      console.log('[L1] No workspace open - attempting to open test workspace');
+      console.log('[L1] No workspace open - opening current test workspace through frontend state');
+      hasWorkspace = await openWorkspace();
+    }
 
-      // Try to open a recent workspace first
-      const openedRecent = await startupPage.openRecentWorkspace(0);
-
-      if (!openedRecent) {
-        // If no recent workspace, try to open current project directory
-        // Use environment variable or default to relative path
-        const testWorkspacePath = process.env.E2E_TEST_WORKSPACE || process.cwd();
-        console.log('[L1] Opening test workspace:', testWorkspacePath);
-
-        try {
-          await startupPage.openWorkspaceByPath(testWorkspacePath);
-          hasWorkspace = true;
-          console.log('[L1] Test workspace opened successfully');
-        } catch (error) {
-          console.error('[L1] Failed to open test workspace:', error);
-          console.log('[L1] Tests will be skipped - no workspace available');
-        }
-      } else {
-        hasWorkspace = true;
-        console.log('[L1] Recent workspace opened successfully');
+    if (hasWorkspace) {
+      try {
+        await ensureCodeSessionOpen();
+      } catch (error) {
+        console.error('[L1] Failed to ensure Code session is open:', error);
+        hasWorkspace = false;
       }
     }
 

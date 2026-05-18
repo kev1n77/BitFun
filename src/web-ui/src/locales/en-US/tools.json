@@ -46,7 +46,15 @@
       "loadingFile": "Loading file...",
       "saving": "Saving...",
       "initFailedWithMessage": "Failed to initialize editor: {{message}}",
-      "externalModifiedConfirm": "This file was modified by another program.\n\nYou have unsaved changes. Discard them and reload the file?"
+      "externalModifiedConfirm": "This file was modified by another program.\n\nYou have unsaved changes. Discard them and reload the file?",
+      "externalModifiedTitle": "File changed on disk",
+      "externalModifiedDetail": "The file's metadata on disk (modified time / size) no longer matches the version this editor is based on. You have unsaved local changes. Reloading will discard them.",
+      "discardAndReload": "Discard and reload",
+      "keepLocalEdits": "Keep my edits",
+      "saveConflictTitle": "Save conflict",
+      "saveConflictDetail": "The file on disk was modified by another program before save. Overwrite the file with your editor content, or discard local changes and reload from disk.",
+      "overwriteSave": "Overwrite",
+      "reloadFromDisk": "Reload from disk"
     },
     "diffEditor": {
       "loading": "Loading diff editor...",
@@ -60,7 +68,16 @@
     },
     "markdownEditor": {
       "loadingFile": "Loading file...",
-      "placeholder": "Start writing Markdown..."
+      "placeholder": "Start writing Markdown...",
+      "source": "Source",
+      "markdown": "Markdown",
+      "preview": "Preview",
+      "copyMarkdown": "Copy Markdown",
+      "copiedMarkdown": "Copied Markdown",
+      "viewModeLabel": "Markdown and preview mode",
+      "notice": {
+        "sourcePreviewFallback": "This document contains HTML fragments that are not safely editable in visual mode. Edit in source mode or switch to preview."
+      }
     },
     "planViewer": {
       "loadingPlan": "Loading plan...",
@@ -91,8 +108,6 @@
     "meditor": {
       "placeholder": "Enter Markdown...",
       "toolbarPlaceholder": "Toolbar",
-      "loading": "Loading...",
-      "parseError": "Parse error",
       "mermaidRendering": "Rendering Mermaid diagram...",
       "mermaidRenderFailed": "Mermaid Render Failed",
       "mermaidRenderFailedWithMessage": "Render failed: {{message}}",
@@ -101,6 +116,12 @@
       "localImageTitleUnableToLoadWithPath": "Unable to load: {{path}}",
       "localImageLoading": "Loading image...",
       "localImageFailed": "Image failed to load",
+      "rawHtml": {
+        "inlineLabel": "HTML"
+      },
+      "details": {
+        "summaryPlaceholder": "Summary"
+      },
       "insertLinkTextPlaceholder": "Link text",
       "inlineAi": {
         "triggerHint": "Press Space to use AI",
@@ -318,6 +339,8 @@
       "resultsFound": "Found {{count}} results",
       "resultsShowing": " (showing {{count}})",
       "loadMore": "Load more ({{count}} results)",
+      "resultsTruncatedFiles": "Showing the first {{count}} file matches.",
+      "resultsTruncatedContent": "Showing the first {{count}} content matches.",
       "lineNumberPrefix": "Line {{line}}: "
     }
   },

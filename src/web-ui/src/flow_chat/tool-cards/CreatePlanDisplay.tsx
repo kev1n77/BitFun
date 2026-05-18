@@ -15,9 +15,10 @@ import { workspaceAPI } from '@/infrastructure/api/service-api/WorkspaceAPI';
 import { fileSystemService } from '@/tools/file-system/services/FileSystemService';
 import { planBuildStateService } from '@/shared/services/PlanBuildStateService';
 import yaml from 'yaml';
-import { Tooltip, CubeLoading } from '@/component-library';
+import { Tooltip } from '@/component-library';
 import { createLogger } from '@/shared/utils/logger';
 import { useToolCardHeightContract } from './useToolCardHeightContract';
+import { basenamePath, dirnameAbsolutePath } from '@/shared/utils/pathUtils';
 import './CreatePlanDisplay.scss';
 
 const log = createLogger('PlanDisplay');
@@ -137,10 +138,7 @@ export const PlanDisplay: React.FC<PlanDisplayProps> = ({
     }
 
     const normalizedPlanPath = planFilePath.replace(/\\/g, '/');
-    // Keep original format for FileSystemService.startsWith comparisons.
-    const dirPath = planFilePath.substring(0, planFilePath.lastIndexOf('\\') >= 0 
-      ? planFilePath.lastIndexOf('\\') 
-      : planFilePath.lastIndexOf('/'));
+    const dirPath = dirnameAbsolutePath(planFilePath);
 
     const loadFromFile = async () => {
       // Skip refresh while writing to avoid feedback loops.
@@ -176,6 +174,10 @@ export const PlanDisplay: React.FC<PlanDisplayProps> = ({
     if (!hasAutoLoaded.current) {
       hasAutoLoaded.current = true;
       loadFromFile();
+    }
+
+    if (!dirPath) {
+      return;
     }
 
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -230,16 +232,14 @@ export const PlanDisplay: React.FC<PlanDisplayProps> = ({
   }, [buildStatus, isBuildStarted]);
 
   const planFileName = useMemo(() => {
-    if (!planData?.planFilePath) return '';
-    const parts = planData.planFilePath.replace(/\\/g, '/').split('/');
-    return parts[parts.length - 1] || '';
-  }, [planData]);
+    return basenamePath(planFilePath);
+  }, [planFilePath]);
 
   const handleViewPlan = useCallback(() => {
-    if (planData?.planFilePath) {
-      ideControl.navigation.goToFile(planData.planFilePath);
+    if (planFilePath) {
+      ideControl.navigation.goToFile(planFilePath);
     }
-  }, [planData]);
+  }, [planFilePath]);
 
   const handleBuild = useCallback(async () => {
     if (!planFilePath || buildStatus !== 'build') return;
@@ -304,9 +304,8 @@ ${JSON.stringify(simpleTodos, null, 2)}
 
   if (!planData) {
     return (
-      <div className="create-plan-display create-plan-display--loading">
-        <div className="create-plan-header">
-          <Loader2 className="animate-spin" size={14} />
+      <div className={`create-plan-display create-plan-display--loading create-plan-display--loading-shimmer status-${status}`}>
+        <div className="create-plan-header create-plan-header--loading-shimmer">
           <span>{t('toolCards.plan.loadingPlan')}</span>
         </div>
       </div>
@@ -317,11 +316,11 @@ ${JSON.stringify(simpleTodos, null, 2)}
     <div
       ref={cardRootRef}
       data-tool-card-id={toolCardId ?? ''}
-      className={`create-plan-display status-${status}`}
+      className={`create-plan-display status-${status}${isLoading ? ' create-plan-display--plan-generating' : ''}`}
     >
       <Tooltip content={t('toolCards.plan.clickToOpenPlan')}>
         <div 
-          className="create-plan-header create-plan-header--clickable"
+          className={`create-plan-header create-plan-header--clickable${isLoading ? ' create-plan-header--loading-shimmer' : ''}`}
           onClick={handleViewPlan}
         >
           <div className="header-left">
@@ -330,9 +329,6 @@ ${JSON.stringify(simpleTodos, null, 2)}
             </div>
             <span className="file-name">{planFileName}</span>
           </div>
-          {isLoading && (
-            <CubeLoading size="small" className="create-plan-loading" />
-          )}
         </div>
       </Tooltip>
 
@@ -379,14 +375,12 @@ ${JSON.stringify(simpleTodos, null, 2)}
         </div>
       )}
 
-      <div className="create-plan-footer">
-        <button 
-          className="view-plan-btn"
-          onClick={handleViewPlan}
-          disabled={isLoading}
-        >
-          {t('toolCards.plan.viewPlan')}
-        </button>
+      <div className={`create-plan-footer${isLoading ? ' create-plan-footer--generating-only' : ''}`}>
+        {!isLoading && (
+          <button className="view-plan-btn" type="button" onClick={handleViewPlan}>
+            {t('toolCards.plan.viewPlan')}
+          </button>
+        )}
         <button 
           className={`build-btn build-btn--${buildStatus}`}
           onClick={handleBuild}
@@ -401,6 +395,11 @@ ${JSON.stringify(simpleTodos, null, 2)}
             <>
               <CheckCircle size={14} />
               <span>{t('toolCards.plan.built')}</span>
+            </>
+          ) : isLoading ? (
+            <>
+              <Loader2 size={14} className="animate-spin" />
+              <span>{t('toolCards.plan.generating')}</span>
             </>
           ) : (
             <span>{t('toolCards.plan.build')}</span>
@@ -419,28 +418,49 @@ ${JSON.stringify(simpleTodos, null, 2)}
 export const CreatePlanDisplay: React.FC<ToolCardProps> = ({
   toolItem,
 }) => {
-  const { status, toolResult, partialParams, isParamsStreaming } = toolItem;
-  
+  const { status, toolResult, partialParams, isParamsStreaming, toolCall } = toolItem;
+  const toolInput = toolCall?.input as Record<string, unknown> | undefined;
+  const useStreamingInputFallback =
+    Boolean(isParamsStreaming) ||
+    status === 'streaming' ||
+    status === 'preparing' ||
+    status === 'running';
+
   const planFilePath = useMemo(() => {
     if (isParamsStreaming && partialParams?.plan_file_path) {
-      return partialParams.plan_file_path;
+      return String(partialParams.plan_file_path);
     }
-    return toolResult?.result?.plan_file_path || '';
-  }, [isParamsStreaming, partialParams, toolResult]);
+    const fromResult = toolResult?.result?.plan_file_path;
+    if (fromResult) return String(fromResult);
+    if (useStreamingInputFallback && toolInput?.plan_file_path != null) {
+      return String(toolInput.plan_file_path);
+    }
+    return '';
+  }, [isParamsStreaming, partialParams, toolResult, useStreamingInputFallback, toolInput]);
 
   const initialName = useMemo(() => {
-    if (isParamsStreaming && partialParams?.name) {
-      return partialParams.name;
+    if (isParamsStreaming && partialParams?.name != null) {
+      return String(partialParams.name);
     }
-    return toolResult?.result?.name || '';
-  }, [isParamsStreaming, partialParams, toolResult]);
+    const fromResult = toolResult?.result?.name;
+    if (fromResult != null) return String(fromResult);
+    if (useStreamingInputFallback && toolInput?.name != null) {
+      return String(toolInput.name);
+    }
+    return '';
+  }, [isParamsStreaming, partialParams, toolResult, useStreamingInputFallback, toolInput]);
 
   const initialOverview = useMemo(() => {
-    if (isParamsStreaming && partialParams?.overview) {
-      return partialParams.overview;
+    if (isParamsStreaming && partialParams?.overview != null) {
+      return String(partialParams.overview);
     }
-    return toolResult?.result?.overview || '';
-  }, [isParamsStreaming, partialParams, toolResult]);
+    const fromResult = toolResult?.result?.overview;
+    if (fromResult != null) return String(fromResult);
+    if (useStreamingInputFallback && toolInput?.overview != null) {
+      return String(toolInput.overview);
+    }
+    return '';
+  }, [isParamsStreaming, partialParams, toolResult, useStreamingInputFallback, toolInput]);
 
   const initialTodos = useMemo(() => {
     if (isParamsStreaming && partialParams?.todos && Array.isArray(partialParams.todos)) {
@@ -449,9 +469,12 @@ export const CreatePlanDisplay: React.FC<ToolCardProps> = ({
     if (toolResult?.result?.todos && Array.isArray(toolResult.result.todos)) {
       return toolResult.result.todos;
     }
+    if (useStreamingInputFallback && toolInput?.todos && Array.isArray(toolInput.todos)) {
+      return toolInput.todos as PlanTodo[];
+    }
     return [];
-  }, [isParamsStreaming, partialParams, toolResult]);
-  
+  }, [isParamsStreaming, partialParams, toolResult, useStreamingInputFallback, toolInput]);
+
   return (
     <PlanDisplay
       planFilePath={planFilePath}

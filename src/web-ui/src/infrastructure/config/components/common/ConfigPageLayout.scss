@@ -65,6 +65,14 @@
   flex: 1;
 }
 
+.bitfun-config-page-section__title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-gap-2, 8px);
+  min-width: 0;
+}
+
 .bitfun-config-page-section__title {
   margin: 0;
   font-size: var(--font-size-base);
@@ -88,6 +96,7 @@
 }
 
 .bitfun-config-page-section__body {
+  min-width: 0;
   background: var(--element-bg-subtle);
   border: 1px solid var(--border-subtle);
   border-radius: var(--size-radius-md, 10px);
@@ -119,7 +128,8 @@
   gap: var(--size-gap-2, 8px);
 
   .bitfun-config-page-row__control {
-    justify-content: stretch;
+    justify-content: flex-start;
+    align-items: stretch;
     justify-self: stretch;
   }
 }
@@ -153,9 +163,14 @@
   justify-self: stretch;
 
   > .bitfun-input-wrapper,
-  > .select {
+  > .select,
+  > .bitfun-number-input {
     width: 100%;
     min-width: 0;
+  }
+
+  > .bitfun-number-input .bitfun-number-input__input {
+    text-align: left;
   }
 }
 

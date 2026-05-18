@@ -11,18 +11,22 @@ import type {
 import './EditorArea.scss';
 export interface EditorAreaProps {
   workspacePath?: string;
+  isSceneActive?: boolean;
   onOpenMissionControl?: () => void;
   onInteraction?: (itemId: string, userInput: string) => Promise<void>;
   onTabCloseWithDirtyCheck?: (tabId: string, groupId: EditorGroupId) => Promise<boolean>;
   onTabCloseAllWithDirtyCheck?: (groupId: EditorGroupId) => Promise<boolean>;
+  disablePopOut?: boolean;
 }
 
 export const EditorArea: React.FC<EditorAreaProps> = ({
   workspacePath,
+  isSceneActive = true,
   onOpenMissionControl,
   onInteraction,
   onTabCloseWithDirtyCheck,
   onTabCloseAllWithDirtyCheck,
+  disablePopOut = false,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const topRowRef = useRef<HTMLDivElement>(null);
@@ -49,6 +53,7 @@ export const EditorArea: React.FC<EditorAreaProps> = ({
     setActiveGroup,
     updateTabContent,
     setTabDirty,
+    setTabFileDeletedFromDisk,
   } = useCanvasStore();
 
   const handleTabClick = useCallback((groupId: EditorGroupId) => (tabId: string) => {
@@ -61,16 +66,16 @@ export const EditorArea: React.FC<EditorAreaProps> = ({
 
   const handleTabClose = useCallback((groupId: EditorGroupId) => async (tabId: string) => {
     if (onTabCloseWithDirtyCheck) {
-      const shouldClose = await onTabCloseWithDirtyCheck(tabId, groupId);
-      if (!shouldClose) return;
+      await onTabCloseWithDirtyCheck(tabId, groupId);
+      return;
     }
     closeTab(tabId, groupId);
   }, [closeTab, onTabCloseWithDirtyCheck]);
 
   const handleCloseAllTabs = useCallback((groupId: EditorGroupId) => async () => {
     if (onTabCloseAllWithDirtyCheck) {
-      const shouldClose = await onTabCloseAllWithDirtyCheck(groupId);
-      if (!shouldClose) return;
+      await onTabCloseAllWithDirtyCheck(groupId);
+      return;
     }
     closeAllTabs(groupId);
   }, [closeAllTabs, onTabCloseAllWithDirtyCheck]);
@@ -110,11 +115,19 @@ export const EditorArea: React.FC<EditorAreaProps> = ({
     setTabDirty(tabId, groupId, isDirty);
   }, [setTabDirty]);
 
+  const handleTabFileDeletedFromDiskChange = useCallback(
+    (groupId: EditorGroupId) => (tabId: string, missing: boolean) => {
+      setTabFileDeletedFromDisk(tabId, groupId, missing);
+    },
+    [setTabFileDeletedFromDisk]
+  );
+
   const renderEditorGroup = (groupId: EditorGroupId, group: typeof primaryGroup) => (
     <EditorGroup
       groupId={groupId}
       group={group}
       isActive={activeGroupId === groupId}
+      isSceneActive={isSceneActive}
       draggingTabId={draggingTabId}
       draggingFromGroupId={draggingFromGroupId}
       splitMode={layout.splitMode}
@@ -130,9 +143,11 @@ export const EditorArea: React.FC<EditorAreaProps> = ({
       onGroupFocus={handleGroupFocus(groupId)}
       onContentChange={handleContentChange(groupId)}
       onDirtyStateChange={handleDirtyStateChange(groupId)}
+      onTabFileDeletedFromDiskChange={handleTabFileDeletedFromDiskChange(groupId)}
       onOpenMissionControl={groupId === 'primary' ? onOpenMissionControl : undefined}
       onCloseAllTabs={handleCloseAllTabs(groupId)}
       onInteraction={onInteraction}
+      disablePopOut={disablePopOut}
     />
   );
 

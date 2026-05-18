@@ -111,6 +111,12 @@ export interface UseGitStateOptions {
   
   /** Whether the component is active/visible */
   isActive?: boolean;
+
+  /**
+   * Whether this consumer should participate in global window-focus refresh.
+   * Disable for passive consumers such as sidebar branch badges.
+   */
+  participateInWindowFocusRefresh?: boolean;
   
   /** Optional selector to reduce re-renders */
   selector?: <T>(state: GitState) => T;

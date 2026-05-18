@@ -10,6 +10,9 @@ const ALIGNABLE_TYPES = [
   'codeBlock',
   'horizontalRule',
   'markdownTable',
+  'details',
+  'renderOnlyBlock',
+  'rawHtmlBlock',
 ];
 
 export const MarkdownAlignmentExtension = Extension.create({

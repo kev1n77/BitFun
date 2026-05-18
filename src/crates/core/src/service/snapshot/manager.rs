@@ -1,10 +1,13 @@
-use crate::agentic::tools::framework::{Tool, ToolResult, ToolUseContext};
+use crate::agentic::tools::framework::{
+    DynamicToolInfo, Tool, ToolExposure, ToolResult, ToolUseContext,
+};
 use crate::agentic::tools::registry::ToolRegistry;
 use crate::service::remote_ssh::workspace_state::is_remote_path;
 use crate::service::snapshot::service::SnapshotService;
 use crate::service::snapshot::types::{
     OperationType, SnapshotConfig, SnapshotError, SnapshotResult,
 };
+use crate::service::workspace_runtime::get_workspace_runtime_service_arc;
 use async_trait::async_trait;
 use log::{debug, error, info, warn};
 use serde_json::Value;
@@ -31,7 +34,14 @@ impl SnapshotManager {
             workspace_dir.display()
         );
 
-        let mut snapshot_service = SnapshotService::new(workspace_dir, config);
+        let runtime_service = get_workspace_runtime_service_arc();
+        let runtime_context = runtime_service
+            .ensure_local_workspace_runtime(&workspace_dir)
+            .await
+            .map_err(|e| SnapshotError::ConfigError(e.to_string()))?
+            .context;
+
+        let mut snapshot_service = SnapshotService::new(workspace_dir, runtime_context, config);
         snapshot_service.initialize().await?;
         let snapshot_service = Arc::new(RwLock::new(snapshot_service));
         Ok(Self { snapshot_service })
@@ -139,6 +149,18 @@ impl SnapshotManager {
         }))
     }
 
+    pub async fn get_session_file_diff_stats(
+        &self,
+        session_id: &str,
+        file_path: &str,
+    ) -> SnapshotResult<crate::service::snapshot::types::SessionFileDiffStats> {
+        let snapshot_service = self.snapshot_service.read().await;
+        let file_path = std::path::Path::new(file_path);
+        snapshot_service
+            .get_session_file_diff_stats(session_id, file_path)
+            .await
+    }
+
     pub async fn get_operation_summary(
         &self,
         session_id: &str,
@@ -192,13 +214,6 @@ impl SnapshotManager {
     pub async fn list_sessions(&self) -> SnapshotResult<Vec<String>> {
         let snapshot_service = self.snapshot_service.read().await;
         snapshot_service.list_sessions().await
-    }
-
-    pub async fn cleanup_snapshot_data(&self, keep_recent_days: u64) -> SnapshotResult<()> {
-        let snapshot_service = self.snapshot_service.read().await;
-        snapshot_service
-            .cleanup_snapshot_data(keep_recent_days)
-            .await
     }
 
     /// Tries to acquire a file lock.
@@ -344,20 +359,60 @@ impl Tool for WrappedTool {
         Ok(self.original_tool.description().await?)
     }
 
+    async fn description_with_context(
+        &self,
+        context: Option<&ToolUseContext>,
+    ) -> crate::util::errors::BitFunResult<String> {
+        self.original_tool.description_with_context(context).await
+    }
+
+    fn short_description(&self) -> String {
+        self.original_tool.short_description()
+    }
+
+    fn default_exposure(&self) -> ToolExposure {
+        self.original_tool.default_exposure()
+    }
+
     fn input_schema(&self) -> Value {
         self.original_tool.input_schema()
+    }
+
+    async fn input_schema_for_model(&self) -> Value {
+        self.original_tool.input_schema_for_model().await
+    }
+
+    async fn input_schema_for_model_with_context(
+        &self,
+        context: Option<&crate::agentic::tools::framework::ToolUseContext>,
+    ) -> Value {
+        self.original_tool
+            .input_schema_for_model_with_context(context)
+            .await
     }
 
     fn input_json_schema(&self) -> Option<Value> {
         self.original_tool.input_json_schema()
     }
 
+    fn dynamic_provider_id(&self) -> Option<&str> {
+        self.original_tool.dynamic_provider_id()
+    }
+
+    fn dynamic_tool_info(&self) -> Option<DynamicToolInfo> {
+        self.original_tool.dynamic_tool_info()
+    }
+
     fn user_facing_name(&self) -> String {
-        format!("{}", self.original_tool.user_facing_name())
+        self.original_tool.user_facing_name().to_string()
     }
 
     async fn is_enabled(&self) -> bool {
         self.original_tool.is_enabled().await
+    }
+
+    async fn is_available_in_context(&self, context: Option<&ToolUseContext>) -> bool {
+        self.original_tool.is_available_in_context(context).await
     }
 
     fn is_readonly(&self) -> bool {
@@ -400,11 +455,13 @@ impl Tool for WrappedTool {
         options: &crate::agentic::tools::framework::ToolRenderOptions,
     ) -> String {
         let original_message = self.original_tool.render_tool_use_message(input, options);
-        format!("{}", original_message)
+        original_message.to_string()
     }
 
     fn render_tool_use_rejected_message(&self) -> String {
-        format!("{}", self.original_tool.render_tool_use_rejected_message())
+        self.original_tool
+            .render_tool_use_rejected_message()
+            .to_string()
     }
 
     fn render_tool_result_message(&self, output: &Value) -> String {
@@ -509,10 +566,13 @@ impl WrappedTool {
             debug!("Creating new file: file_path={}", file_path.display());
         }
 
+        let file_existed_before = file_path.exists();
+        let operation_type = self.get_operation_type_internal(file_existed_before);
         let turn_index = self.extract_turn_index(context);
 
         let snapshot_service = snapshot_manager.get_snapshot_service();
         let snapshot_service = snapshot_service.read().await;
+        let intercept_started_at = std::time::Instant::now();
         let operation_id = snapshot_service
             .intercept_file_modification(
                 &session_id,
@@ -520,11 +580,12 @@ impl WrappedTool {
                 self.name(),
                 input.clone(),
                 &file_path,
-                self.get_operation_type_internal(),
+                operation_type,
                 context.tool_call_id.clone(),
             )
             .await
             .map_err(|e| crate::util::errors::BitFunError::Tool(e.to_string()))?;
+        let intercept_ms = crate::util::elapsed_ms_u64(intercept_started_at);
 
         debug!(
             "Recorded file modification operation: operation_id={}",
@@ -533,16 +594,27 @@ impl WrappedTool {
 
         let start_time = std::time::Instant::now();
         let results = self.original_tool.call(input, context).await?;
-        let duration_ms = start_time.elapsed().as_millis() as u64;
+        let tool_call_ms = crate::util::elapsed_ms_u64(start_time);
 
+        let complete_started_at = std::time::Instant::now();
         snapshot_service
-            .complete_file_modification(&session_id, &operation_id, duration_ms)
+            .complete_file_modification(&session_id, &operation_id, tool_call_ms)
             .await
             .map_err(|e| crate::util::errors::BitFunError::Tool(e.to_string()))?;
+        let complete_ms = crate::util::elapsed_ms_u64(complete_started_at);
+        let total_ms = intercept_ms
+            .saturating_add(tool_call_ms)
+            .saturating_add(complete_ms);
 
         debug!(
-            "File modification tool completed: tool_name={}",
-            self.name()
+            "File modification tool completed: tool_name={}, operation_id={}, total_ms={}, intercept_ms={}, tool_call_ms={}, complete_ms={}, file_path={}",
+            self.name(),
+            operation_id,
+            total_ms,
+            intercept_ms,
+            tool_call_ms,
+            complete_ms,
+            file_path.display()
         );
         Ok(results)
     }
@@ -550,10 +622,8 @@ impl WrappedTool {
     /// Extracts the turn index.
     fn extract_turn_index(&self, context: &ToolUseContext) -> usize {
         context
-            .options
-            .as_ref()
-            .and_then(|opts| opts.custom_data.as_ref())
-            .and_then(|data| data.get("turn_index"))
+            .custom_data
+            .get("turn_index")
             .and_then(|v| v.as_u64())
             .map(|v| v as usize)
             .unwrap_or(0)
@@ -577,8 +647,15 @@ impl WrappedTool {
     }
 
     /// Returns the operation type.
-    fn get_operation_type_internal(&self) -> OperationType {
+    fn get_operation_type_internal(&self, file_existed_before: bool) -> OperationType {
         match self.name() {
+            "Write" | "write_file" => {
+                if file_existed_before {
+                    OperationType::Modify
+                } else {
+                    OperationType::Create
+                }
+            }
             "create_file" => OperationType::Create,
             "delete_file" | "Delete" => OperationType::Delete,
             "rename_file" | "move_file" => OperationType::Rename,

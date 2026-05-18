@@ -5,11 +5,18 @@
 //! `params` and returns a JSON `result`.
 
 use crate::bootstrap::ServerAppState;
-use anyhow::{anyhow, Result};
-use bitfun_core::agentic::core::SessionConfig;
+use anyhow::{Result, anyhow};
+use bitfun_core::agentic::agents::SubAgentSource;
 use bitfun_core::agentic::coordination::{DialogSubmissionPolicy, DialogTriggerSource};
+use bitfun_core::agentic::core::SessionConfig;
+use bitfun_core::agentic::deep_review_policy::{
+    DeepReviewQueueControlAction, apply_deep_review_queue_control,
+};
+use bitfun_core::service::i18n::{LocaleId, LocaleMetadata, sync_global_i18n_service_locale};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Dispatch a WebSocket RPC method call to the appropriate handler.
 ///
@@ -48,9 +55,15 @@ pub async fn dispatch(
         "open_workspace" => {
             let request = extract_request(&params)?;
             let path: String = serde_json::from_value(
-                request.get("path").cloned().ok_or_else(|| anyhow!("Missing path"))?,
+                request
+                    .get("path")
+                    .cloned()
+                    .ok_or_else(|| anyhow!("Missing path"))?,
             )?;
-            let info = state.workspace_service.open_workspace(path.into()).await
+            let info = state
+                .workspace_service
+                .open_workspace(path.into())
+                .await
                 .map_err(|e| anyhow!("{}", e))?;
             *state.workspace_path.write().await = Some(info.root_path.clone());
             Ok(serde_json::to_value(&info).unwrap_or_default())
@@ -63,6 +76,16 @@ pub async fn dispatch(
             let list = state.workspace_service.get_recent_workspaces().await;
             Ok(serde_json::to_value(&list).unwrap_or_default())
         }
+        "remove_recent_workspace" => {
+            let request = extract_request(&params)?;
+            let workspace_id = get_string(request, "workspaceId")?;
+            state
+                .workspace_service
+                .remove_workspace_from_recent(&workspace_id)
+                .await
+                .map_err(|e| anyhow!("{}", e))?;
+            Ok(serde_json::Value::Null)
+        }
         "get_opened_workspaces" => {
             let list = state.workspace_service.get_opened_workspaces().await;
             Ok(serde_json::to_value(&list).unwrap_or_default())
@@ -72,7 +95,10 @@ pub async fn dispatch(
         "read_file_content" => {
             let request = extract_request(&params)?;
             let file_path = get_string(&request, "filePath")?;
-            let result = state.filesystem_service.read_file(&file_path).await
+            let result = state
+                .filesystem_service
+                .read_file(&file_path)
+                .await
                 .map_err(|e| anyhow!("{}", e))?;
             Ok(serde_json::json!(result.content))
         }
@@ -80,7 +106,10 @@ pub async fn dispatch(
             let request = extract_request(&params)?;
             let file_path = get_string(&request, "filePath")?;
             let content = get_string(&request, "content")?;
-            state.filesystem_service.write_file(&file_path, &content).await
+            state
+                .filesystem_service
+                .write_file(&file_path, &content)
+                .await
                 .map_err(|e| anyhow!("{}", e))?;
             Ok(serde_json::Value::Null)
         }
@@ -96,7 +125,10 @@ pub async fn dispatch(
         "get_file_tree" => {
             let request = extract_request(&params)?;
             let path = get_string(&request, "path")?;
-            let nodes = state.filesystem_service.build_file_tree(&path).await
+            let nodes = state
+                .filesystem_service
+                .build_file_tree(&path)
+                .await
                 .map_err(|e| anyhow!("{}", e))?;
             Ok(serde_json::to_value(&nodes).unwrap_or_default())
         }
@@ -110,23 +142,169 @@ pub async fn dispatch(
         "get_config" => {
             let request = extract_request(&params)?;
             let key = request.get("key").and_then(|v| v.as_str());
-            let config: serde_json::Value = state.config_service
-                .get_config(key).await
+            let config: serde_json::Value = state
+                .config_service
+                .get_config(key)
+                .await
                 .map_err(|e| anyhow!("{}", e))?;
             Ok(config)
         }
         "set_config" => {
             let request = extract_request(&params)?;
             let key = get_string(&request, "key")?;
-            let value = request.get("value").cloned().ok_or_else(|| anyhow!("Missing value"))?;
-            state.config_service.set_config(&key, value).await
+            let value = request
+                .get("value")
+                .cloned()
+                .ok_or_else(|| anyhow!("Missing value"))?;
+            state
+                .config_service
+                .set_config(&key, value)
+                .await
                 .map_err(|e| anyhow!("{}", e))?;
             Ok(serde_json::json!("ok"))
         }
         "get_model_configs" => {
-            let models = state.config_service.get_ai_models().await
+            let models = state
+                .config_service
+                .get_ai_models()
+                .await
                 .map_err(|e| anyhow!("{}", e))?;
             Ok(serde_json::to_value(&models).unwrap_or_default())
+        }
+
+        "list_subagents" => {
+            let request = extract_request(&params)?;
+            let source = request
+                .get("source")
+                .cloned()
+                .map(serde_json::from_value::<SubAgentSource>)
+                .transpose()?;
+            let workspace =
+                workspace_root_from_request(request.get("workspacePath").and_then(|v| v.as_str()));
+            let list = state
+                .agent_registry
+                .get_subagents_info(workspace.as_deref())
+                .await;
+            let result: Vec<_> = match source {
+                Some(source) => list
+                    .into_iter()
+                    .filter(|agent| agent.subagent_source == Some(source))
+                    .collect(),
+                None => list,
+            };
+
+            Ok(serde_json::to_value(&result).unwrap_or_default())
+        }
+        "update_subagent_config" => {
+            let request = extract_request(&params)?;
+            let subagent_id = get_string(request, "subagentId")?;
+            let parent_agent_type = request
+                .get("parentAgentType")
+                .and_then(|v| v.as_str())
+                .map(|value| value.to_string());
+            let enabled = request.get("enabled").and_then(|v| v.as_bool());
+            let model = request
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(|value| value.to_string());
+            let workspace =
+                workspace_root_from_request(request.get("workspacePath").and_then(|v| v.as_str()));
+
+            if let Some(workspace) = workspace.as_deref() {
+                state.agent_registry.load_custom_subagents(workspace).await;
+            }
+
+            if state
+                .agent_registry
+                .get_custom_subagent_config(&subagent_id, workspace.as_deref())
+                .is_some()
+            {
+                if let Some(enabled) = enabled {
+                    let parent_agent_type = parent_agent_type.as_deref().ok_or_else(|| {
+                        anyhow!("parentAgentType is required when updating subagent availability")
+                    })?;
+                    state
+                        .agent_registry
+                        .update_subagent_override(
+                            parent_agent_type,
+                            &subagent_id,
+                            enabled,
+                            workspace.as_deref(),
+                        )
+                        .await
+                        .map_err(|e| anyhow!("Failed to update subagent availability: {}", e))?;
+                }
+
+                if model.is_some() {
+                    state
+                        .agent_registry
+                        .update_and_save_custom_subagent_config(
+                            &subagent_id,
+                            model,
+                            workspace.as_deref(),
+                        )
+                        .map_err(|e| anyhow!("Failed to update configuration: {}", e))?;
+                }
+                Ok(serde_json::Value::Null)
+            } else {
+                if state
+                    .agent_registry
+                    .has_project_custom_subagent(&subagent_id)
+                {
+                    if let Some(workspace) = workspace.as_deref() {
+                        return Err(anyhow!(
+                            "Project Sub-Agent '{}' was not found in workspace '{}'",
+                            subagent_id,
+                            workspace.display()
+                        ));
+                    }
+
+                    return Err(anyhow!(
+                        "workspacePath is required to update project Sub-Agent '{}'",
+                        subagent_id
+                    ));
+                }
+
+                if let Some(enabled) = enabled {
+                    let parent_agent_type = parent_agent_type.as_deref().ok_or_else(|| {
+                        anyhow!("parentAgentType is required when updating subagent availability")
+                    })?;
+                    state
+                        .agent_registry
+                        .update_subagent_override(
+                            parent_agent_type,
+                            &subagent_id,
+                            enabled,
+                            workspace.as_deref(),
+                        )
+                        .await
+                        .map_err(|e| anyhow!("Failed to update subagent availability: {}", e))?;
+                }
+
+                if let Some(model) = model {
+                    let mut agent_models: HashMap<String, String> = state
+                        .config_service
+                        .get_config(Some("ai.agent_models"))
+                        .await
+                        .unwrap_or_default();
+                    agent_models.insert(subagent_id.clone(), model);
+                    state
+                        .config_service
+                        .set_config("ai.agent_models", &agent_models)
+                        .await
+                        .map_err(|e| anyhow!("Failed to update model configuration: {}", e))?;
+                }
+
+                if let Err(e) = bitfun_core::service::config::reload_global_config().await {
+                    log::warn!(
+                        "Failed to reload global config after server subagent config update: subagent_id={}, error={}",
+                        subagent_id,
+                        e
+                    );
+                }
+
+                Ok(serde_json::Value::Null)
+            }
         }
 
         // ── Agentic (Session / Dialog) ───────────────────────
@@ -135,7 +313,8 @@ pub async fn dispatch(
             let session_name = get_string(&request, "sessionName")?;
             let agent_type = get_string(&request, "agentType")?;
             let workspace_path = get_string(&request, "workspacePath")?;
-            let session_id = request.get("sessionId")
+            let session_id = request
+                .get("sessionId")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
@@ -144,7 +323,8 @@ pub async fn dispatch(
                 ..Default::default()
             };
 
-            let session = state.coordinator
+            let session = state
+                .coordinator
                 .create_session_with_workspace(
                     session_id,
                     session_name,
@@ -164,7 +344,8 @@ pub async fn dispatch(
         "list_sessions" => {
             let request = extract_request(&params)?;
             let workspace_path = get_string(&request, "workspacePath")?;
-            let sessions = state.coordinator
+            let sessions = state
+                .coordinator
                 .list_sessions(&PathBuf::from(workspace_path))
                 .await
                 .map_err(|e| anyhow!("{}", e))?;
@@ -174,7 +355,8 @@ pub async fn dispatch(
             let request = extract_request(&params)?;
             let session_id = get_string(&request, "sessionId")?;
             let workspace_path = get_string(&request, "workspacePath")?;
-            state.coordinator
+            state
+                .coordinator
                 .delete_session(&PathBuf::from(workspace_path), &session_id)
                 .await
                 .map_err(|e| anyhow!("{}", e))?;
@@ -184,18 +366,22 @@ pub async fn dispatch(
             let request = extract_request(&params)?;
             let session_id = get_string(&request, "sessionId")?;
             let user_input = get_string(&request, "userInput")?;
-            let original_user_input = request.get("originalUserInput")
+            let original_user_input = request
+                .get("originalUserInput")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
             let agent_type = get_string(&request, "agentType")?;
-            let workspace_path = request.get("workspacePath")
+            let workspace_path = request
+                .get("workspacePath")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            let turn_id = request.get("turnId")
+            let turn_id = request
+                .get("turnId")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
-            state.scheduler
+            state
+                .scheduler
                 .submit(
                     session_id,
                     user_input,
@@ -215,26 +401,87 @@ pub async fn dispatch(
             let request = extract_request(&params)?;
             let session_id = get_string(&request, "sessionId")?;
             let dialog_turn_id = get_string(&request, "dialogTurnId")?;
-            state.coordinator
+            state
+                .coordinator
                 .cancel_dialog_turn(&session_id, &dialog_turn_id)
                 .await
                 .map_err(|e| anyhow!("{}", e))?;
             Ok(serde_json::json!({ "success": true }))
         }
-        "get_session_messages" => {
+        "control_deep_review_queue" => {
             let request = extract_request(&params)?;
             let session_id = get_string(&request, "sessionId")?;
-            let messages = state.coordinator
-                .get_messages(&session_id)
+            let dialog_turn_id = get_string(&request, "dialogTurnId")?;
+            let tool_id = get_string(&request, "toolId")?;
+            let action_raw = get_string(&request, "action")?;
+            let action = match action_raw.as_str() {
+                "pause" => DeepReviewQueueControlAction::Pause,
+                "continue" => DeepReviewQueueControlAction::Continue,
+                "cancel" => DeepReviewQueueControlAction::Cancel,
+                "skip_optional" => DeepReviewQueueControlAction::SkipOptional,
+                other => {
+                    return Err(anyhow!(
+                        "Invalid DeepReview queue control action: {}",
+                        other
+                    ));
+                }
+            };
+            if session_id.trim().is_empty() {
+                return Err(anyhow!("Missing sessionId"));
+            }
+            if dialog_turn_id.trim().is_empty() {
+                return Err(anyhow!("Missing dialogTurnId"));
+            }
+            if tool_id.trim().is_empty() {
+                return Err(anyhow!("Missing toolId"));
+            }
+            apply_deep_review_queue_control(&dialog_turn_id, &tool_id, action);
+            Ok(serde_json::json!({ "success": true }))
+        }
+        "cancel_session" => {
+            let request = extract_request(&params)?;
+            let session_id = get_string(&request, "sessionId")?;
+            state
+                .coordinator
+                .cancel_active_turn_for_session(&session_id, Duration::from_secs(5))
                 .await
                 .map_err(|e| anyhow!("{}", e))?;
-            Ok(serde_json::to_value(&messages).unwrap_or_default())
+            Ok(serde_json::Value::Null)
+        }
+        "get_session_messages" => {
+            let request = params.get("request").unwrap_or(&params);
+            let session_id = request
+                .get("sessionId")
+                .or_else(|| request.get("session_id"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("Missing or invalid 'sessionId'/'session_id' field"))?
+                .to_string();
+            let limit = request
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(50);
+            let before_message_id = request
+                .get("beforeMessageId")
+                .or_else(|| request.get("before_message_id"))
+                .and_then(|v| v.as_str());
+
+            let (messages, has_more) = state
+                .coordinator
+                .get_messages_paginated(&session_id, limit, before_message_id)
+                .await
+                .map_err(|e| anyhow!("{}", e))?;
+            Ok(serde_json::json!({
+                "messages": messages,
+                "has_more": has_more,
+            }))
         }
         "confirm_tool_execution" => {
             let request = extract_request(&params)?;
             let tool_id = get_string(&request, "toolId")?;
             let updated_input = request.get("updatedInput").cloned();
-            state.coordinator
+            state
+                .coordinator
                 .confirm_tool(&tool_id, updated_input)
                 .await
                 .map_err(|e| anyhow!("{}", e))?;
@@ -243,11 +490,13 @@ pub async fn dispatch(
         "reject_tool_execution" => {
             let request = extract_request(&params)?;
             let tool_id = get_string(&request, "toolId")?;
-            let reason = request.get("reason")
+            let reason = request
+                .get("reason")
                 .and_then(|v| v.as_str())
                 .unwrap_or("User rejected")
                 .to_string();
-            state.coordinator
+            state
+                .coordinator
                 .reject_tool(&tool_id, reason)
                 .await
                 .map_err(|e| anyhow!("{}", e))?;
@@ -256,32 +505,121 @@ pub async fn dispatch(
 
         // ── I18n ─────────────────────────────────────────────
         "i18n_get_current_language" => {
-            let lang: String = state.config_service
-                .get_config(Some("app.language")).await
+            let lang: String = state
+                .config_service
+                .get_config(Some("app.language"))
+                .await
                 .unwrap_or_else(|_| "zh-CN".to_string());
+            let lang = LocaleId::from_str(&lang)
+                .unwrap_or_default()
+                .as_str()
+                .to_string();
             Ok(serde_json::json!(lang))
         }
         "i18n_set_language" => {
             let request = extract_request(&params)?;
             let language = get_string(&request, "language")?;
-            state.config_service.set_config("app.language", language.clone()).await
+            let Some(locale_id) = LocaleId::from_str(&language) else {
+                return Err(anyhow!("Unsupported language: {}", language));
+            };
+            state
+                .config_service
+                .set_config("app.language", locale_id.as_str())
+                .await
                 .map_err(|e| anyhow!("{}", e))?;
-            Ok(serde_json::json!(language))
+            match sync_global_i18n_service_locale(locale_id).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    log::warn!(
+                        "Global I18nService not initialized after server language change: language={}",
+                        locale_id.as_str()
+                    );
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Failed to sync global I18nService after server language change: language={}, error={}",
+                        locale_id.as_str(),
+                        e
+                    );
+                }
+            }
+            Ok(serde_json::json!(locale_id.as_str()))
+        }
+        "i18n_get_config" => {
+            let current_language = match state
+                .config_service
+                .get_config::<String>(Some("app.language"))
+                .await
+            {
+                Ok(language) => LocaleId::from_str(&language)
+                    .unwrap_or_default()
+                    .as_str()
+                    .to_string(),
+                Err(_) => "zh-CN".to_string(),
+            };
+
+            Ok(serde_json::json!({
+                "currentLanguage": current_language,
+                "fallbackLanguage": "en-US",
+                "autoDetect": false
+            }))
+        }
+        "i18n_set_config" => {
+            let config = params.get("config").unwrap_or(&params);
+            if let Some(language) = config.get("currentLanguage").and_then(|v| v.as_str()) {
+                let Some(locale_id) = LocaleId::from_str(language) else {
+                    return Err(anyhow!("Unsupported language: {}", language));
+                };
+                state
+                    .config_service
+                    .set_config("app.language", locale_id.as_str())
+                    .await
+                    .map_err(|e| anyhow!("{}", e))?;
+                match sync_global_i18n_service_locale(locale_id).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        log::warn!(
+                            "Global I18nService not initialized after server i18n config save: language={}",
+                            locale_id.as_str()
+                        );
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to sync global I18nService after server i18n config save: language={}, error={}",
+                            locale_id.as_str(),
+                            e
+                        );
+                    }
+                }
+            }
+            Ok(serde_json::json!("i18n config saved"))
         }
         "i18n_get_supported_languages" => {
-            Ok(serde_json::json!([
-                {"id": "zh-CN", "name": "Chinese (Simplified)", "englishName": "Chinese (Simplified)", "nativeName": "简体中文", "rtl": false},
-                {"id": "en-US", "name": "English", "englishName": "English", "nativeName": "English", "rtl": false}
-            ]))
+            let locales: Vec<_> = LocaleMetadata::all()
+                .into_iter()
+                .map(|locale| {
+                    serde_json::json!({
+                        "id": locale.id.as_str(),
+                        "name": locale.name,
+                        "englishName": locale.english_name,
+                        "nativeName": locale.native_name,
+                        "rtl": locale.rtl,
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!(locales))
         }
 
         // ── Tools ────────────────────────────────────────────
         "get_all_tools_info" => {
-            let tools: Vec<serde_json::Value> = state.tool_registry_snapshot
+            let tools: Vec<serde_json::Value> = state
+                .tool_registry_snapshot
                 .iter()
-                .map(|t| serde_json::json!({
-                    "name": t.name().to_string(),
-                }))
+                .map(|t| {
+                    serde_json::json!({
+                        "name": t.name().to_string(),
+                    })
+                })
                 .collect();
             Ok(serde_json::json!(tools))
         }
@@ -308,4 +646,10 @@ fn get_string(obj: &serde_json::Value, key: &str) -> Result<String> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| anyhow!("Missing or invalid '{}' field", key))
+}
+
+fn workspace_root_from_request(workspace_path: Option<&str>) -> Option<PathBuf> {
+    workspace_path
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
 }

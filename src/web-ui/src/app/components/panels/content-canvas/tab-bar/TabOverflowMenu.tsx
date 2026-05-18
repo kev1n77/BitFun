@@ -124,6 +124,28 @@ export const TabOverflowMenu: React.FC<TabOverflowMenuProps> = ({
     await onTabClose(tabId);
   }, [onTabClose]);
 
+  const handleItemMiddleMouseDown = useCallback((e: React.MouseEvent, tab: CanvasTab) => {
+    if (e.button !== 1) return;
+    if (tab.state === 'pinned') return;
+    const target = e.target as HTMLElement;
+    if (target.closest('.canvas-tab-overflow-menu__item-close')) return;
+    e.preventDefault();
+  }, []);
+
+  const handleItemAuxClick = useCallback(
+    async (e: React.MouseEvent, tab: CanvasTab) => {
+      if (e.button !== 1) return;
+      if (tab.state === 'pinned') return;
+      const target = e.target as HTMLElement;
+      if (target.closest('.canvas-tab-overflow-menu__item-close')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      await onTabClose(tab.id);
+      setIsOpen(false);
+    },
+    [onTabClose]
+  );
+
   // Decide whether to show button: overflow tabs or mission control
   const shouldShowButton = hasOverflow || hasMissionControl;
   
@@ -189,17 +211,22 @@ export const TabOverflowMenu: React.FC<TabOverflowMenuProps> = ({
 
           {/* Overflow tab list */}
           <div className="canvas-tab-overflow-menu__list">
-            {overflowTabs.map((tab) => (
+            {overflowTabs.map((tab) => {
+              const deletedSuffix = tab.fileDeletedFromDisk ? ` - ${t('tabs.fileDeleted')}` : '';
+              const titleWithDeleted = `${tab.title}${deletedSuffix}`;
+              return (
               <div
                 key={tab.id}
                 className={`canvas-tab-overflow-menu__item ${
                   activeTabId === tab.id ? 'is-active' : ''
-                } ${tab.isDirty ? 'is-dirty' : ''}`}
+                } ${tab.isDirty ? 'is-dirty' : ''} ${tab.fileDeletedFromDisk ? 'is-file-deleted' : ''}`}
                 onClick={() => handleTabClick(tab.id)}
+                onMouseDown={(e) => handleItemMiddleMouseDown(e, tab)}
+                onAuxClick={(e) => void handleItemAuxClick(e, tab)}
               >
                 <span className="canvas-tab-overflow-menu__item-title">
-                  {tab.state === 'preview' && <em>{tab.title}</em>}
-                  {tab.state !== 'preview' && tab.title}
+                  {tab.state === 'preview' && <em>{titleWithDeleted}</em>}
+                  {tab.state !== 'preview' && titleWithDeleted}
                 </span>
                 
                 {tab.isDirty && (
@@ -213,7 +240,8 @@ export const TabOverflowMenu: React.FC<TabOverflowMenuProps> = ({
                   <X size={12} />
                 </button>
               </div>
-            ))}
+            );
+            })}
           </div>
         </div>,
         document.body

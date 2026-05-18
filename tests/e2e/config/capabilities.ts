@@ -12,12 +12,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 /**
- * Get the application path based on the current platform
+ * Get the debug application path for the current platform
  */
-export function getApplicationPath(buildType: 'debug' | 'release' = 'release'): string {
+export function getApplicationPath(): string {
   const isWindows = process.platform === 'win32';
   const isMac = process.platform === 'darwin';
-  const isLinux = process.platform === 'linux';
   
   let appName: string;
   
@@ -29,7 +28,7 @@ export function getApplicationPath(buildType: 'debug' | 'release' = 'release'): 
     appName = 'bitfun-desktop';
   }
   
-  return path.resolve(__dirname, '..', '..', '..', 'target', buildType, appName);
+  return path.resolve(__dirname, '..', '..', '..', 'target', 'debug', appName);
 }
 
 /**
@@ -38,7 +37,7 @@ export function getApplicationPath(buildType: 'debug' | 'release' = 'release'): 
 export const windowsCapabilities = {
   browserName: 'wry',
   'tauri:options': {
-    application: getApplicationPath('release'),
+    application: getApplicationPath(),
   },
   // Edge WebDriver specific options if needed
   'ms:edgeOptions': {
@@ -52,7 +51,7 @@ export const windowsCapabilities = {
 export const linuxCapabilities = {
   browserName: 'wry',
   'tauri:options': {
-    application: getApplicationPath('release'),
+    application: getApplicationPath(),
   },
   // WebKitWebDriver specific options if needed
   'webkit:browserOptions': {
@@ -67,7 +66,7 @@ export const linuxCapabilities = {
 export const macOSCapabilities = {
   browserName: 'wry',
   'tauri:options': {
-    application: getApplicationPath('release'),
+    application: getApplicationPath(),
   },
 };
 
@@ -83,7 +82,7 @@ export function getPlatformCapabilities(): Record<string, unknown> {
     case 'linux':
       return linuxCapabilities;
     case 'darwin':
-      console.warn('⚠️ macOS WebDriver support is limited for Tauri apps');
+      console.warn('macOS WebDriver support is limited for Tauri apps');
       return macOSCapabilities;
     default:
       throw new Error(`Unsupported platform: ${platform}`);

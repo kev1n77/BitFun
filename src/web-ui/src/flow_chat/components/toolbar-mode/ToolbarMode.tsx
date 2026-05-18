@@ -3,22 +3,21 @@
  * Single-window morph UI for compact toolbar view.
  *
  * Layout: two rows
- * - Row 1: status icons + session title (click to switch)
+ * - Row 1: + / session list only when expanded; collapsed: no left control. Right: ⋮ when expanded, expand when collapsed.
  * - Row 2: streaming content/input + controls
  */
 
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { PhysicalSize, PhysicalPosition } from '@tauri-apps/api/dpi';
 import { 
   MessageSquare, 
   Square, 
   Check, 
   X, 
-  Send,
+  ArrowUp,
   Maximize2,
-  ChevronDown,
+  MoreVertical,
   PanelTopOpen,
   PanelTopClose,
   Plus
@@ -29,16 +28,14 @@ import { syncSessionToModernStore } from '../../services/storeSync';
 import { FlowChatState } from '../../types/flow-chat';
 import { compareSessionsForDisplay } from '../../utils/sessionOrdering';
 import { createLogger } from '@/shared/utils/logger';
+import { i18nService } from '@/infrastructure/i18n';
+import { resolveSessionTitle } from '../../utils/sessionTitle';
 
 const log = createLogger('ToolbarMode');
 import { ModernFlowChatContainer } from '../modern/ModernFlowChatContainer';
 import { Tooltip } from '@/component-library';
+import { useImeEnterGuard } from '../../hooks/useImeEnterGuard';
 import './ToolbarMode.scss';
-
-// Window size config (physical pixels, accounts for Windows DPI scaling).
-const TOOLBAR_WIDTH = 600;
-const TOOLBAR_HEIGHT_NORMAL = 120;  // Two-row height (32px + ~88px).
-const TOOLBAR_HEIGHT_EXPANDED = 320; // Height when session list is expanded.
 
 export const ToolbarMode: React.FC = () => {
   const { t } = useTranslation('flow-chat');
@@ -52,11 +49,14 @@ export const ToolbarMode: React.FC = () => {
   
   const [showInput, setShowInput] = useState(false);
   const [inputValue, setInputValue] = useState('');
+  const { isImeEnter, handleCompositionStart, handleCompositionEnd } = useImeEnterGuard();
   const [showSessionPicker, setShowSessionPicker] = useState(false);
+  const [showHeaderOverflowMenu, setShowHeaderOverflowMenu] = useState(false);
   const [flowChatState, setFlowChatState] = useState<FlowChatState>(() => 
     flowChatStore.getState()
   );
   const sessionPickerRef = useRef<HTMLDivElement>(null);
+  const headerOverflowRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const unsubscribe = flowChatStore.subscribe((state) => {
@@ -69,8 +69,8 @@ export const ToolbarMode: React.FC = () => {
     const activeSession = flowChatState.activeSessionId 
       ? flowChatState.sessions.get(flowChatState.activeSessionId)
       : undefined;
-    return activeSession?.title || t('session.new');
-  }, [flowChatState, t]);
+    return resolveSessionTitle(activeSession, (key, options) => i18nService.t(key, options));
+  }, [flowChatState]);
   
   const sessions = useMemo(() => {
     return Array.from(flowChatState.sessions.values())
@@ -118,7 +118,10 @@ export const ToolbarMode: React.FC = () => {
     
     const lastTurn = activeSession.dialogTurns[activeSession.dialogTurns.length - 1];
     
-    const isStreaming = lastTurn.status === 'processing' || lastTurn.status === 'image_analyzing';
+    const isStreaming =
+      lastTurn.status === 'processing' ||
+      lastTurn.status === 'finishing' ||
+      lastTurn.status === 'image_analyzing';
     
     if (!isStreaming || !lastTurn.modelRounds || lastTurn.modelRounds.length === 0) {
       return { isStreaming, toolName: null, content: null };
@@ -151,48 +154,14 @@ export const ToolbarMode: React.FC = () => {
     }
     
     return { isStreaming, toolName, content };
-  }, [flowChatState]);
-  
-  // Window position is initialized in ToolbarModeContext.tsx to avoid conflicts.
-  
-  // Track the previous picker state to avoid redundant resize calls.
-  const prevShowSessionPickerRef = useRef(showSessionPicker);
+  }, [flowChatState, t]);
   
   useEffect(() => {
-    if (prevShowSessionPickerRef.current === showSessionPicker) {
-      return;
+    if (!isExpanded) {
+      setShowSessionPicker(false);
+      setShowHeaderOverflowMenu(false);
     }
-    prevShowSessionPickerRef.current = showSessionPicker;
-    
-    const adjustWindowSize = async () => {
-      if (isExpanded) return;
-      if (!isToolbarMode) return;
-      
-      try {
-        const win = getCurrentWindow();
-        const currentPosition = await win.outerPosition();
-        const currentSize = await win.outerSize();
-        
-        if (showSessionPicker) {
-          const heightDiff = TOOLBAR_HEIGHT_EXPANDED - currentSize.height;
-          const newY = currentPosition.y - heightDiff;
-          
-          await win.setSize(new PhysicalSize(TOOLBAR_WIDTH, TOOLBAR_HEIGHT_EXPANDED));
-          await win.setPosition(new PhysicalPosition(currentPosition.x, Math.max(0, newY)));
-        } else {
-          const heightDiff = currentSize.height - TOOLBAR_HEIGHT_NORMAL;
-          const newY = currentPosition.y + heightDiff;
-          
-          await win.setSize(new PhysicalSize(TOOLBAR_WIDTH, TOOLBAR_HEIGHT_NORMAL));
-          await win.setPosition(new PhysicalPosition(currentPosition.x, newY));
-        }
-      } catch (error) {
-        log.error('Failed to adjust window size', { isToolbarMode, isExpanded, error });
-      }
-    };
-    
-    adjustWindowSize();
-  }, [isToolbarMode, isExpanded, showSessionPicker]);
+  }, [isExpanded]);
   
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -200,7 +169,7 @@ export const ToolbarMode: React.FC = () => {
       if (sessionPickerRef.current?.contains(target)) {
         return;
       }
-      if (target.closest?.('.bitfun-toolbar-mode__title-btn')) {
+      if (target.closest?.('.bitfun-toolbar-mode__session-menu-trigger')) {
         return;
       }
       setShowSessionPicker(false);
@@ -216,11 +185,36 @@ export const ToolbarMode: React.FC = () => {
       };
     }
   }, [showSessionPicker]);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (headerOverflowRef.current?.contains(target)) {
+        return;
+      }
+      if (target.closest?.('.bitfun-toolbar-mode__overflow-trigger')) {
+        return;
+      }
+      setShowHeaderOverflowMenu(false);
+    };
+
+    if (showHeaderOverflowMenu) {
+      const timer = setTimeout(() => {
+        document.addEventListener('mousedown', handleClickOutside);
+      }, 0);
+      return () => {
+        clearTimeout(timer);
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [showHeaderOverflowMenu]);
   
   const handleStartDrag = useCallback(async (e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
     // Avoid dragging when interacting with UI controls.
-    if (target.closest?.('button, input, .bitfun-toolbar-mode__session-picker, .bitfun-toolbar-mode__stream-content, .bitfun-toolbar-mode__session-item, .bitfun-toolbar-mode__flowchat-container')) {
+    if (target.closest?.(
+      'button, input, .bitfun-toolbar-mode__session-picker, .bitfun-toolbar-mode__session-dropdown, .bitfun-toolbar-mode__overflow-menu, .bitfun-toolbar-mode__stream-content, .bitfun-toolbar-mode__session-item, .bitfun-toolbar-mode__flowchat-container'
+    )) {
       return;
     }
     try {
@@ -263,9 +257,21 @@ export const ToolbarMode: React.FC = () => {
     }
   }, [toolbarState.pendingToolId]);
   
-  const handleCreateSession = useCallback(() => {
-    window.dispatchEvent(new CustomEvent('toolbar-create-session'));
+  const dispatchToolbarCreateSession = useCallback((mode: 'code' | 'cowork') => {
+    window.dispatchEvent(new CustomEvent('toolbar-create-session', { detail: { mode } }));
+    setShowSessionPicker(false);
   }, []);
+
+  const toggleSessionMenu = useCallback(() => {
+    setShowHeaderOverflowMenu(false);
+    setShowSessionPicker(v => !v);
+  }, []);
+
+  const toggleHeaderOverflowMenu = useCallback(() => {
+    if (!isExpanded) return;
+    setShowSessionPicker(false);
+    setShowHeaderOverflowMenu(v => !v);
+  }, [isExpanded]);
   
   const handleSendMessage = useCallback(() => {
     const message = inputValue.trim();
@@ -280,6 +286,7 @@ export const ToolbarMode: React.FC = () => {
   
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
+      if (isImeEnter(e)) return;
       e.preventDefault();
       handleSendMessage();
     }
@@ -287,13 +294,76 @@ export const ToolbarMode: React.FC = () => {
       e.preventDefault();
       if (showInput) {
         setShowInput(false);
+      } else if (showHeaderOverflowMenu) {
+        setShowHeaderOverflowMenu(false);
       } else if (showSessionPicker) {
         setShowSessionPicker(false);
       } else {
         handleExpand();
       }
     }
-  }, [handleSendMessage, showInput, showSessionPicker, handleExpand]);
+  }, [handleSendMessage, showInput, showSessionPicker, showHeaderOverflowMenu, handleExpand, isImeEnter]);
+
+  const sessionMenuContent = useMemo(
+    () => (
+      <div className="bitfun-toolbar-mode__session-menu">
+        <div className="bitfun-toolbar-mode__session-menu-actions">
+          <button
+            type="button"
+            className="bitfun-toolbar-mode__session-item bitfun-toolbar-mode__session-item--new"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              dispatchToolbarCreateSession('code');
+            }}
+          >
+            <span className="bitfun-toolbar-mode__session-item-icon" aria-hidden>
+              <Plus size={13} strokeWidth={2.25} />
+            </span>
+            <span className="bitfun-toolbar-mode__session-item-label">
+              {t('toolCards.toolbar.newCodeSessionItem')}
+            </span>
+          </button>
+          <button
+            type="button"
+            className="bitfun-toolbar-mode__session-item bitfun-toolbar-mode__session-item--new"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              dispatchToolbarCreateSession('cowork');
+            }}
+          >
+            <span className="bitfun-toolbar-mode__session-item-icon" aria-hidden>
+              <Plus size={13} strokeWidth={2.25} />
+            </span>
+            <span className="bitfun-toolbar-mode__session-item-label">
+              {t('toolCards.toolbar.newCoworkSessionItem')}
+            </span>
+          </button>
+          <div className="bitfun-toolbar-mode__session-list-divider" role="separator" />
+        </div>
+        <div
+          className="bitfun-toolbar-mode__session-menu-scroll"
+          role="listbox"
+          aria-label={t('session.switchSession')}
+        >
+          {sessions.map((session) => (
+            <button
+              key={session.sessionId}
+              type="button"
+              className={`bitfun-toolbar-mode__session-item ${
+                session.sessionId === flowChatState.activeSessionId ? 'bitfun-toolbar-mode__session-item--active' : ''
+              }`}
+              onMouseDown={(e) => handleSwitchSession(e, session.sessionId)}
+            >
+              {resolveSessionTitle(session, (key, options) => i18nService.t(key, options))}
+            </button>
+          ))}
+        </div>
+      </div>
+    ),
+    [sessions, flowChatState.activeSessionId, dispatchToolbarCreateSession, handleSwitchSession, t]
+  );
   
   if (!isToolbarMode) {
     return null;
@@ -309,84 +379,120 @@ export const ToolbarMode: React.FC = () => {
   
   return (
     <div className={containerClassName} onMouseDown={handleStartDrag}>
-      {showSessionPicker && !isExpanded && (
-        <div 
-          className="bitfun-toolbar-mode__session-picker" 
-          ref={sessionPickerRef}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          {sessions.map((session) => (
-            <button
-              key={session.sessionId}
-              className={`bitfun-toolbar-mode__session-item ${
-                session.sessionId === flowChatState.activeSessionId ? 'bitfun-toolbar-mode__session-item--active' : ''
-              }`}
-              onMouseDown={(e) => handleSwitchSession(e, session.sessionId)}
-            >
-              {session.title || t('session.new')}
-            </button>
-          ))}
-        </div>
-      )}
-      
       <div className="bitfun-toolbar-mode__header">
-        <Tooltip content={t('session.newCode')}>
-          <button
-            className="bitfun-toolbar-mode__create-btn"
-            onClick={handleCreateSession}
-          >
-            <Plus size={14} />
-          </button>
-        </Tooltip>
+        <div className="bitfun-toolbar-mode__header-left">
+          {isExpanded ? (
+            <div className="bitfun-toolbar-mode__session-menu-root">
+              <Tooltip content={t('toolCards.toolbar.openSessionMenu')}>
+                <button
+                  type="button"
+                  className={[
+                    'bitfun-toolbar-mode__create-btn',
+                    'bitfun-toolbar-mode__session-menu-trigger',
+                    showSessionPicker ? 'bitfun-toolbar-mode__session-menu-trigger--open' : '',
+                  ].filter(Boolean).join(' ')}
+                  onClick={toggleSessionMenu}
+                  aria-expanded={showSessionPicker}
+                  aria-haspopup="listbox"
+                >
+                  <Plus size={14} />
+                </button>
+              </Tooltip>
+              {showSessionPicker && (
+                <div 
+                  className="bitfun-toolbar-mode__session-dropdown" 
+                  ref={sessionPickerRef}
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  {sessionMenuContent}
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
 
         <div className="bitfun-toolbar-mode__title-wrapper">
-          <Tooltip content={t('session.switchSession')}>
-            <button
-              className="bitfun-toolbar-mode__title-btn"
-              onClick={() => setShowSessionPicker(!showSessionPicker)}
-            >
-              <span className="bitfun-toolbar-mode__title-text">{sessionTitle}</span>
-              <ChevronDown size={12} className={`bitfun-toolbar-mode__title-chevron ${showSessionPicker ? 'bitfun-toolbar-mode__title-chevron--open' : ''}`} />
-            </button>
-          </Tooltip>
-          
-          {showSessionPicker && isExpanded && (
-            <div 
-              className="bitfun-toolbar-mode__session-dropdown" 
-              ref={sessionPickerRef}
-              onMouseDown={(e) => e.stopPropagation()}
-            >
-              {sessions.map((session) => (
-                <button
-                  key={session.sessionId}
-                  className={`bitfun-toolbar-mode__session-item ${
-                    session.sessionId === flowChatState.activeSessionId ? 'bitfun-toolbar-mode__session-item--active' : ''
-                  }`}
-                  onMouseDown={(e) => handleSwitchSession(e, session.sessionId)}
-                >
-                  {session.title || t('session.new')}
-                </button>
-              ))}
-            </div>
-          )}
+          <div className="bitfun-toolbar-mode__title-display" title={sessionTitle}>
+            <span className="bitfun-toolbar-mode__title-text">{sessionTitle}</span>
+          </div>
         </div>
-        
-        <button
-          className="toolbar-btn toolbar-btn--toggle"
-          onClick={toggleExpanded}
-          title={isExpanded ? t('toolCards.toolbar.collapseChat') : t('toolCards.toolbar.expandChat')}
-        >
-          {isExpanded ? <PanelTopClose size={14} /> : <PanelTopOpen size={14} />}
-        </button>
-        
-        <Tooltip content={t('session.restoreMain')}>
-          <button 
-            className="toolbar-btn toolbar-btn--expand"
-            onClick={handleExpand}
-          >
-            <Maximize2 size={14} />
-          </button>
-        </Tooltip>
+
+        <div className="bitfun-toolbar-mode__header-right">
+          <div className="bitfun-toolbar-mode__header-drag-area" aria-hidden="true" />
+          <div className="bitfun-toolbar-mode__header-overflow">
+            {isExpanded ? (
+              <>
+                <Tooltip content={t('toolCards.toolbar.moreMenu')}>
+                  <button
+                    type="button"
+                    className="toolbar-btn toolbar-btn--overflow bitfun-toolbar-mode__overflow-trigger"
+                    onClick={toggleHeaderOverflowMenu}
+                    aria-expanded={showHeaderOverflowMenu}
+                    aria-haspopup="menu"
+                  >
+                    <MoreVertical size={14} />
+                  </button>
+                </Tooltip>
+                {showHeaderOverflowMenu && (
+                  <div
+                    ref={headerOverflowRef}
+                    className="bitfun-toolbar-mode__overflow-menu"
+                    role="menu"
+                    onMouseDown={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      className="bitfun-toolbar-mode__overflow-menu-item"
+                      role="menuitem"
+                      onClick={() => {
+                        void toggleExpanded();
+                        setShowHeaderOverflowMenu(false);
+                      }}
+                    >
+                      <PanelTopClose size={14} />
+                      <span>{t('toolCards.toolbar.collapseChat')}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="bitfun-toolbar-mode__overflow-menu-item"
+                      role="menuitem"
+                      onClick={() => {
+                        void handleExpand();
+                        setShowHeaderOverflowMenu(false);
+                      }}
+                    >
+                      <Maximize2 size={14} />
+                      <span>{t('session.restoreMain')}</span>
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="bitfun-toolbar-mode__header-collapsed-actions">
+                <Tooltip content={t('toolCards.toolbar.expandChat')}>
+                  <button
+                    type="button"
+                    className="toolbar-btn toolbar-btn--overflow"
+                    onClick={() => void toggleExpanded()}
+                    aria-label={t('toolCards.toolbar.expandChat')}
+                  >
+                    <PanelTopOpen size={14} />
+                  </button>
+                </Tooltip>
+                <Tooltip content={t('session.restoreMain')}>
+                  <button
+                    type="button"
+                    className="toolbar-btn toolbar-btn--expand"
+                    onClick={() => void handleExpand()}
+                    aria-label={t('session.restoreMain')}
+                  >
+                    <Maximize2 size={14} />
+                  </button>
+                </Tooltip>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
       
       {isExpanded ? (
@@ -401,6 +507,8 @@ export const ToolbarMode: React.FC = () => {
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
+              onCompositionStart={handleCompositionStart}
+              onCompositionEnd={handleCompositionEnd}
               placeholder={currentStreamState.isStreaming ? t('toolCards.toolbar.aiProcessing') : t('toolCards.toolbar.inputMessage')}
               disabled={currentStreamState.isStreaming}
             />
@@ -420,7 +528,7 @@ export const ToolbarMode: React.FC = () => {
                   onClick={handleSendMessage}
                   disabled={!inputValue.trim()}
                 >
-                  <Send size={16} />
+                  <ArrowUp size={16} />
                 </button>
               </Tooltip>
             )}
@@ -436,6 +544,8 @@ export const ToolbarMode: React.FC = () => {
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={handleKeyDown}
+                onCompositionStart={handleCompositionStart}
+                onCompositionEnd={handleCompositionEnd}
                 placeholder={t('input.placeholder')}
                 autoFocus
               />
@@ -445,7 +555,7 @@ export const ToolbarMode: React.FC = () => {
                   onClick={handleSendMessage}
                   disabled={!inputValue.trim()}
                 >
-                  <Send size={16} />
+                  <ArrowUp size={16} />
                 </button>
               </Tooltip>
               <Tooltip content={t('planner.cancel')}>

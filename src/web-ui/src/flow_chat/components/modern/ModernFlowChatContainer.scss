@@ -2,6 +2,11 @@
  * Modern FlowChat container styles.
  */
 
+.modern-flowchat-container.flow-chat-typography {
+  font-family: var(--font-sans, var(--font-family-sans, inherit));
+  font-size: var(--flowchat-font-size-base);
+}
+
 .modern-flowchat-container {
   width: 100%;
   height: 100%;

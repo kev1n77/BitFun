@@ -1,7 +1,8 @@
 import ReactDOM from "react-dom/client";
 import App from "./app/App";
+import AgentCompanionDesktopPet from "./app/components/AgentCompanionDesktopPet/AgentCompanionDesktopPet";
 import AppErrorBoundary from "./app/components/AppErrorBoundary";
-import { WorkspaceProvider } from "./infrastructure/contexts/WorkspaceContext";
+import { WorkspaceProvider } from "./infrastructure/contexts/WorkspaceProvider";
 import "./app/styles/index.scss";
 
 // Manually import Monaco Editor CSS.
@@ -11,21 +12,29 @@ import 'monaco-editor/min/vs/editor/editor.main.css';
 // Font: Noto Sans SC is loaded via a <link> tag in index.html.
 // File path: public/fonts/fonts.css, served as /fonts/fonts.css.
 
-import { initializeAllTools } from "./tools";
+import { initializeAllTools } from "./tools/initializeTools";
 import { initContextMenuSystem } from "./shared/context-menu-system";
 import { loader } from '@monaco-editor/react';
 import { getMonacoPath, getMonacoWorkerPath, logMonacoResourceCheck } from './tools/editor/utils/monacoPathHelper';
-import { createLogger } from './shared/utils/logger';
+import { bootstrapLogger, createLogger, initLogger } from './shared/utils/logger';
+import { elapsedMs, logElapsed, measureAsyncAndLog, nowMs } from './shared/utils/timing';
+import {
+  buildReactCrashLogPayload,
+  isMinifiedReactErrorMessage,
+} from './shared/utils/reactProductionError';
+
+// Install console forwarding before app startup so early console output is persisted too.
+bootstrapLogger();
 
 const log = createLogger('App');
 
-// Crash log deduplication flag
-const CRASH_LOGGED_FLAG = '__bitfun_frontend_crash_logged__';
-function hasLoggedCrash(): boolean {
-  return Boolean((window as any)[CRASH_LOGGED_FLAG]);
+/** Dedupe only for white-screen heuristic (empty #root), not for Error Boundary logs. */
+const WHITE_SCREEN_LOGGED_FLAG = '__bitfun_white_screen_crash_logged__';
+function hasLoggedWhiteScreenCrash(): boolean {
+  return Boolean((window as any)[WHITE_SCREEN_LOGGED_FLAG]);
 }
-function markCrashLogged(): void {
-  (window as any)[CRASH_LOGGED_FLAG] = true;
+function markWhiteScreenCrashLogged(): void {
+  (window as any)[WHITE_SCREEN_LOGGED_FLAG] = true;
 }
 
 function serializeError(err: unknown): Record<string, unknown> {
@@ -56,18 +65,25 @@ function registerGlobalErrorHandlers() {
   w[flag] = true;
 
   const scheduleCrashLog = (payload: { location: string; message: string; data?: Record<string, unknown> }) => {
-    // Only persist when it looks like a real "white screen"/startup crash.
+    // Always persist uncaught errors so they appear in webview.log for diagnostics.
+    // Mark white-screen crashes separately to allow callers to deduplicate.
     queueMicrotask(() => {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          if (isRootEmpty() && !hasLoggedCrash()) {
-            markCrashLogged();
-            log.error('[CRASH] Application crashed', {
-              location: payload.location,
-              message: payload.message,
-              ...payload.data,
-            });
+          const isWhiteScreen = isRootEmpty();
+          const crashType = isWhiteScreen ? 'white-screen' : 'page-error';
+          // Deduplicate only white-screen crashes to avoid duplicate startup logs.
+          if (isWhiteScreen && hasLoggedWhiteScreenCrash()) {
+            return;
           }
+          if (isWhiteScreen) {
+            markWhiteScreenCrashLogged();
+          }
+          log.error(`[CRASH:${crashType}] Uncaught error`, {
+            location: payload.location,
+            message: payload.message,
+            ...payload.data,
+          });
         });
       });
     });
@@ -77,9 +93,23 @@ function registerGlobalErrorHandlers() {
     'error',
     (event: Event) => {
       if (event instanceof ErrorEvent) {
+        const msg = event.message || '';
+        // Minified React errors often reach window.error even when #root is not empty;
+        // always persist so production builds get react.dev/errors/{code} in webview.log.
+        if (isMinifiedReactErrorMessage(msg)) {
+          const err =
+            event.error instanceof Error ? event.error : new Error(msg);
+          log.error('[CRASH] window:error (minified React)', {
+            location: 'window:error',
+            ...buildReactCrashLogPayload(err),
+            filename: event.filename,
+            lineno: event.lineno,
+            colno: event.colno,
+          });
+        }
         scheduleCrashLog({
           location: 'window:error',
-          message: event.message || 'window error',
+          message: msg || 'window error',
           data: {
             filename: event.filename,
             lineno: event.lineno,
@@ -106,6 +136,20 @@ function registerGlobalErrorHandlers() {
   );
 
   window.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
+    const reason = event.reason;
+    const msg =
+      reason instanceof Error
+        ? reason.message
+        : typeof reason === 'string'
+          ? reason
+          : '';
+    if (isMinifiedReactErrorMessage(msg)) {
+      const err = reason instanceof Error ? reason : new Error(msg);
+      log.error('[CRASH] unhandledrejection (minified React)', {
+        location: 'window:unhandledrejection',
+        ...buildReactCrashLogPayload(err),
+      });
+    }
     scheduleCrashLog({
       location: 'window:unhandledrejection',
       message: 'unhandled rejection',
@@ -178,101 +222,157 @@ const DEFAULT_WORKER = 'base/worker/workerMain.js';
   }
 };
 
-// Initialize app.
-async function initializeApp() {
-  try {
-    // Initialize logger first (attaches console in dev mode)
-    const { initLogger } = await import('./shared/utils/logger');
-    await initLogger();
+/** Logger, theme, and minimal deps — must finish before first React paint (F5 / webview reload does not re-run Tauri init script). */
+async function initializeBeforeRender(): Promise<void> {
+  const phaseStartedAt = nowMs();
+  await measureAsyncAndLog(log, 'Startup step completed', () => initLogger(), {
+    data: { step: 'initLogger' },
+  });
 
-    // Sync frontend logger with app.logging.level before startup logs.
+  await measureAsyncAndLog(log, 'Startup step completed', async () => {
     const { initializeFrontendLogLevelSync } = await import('./infrastructure/config/services/FrontendLogLevelSync');
     await initializeFrontendLogLevelSync();
+  }, {
+    data: { step: 'initializeFrontendLogLevelSync' },
+  });
 
-    log.debug('Monaco loader configured', { vs: monacoPath, isDev });
-    log.info('Initializing BitFun');
+  log.debug('Monaco loader configured', { vs: monacoPath, isDev });
+  log.info('Initializing BitFun');
 
-    // Synchronous initialization: core systems that must run first.
+  await measureAsyncAndLog(log, 'Startup step completed', async () => {
     const { registerDefaultContextTypes } = await import('./shared/context-system/core/registerDefaultTypes');
     registerDefaultContextTypes();
-    
-    // Initialize smart recommendation system.
+  }, {
+    data: { step: 'registerDefaultContextTypes' },
+  });
+
+  await measureAsyncAndLog(log, 'Startup step completed', async () => {
     const { initRecommendationProviders } = await import('./flow_chat/components/smart-recommendations');
     initRecommendationProviders();
-    
-    // Initialize theme system.
+  }, {
+    data: { step: 'initRecommendationProviders' },
+  });
+
+  await measureAsyncAndLog(log, 'Startup step completed', async () => {
     const { themeService } = await import('./infrastructure/theme');
     await themeService.initialize();
-    log.info('Theme system initialized');
-    
-    // Preload editor configuration.
-    const { configManager } = await import('./infrastructure/config');
-    await configManager.getConfig('editor');
-    log.info('Editor configuration preloaded');
-    
-    // Note: i18n is initialized by I18nProvider, not here.
-    // This avoids blocking startup and ensures i18n is ready during React render.
-    
-    // Parallel initialization: independent systems.
-    const initResults = await Promise.allSettled([
-      // Snapshot system - lazy load: initialize on first use.
-      // SandboxInitializer.initialize(),
-      
-      // Feature module initialization.
-      initializeAllTools(),
-      
-      // Context menu system initialization.
-      (async () => {
-        initContextMenuSystem({
-          registerBuiltinCommands: true,
-          registerBuiltinProviders: true,
-          debug: false  // Disable debug mode to reduce log output.
-        });
-        
-        // Register notification context menu.
-        const { registerNotificationContextMenu } = await import('./shared/notification-system');
-        registerNotificationContextMenu();
-      })(),
-      
-      // Editor preload (Monaco).
-      (async () => {
-        const { MonacoManager } = await import('./tools/editor');
-        await MonacoManager.initialize();  // Preload Monaco Editor.
-        
-        // Initialize Monaco theme sync.
-        const { monacoThemeSync } = await import('./infrastructure/theme/integrations/MonacoThemeSync');
-        await monacoThemeSync.initialize();
-        log.info('Monaco theme sync initialized');
-      })()
-    ]);
-    
-    // Check initialization results.
-    initResults.forEach((result, index) => {
-      const names = ['Tools', 'ContextMenu', 'Editors'];
-      if (result.status === 'rejected') {
-        log.warn('Initialization failed', { module: names[index], error: result.reason });
-      }
-    });
-    
-    log.info('BitFun core systems initialized successfully');
-  } catch (error) {
-    log.error('Failed to initialize BitFun', error);
-  }
+  }, {
+    data: { step: 'themeService.initialize' },
+  });
+  log.info('Theme system initialized');
+  logElapsed(log, 'Startup phase completed', phaseStartedAt, {
+    data: { phase: 'initializeBeforeRender' },
+  });
 }
 
-// Start initialization.
-initializeApp();
+/** Rest of startup runs after the shell is visible so refresh latency stays reasonable. */
+async function initializeAfterRender(): Promise<void> {
+  const phaseStartedAt = nowMs();
+  const { fontPreferenceService } = await import('./infrastructure/font-preference');
+  await fontPreferenceService.initialize();
+  log.info('Font preference initialized at startup');
 
-// I18n Provider.
-import { I18nProvider } from './infrastructure/i18n';
+  const { configManager } = await import('./infrastructure/config');
+  await configManager.getConfig('editor');
+  log.info('Editor configuration preloaded');
 
-// Render app (single-window mode; toolbar via window transform).
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <AppErrorBoundary>
-    <I18nProvider>
-      <WorkspaceProvider>
-        <App />
-      </WorkspaceProvider>
-    </I18nProvider>
-  </AppErrorBoundary>
-);
+  const initResults = await Promise.allSettled([
+    initializeAllTools(),
+    (async () => {
+      initContextMenuSystem({
+        registerBuiltinCommands: true,
+        registerBuiltinProviders: true,
+        debug: false,
+      });
+
+      const { registerNotificationContextMenu } = await import('./shared/notification-system');
+      registerNotificationContextMenu();
+    })(),
+    (async () => {
+      const { MonacoManager } = await import('./tools/editor');
+      await MonacoManager.initialize();
+
+      const { monacoThemeSync } = await import('./infrastructure/theme/integrations/MonacoThemeSync');
+      await monacoThemeSync.initialize();
+      log.info('Monaco theme sync initialized');
+    })(),
+  ]);
+
+  initResults.forEach((result, index) => {
+    const names = ['Tools', 'ContextMenu', 'Editors'];
+    if (result.status === 'rejected') {
+      log.warn('Initialization failed', { module: names[index], error: result.reason });
+    }
+  });
+
+  log.info('BitFun core systems initialized successfully');
+  logElapsed(log, 'Startup phase completed', phaseStartedAt, {
+    data: { phase: 'initializeAfterRender' },
+  });
+}
+
+async function startApplication(): Promise<void> {
+  const appStartedAt = nowMs();
+  try {
+    await initializeBeforeRender();
+  } catch (error) {
+    log.error('Failed to initialize BitFun (pre-render)', error);
+  }
+
+  // I18n Provider.
+  const i18nProviderImportResult = await measureAsyncAndLog(
+    log,
+    'Startup step completed',
+    () => import('./infrastructure/i18n'),
+    { data: { step: 'loadI18nProvider' } }
+  );
+  const { I18nProvider } = i18nProviderImportResult.value;
+  const isAgentCompanionWindow = new URLSearchParams(window.location.search)
+    .get('bitfunWindow') === 'agent-companion';
+
+  const renderStartedAt = nowMs();
+  if (isAgentCompanionWindow) {
+    ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+      <AppErrorBoundary>
+        <I18nProvider>
+          <AgentCompanionDesktopPet />
+        </I18nProvider>
+      </AppErrorBoundary>
+    );
+    logElapsed(log, 'Startup step completed', renderStartedAt, {
+      data: {
+        step: 'scheduleAgentCompanionRender',
+        sinceStartupMs: elapsedMs(appStartedAt),
+      },
+    });
+    return;
+  }
+
+  ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+    <AppErrorBoundary>
+      <I18nProvider>
+        <WorkspaceProvider>
+          <App />
+        </WorkspaceProvider>
+      </I18nProvider>
+    </AppErrorBoundary>
+  );
+  logElapsed(log, 'Startup step completed', renderStartedAt, {
+    data: {
+      step: 'scheduleInitialRender',
+      sinceStartupMs: elapsedMs(appStartedAt),
+    },
+  });
+
+  try {
+    await initializeAfterRender();
+  } catch (error) {
+    log.error('Failed to complete post-render initialization', error);
+  }
+
+  logElapsed(log, 'Startup phase completed', appStartedAt, {
+    data: { phase: 'startApplication' },
+  });
+}
+
+void startApplication();

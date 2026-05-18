@@ -13,11 +13,12 @@ import {
   Play,
   Square,
   CheckCircle,
-  Clock,
   AlertTriangle,
   MinusCircle,
+  KeyRound,
+  Trash2,
 } from 'lucide-react';
-import { Button, Textarea, IconButton } from '@/component-library';
+import { Button, Textarea, IconButton, Modal, ToolProcessingDots } from '@/component-library';
 import {
   ConfigPageHeader,
   ConfigPageLayout,
@@ -27,7 +28,12 @@ import {
 } from './common';
 import { useNotification } from '@/shared/notification-system';
 import { createLogger } from '@/shared/utils/logger';
-import { MCPAPI, MCPServerInfo } from '../../api/service-api/MCPAPI';
+import {
+  MCPAPI,
+  MCPRemoteOAuthSessionSnapshot,
+  MCPServerInfo,
+} from '../../api/service-api/MCPAPI';
+import { systemAPI } from '../../api/service-api/SystemAPI';
 import './McpToolsConfig.scss';
 
 const log = createLogger('McpToolsConfig');
@@ -95,6 +101,22 @@ function createErrorClassifier(t: (key: string, options?: any) => any) {
         duration: 15000,
         suggestions: getSuggestions('errors.suggestions.permission'),
       };
+    if (matches(['address already in use', 'failed to bind oauth callback listener']))
+      return {
+        title: t('errors.operationFailed', { context: 'oauth' }),
+        message: errorMessage,
+        duration: 10000,
+        suggestions: [
+          'Change the OAuth callback port in the MCP config or stop the process already using it.',
+        ],
+      };
+    if (matches(['authorization timed out', 'oauth authorization timed out']))
+      return {
+        title: t('errors.operationFailed', { context: 'oauth' }),
+        message: errorMessage,
+        duration: 10000,
+        suggestions: ['Restart OAuth and complete sign-in before the callback window expires.'],
+      };
     if (
       matches([
         'failed to write config file',
@@ -146,10 +168,17 @@ const McpToolsConfig: React.FC = () => {
   // ─── MCP state ─────────────────────────────────────────────────────────────
   const jsonEditorRef = useRef<HTMLTextAreaElement>(null);
   const jsonLintSeqRef = useRef(0);
+  const oauthPollTimerRef = useRef<number | null>(null);
   const [servers, setServers] = useState<MCPServerInfo[]>([]);
   const [mcpLoading, setMcpLoading] = useState(true);
   const [showJsonEditor, setShowJsonEditor] = useState(false);
   const [jsonConfig, setJsonConfig] = useState('');
+  const [authDialogServer, setAuthDialogServer] = useState<MCPServerInfo | null>(null);
+  const [authValue, setAuthValue] = useState('');
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [oauthSession, setOauthSession] = useState<MCPRemoteOAuthSessionSnapshot | null>(null);
+  const [oauthStarting, setOauthStarting] = useState(false);
+  const [oauthCancelling, setOauthCancelling] = useState(false);
   const [jsonLintError, setJsonLintError] = useState<{
     message: string;
     line?: number;
@@ -193,9 +222,81 @@ const McpToolsConfig: React.FC = () => {
     }
   };
 
+  function stopOAuthPolling() {
+    if (oauthPollTimerRef.current !== null) {
+      window.clearInterval(oauthPollTimerRef.current);
+      oauthPollTimerRef.current = null;
+    }
+  }
+
+  const handleOAuthSessionUpdate = async (
+    serverId: string,
+    session: MCPRemoteOAuthSessionSnapshot | null
+  ) => {
+    setOauthSession(session);
+
+    const status = session?.status;
+    if (!status || !['authorized', 'failed', 'cancelled'].includes(status)) {
+      return;
+    }
+
+    stopOAuthPolling();
+
+    if (status === 'authorized') {
+      notification.success(
+        session?.message || tMcp('messages.remoteOAuthAuthorized', { serverId }),
+        {
+          title: tMcp('notifications.saveSuccess'),
+          duration: 4000,
+        }
+      );
+      await loadServers();
+      closeAuthDialog();
+      return;
+    }
+
+    if (status === 'failed') {
+      notification.error(
+        session?.message || tMcp('messages.remoteOAuthFailed', { serverId }),
+        {
+          title: tMcp('notifications.operationFailed'),
+          duration: 6000,
+        }
+      );
+    }
+  };
+
+  const pollOAuthSession = (serverId: string) => {
+    stopOAuthPolling();
+    oauthPollTimerRef.current = window.setInterval(async () => {
+      try {
+        const session = await MCPAPI.getRemoteOAuthSession({ serverId });
+        await handleOAuthSessionUpdate(serverId, session);
+      } catch (error) {
+        stopOAuthPolling();
+        notification.error(
+          error instanceof Error ? error.message : String(error),
+          {
+            title: tMcp('notifications.operationFailed'),
+            duration: 5000,
+          }
+        );
+      }
+    }, 1000);
+  };
+
   useEffect(() => {
     loadServers();
     loadJsonConfig();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (oauthPollTimerRef.current !== null) {
+        window.clearInterval(oauthPollTimerRef.current);
+        oauthPollTimerRef.current = null;
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -390,21 +491,42 @@ const McpToolsConfig: React.FC = () => {
   };
 
   const isCommandDrivenServer = (server: MCPServerInfo) => {
-    const normalizedType = server.serverType.toLowerCase();
-    return normalizedType.includes('local') || normalizedType.includes('container');
+    return server.transport.toLowerCase() === 'stdio';
+  };
+
+  const isRemoteServer = (server: MCPServerInfo) => {
+    return server.serverType.toLowerCase().includes('remote');
   };
 
   const canStartServer = (server: MCPServerInfo) => {
+    if (server.startSupported === false) return false;
     if (!isCommandDrivenServer(server)) return true;
     return server.commandAvailable !== false;
   };
 
-  const notifyCommandUnavailable = (server: MCPServerInfo) => {
+  const getErrorMessage = (error: unknown) =>
+    error instanceof Error ? error.message : String(error);
+
+  const isLikelyRemoteAuthError = (error: unknown) => {
+    const message = getErrorMessage(error).toLowerCase();
+    return [
+      'auth required',
+      'authorization required',
+      'authentication required',
+      'www-authenticate',
+      'status code: 401',
+      'status code: 403',
+      'unauthorized',
+      'forbidden',
+    ].some((pattern) => message.includes(pattern));
+  };
+
+  const notifyServerStartUnavailable = (server: MCPServerInfo) => {
+    const message = server.startDisabledReason
+      ? getStartDisabledReasonLabel(server)
+      : tMcp('messages.commandUnavailable', { serverId: server.id });
     notification.warning(
-      tMcp('messages.commandUnavailable', {
-        serverId: server.id,
-        defaultValue: `Server "${server.id}" command is unavailable. Check runtime installation or command configuration.`,
-      }),
+      message,
       {
         title: tMcp('notifications.startFailed'),
         duration: 5000,
@@ -414,7 +536,7 @@ const McpToolsConfig: React.FC = () => {
 
   const handleStartServer = async (server: MCPServerInfo) => {
     if (!canStartServer(server)) {
-      notifyCommandUnavailable(server);
+      notifyServerStartUnavailable(server);
       return;
     }
 
@@ -427,10 +549,16 @@ const McpToolsConfig: React.FC = () => {
       });
       await loadServers();
     } catch (error) {
+      if (isRemoteServer(server) && isLikelyRemoteAuthError(error)) {
+        handleOpenAuthDialog(server);
+        if (server.oauthEnabled) {
+          void startRemoteOAuthFlow(server);
+        }
+      }
       notification.error(
         tMcp('messages.startFailed', { serverId }) +
           ': ' +
-          (error instanceof Error ? error.message : String(error)),
+          getErrorMessage(error),
         { title: tMcp('notifications.startFailed'), duration: 5000 }
       );
     }
@@ -456,7 +584,7 @@ const McpToolsConfig: React.FC = () => {
 
   const handleRestartServer = async (server: MCPServerInfo) => {
     if (!canStartServer(server)) {
-      notifyCommandUnavailable(server);
+      notifyServerStartUnavailable(server);
       return;
     }
 
@@ -469,86 +597,359 @@ const McpToolsConfig: React.FC = () => {
       });
       await loadServers();
     } catch (error) {
+      if (isRemoteServer(server) && isLikelyRemoteAuthError(error)) {
+        handleOpenAuthDialog(server);
+        if (server.oauthEnabled) {
+          void startRemoteOAuthFlow(server);
+        }
+      }
       notification.error(
         tMcp('messages.restartFailed', { serverId }) +
           ': ' +
-          (error instanceof Error ? error.message : String(error)),
+          getErrorMessage(error),
         { title: tMcp('notifications.restartFailed'), duration: 5000 }
       );
     }
+  };
+
+  function handleOpenAuthDialog(server: MCPServerInfo) {
+    setAuthDialogServer(server);
+    setAuthValue('');
+    setOauthSession(null);
+    setOauthStarting(false);
+    setOauthCancelling(false);
+    stopOAuthPolling();
+
+    if (server.oauthEnabled) {
+      void (async () => {
+        try {
+          const session = await MCPAPI.getRemoteOAuthSession({ serverId: server.id });
+          setOauthSession(session);
+          if (session && !['authorized', 'failed', 'cancelled'].includes(session.status)) {
+            pollOAuthSession(server.id);
+          }
+        } catch (error) {
+          log.warn('Failed to load remote OAuth session', { serverId: server.id, error });
+        }
+      })();
+    }
+  }
+
+  function closeAuthDialog() {
+    stopOAuthPolling();
+    setAuthDialogServer(null);
+    setAuthValue('');
+    setOauthSession(null);
+    setOauthStarting(false);
+    setOauthCancelling(false);
+  }
+
+  const handleCloseAuthDialog = () => {
+    if (authSubmitting || oauthCancelling) return;
+
+    if (
+      authDialogServer &&
+      oauthSession &&
+      !['authorized', 'failed', 'cancelled'].includes(oauthSession.status)
+    ) {
+      setOauthCancelling(true);
+      void (async () => {
+        try {
+          await MCPAPI.cancelRemoteOAuth({ serverId: authDialogServer.id });
+        } catch (error) {
+          log.warn('Failed to cancel remote OAuth session', {
+            serverId: authDialogServer.id,
+            error,
+          });
+        } finally {
+          setOauthCancelling(false);
+          closeAuthDialog();
+        }
+      })();
+      return;
+    }
+
+    closeAuthDialog();
+  };
+
+  const handleSaveRemoteAuth = async () => {
+    if (!authDialogServer || authSubmitting) return;
+
+    const trimmed = authValue.trim();
+    if (!trimmed) {
+      notification.warning(tMcp('messages.remoteAuthRequired'), {
+        title: tMcp('notifications.operationFailed'),
+        duration: 5000,
+      });
+      return;
+    }
+
+    setAuthSubmitting(true);
+    try {
+      await MCPAPI.updateRemoteAuth({
+        serverId: authDialogServer.id,
+        authorizationValue: trimmed,
+      });
+      notification.success(
+        tMcp('messages.remoteAuthUpdated', { serverId: authDialogServer.id }),
+        {
+          title: tMcp('notifications.saveSuccess'),
+          duration: 3000,
+        }
+      );
+      closeAuthDialog();
+      await loadServers();
+    } catch (error) {
+      const errorInfo = classifyError(error, tMcp('actions.saveConfig'));
+      notification.error(errorInfo.message, {
+        title: errorInfo.title,
+        duration: errorInfo.duration,
+      });
+    } finally {
+      setAuthSubmitting(false);
+    }
+  };
+
+  const handleDeleteServer = async (server: MCPServerInfo) => {
+    const confirmed = await window.confirm(tMcp('messages.deleteConfirm'));
+    if (!confirmed) return;
+
+    try {
+      await MCPAPI.deleteServer({ serverId: server.id });
+      if (authDialogServer?.id === server.id) {
+        closeAuthDialog();
+      }
+      notification.success(tMcp('messages.deleteSuccess'), {
+        title: tMcp('notifications.saveSuccess'),
+        duration: 3000,
+      });
+      await loadServers();
+    } catch (error) {
+      const errorInfo = classifyError(error, tMcp('actions.delete'));
+      notification.error(
+        tMcp('errors.deleteServerFailed', {
+          serverId: server.id,
+          message: errorInfo.message,
+        }),
+        {
+          title: tMcp('messages.deleteFailed'),
+          duration: errorInfo.duration,
+        }
+      );
+    }
+  };
+
+  async function startRemoteOAuthFlow(server: MCPServerInfo) {
+    setOauthStarting(true);
+    try {
+      const session = await MCPAPI.startRemoteOAuth({ serverId: server.id });
+      setOauthSession(session);
+      if (session.authorizationUrl) {
+        await systemAPI.openExternal(session.authorizationUrl);
+      }
+      pollOAuthSession(server.id);
+      notification.success(
+        session.message || tMcp('messages.remoteOAuthStarted', { serverId: server.id }),
+        {
+          title: tMcp('notifications.startSuccess'),
+          duration: 3000,
+        }
+      );
+    } catch (error) {
+      const errorInfo = classifyError(error, tMcp('actions.remoteAuth'));
+      notification.error(errorInfo.message, {
+        title: errorInfo.title,
+        duration: errorInfo.duration,
+      });
+    } finally {
+      setOauthStarting(false);
+    }
+  }
+
+  const handleStartRemoteOAuth = async () => {
+    if (!authDialogServer || oauthStarting || authSubmitting) return;
+    await startRemoteOAuthFlow(authDialogServer);
   };
 
   const getStatusClass = (status: string): string => {
     const s = status.toLowerCase();
     if (s.includes('healthy') || s.includes('connected')) return 'is-healthy';
     if (s.includes('starting') || s.includes('reconnecting')) return 'is-pending';
-    if (s.includes('failed') || s.includes('stopped')) return 'is-error';
+    if (s.includes('failed') || s.includes('stopped') || s.includes('auth')) return 'is-error';
     return '';
   };
 
   const getStatusIcon = (status: string): React.ReactNode => {
     const s = status.toLowerCase();
     if (s.includes('healthy') || s.includes('connected')) return <CheckCircle size={10} />;
-    if (s.includes('starting') || s.includes('reconnecting')) return <Clock size={10} />;
-    if (s.includes('failed') || s.includes('stopped')) return <AlertTriangle size={10} />;
+    if (s.includes('starting') || s.includes('reconnecting')) return <ToolProcessingDots size={10} />;
+    if (s.includes('failed') || s.includes('stopped') || s.includes('auth'))
+      return <AlertTriangle size={10} />;
     return <MinusCircle size={10} />;
   };
 
   const isStopped = (status: string) => {
     const s = status.toLowerCase();
-    return s.includes('stopped') || s.includes('failed');
+    return s.includes('stopped') || s.includes('failed') || s.includes('auth');
+  };
+
+  const getServerStatusLabel = (status: string) => {
+    const normalized = status.trim().toLowerCase();
+    switch (normalized) {
+      case 'uninitialized':
+        return tMcp('status.uninitialized');
+      case 'starting':
+        return tMcp('status.starting');
+      case 'connected':
+        return tMcp('status.connected');
+      case 'healthy':
+        return tMcp('status.healthy');
+      case 'needsauth':
+        return tMcp('status.needsAuth');
+      case 'reconnecting':
+        return tMcp('status.reconnecting');
+      case 'failed':
+        return tMcp('status.failed');
+      case 'stopping':
+        return tMcp('status.stopping');
+      case 'stopped':
+        return tMcp('status.stopped');
+      default:
+        return status;
+    }
   };
 
   const getRuntimeSourceLabel = (server: MCPServerInfo) => {
     if (!server.commandSource) {
-      return tMcp('server.runtime.unknown', { defaultValue: 'unknown' });
+      return tMcp('server.runtime.unknown');
     }
     return server.commandSource === 'managed'
-      ? tMcp('server.runtime.managed', { defaultValue: 'managed' })
-      : tMcp('server.runtime.system', { defaultValue: 'system' });
+      ? tMcp('server.runtime.managed')
+      : tMcp('server.runtime.system');
+  };
+
+  const getOAuthStatusLabel = (session: MCPRemoteOAuthSessionSnapshot | null) => {
+    if (!session) {
+      return tMcp('server.remoteOAuthIdle');
+    }
+
+    switch (session.status) {
+      case 'awaitingBrowser':
+        return tMcp('server.remoteOAuthAwaitingBrowser');
+      case 'awaitingCallback':
+        return tMcp('server.remoteOAuthAwaitingCallback');
+      case 'exchangingToken':
+        return tMcp('server.remoteOAuthExchangingToken');
+      case 'authorized':
+        return tMcp('server.remoteOAuthAuthorized');
+      case 'failed':
+        return tMcp('server.remoteOAuthFailed');
+      case 'cancelled':
+        return tMcp('server.remoteOAuthCancelled');
+      default:
+        return session.status;
+    }
+  };
+
+  const getAuthSourceLabel = (authSource?: MCPServerInfo['authSource']) => {
+    if (!authSource) return '';
+    switch (authSource) {
+      case 'headers':
+        return tMcp('server.authSource.headers');
+      case 'env':
+        return tMcp('server.authSource.env');
+      case 'oauth':
+        return tMcp('server.authSource.oauth');
+      default:
+        return authSource;
+    }
+  };
+
+  const getRemoteAuthSummary = (server: MCPServerInfo) => {
+    if (server.authConfigured) {
+      if (server.authSource) {
+        return tMcp('server.remoteAuthConfiguredWithSource', {
+          source: getAuthSourceLabel(server.authSource),
+        });
+      }
+      return tMcp('server.remoteAuthConfigured');
+    }
+
+    if (server.oauthEnabled) {
+      return tMcp('server.remoteOAuthReady');
+    }
+
+    return tMcp('server.remoteAuthMissing');
+  };
+
+  const getRemoteAuthMethodLabel = (server: MCPServerInfo) => {
+    if (server.oauthEnabled && server.xaaEnabled) {
+      return tMcp('server.remoteAuthMethodOAuthXaa');
+    }
+    if (server.oauthEnabled) {
+      return tMcp('server.remoteAuthMethodOAuth');
+    }
+    return tMcp('server.remoteAuthMethodXaa');
+  };
+
+  function getStartDisabledReasonLabel(server: MCPServerInfo) {
+    if (server.transport.toLowerCase() === 'sse' && server.startSupported === false) {
+      return tMcp('server.runtime.unsupportedRemoteSse');
+    }
+
+    return server.startDisabledReason || '';
+  }
+
+  const isOAuthFlowActive = !!oauthSession && !['authorized', 'failed', 'cancelled'].includes(oauthSession.status);
+
+  const getOAuthActionLabel = (server: MCPServerInfo) => {
+    if (isOAuthFlowActive) {
+      return tMcp('actions.restartRemoteOAuth');
+    }
+    if (server.authSource === 'oauth' && server.authConfigured) {
+      return tMcp('actions.reconnectRemoteOAuth');
+    }
+    return tMcp('actions.startRemoteOAuth');
   };
 
   const mcpSectionExtra = (
-    <>
-      <IconButton
-        variant={showJsonEditor ? 'ghost' : 'primary'}
-        size="small"
-        onClick={() => setShowJsonEditor(!showJsonEditor)}
-        tooltip={showJsonEditor ? tMcp('actions.backToList') : tMcp('actions.jsonConfig')}
-      >
-        {showJsonEditor ? <X size={16} /> : <FileJson size={16} />}
-      </IconButton>
-      <IconButton variant="ghost" size="small" onClick={loadServers} tooltip={tMcp('actions.refresh')}>
-        <RefreshCw size={16} />
-      </IconButton>
-    </>
+    <IconButton
+      variant="ghost"
+      size="small"
+      onClick={() => setShowJsonEditor(!showJsonEditor)}
+      tooltip={showJsonEditor ? tMcp('actions.backToList') : tMcp('actions.jsonConfig')}
+    >
+      {showJsonEditor ? <X size={16} /> : <FileJson size={16} />}
+    </IconButton>
   );
 
   const renderServerBadge = (server: MCPServerInfo) => (
-    <>
-      <span className={`bitfun-mcp-tools__status-badge ${getStatusClass(server.status)}`}>
-        {getStatusIcon(server.status)}
-        {server.status}
-      </span>
-      <span className="bitfun-collection-item__badge">{server.serverType}</span>
-      {isCommandDrivenServer(server) && (
-        <span
-          className={`bitfun-collection-item__badge ${
-            server.commandAvailable === false
-              ? 'bitfun-mcp-tools__runtime-badge bitfun-mcp-tools__runtime-badge--error'
-              : 'bitfun-mcp-tools__runtime-badge bitfun-mcp-tools__runtime-badge--ok'
-          }`}
-        >
-          {server.commandAvailable === false
-            ? tMcp('server.runtime.unavailable', { defaultValue: 'command unavailable' })
-            : tMcp('server.runtime.available', { defaultValue: 'command available' })}
-        </span>
-      )}
-    </>
+    <span className={`bitfun-mcp-tools__status-badge ${getStatusClass(server.status)}`}>
+      {getStatusIcon(server.status)}
+      {getServerStatusLabel(server.status)}
+    </span>
   );
 
   const renderServerControl = (server: MCPServerInfo) => (
     <>
+      {isRemoteServer(server) && (
+        <IconButton
+          size="small"
+          variant="ghost"
+          onClick={() => handleOpenAuthDialog(server)}
+          tooltip={tMcp('actions.remoteAuth')}
+        >
+          <KeyRound size={14} />
+        </IconButton>
+      )}
+      <IconButton
+        size="small"
+        variant="ghost"
+        onClick={() => handleDeleteServer(server)}
+        tooltip={tMcp('actions.delete')}
+      >
+        <Trash2 size={14} />
+      </IconButton>
       {isStopped(server.status) ? (
         <IconButton
           size="small"
@@ -557,10 +958,7 @@ const McpToolsConfig: React.FC = () => {
           tooltip={
             canStartServer(server)
               ? tMcp('actions.start')
-              : tMcp('messages.commandUnavailable', {
-                  serverId: server.id,
-                  defaultValue: `Server "${server.id}" command is unavailable.`,
-                })
+              : tMcp('messages.commandUnavailable', { serverId: server.id })
           }
         >
           <Play size={14} />
@@ -582,10 +980,7 @@ const McpToolsConfig: React.FC = () => {
         tooltip={
           canStartServer(server)
             ? tMcp('actions.restart')
-            : tMcp('messages.commandUnavailable', {
-                serverId: server.id,
-                defaultValue: `Server "${server.id}" command is unavailable.`,
-              })
+            : tMcp('messages.commandUnavailable', { serverId: server.id })
         }
       >
         <RefreshCw size={14} />
@@ -594,13 +989,71 @@ const McpToolsConfig: React.FC = () => {
   );
 
   const renderServerDetails = (server: MCPServerInfo) => {
-    if (!isCommandDrivenServer(server)) return null;
+    if (!server.statusMessage && !isCommandDrivenServer(server) && !isRemoteServer(server)) return null;
 
     return (
       <div className="bitfun-mcp-tools__server-details">
         <div className="bitfun-mcp-tools__server-detail-item">
           <span className="bitfun-mcp-tools__server-detail-label">
-            {tMcp('server.command', { defaultValue: 'Command' })}:
+            {tMcp('server.transport')}:
+          </span>
+          <code className="bitfun-mcp-tools__server-detail-value">{server.transport}</code>
+        </div>
+        {server.statusMessage && (
+          <div className="bitfun-mcp-tools__server-detail-item">
+            <span className="bitfun-mcp-tools__server-detail-label">
+              {tMcp('server.statusDetail')}:
+            </span>
+            <span className="bitfun-mcp-tools__server-detail-value">
+              {server.statusMessage}
+            </span>
+          </div>
+        )}
+        {server.startDisabledReason && (
+          <div className="bitfun-mcp-tools__server-detail-item">
+            <span className="bitfun-mcp-tools__server-detail-label">
+              {tMcp('server.runtime.unsupportedReason')}:
+            </span>
+            <span className="bitfun-mcp-tools__server-detail-value">
+              {getStartDisabledReasonLabel(server)}
+            </span>
+          </div>
+        )}
+        {isRemoteServer(server) && (
+          <>
+            <div className="bitfun-mcp-tools__server-detail-item">
+              <span className="bitfun-mcp-tools__server-detail-label">
+                {tMcp('server.remoteUrl')}:
+              </span>
+              <code className="bitfun-mcp-tools__server-detail-value">
+                {server.url || '-'}
+              </code>
+            </div>
+            <div className="bitfun-mcp-tools__server-detail-item">
+              <span className="bitfun-mcp-tools__server-detail-label">
+                {tMcp('server.remoteAuth')}:
+              </span>
+              <span className="bitfun-mcp-tools__server-detail-value">
+                {getRemoteAuthSummary(server)}
+              </span>
+            </div>
+            {(server.oauthEnabled || server.xaaEnabled) && (
+              <div className="bitfun-mcp-tools__server-detail-item">
+                <span className="bitfun-mcp-tools__server-detail-label">
+                  {tMcp('server.remoteAuthMethod')}:
+                </span>
+                <span className="bitfun-mcp-tools__server-detail-value">
+                  {getRemoteAuthMethodLabel(server)}
+                </span>
+              </div>
+            )}
+          </>
+        )}
+        {!isCommandDrivenServer(server) ? null : (
+          <>
+        <div className="bitfun-mcp-tools__server-detail-item">
+          <span className="bitfun-mcp-tools__server-detail-label">
+            {tMcp('server.command')}:
           </span>
           <code className="bitfun-mcp-tools__server-detail-value">
             {server.command || '-'}
@@ -608,7 +1061,7 @@ const McpToolsConfig: React.FC = () => {
         </div>
         <div className="bitfun-mcp-tools__server-detail-item">
           <span className="bitfun-mcp-tools__server-detail-label">
-            {tMcp('server.runtime.source', { defaultValue: 'Source' })}:
+            {tMcp('server.runtime.source')}:
           </span>
           <span className="bitfun-mcp-tools__server-detail-value">
             {getRuntimeSourceLabel(server)}
@@ -617,12 +1070,14 @@ const McpToolsConfig: React.FC = () => {
         {server.commandResolvedPath && (
           <div className="bitfun-mcp-tools__server-detail-item">
             <span className="bitfun-mcp-tools__server-detail-label">
-              {tMcp('server.runtime.path', { defaultValue: 'Resolved Path' })}:
+              {tMcp('server.runtime.path')}:
             </span>
             <code className="bitfun-mcp-tools__server-detail-value">
               {server.commandResolvedPath}
             </code>
           </div>
+        )}
+          </>
         )}
       </div>
     );
@@ -722,6 +1177,97 @@ const McpToolsConfig: React.FC = () => {
             ))}
         </ConfigPageSection>
       </ConfigPageContent>
+      <Modal
+        isOpen={!!authDialogServer}
+        onClose={handleCloseAuthDialog}
+        title={
+          authDialogServer
+            ? tMcp('modal.remoteAuthTitle', { serverName: authDialogServer.name })
+            : tMcp('actions.remoteAuth')
+        }
+        size="medium"
+        showCloseButton={!authSubmitting && !oauthCancelling}
+      >
+        {authDialogServer && (
+          <div className="bitfun-mcp-tools__json-editor">
+            {authDialogServer.oauthEnabled && (
+              <>
+                <p className="bitfun-mcp-tools__json-hint">
+                  {tMcp('modal.remoteOAuthHint')}
+                </p>
+                <p className="bitfun-mcp-tools__json-hint">
+                  {tMcp('modal.remoteOAuthCurrentStatus', {
+                    status: getOAuthStatusLabel(oauthSession),
+                  })}
+                </p>
+                {oauthSession?.redirectUri && (
+                  <p className="bitfun-mcp-tools__json-hint">
+                    {tMcp('modal.remoteOAuthRedirectUri', {
+                      redirectUri: oauthSession.redirectUri,
+                    })}
+                  </p>
+                )}
+                {oauthSession?.message && (
+                  <p className="bitfun-mcp-tools__json-hint">
+                    {tMcp('modal.remoteOAuthStatus', {
+                      status: getOAuthStatusLabel(oauthSession),
+                      message: oauthSession.message,
+                    })}
+                  </p>
+                )}
+                <div className="bitfun-mcp-tools__json-actions">
+                  <Button
+                    variant="primary"
+                    onClick={handleStartRemoteOAuth}
+                    isLoading={oauthStarting}
+                    disabled={authSubmitting || oauthCancelling}
+                  >
+                    {getOAuthActionLabel(authDialogServer)}
+                  </Button>
+                </div>
+              </>
+            )}
+            <p className="bitfun-mcp-tools__json-hint">
+              {tMcp('modal.remoteAuthHint')}
+            </p>
+            {authDialogServer.url && (
+              <p className="bitfun-mcp-tools__json-hint">
+                {tMcp('modal.remoteAuthServerUrl', {
+                  url: authDialogServer.url,
+                })}
+              </p>
+            )}
+            <Textarea
+              value={authValue}
+              onChange={(e) => setAuthValue(e.target.value)}
+              rows={4}
+              placeholder={tMcp('modal.remoteAuthPlaceholder')}
+              variant="outlined"
+              className="bitfun-mcp-tools__json-textarea"
+              spellCheck={false}
+            />
+            <div className="bitfun-mcp-tools__json-actions">
+              <Button
+                variant="secondary"
+                onClick={handleCloseAuthDialog}
+                disabled={authSubmitting || oauthStarting || oauthCancelling}
+              >
+                {isOAuthFlowActive
+                  ? tMcp('actions.cancelRemoteOAuth')
+                  : tMcp('actions.cancel')}
+              </Button>
+              <Button
+                variant="primary"
+                onClick={handleSaveRemoteAuth}
+                isLoading={authSubmitting}
+                disabled={oauthStarting || oauthCancelling}
+              >
+                {tMcp('actions.saveRemoteAuth')}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </ConfigPageLayout>
   );
 };

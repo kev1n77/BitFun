@@ -1,12 +1,12 @@
-/// Robust JSON extraction from AI model responses.
-///
-/// AI models often wrap JSON in markdown code blocks (`` ```json ... ``` ``),
-/// or include leading/trailing prose.  This module provides a single public
-/// helper that handles all common formats and falls back gracefully.
-///
-/// When the extracted text is not valid JSON (e.g. the model emitted unescaped
-/// quotes inside string values), a best-effort repair pass is attempted before
-/// giving up.
+//! Robust JSON extraction from AI model responses.
+//!
+//! AI models often wrap JSON in markdown code blocks (`` ```json ... ``` ``),
+//! or include leading/trailing prose. This module provides a single public
+//! helper that handles all common formats and falls back gracefully.
+//!
+//! When the extracted text is not valid JSON (e.g. the model emitted unescaped
+//! quotes inside string values), a best-effort repair pass is attempted before
+//! giving up.
 
 use log::{debug, warn};
 
@@ -60,7 +60,11 @@ pub fn extract_json_from_ai_response(response: &str) -> Option<String> {
     // Second pass: attempt repair on each candidate.
     for candidate in &candidates {
         if let Some(repaired) = try_repair_json(candidate) {
-            debug!("JSON repair succeeded (original length={}, repaired length={})", candidate.len(), repaired.len());
+            debug!(
+                "JSON repair succeeded (original length={}, repaired length={})",
+                candidate.len(),
+                repaired.len()
+            );
             return Some(repaired);
         }
     }
@@ -192,7 +196,10 @@ fn try_repair_json(input: &str) -> Option<String> {
 }
 
 fn next_non_whitespace(chars: &[char], start: usize) -> Option<char> {
-    chars[start..].iter().find(|c| !c.is_ascii_whitespace()).copied()
+    chars[start..]
+        .iter()
+        .find(|c| !c.is_ascii_whitespace())
+        .copied()
 }
 
 /// Characters that legitimately follow a closing `"` in JSON.
@@ -348,11 +355,15 @@ mod tests {
     #[test]
     fn repair_unescaped_chinese_style_quotes() {
         // AI writes: "headline": "用户问AI"你是什么模型"" — inner quotes are ASCII U+0022
-        let input = "```json\n{\"headline\": \"用户问AI\"你是什么模型\"\", \"detail\": \"ok\"}\n```";
+        let input =
+            "```json\n{\"headline\": \"用户问AI\"你是什么模型\"\", \"detail\": \"ok\"}\n```";
         let result = extract_json_from_ai_response(input);
         assert!(result.is_some(), "repair should succeed");
         let parsed: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
-        assert!(parsed["headline"].as_str().unwrap().contains("你是什么模型"));
+        assert!(parsed["headline"]
+            .as_str()
+            .unwrap()
+            .contains("你是什么模型"));
         assert_eq!(parsed["detail"].as_str().unwrap(), "ok");
     }
 
@@ -361,7 +372,10 @@ mod tests {
         // "text": "他说"你好"然后又说"再见""
         let input = r#"{"text": "他说"你好"然后又说"再见"", "other": "fine"}"#;
         let result = extract_json_from_ai_response(input);
-        assert!(result.is_some(), "repair should handle multiple rogue quotes");
+        assert!(
+            result.is_some(),
+            "repair should handle multiple rogue quotes"
+        );
         let parsed: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
         assert!(parsed["text"].as_str().unwrap().contains("你好"));
         assert!(parsed["text"].as_str().unwrap().contains("再见"));
@@ -392,7 +406,10 @@ mod tests {
         let result = extract_json_from_ai_response(input);
         assert!(result.is_some(), "should repair the fun ending JSON");
         let parsed: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
-        assert!(parsed["headline"].as_str().unwrap().contains("你到底是什么模型"));
+        assert!(parsed["headline"]
+            .as_str()
+            .unwrap()
+            .contains("你到底是什么模型"));
     }
 
     #[test]
@@ -402,7 +419,10 @@ mod tests {
         let result = extract_json_from_ai_response(input);
         assert!(result.is_some(), "should repair interaction style JSON");
         let parsed: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
-        assert!(parsed["narrative"].as_str().unwrap().contains("这个项目是什么"));
+        assert!(parsed["narrative"]
+            .as_str()
+            .unwrap()
+            .contains("这个项目是什么"));
     }
 
     #[test]

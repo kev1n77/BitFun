@@ -4,54 +4,48 @@
 
 
 
+// Surface + motion aligned with .bitfun-nav-panel__workspace-menu / __workspace-item-menu-popover
 .context-menu {
   position: fixed;
   z-index: $z-context-menu;
-  min-width: 200px;
-  max-width: 300px;
-  
-  
-  background: var(--color-bg-elevated);
-  
-  
-  border: 1px solid var(--border-medium);
-  border-radius: 4px;
-  
-  
-  &::before {
-    content: '';
-    position: absolute;
-    inset: 2px;
-    border: 1px dashed var(--border-base);
-    border-radius: 2px;
-    pointer-events: none;
-    z-index: 0;
-  }
-  
-  
-  box-shadow: var(--shadow-lg);
-  
-  
-  backdrop-filter: var(--blur-medium);
-  -webkit-backdrop-filter: var(--blur-medium);
-  
-  padding: 6px;
-  
-  
+  min-width: 180px;
+  max-width: min(320px, calc(100vw - 24px));
+
+  background: var(--color-bg-elevated, #1e1e22);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: $size-radius-base;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+
+  padding: $size-gap-1 0;
+  box-sizing: border-box;
+
   opacity: 0;
-  transform: scale(0.95) translateY(-4px);
-  transition: all var(--motion-fast) var(--easing-standard);
+  transform: translateY(6px) scale(0.96);
+  transform-origin: top left;
+  transition:
+    opacity $motion-fast $easing-decelerate,
+    transform $motion-fast $easing-decelerate;
   pointer-events: none;
-  
-  
+
   font-family: var(--font-family-sans);
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-sm);
   line-height: 1.4;
 
-  
+  :root[data-theme-type='light'] & {
+    box-shadow:
+      0 1px 2px rgba(15, 23, 42, 0.05),
+      0 10px 28px -8px rgba(15, 23, 42, 0.12);
+  }
+
+  :root[data-theme-type='dark'] & {
+    box-shadow:
+      0 1px 0 color-mix(in srgb, #fff 4%, transparent),
+      0 10px 28px -8px rgba(0, 0, 0, 0.55);
+  }
+
   &.visible {
     opacity: 1;
-    transform: scale(1) translateY(0);
+    transform: translateY(0) scale(1);
     pointer-events: all;
   }
 }
@@ -61,37 +55,39 @@
 .context-menu-item {
   display: flex;
   align-items: center;
-  padding: 4px var(--size-gap-2);
-  margin: 1px 0;
-  border-radius: 3px;
+  width: 100%;
+  padding: 0 $size-gap-2;
+  min-height: 30px;
+  border: none;
+  border-radius: $size-radius-sm;
   color: var(--color-text-secondary);
+  font-weight: 400;
   cursor: pointer;
-  transition: background var(--motion-instant) ease, color var(--motion-instant) ease, box-shadow var(--motion-instant) ease;
+  transition:
+    color $motion-fast $easing-standard,
+    background $motion-fast $easing-standard;
   user-select: none;
   position: relative;
   z-index: 1;
-  gap: var(--size-gap-1);
-  min-height: 26px;
-  
-  border: 1px solid transparent;
-  
-  
+  gap: $size-gap-2;
+  box-sizing: border-box;
+
   &:hover:not(.disabled) {
-    background: var(--color-accent-100);
     color: var(--color-text-primary);
-    
-    box-shadow: inset 0 0 0 1px var(--color-accent-300);
+    background: var(--element-bg-soft);
   }
-  
-  
+
+  &:active:not(.disabled) {
+    background: var(--element-bg-medium);
+  }
+
   &.disabled {
-    color: var(--color-text-disabled);
-    cursor: default;
-    opacity: var(--opacity-disabled);
-    
+    color: var(--color-text-muted);
+    cursor: not-allowed;
+    opacity: 0.45;
+
     &:hover {
       background: transparent;
-      box-shadow: none;
     }
   }
 }
@@ -106,8 +102,9 @@
   justify-content: center;
   flex-shrink: 0;
   font-size: var(--font-size-xs);
-  opacity: 0.9;
-  
+  opacity: 0.7;
+  transition: opacity $motion-fast $easing-standard;
+
   .context-menu-item:hover:not(.disabled) & {
     opacity: 1;
   }
@@ -115,7 +112,7 @@
 
 .context-menu-item-label {
   flex: 1;
-  font-weight: var(--font-weight-medium);
+  font-weight: 400;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -139,15 +136,12 @@
 
 .context-menu-separator {
   height: 1px;
-  margin: 5px var(--size-gap-1);
-  opacity: 0.8;
+  margin: $size-gap-1 0;
   position: relative;
   z-index: 1;
-  
-  
   border: none;
-  border-top: 1px dashed var(--border-base);
-  background: transparent;
+  background: var(--border-subtle);
+  opacity: 1;
 }
 
 
@@ -181,7 +175,7 @@
   
   .context-menu-item:hover:not(.disabled) &::before,
   .context-menu-item.submenu-active &::before {
-    border-color: var(--color-accent-500);
+    border-color: var(--color-text-primary);
   }
   
   
@@ -236,36 +230,9 @@
 
 
 .context-menu-item.submenu-active:not(.disabled) {
-  background: var(--color-accent-100);
   color: var(--color-text-primary);
-  box-shadow: inset 0 0 0 1px var(--color-accent-300);
+  background: var(--element-bg-soft);
 }
-
-
-
-@keyframes contextMenuFadeIn {
-  from {
-    opacity: 0;
-    transform: scale(0.95) translateY(-4px);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
-}
-
-@keyframes contextMenuFadeOut {
-  from {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
-  to {
-    opacity: 0;
-    transform: scale(0.95) translateY(-4px);
-  }
-}
-
-
 
 @media (max-width: 768px) {
   .context-menu {
@@ -292,15 +259,13 @@
     border-color: var(--border-strong);
     box-shadow: var(--shadow-xl);
   }
-  
+
   .context-menu-item:hover:not(.disabled) {
-    background: var(--color-accent-300);
-    box-shadow: inset 0 0 0 1px var(--border-accent-soft);
+    background: var(--element-bg-medium);
   }
-  
+
   .context-menu-separator {
-    border-color: var(--border-medium);
-    opacity: 1;
+    background: var(--border-medium);
   }
 }
 
@@ -310,28 +275,22 @@
     transition: opacity var(--motion-instant) ease;
     transform: none;
   }
-  
+
+  .context-menu.visible {
+    transform: none;
+  }
+
   .context-menu-item {
-    transition: background-color var(--motion-instant) ease;
-  }
-  
-  @keyframes contextMenuFadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-  
-  @keyframes contextMenuFadeOut {
-    from { opacity: 1; }
-    to { opacity: 0; }
+    transition: background-color var(--motion-instant) ease, color var(--motion-instant) ease;
   }
 }
 
 
 
 .context-menu-item:focus-visible {
-  outline: 2px solid var(--color-accent-500);
-  outline-offset: -2px;
-  border-radius: 3px;
+  outline: 1px solid var(--color-accent-500);
+  outline-offset: 1px;
+  border-radius: $size-radius-sm;
 }
 
 
@@ -340,11 +299,11 @@
 .context-menu-item {
   
   &.is-active {
-    background: var(--color-accent-100);
+    background: var(--element-bg-medium);
     color: var(--color-text-primary);
-    
+
     .context-menu-item-label {
-      font-weight: var(--font-weight-medium);
+      font-weight: 500;
     }
   }
   
@@ -363,9 +322,8 @@
   &--danger,
   &.context-menu-item--danger {
     &:hover:not(.disabled) {
-      background: var(--color-error-bg);
-      color: var(--color-error);
-      box-shadow: inset 0 0 0 1px var(--color-error-border);
+      color: var(--color-error, #ef4444);
+      background: color-mix(in srgb, var(--color-error, #ef4444) 10%, transparent);
     }
   }
 }

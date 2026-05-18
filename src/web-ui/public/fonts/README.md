@@ -1,3 +1,5 @@
+[中文](README.zh-CN.md) | **English**
+
 # Fonts
 
 This directory contains font assets and configuration for the web UI.
@@ -14,7 +16,6 @@ src/web-ui/public/fonts/
 │   ├── FiraCode-SemiBold.woff2
 │   └── FiraCode-VF.woff2
 └── Noto_Sans_SC/
-    ├── NotoSansSC-VariableFont_wght.ttf
     └── static/
         ├── NotoSansSC-Regular.ttf
         ├── NotoSansSC-Medium.ttf
@@ -47,6 +48,8 @@ src/web-ui/public/fonts/
 | 400 | NotoSansSC-Regular.ttf | Body |
 | 500 | NotoSansSC-Medium.ttf | Heading/Emphasis |
 | 600 | NotoSansSC-SemiBold.ttf | Strong heading |
+
+Only the static weights referenced by `fonts.css` are bundled.
 
 ## Font Stack
 

@@ -9,6 +9,7 @@ import {
   DialogTurn,
   ModelRound,
   FlowItem,
+  FlowToolItem,
   FlowImageAnalysisItem,
   ImageAnalysisResult,
   AnyFlowItem,
@@ -16,22 +17,45 @@ import {
 } from '../types/flow-chat';
 import { createLogger } from '@/shared/utils/logger';
 import { i18nService } from '@/infrastructure/i18n/core/I18nService';
-import type { SessionKind } from '@/shared/types/session-history';
+import type { LocalCommandMetadata, SessionKind } from '@/shared/types/session-history';
 import {
-  buildSessionMetadata,
   deriveLastFinishedAtFromMetadata,
   deriveSessionRelationshipFromMetadata,
+  isLegacyPersistedBtwSession,
   normalizeSessionRelationship,
 } from '../utils/sessionMetadata';
+import type { SessionTitleDescriptor } from '../utils/sessionTitle';
+import {
+  deriveSessionTitleState,
+  deriveSessionTitleStateFromMetadata,
+  freezeSessionTitleState,
+} from '../utils/sessionTitle';
+import {
+  isTransientToolStatus,
+  normalizeRecoveredRoundStatus,
+  normalizeRecoveredTextStatus,
+  normalizeRecoveredThinkingStatus,
+  normalizeRecoveredToolStatus,
+  normalizeRecoveredTurnStatus,
+  settleInterruptedDialogTurn,
+} from '../utils/dialogTurnStability';
+import type { WorkspaceInfo } from '@/shared/types';
+import { sessionBelongsToWorkspaceNavRow } from '../utils/sessionOrdering';
+import { sessionMatchesWorkspace } from '../utils/workspaceScope';
 
 const log = createLogger('FlowChatStore');
+const VALID_AGENT_TYPES = new Set(['agentic', 'debug', 'Plan', 'Cowork', 'Claw', 'Team', 'DeepResearch']);
+
+function isValidPersistedAgentType(agentType: string): boolean {
+  return VALID_AGENT_TYPES.has(agentType) || agentType.startsWith('acp:');
+}
 
 export class FlowChatStore {
   private static instance: FlowChatStore;
   private state: FlowChatState;
   private listeners: Set<(state: FlowChatState) => void> = new Set();
-  
   private silentMode = false;
+  private onPersistUnreadCompletion?: (sessionId: string, value: 'completed' | 'error' | 'interrupted' | undefined) => void;
 
   private constructor() {
     this.clearOldStorage();
@@ -82,7 +106,13 @@ export class FlowChatStore {
     this.state = newState;
     
     if (!this.silentMode) {
-      this.listeners.forEach(listener => listener(newState));
+      this.listeners.forEach(listener => {
+        try {
+          listener(newState);
+        } catch (error) {
+          console.error('[FlowChatStore] Listener threw an error, skipping:', error);
+        }
+      });
     }
   }
   
@@ -104,7 +134,13 @@ export class FlowChatStore {
    * Manually notify all listeners (call after batch updates complete)
    */
   public notifyListeners(): void {
-    this.listeners.forEach(listener => listener(this.state));
+    this.listeners.forEach(listener => {
+      try {
+        listener(this.state);
+      } catch (error) {
+        console.error('[FlowChatStore] Listener threw an error during notifyListeners, skipping:', error);
+      }
+    });
   }
   
   public beginSilentMode(): void {
@@ -167,6 +203,16 @@ export class FlowChatStore {
     };
   }
 
+  /**
+   * Register a callback to persist unread completion changes.
+   * Called by FlowChatManager during initialization.
+   */
+  public registerPersistUnreadCompletionCallback(
+    callback: (sessionId: string, value: 'completed' | 'error' | 'interrupted' | undefined) => void
+  ): void {
+    this.onPersistUnreadCompletion = callback;
+  }
+
   public createSession(
     sessionId: string,
     config: SessionConfig,
@@ -174,7 +220,10 @@ export class FlowChatStore {
     title?: string,
     maxContextTokens?: number,
     mode?: string,
-    workspacePath?: string
+    workspacePath?: string,
+    remoteConnectionId?: string,
+    remoteSshHost?: string,
+    titleDescriptor?: SessionTitleDescriptor,
   ): void {
     import('../state-machine').then(({ stateMachineManager }) => {
       stateMachineManager.getOrCreate(sessionId);
@@ -182,9 +231,16 @@ export class FlowChatStore {
     
     this.setState(prev => {
       const relationship = normalizeSessionRelationship({ sessionKind: 'normal' });
+      const titleState = deriveSessionTitleState(titleDescriptor);
       const session: Session = {
         sessionId,
-        title: title || i18nService.t('flow-chat:session.new'),
+        title:
+          titleState.title ||
+          title ||
+          i18nService.t('flow-chat:session.new'),
+        titleSource: titleState.titleSource,
+        titleI18nKey: titleState.titleI18nKey,
+        titleI18nParams: titleState.titleI18nParams,
         titleStatus: undefined,
         dialogTurns: [],
         status: 'idle',
@@ -196,10 +252,14 @@ export class FlowChatStore {
         maxContextTokens: maxContextTokens || 128128,
         mode: mode || 'agentic',
         workspacePath,
+        workspaceId: config.workspaceId,
+        remoteConnectionId,
+        remoteSshHost,
         parentSessionId: relationship.parentSessionId,
         sessionKind: relationship.sessionKind,
         btwThreads: [],
         btwOrigin: relationship.btwOrigin,
+        isTransient: false,
       };
 
       const newSessions = new Map(prev.sessions);
@@ -222,7 +282,16 @@ export class FlowChatStore {
     title: string,
     mode: string,
     workspacePath?: string,
-    meta?: { parentSessionId?: string; sessionKind?: SessionKind; btwOrigin?: Session['btwOrigin'] }
+    meta?: {
+      parentSessionId?: string;
+      sessionKind?: SessionKind;
+      btwOrigin?: Session['btwOrigin'];
+      isTransient?: boolean;
+      agentBackedTransient?: boolean;
+      deepReviewRunManifest?: Session['deepReviewRunManifest'];
+    },
+    remoteConnectionId?: string,
+    remoteSshHost?: string
   ): void {
     import('../state-machine').then(({ stateMachineManager }) => {
       stateMachineManager.getOrCreate(sessionId);
@@ -237,6 +306,9 @@ export class FlowChatStore {
       const session: Session = {
         sessionId,
         title: title || i18nService.t('flow-chat:session.new'),
+        titleSource: 'text',
+        titleI18nKey: undefined,
+        titleI18nParams: undefined,
         titleStatus: 'generated',
         dialogTurns: [],
         status: 'idle',
@@ -249,10 +321,15 @@ export class FlowChatStore {
         mode: mode || 'agentic',
         isHistorical: false,
         workspacePath,
+        remoteConnectionId,
+        remoteSshHost,
         parentSessionId: relationship.parentSessionId,
         sessionKind: relationship.sessionKind,
         btwThreads: [],
         btwOrigin: relationship.btwOrigin,
+        deepReviewRunManifest: meta?.deepReviewRunManifest,
+        isTransient: meta?.isTransient ?? false,
+        agentBackedTransient: meta?.agentBackedTransient ?? false,
       };
 
       const newSessions = new Map(prev.sessions);
@@ -382,13 +459,17 @@ export class FlowChatStore {
     });
   }
 
-  public updateSessionBtwOrigin(sessionId: string, origin: Session['btwOrigin']): void {
+  public updateSessionBtwOrigin(
+    sessionId: string,
+    origin: Session['btwOrigin'],
+    sessionKind: SessionKind = 'btw'
+  ): void {
     this.setState(prev => {
       const session = prev.sessions.get(sessionId);
       if (!session) return prev;
 
       const relationship = normalizeSessionRelationship({
-        sessionKind: 'btw',
+        sessionKind,
         parentSessionId: origin?.parentSessionId ?? session.parentSessionId,
         btwOrigin: { ...(session.btwOrigin || {}), ...(origin || {}) },
       });
@@ -517,12 +598,18 @@ export class FlowChatStore {
       const { agentAPI } = await import('@/infrastructure/api');
       const deleteResults = await Promise.allSettled(
         sessionIdsToDelete.map(async id => {
-          const workspacePath = this.state.sessions.get(id)?.workspacePath;
+          const sess = this.state.sessions.get(id);
+          const workspacePath = sess?.workspacePath;
           if (!workspacePath) {
             throw new Error(`Workspace path not found for session ${id}`);
           }
 
-          await agentAPI.deleteSession(id, workspacePath);
+          await agentAPI.deleteSession(
+            id,
+            workspacePath,
+            sess?.remoteConnectionId,
+            sess?.remoteSshHost
+          );
         })
       );
 
@@ -631,10 +718,73 @@ export class FlowChatStore {
     });
   }
 
-  public removeSessionsByWorkspace(workspacePath: string): string[] {
+  /**
+   * Remove sessions bound to a workspace using stable id + host/path scope (never path-only).
+   */
+  public removeSessionsForWorkspace(
+    workspace: Pick<WorkspaceInfo, 'id' | 'rootPath' | 'connectionId' | 'sshHost'>
+  ): string[] {
     const removedSessionIds = Array.from(this.state.sessions.values())
-      .filter(session => session.workspacePath === workspacePath)
+      .filter(session => sessionMatchesWorkspace(session, workspace))
       .map(session => session.sessionId);
+
+    return this.removeSessionsByIds(removedSessionIds);
+  }
+
+  public async cancelRunningSessionsForWorkspace(
+    workspace: Pick<WorkspaceInfo, 'id' | 'rootPath' | 'connectionId' | 'sshHost'>
+  ): Promise<string[]> {
+    const runningSessionIds = Array.from(this.state.sessions.values())
+      .filter(session => sessionMatchesWorkspace(session, workspace))
+      .filter(session => {
+        const lastTurn = session.dialogTurns[session.dialogTurns.length - 1];
+        return Boolean(
+          lastTurn &&
+          !['completed', 'cancelled', 'error'].includes(lastTurn.status)
+        );
+      })
+      .map(session => session.sessionId);
+
+    if (runningSessionIds.length === 0) {
+      return [];
+    }
+
+    const { agentAPI } = await import('@/infrastructure/api');
+    await Promise.allSettled(
+      runningSessionIds.map(async sessionId => {
+        try {
+          await agentAPI.cancelSession(sessionId);
+        } catch (error) {
+          log.warn('Failed to cancel running session before closing workspace', {
+            sessionId,
+            workspaceId: workspace.id,
+            error,
+          });
+        } finally {
+          this.cancelSessionTask(sessionId);
+        }
+      })
+    );
+
+    return runningSessionIds;
+  }
+
+  /** @deprecated Prefer `removeSessionsForWorkspace` with full `WorkspaceInfo`. */
+  public removeSessionsByWorkspace(
+    workspacePath: string,
+    remoteConnectionId?: string | null,
+    remoteSshHost?: string | null
+  ): string[] {
+    const removedSessionIds = Array.from(this.state.sessions.values())
+      .filter(session =>
+        sessionBelongsToWorkspaceNavRow(session, workspacePath, remoteConnectionId, remoteSshHost)
+      )
+      .map(session => session.sessionId);
+
+    return this.removeSessionsByIds(removedSessionIds);
+  }
+
+  private removeSessionsByIds(removedSessionIds: string[]): string[] {
 
     if (removedSessionIds.length === 0) {
       return [];
@@ -693,6 +843,70 @@ export class FlowChatStore {
     });
   }
 
+  public addLocalUsageReportTurn(params: {
+    sessionId: string;
+    markdown: string;
+    reportId: string;
+    schemaVersion: number;
+    generatedAt: number;
+    report?: Record<string, any>;
+    status?: 'loading' | 'completed';
+  }): DialogTurn | null {
+    const session = this.state.sessions.get(params.sessionId);
+    if (!session) {
+      log.warn('Session not found, cannot add local usage report', { sessionId: params.sessionId });
+      return null;
+    }
+
+    const metadata: LocalCommandMetadata = {
+      localCommandKind: 'usage_report',
+      reportId: params.reportId,
+      schemaVersion: params.schemaVersion,
+      generatedAt: params.generatedAt,
+      modelVisible: false,
+      usageReport: params.report,
+      usageReportStatus: params.status ?? 'completed',
+    };
+    const turnIndex = session.dialogTurns.length;
+    const dialogTurn: DialogTurn = {
+      id: `local-usage-${params.reportId}`,
+      sessionId: params.sessionId,
+      kind: 'local_command',
+      userMessage: {
+        id: `local-usage-user-${params.reportId}`,
+        content: params.markdown,
+        timestamp: params.generatedAt,
+        metadata,
+      },
+      modelRounds: [],
+      status: params.status === 'loading' ? 'processing' : 'completed',
+      startTime: params.generatedAt,
+      endTime: params.generatedAt,
+      backendTurnIndex: turnIndex,
+    };
+
+    this.setState(prev => {
+      const currentSession = prev.sessions.get(params.sessionId);
+      if (!currentSession) return prev;
+
+      if (currentSession.dialogTurns.some(turn => turn.id === dialogTurn.id)) {
+        return prev;
+      }
+
+      const newSessions = new Map(prev.sessions);
+      newSessions.set(params.sessionId, {
+        ...currentSession,
+        dialogTurns: [...currentSession.dialogTurns, dialogTurn],
+      });
+
+      return {
+        ...prev,
+        sessions: newSessions,
+      };
+    });
+    return dialogTurn;
+  }
+
   public deleteDialogTurn(sessionId: string, dialogTurnId: string): void {
     this.setState(prev => {
       const session = prev.sessions.get(sessionId);
@@ -743,7 +957,12 @@ export class FlowChatStore {
     });
   }
 
-  public updateDialogTurn(sessionId: string, dialogTurnId: string, updater: (turn: DialogTurn) => DialogTurn): void {
+  public updateDialogTurn(
+    sessionId: string,
+    dialogTurnId: string,
+    updater: (turn: DialogTurn) => DialogTurn,
+    options?: { touchActivity?: boolean }
+  ): void {
     this.setState(prev => {
       const session = prev.sessions.get(sessionId);
       if (!session) return prev;
@@ -755,7 +974,9 @@ export class FlowChatStore {
       const updatedSession = {
         ...session,
         dialogTurns: updatedDialogTurns,
-        lastActiveAt: Date.now()
+        lastActiveAt: options?.touchActivity === false
+          ? session.lastActiveAt
+          : Date.now()
       };
 
       const newSessions = new Map(prev.sessions);
@@ -1026,30 +1247,27 @@ export class FlowChatStore {
   }
 
   public updateModelRoundItem(sessionId: string, dialogTurnId: string, itemId: string, updates: Partial<FlowItem>): void {
-    let foundItemsCount = 0;
-
     this.updateDialogTurn(sessionId, dialogTurnId, turn => {
       let updated = false;
-      
-      turn.modelRounds.forEach(modelRound => {
-        const hasItem = modelRound.items.some((item: any) => item.id === itemId);
-        if (hasItem) {
-          foundItemsCount++;
-        }
-      });
       
       const updatedModelRounds = turn.modelRounds.map(modelRound => {
         if (updated) return modelRound;
         
         const updatedItems = modelRound.items.map((item: any) => {
-          if (item.id === itemId) {
+          const toolCallId =
+            item.type === 'tool' ? ((item as FlowToolItem).toolCall?.id as string | undefined) : undefined;
+          const idMatches = item.id === itemId || (toolCallId !== undefined && toolCallId === itemId);
+          if (idMatches) {
             const updatedItem = { ...item, ...updates };
             return updatedItem;
           }
           return item;
         });
         
-        if (updatedItems.some((item: any) => item.id === itemId)) {
+        if (updatedItems.some((item: any) => {
+          const tc = item.type === 'tool' ? (item as FlowToolItem).toolCall?.id : undefined;
+          return item.id === itemId || tc === itemId;
+        })) {
           updated = true;
           return { ...modelRound, items: updatedItems };
         }
@@ -1094,7 +1312,14 @@ export class FlowChatStore {
     if (!dialogTurn) return null;
 
     for (const modelRound of dialogTurn.modelRounds) {
-      const item = modelRound.items.find((item: any) => item.id === toolUseId);
+      const item = modelRound.items.find((item: any) => {
+        if (item.id === toolUseId) return true;
+        if (item.type === 'tool') {
+          const ti = item as FlowToolItem;
+          return ti.toolCall?.id === toolUseId;
+        }
+        return false;
+      });
       if (item) {
         return item;
       }
@@ -1185,6 +1410,7 @@ export class FlowChatStore {
 
       const updatedSession: Session = {
         ...session,
+        lastActiveAt: timestamp,
         lastFinishedAt: timestamp,
       };
 
@@ -1198,18 +1424,107 @@ export class FlowChatStore {
     });
   }
 
+  public markSessionUnreadCompletion(
+    sessionId: string,
+    completionKind: 'completed' | 'error' | 'interrupted'
+  ): void {
+    this.setState(prev => {
+      const session = prev.sessions.get(sessionId);
+      if (!session) return prev;
+
+      const updatedSession: Session = {
+        ...session,
+        hasUnreadCompletion: completionKind,
+      };
+
+      const newSessions = new Map(prev.sessions);
+      newSessions.set(sessionId, updatedSession);
+
+      return { ...prev, sessions: newSessions };
+    });
+    this.onPersistUnreadCompletion?.(sessionId, completionKind);
+  }
+
+  public clearSessionUnreadCompletion(sessionId: string): void {
+    let didClear = false;
+    this.setState(prev => {
+      const session = prev.sessions.get(sessionId);
+      if (!session || !session.hasUnreadCompletion) return prev;
+
+      const updatedSession: Session = {
+        ...session,
+        hasUnreadCompletion: undefined,
+      };
+
+      const newSessions = new Map(prev.sessions);
+      newSessions.set(sessionId, updatedSession);
+
+      didClear = true;
+      return { ...prev, sessions: newSessions };
+    });
+    if (didClear) {
+      this.onPersistUnreadCompletion?.(sessionId, undefined);
+    }
+  }
+
+  public setSessionNeedsAttention(
+    sessionId: string,
+    attentionKind: 'ask_user' | 'tool_confirm'
+  ): void {
+    this.setState(prev => {
+      const session = prev.sessions.get(sessionId);
+      if (!session) return prev;
+
+      const updatedSession: Session = {
+        ...session,
+        needsUserAttention: attentionKind,
+      };
+
+      const newSessions = new Map(prev.sessions);
+      newSessions.set(sessionId, updatedSession);
+
+      return { ...prev, sessions: newSessions };
+    });
+    this.onPersistUnreadCompletion?.(sessionId, undefined);
+  }
+
+  public clearSessionNeedsAttention(sessionId: string): void {
+    let didClear = false;
+    this.setState(prev => {
+      const session = prev.sessions.get(sessionId);
+      if (!session || !session.needsUserAttention) return prev;
+
+      const updatedSession: Session = {
+        ...session,
+        needsUserAttention: undefined,
+      };
+
+      const newSessions = new Map(prev.sessions);
+      newSessions.set(sessionId, updatedSession);
+
+      didClear = true;
+      return { ...prev, sessions: newSessions };
+    });
+    if (didClear) {
+      this.onPersistUnreadCompletion?.(sessionId, undefined);
+    }
+  }
+
   public async updateSessionTitle(
-    sessionId: string, 
-    title: string, 
+    sessionId: string,
+    title: string,
     status: 'generating' | 'generated' | 'failed'
   ): Promise<void> {
     this.setState(prev => {
       const session = prev.sessions.get(sessionId);
       if (!session) return prev;
 
+      // As soon as the user meaningfully interacts with the session we freeze the
+      // title to text, so later locale changes do not rewrite real conversation names.
+      const nextTitleState = freezeSessionTitleState(title);
       const updatedSession = {
         ...session,
-        title,
+        ...nextTitleState,
         titleStatus: status,
         lastActiveAt: Date.now()
       };
@@ -1222,30 +1537,6 @@ export class FlowChatStore {
         sessions: newSessions
       };
     });
-
-    if (status === 'generated') {
-      try {
-        const { sessionAPI } = await import('@/infrastructure/api');
-        const session = this.state.sessions.get(sessionId);
-        if (!session) {
-          log.warn('Session not found, skipping title sync', { sessionId });
-          return;
-        }
-
-        const workspacePath = session.workspacePath;
-        if (!workspacePath) {
-          log.warn('Workspace path not available, skipping title sync', { sessionId });
-          return;
-        }
-
-        const metadata = await sessionAPI.loadSessionMetadata(sessionId, workspacePath);
-        const nextMetadata = buildSessionMetadata(session, metadata);
-
-        await sessionAPI.saveSessionMetadata(nextMetadata, workspacePath);
-      } catch (error) {
-        log.error('Failed to sync session title', { sessionId, error });
-      }
-    }
   }
 
   /**
@@ -1270,48 +1561,12 @@ export class FlowChatStore {
         return prev;
       }
 
-      const updatedDialogTurns = session.dialogTurns.map((turn, index) => {
-        if (index !== session.dialogTurns.length - 1) {
-          return turn;
-        }
-
-        const updatedModelRounds = turn.modelRounds.map(round => {
-          const updatedItems = round.items.map(item => {
-            if (item.status === 'completed' || item.status === 'cancelled' || item.status === 'error') {
-              return item;
-            }
-            
-            return {
-              ...item,
-              status: 'cancelled' as const,
-              ...(item.type === 'text' && { isStreaming: false }),
-              ...(item.type === 'tool' && {
-                isParamsStreaming: false,
-                endTime: (item as any).endTime || Date.now()
-              }),
-              ...(item.type === 'thinking' && {
-                isCollapsed: true,
-                isStreaming: false
-              })
-            };
-          });
-
-          return {
-            ...round,
-            items: updatedItems,
-            isStreaming: false,
-            isComplete: true,
-            endTime: round.endTime || Date.now()
-          };
-        });
-
-        return {
-          ...turn,
-          status: 'cancelled' as const,
-          modelRounds: updatedModelRounds,
-          endTime: Date.now()
-        };
-      });
+      const settledAt = Date.now();
+      const updatedDialogTurns = session.dialogTurns.map((turn, index) =>
+        index === session.dialogTurns.length - 1
+          ? settleInterruptedDialogTurn(turn, settledAt)
+          : turn
+      );
 
       const updatedSession = {
         ...session,
@@ -1352,6 +1607,9 @@ export class FlowChatStore {
         log.warn('Session not found, skipping save', { sessionId, turnId });
         return;
       }
+      if (session.isTransient) {
+        return;
+      }
 
       const workspacePath = session.workspacePath;
       if (!workspacePath) {
@@ -1372,19 +1630,22 @@ export class FlowChatStore {
         turnIndex,
         sessionId,
         timestamp: dialogTurn.startTime,
+        kind: dialogTurn.kind || 'user_dialog',
         userMessage: {
           id: dialogTurn.userMessage.id,
           content: dialogTurn.userMessage.content,
-          timestamp: dialogTurn.userMessage.timestamp
+          timestamp: dialogTurn.userMessage.timestamp,
+          metadata: dialogTurn.userMessage.metadata,
         },
         modelRounds: dialogTurn.modelRounds.map((round, roundIndex) => {
           const textItems = round.items
-            .filter(item => item.type === 'text')
+            .filter(item => item.type === 'text' && !(item as any).runtimeStatus)
             .map(item => ({
               id: item.id,
               content: (item as any).content || '',
               isStreaming: false,
-              timestamp: item.timestamp
+              timestamp: item.timestamp,
+              status: item.status,
             }));
           
           const toolItems = round.items
@@ -1392,14 +1653,20 @@ export class FlowChatStore {
             .map(item => ({
               id: item.id,
               toolName: (item as any).toolName || '',
+              interruptionReason: (item as any).interruptionReason,
               toolCall: (item as any).toolCall || { input: {}, id: item.id },
               toolResult: (item as any).toolResult,
               aiIntent: (item as any).aiIntent,
               startTime: (item as any).startTime || item.timestamp,
               endTime: (item as any).endTime,
-              durationMs: (item as any).endTime 
-                ? (item as any).endTime - (item as any).startTime 
-                : undefined
+              status: item.status,
+              durationMs: (item as any).durationMs ?? ((item as any).endTime
+                ? (item as any).endTime - (item as any).startTime
+                : undefined),
+              queueWaitMs: (item as any).queueWaitMs,
+              preflightMs: (item as any).preflightMs,
+              confirmationWaitMs: (item as any).confirmationWaitMs,
+              executionMs: (item as any).executionMs,
             }));
           
           const thinkingItems = round.items
@@ -1409,7 +1676,8 @@ export class FlowChatStore {
               content: (item as any).content || '',
               isStreaming: false,
               isCollapsed: (item as any).isCollapsed || false,
-              timestamp: item.timestamp
+              timestamp: item.timestamp,
+              status: item.status,
             }));
           
           return {
@@ -1417,11 +1685,22 @@ export class FlowChatStore {
             turnId,
             roundIndex,
             timestamp: round.startTime,
+            renderHints: round.renderHints,
             textItems,
             toolItems,
             thinkingItems,
             startTime: round.startTime,
             endTime: round.endTime || Date.now(),
+            durationMs: round.durationMs,
+            providerId: round.providerId,
+            modelId: round.modelId,
+            modelAlias: round.modelAlias,
+            firstChunkMs: round.firstChunkMs,
+            firstVisibleOutputMs: round.firstVisibleOutputMs,
+            streamDurationMs: round.streamDurationMs,
+            attemptCount: round.attemptCount,
+            failureCategory: round.failureCategory,
+            tokenDetails: round.tokenDetails,
             status: round.status
           };
         }),
@@ -1431,7 +1710,12 @@ export class FlowChatStore {
         status: 'cancelled' as const
       };
 
-      await sessionAPI.saveSessionTurn(turnData, workspacePath);
+      await sessionAPI.saveSessionTurn(
+        turnData,
+        workspacePath,
+        session.remoteConnectionId,
+        session.remoteSshHost
+      );
     } catch (error) {
       log.error('Failed to save cancelled dialog turn', { sessionId, turnId, error });
     }
@@ -1442,11 +1726,15 @@ export class FlowChatStore {
    * Initialize by loading persisted session metadata from disk
    * Clears sessions from other workspaces, then loads sessions for the target workspace.
    */
-  public async initializeFromDisk(workspacePath: string): Promise<void> {
+  public async initializeFromDisk(
+    workspacePath: string,
+    remoteConnectionId?: string,
+    remoteSshHost?: string
+  ): Promise<void> {
     try {
       const { sessionAPI } = await import('@/infrastructure/api');
-      const sessions = await sessionAPI.listSessions(workspacePath);
-      
+      const sessions = await sessionAPI.listSessions(workspacePath, remoteConnectionId, remoteSshHost);
+
       const { stateMachineManager } = await import('../state-machine');
       sessions.forEach(metadata => {
         stateMachineManager.getOrCreate(metadata.sessionId);
@@ -1455,6 +1743,9 @@ export class FlowChatStore {
       const processSession = async (metadata: any) => {
         const existingSession = this.state.sessions.get(metadata.sessionId);
         if (existingSession) {
+          return;
+        }
+        if (isLegacyPersistedBtwSession(metadata)) {
           return;
         }
         
@@ -1487,15 +1778,16 @@ export class FlowChatStore {
         
         const relationship = deriveSessionRelationshipFromMetadata(metadata);
         const lastFinishedAt = deriveLastFinishedAtFromMetadata(metadata);
+        const titleState = deriveSessionTitleStateFromMetadata(metadata);
+        const hasDynamicDefaultTitle = titleState.titleSource === 'i18n';
 
         this.setState(prev => {
           if (prev.sessions.has(metadata.sessionId)) {
             return prev;
           }
           
-          const VALID_AGENT_TYPES = ['agentic', 'debug', 'Plan', 'Cowork', 'Claw'];
           const rawAgentType = metadata.agentType || 'agentic';
-          const validatedAgentType = VALID_AGENT_TYPES.includes(rawAgentType) ? rawAgentType : 'agentic';
+          const validatedAgentType = isValidPersistedAgentType(rawAgentType) ? rawAgentType : 'agentic';
           
           if (rawAgentType !== validatedAgentType) {
             log.warn('Invalid agentType, falling back to agentic', { sessionId: metadata.sessionId, rawAgentType, validatedAgentType });
@@ -1503,8 +1795,11 @@ export class FlowChatStore {
           
           const session: Session = {
             sessionId: metadata.sessionId,
-            title: metadata.sessionName,
-            titleStatus: 'generated',
+            title: titleState.title,
+            titleSource: titleState.titleSource,
+            titleI18nKey: titleState.titleI18nKey,
+            titleI18nParams: titleState.titleI18nParams,
+            titleStatus: hasDynamicDefaultTitle ? undefined : 'generated',
             dialogTurns: [],
             status: 'idle',
             config: {
@@ -1520,10 +1815,17 @@ export class FlowChatStore {
             maxContextTokens,
             mode: validatedAgentType,
             workspacePath: (metadata as any).workspacePath || workspacePath,
+            remoteConnectionId: metadata.remoteConnectionId || remoteConnectionId,
+            remoteSshHost:
+              metadata.remoteSshHost || metadata.workspaceHostname || remoteSshHost,
             parentSessionId: relationship.parentSessionId,
             sessionKind: relationship.sessionKind,
             btwThreads: [],
             btwOrigin: relationship.btwOrigin,
+            hasUnreadCompletion: metadata.unreadCompletion,
+            needsUserAttention: metadata.needsUserAttention,
+            deepReviewRunManifest: metadata.deepReviewRunManifest,
+            isTransient: false,
           };
           
           const newSessions = new Map(prev.sessions);
@@ -1548,24 +1850,33 @@ export class FlowChatStore {
   public async loadSessionHistory(
     sessionId: string,
     workspacePath: string,
-    limit?: number
+    limit?: number,
+    remoteConnectionId?: string,
+    remoteSshHost?: string
   ): Promise<void> {
     try {
       const { stateMachineManager } = await import('../state-machine');
       stateMachineManager.getOrCreate(sessionId);
       
-      try {
-        const { agentAPI } = await import('@/infrastructure/api');
-        await agentAPI.restoreSession(sessionId, workspacePath);
-      } catch (error) {
-        log.warn('Backend session restore failed (may be new session)', { sessionId, error });
+      const existingSession = this.state.sessions.get(sessionId);
+      const isAcpSession = existingSession?.mode?.startsWith('acp:') ||
+        existingSession?.config.agentType?.startsWith('acp:');
+      if (!isAcpSession) {
+        try {
+          const { agentAPI } = await import('@/infrastructure/api');
+          await agentAPI.restoreSession(sessionId, workspacePath, remoteConnectionId, remoteSshHost);
+        } catch (error) {
+          log.warn('Backend session restore failed (may be new session)', { sessionId, error });
+        }
       }
       
       const { sessionAPI } = await import('@/infrastructure/api');
       const turns = await sessionAPI.loadSessionTurns(
         sessionId,
         workspacePath,
-        limit
+        limit,
+        remoteConnectionId,
+        remoteSshHost
       );
       
       const dialogTurns = this.convertToDialogTurns(turns);
@@ -1588,6 +1899,10 @@ export class FlowChatStore {
           sessions: newSessions,
         };
       });
+      
+      // Reset state machine to IDLE after loading history
+      // This handles the case where restoreSession triggered events that left the state machine in PROCESSING
+      stateMachineManager.reset(sessionId);
     } catch (error) {
       log.error('Failed to load session history', { sessionId, error });
       throw error;
@@ -1628,88 +1943,124 @@ export class FlowChatStore {
         : undefined;
 
       const displayContent =
-        metadata?.original_text || this.cleanRemoteUserInput(turn.userMessage.content);
-
-
+        metadata?.localCommandKind === 'usage_report'
+          ? turn.userMessage.content
+          : metadata?.original_text || this.cleanRemoteUserInput(turn.userMessage.content);
+      const normalizedTurnStatus = normalizeRecoveredTurnStatus(turn.status, { error: undefined });
 
       return {
       id: turn.turnId,
       sessionId: turn.sessionId,
+      kind: turn.kind || 'user_dialog',
       userMessage: {
         id: turn.userMessage.id,
         type: 'user' as const,
         content: displayContent,
         timestamp: turn.userMessage.timestamp,
         hasImages,
+        metadata,
         images,
       },
-      modelRounds: turn.modelRounds.map((round: any) => ({
-        id: round.id,
-        turnId: round.turnId,
-        items: [
-          ...round.textItems.map((text: any) => ({
-            id: text.id,
-            type: 'text' as const,
-            content: text.content,
-            isStreaming: text.isStreaming,
-            isMarkdown: text.isMarkdown !== undefined ? text.isMarkdown : true,
-            timestamp: text.timestamp,
-            status: text.status || 'completed' as const,
-            orderIndex: text.orderIndex,
-            isSubagentItem: text.isSubagentItem,
-            parentTaskToolId: text.parentTaskToolId,
-            subagentSessionId: text.subagentSessionId,
-          })),
-          ...round.toolItems.map((tool: any) => {
-            let inferredStatus = 'completed';
-            if (tool.status) {
-              inferredStatus = tool.status;
-            } else if (tool.toolResult) {
-              inferredStatus = tool.toolResult.success === false ? 'error' : 'completed';
-            }
-            
-            return {
+      modelRounds: turn.modelRounds.map((round: any) => {
+        const normalizedRoundStatus = normalizeRecoveredRoundStatus(round.status, normalizedTurnStatus);
+
+        return {
+          id: round.id,
+          turnId: round.turnId,
+          index: round.roundIndex ?? 0,
+          renderHints: round.renderHints,
+          items: [
+            ...round.textItems.map((text: any) => ({
+              id: text.id,
+              type: 'text' as const,
+              content: text.content,
+              isStreaming: false,
+              isMarkdown: text.isMarkdown !== undefined ? text.isMarkdown : true,
+              timestamp: text.timestamp,
+              status: normalizeRecoveredTextStatus(text.status, normalizedTurnStatus),
+              orderIndex: text.orderIndex,
+              isSubagentItem: text.isSubagentItem,
+              parentTaskToolId: text.parentTaskToolId,
+              subagentSessionId: text.subagentSessionId,
+            })),
+            ...round.toolItems.map((tool: any) => ({
               id: tool.id,
               type: 'tool' as const,
               toolName: tool.toolName,
+              interruptionReason:
+                tool.interruptionReason === 'app_restart'
+                  ? 'app_restart'
+                  : isTransientToolStatus(tool.status)
+                    ? 'app_restart'
+                    : undefined,
               toolCall: tool.toolCall,
               toolResult: tool.toolResult,
               aiIntent: tool.aiIntent,
+              requiresConfirmation: tool.requiresConfirmation,
+              userConfirmed: tool.userConfirmed,
+              acpPermission: tool.acpPermission,
               startTime: tool.startTime,
               endTime: tool.endTime,
+              durationMs: tool.durationMs,
+              queueWaitMs: tool.queueWaitMs,
+              preflightMs: tool.preflightMs,
+              confirmationWaitMs: tool.confirmationWaitMs,
+              executionMs: tool.executionMs,
               timestamp: tool.startTime,
-              status: inferredStatus,
+              status: normalizeRecoveredToolStatus(
+                tool.status,
+                normalizedTurnStatus,
+                tool.toolResult,
+                { preservePendingConfirmation: true },
+              ),
               orderIndex: tool.orderIndex,
               isSubagentItem: tool.isSubagentItem,
               parentTaskToolId: tool.parentTaskToolId,
               subagentSessionId: tool.subagentSessionId,
-            };
+              subagentModelId: tool.subagentModelId,
+              subagentModelAlias: tool.subagentModelAlias,
+            })),
+            ...(round.thinkingItems || []).map((thinking: any) => ({
+              id: thinking.id,
+              type: 'thinking' as const,
+              content: thinking.content,
+              isStreaming: false,
+              isCollapsed: thinking.isCollapsed ?? true,
+              timestamp: thinking.timestamp,
+              status: normalizeRecoveredThinkingStatus(thinking.status, normalizedTurnStatus),
+              orderIndex: thinking.orderIndex,
+              isSubagentItem: thinking.isSubagentItem,
+              parentTaskToolId: thinking.parentTaskToolId,
+              subagentSessionId: thinking.subagentSessionId,
+            })),
+          ].sort((a: any, b: any) => {
+            const aIndex = a.orderIndex !== undefined ? a.orderIndex : a.timestamp || 0;
+            const bIndex = b.orderIndex !== undefined ? b.orderIndex : b.timestamp || 0;
+            
+            return aIndex - bIndex;
           }),
-          ...(round.thinkingItems || []).map((thinking: any) => ({
-            id: thinking.id,
-            type: 'thinking' as const,
-            content: thinking.content,
-            isStreaming: thinking.isStreaming || false,
-            isCollapsed: thinking.isCollapsed || true,
-            timestamp: thinking.timestamp,
-            status: thinking.status || 'completed' as const,
-            orderIndex: thinking.orderIndex,
-            isSubagentItem: thinking.isSubagentItem,
-            parentTaskToolId: thinking.parentTaskToolId,
-            subagentSessionId: thinking.subagentSessionId,
-          })),
-        ].sort((a: any, b: any) => {
-          const aIndex = a.orderIndex !== undefined ? a.orderIndex : a.timestamp || 0;
-          const bIndex = b.orderIndex !== undefined ? b.orderIndex : b.timestamp || 0;
-          
-          return aIndex - bIndex;
-        }),
-        status: round.status,
-        timestamp: round.timestamp,
-      })),
+          isStreaming: false,
+          isComplete: normalizedRoundStatus !== 'pending' && normalizedRoundStatus !== 'streaming',
+          status: normalizedRoundStatus,
+          startTime: round.startTime ?? round.timestamp,
+          endTime: round.endTime,
+          durationMs: round.durationMs,
+          providerId: round.providerId,
+          modelId: round.modelId,
+          modelAlias: round.modelAlias,
+          firstChunkMs: round.firstChunkMs,
+          firstVisibleOutputMs: round.firstVisibleOutputMs,
+          streamDurationMs: round.streamDurationMs,
+          attemptCount: round.attemptCount,
+          failureCategory: round.failureCategory,
+          tokenDetails: round.tokenDetails,
+          timestamp: round.timestamp,
+        };
+      }),
       timestamp: turn.timestamp,
-      status: turn.status,
+      status: normalizedTurnStatus,
       startTime: turn.startTime,
+      endTime: turn.endTime,
       backendTurnIndex: turn.turnIndex,
     };
     });
@@ -1773,7 +2124,6 @@ export class FlowChatStore {
       const updatedSession = {
         ...session,
         todos: updatedTodos,
-        lastActiveAt: Date.now()
       };
 
       const newSessions = new Map(prev.sessions);
@@ -1818,7 +2168,6 @@ export class FlowChatStore {
       const updatedSession = {
         ...session,
         todos: [...todos],
-        lastActiveAt: Date.now()
       };
 
       const newSessions = new Map(prev.sessions);

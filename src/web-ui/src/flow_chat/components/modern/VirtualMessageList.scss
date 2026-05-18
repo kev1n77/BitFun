@@ -62,11 +62,9 @@
   }
   
   .message-list-footer {
-    /* Increase height to avoid ChatInput overlap:
-       ChatInput (56px) + bottom gap (16px) + expand button (22px) + gap (8px)
-       + extra space (18px) + header buffer (20px). */
-    height: 140px;
-    min-height: 140px; /* Ensure footer minimum height. */
+    /* Inline height from VirtualMessageList (measured drop-zone + bottom inset + tail clearance). */
+    height: 120px;
+    min-height: 72px;
     overflow-anchor: none;
   }
 }

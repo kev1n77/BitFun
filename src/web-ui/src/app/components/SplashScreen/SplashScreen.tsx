@@ -1,7 +1,7 @@
 /**
  * SplashScreen — full-screen loading overlay shown on app start.
  *
- * Idle:    logo breathes softly; loading dots bounce.
+ * Idle:    logo larger, soft fade in/out.
  * Exiting: logo scales up and fades; backdrop dissolves.
  */
 
@@ -30,7 +30,6 @@ const SplashScreen: React.FC<SplashScreenProps> = ({ isExiting, onExited }) => {
       className={`splash-screen${isExiting ? ' splash-screen--exiting' : ''}`}
       aria-hidden="true"
     >
-      {/* Center: logo + loading dots */}
       <div className="splash-screen__center">
         <div className="splash-screen__logo-wrap">
           <img
@@ -39,12 +38,6 @@ const SplashScreen: React.FC<SplashScreenProps> = ({ isExiting, onExited }) => {
             className="splash-screen__logo"
             draggable={false}
           />
-        </div>
-
-        <div className="splash-screen__dots" aria-hidden="true">
-          <span className="splash-screen__dot" />
-          <span className="splash-screen__dot" />
-          <span className="splash-screen__dot" />
         </div>
       </div>
     </div>

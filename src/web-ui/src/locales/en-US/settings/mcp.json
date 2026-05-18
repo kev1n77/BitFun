@@ -33,6 +33,25 @@
     "urlPlaceholder": "http://localhost:3000",
     "enabled": "Enable this server",
     "autoStart": "Auto start on application launch",
+    "transport": "Transport",
+    "statusDetail": "Status Detail",
+    "remoteUrl": "Remote URL",
+    "remoteAuth": "Authentication",
+    "remoteAuthConfigured": "configured",
+    "remoteAuthConfiguredWithSource": "configured via {{source}}",
+    "remoteAuthMissing": "not configured",
+    "remoteOAuthReady": "OAuth configured, authorization required",
+    "remoteAuthMethod": "Auth Method",
+    "remoteAuthMethodOAuthXaa": "OAuth configured, XAA reserved",
+    "remoteAuthMethodOAuth": "OAuth",
+    "remoteAuthMethodXaa": "XAA",
+    "remoteOAuthIdle": "Not started yet",
+    "remoteOAuthAwaitingBrowser": "Waiting to open browser",
+    "remoteOAuthAwaitingCallback": "Waiting for provider callback",
+    "remoteOAuthExchangingToken": "Exchanging authorization code",
+    "remoteOAuthAuthorized": "Authorized",
+    "remoteOAuthFailed": "Failed",
+    "remoteOAuthCancelled": "Cancelled",
     "runtime": {
       "source": "Source",
       "path": "Resolved Path",
@@ -40,11 +59,26 @@
       "unavailable": "command unavailable",
       "managed": "managed",
       "system": "system",
-      "unknown": "unknown"
+      "unknown": "unknown",
+      "unsupportedReason": "Unavailable Reason",
+      "unsupportedRemoteSse": "Remote MCP SSE transport is not yet supported"
+    },
+    "authSource": {
+      "headers": "headers",
+      "env": "env",
+      "oauth": "OAuth"
     }
   },
   "status": {
+    "uninitialized": "Uninitialized",
+    "starting": "Starting",
     "connected": "Connected",
+    "healthy": "Healthy",
+    "needsAuth": "Needs Auth",
+    "reconnecting": "Reconnecting",
+    "failed": "Failed",
+    "stopping": "Stopping",
+    "stopped": "Stopped",
     "disconnected": "Disconnected",
     "connecting": "Connecting",
     "error": "Error"
@@ -66,7 +100,13 @@
     "cancelAdd": "Cancel Add",
     "close": "Close",
     "backToList": "Back to List",
-    "jsonConfig": "JSON Config"
+    "jsonConfig": "JSON Config",
+    "remoteAuth": "Remote Auth",
+    "startRemoteOAuth": "Connect with OAuth",
+    "restartRemoteOAuth": "Restart OAuth",
+    "reconnectRemoteOAuth": "Reconnect with OAuth",
+    "cancelRemoteOAuth": "Cancel OAuth",
+    "saveRemoteAuth": "Save and Reconnect"
   },
   "search": {
     "placeholder": "Search servers..."
@@ -84,6 +124,16 @@
     "status": "Status",
     "yes": "Yes",
     "no": "No"
+  },
+  "modal": {
+    "remoteAuthTitle": "Remote auth: {{serverName}}",
+    "remoteOAuthHint": "Use OAuth to connect this remote MCP server. BitFun will listen on a local callback URL and reconnect the server after authorization.",
+    "remoteOAuthCurrentStatus": "OAuth state: {{status}}",
+    "remoteOAuthRedirectUri": "Callback URL: {{redirectUri}}",
+    "remoteOAuthStatus": "OAuth status: {{status}} - {{message}}",
+    "remoteAuthHint": "Paste a Bearer token or a full Authorization header value. Saving will restart the remote MCP server.",
+    "remoteAuthServerUrl": "Server URL: {{url}}",
+    "remoteAuthPlaceholder": "Bearer eyJ... or eyJ..."
   },
   "jsonEditor": {
     "title": "MCP JSON Config",
@@ -114,7 +164,8 @@
       "selectToView": "Select a resource to view its content"
     },
     "errors": {
-      "loadContentFailed": "Failed to load resource content"
+      "loadContentFailed": "Failed to load resource content",
+      "binaryContent": "Binary resource content cannot be previewed here"
     },
     "mockContent": "# {{name}}\n\nThis is the content of {{uri}}\n\nLorem ipsum dolor sit amet..."
   },
@@ -140,7 +191,12 @@
     "commandRequired": "Local process type requires a start command",
     "urlRequired": "Remote service type requires a server URL",
     "validationFailed": "Validation Failed",
-    "commandUnavailable": "Server \"{{serverId}}\" command is unavailable. Check runtime installation or command configuration."
+    "commandUnavailable": "Server \"{{serverId}}\" command is unavailable. Check runtime installation or command configuration.",
+    "remoteOAuthAuthorized": "OAuth connected for \"{{serverId}}\".",
+    "remoteOAuthFailed": "OAuth failed for \"{{serverId}}\".",
+    "remoteAuthRequired": "Please provide a Bearer token or full Authorization header value.",
+    "remoteAuthUpdated": "Updated remote auth for \"{{serverId}}\".",
+    "remoteOAuthStarted": "Opened OAuth sign-in for \"{{serverId}}\"."
   },
   "errors": {
     "unknownError": "Unknown error",
@@ -208,6 +264,7 @@
     "saveFailed": "Save Failed",
     "deleteSuccess": "Delete Success",
     "deleteFailed": "Delete Failed",
+    "operationFailed": "Operation Failed",
     "partialStartFailed": "Partial Server Start Failed",
     "suggestionPrefix": "Suggestions:"
   }

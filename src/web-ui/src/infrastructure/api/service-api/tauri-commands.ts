@@ -79,13 +79,6 @@ export interface SendMessageRequest {
   context?: any;
 }
 
-export interface FixMermaidCodeRequest {
-  sourceCode: string;
-  errorMessage: string;
-}
-
-
-
 export interface GetToolInfoRequest {
   toolName: string;
 }
@@ -147,6 +140,41 @@ export interface SearchFilesRequest {
   rootPath: string;
   pattern: string;
   searchContent?: boolean;
+  searchId?: string;
+  caseSensitive?: boolean;
+  useRegex?: boolean;
+  wholeWord?: boolean;
+  maxResults?: number;
+  includeDirectories?: boolean;
+}
+
+export interface SearchFilenamesRequest {
+  rootPath: string;
+  pattern: string;
+  searchId?: string;
+  caseSensitive?: boolean;
+  useRegex?: boolean;
+  wholeWord?: boolean;
+  maxResults?: number;
+  includeDirectories?: boolean;
+}
+
+export interface SearchFileContentsRequest {
+  rootPath: string;
+  pattern: string;
+  searchId?: string;
+  caseSensitive?: boolean;
+  useRegex?: boolean;
+  wholeWord?: boolean;
+  maxResults?: number;
+}
+
+export interface CancelSearchRequest {
+  searchId: string;
+}
+
+export interface SearchRepoIndexRequest {
+  rootPath: string;
 }
 
 export type SearchMatchType = 'fileName' | 'content';
@@ -158,4 +186,176 @@ export interface FileSearchResult {
   matchType: SearchMatchType;
   lineNumber?: number;
   matchedContent?: string;
+  previewBefore?: string;
+  previewInside?: string;
+  previewAfter?: string;
+}
+
+export interface FileSearchResponse {
+  results: FileSearchResult[];
+  limit: number;
+  truncated: boolean;
+  searchMetadata?: SearchMetadata;
+}
+
+export interface FileSearchResultGroup {
+  path: string;
+  name: string;
+  isDirectory: boolean;
+  fileNameMatch?: FileSearchResult;
+  contentMatches: FileSearchResult[];
+}
+
+export type FileSearchStreamKind = 'filenames' | 'content';
+
+export interface FileSearchStreamStartResponse {
+  searchId: string;
+  limit: number;
+}
+
+export interface FileSearchProgressEvent {
+  searchId: string;
+  searchKind: FileSearchStreamKind;
+  results: FileSearchResultGroup[];
+}
+
+export interface FileSearchCompleteEvent {
+  searchId: string;
+  searchKind: FileSearchStreamKind;
+  limit: number;
+  truncated: boolean;
+  totalResults: number;
+  searchMetadata?: SearchMetadata;
+}
+
+export interface FileSearchErrorEvent {
+  searchId: string;
+  searchKind: FileSearchStreamKind;
+  error: string;
+}
+
+export type SearchBackendKind =
+  | 'indexed'
+  | 'indexed_workspace'
+  | 'text_fallback'
+  | 'scan_fallback';
+
+export interface SearchMetadata {
+  backend: SearchBackendKind | string;
+  repoPhase: WorkspaceSearchRepoPhase | string;
+  rebuildRecommended: boolean;
+  candidateDocs: number;
+  matchedLines: number;
+  matchedOccurrences: number;
+}
+
+export type WorkspaceSearchRepoPhase =
+  | 'preparing'
+  | 'needs_index'
+  | 'building'
+  | 'ready'
+  | 'tracking_changes'
+  | 'refreshing'
+  | 'limited';
+
+export type WorkspaceSearchTaskKind =
+  | 'build'
+  | 'rebuild'
+  | 'refresh';
+
+export type WorkspaceSearchTaskState =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export type WorkspaceSearchTaskPhase =
+  | 'discovering'
+  | 'processing'
+  | 'persisting'
+  | 'finalizing'
+  | 'refreshing';
+
+export interface WorkspaceSearchDirtyFiles {
+  modified: number;
+  deleted: number;
+  new: number;
+}
+
+export interface WorkspaceSearchRepoStatus {
+  repoId: string;
+  repoPath: string;
+  storageRoot: string;
+  baseSnapshotRoot: string;
+  workspaceOverlayRoot: string;
+  phase: WorkspaceSearchRepoPhase;
+  snapshotKey?: string | null;
+  lastProbeUnixSecs?: number | null;
+  lastRebuildUnixSecs?: number | null;
+  dirtyFiles: WorkspaceSearchDirtyFiles;
+  rebuildRecommended: boolean;
+  activeTaskId?: string | null;
+  probeHealthy: boolean;
+  lastError?: string | null;
+  overlay?: WorkspaceSearchOverlayStatus | null;
+}
+
+export interface WorkspaceSearchOverlayStatus {
+  committedSeqNo: number;
+  lastSeqNo: number;
+  uncommittedOps: number;
+  pendingDocs: number;
+  activeSegments: number;
+  activeDeleteSegments: number;
+  mergeRequested: boolean;
+  mergeRunning: boolean;
+  mergeAttempts: number;
+  mergeCompleted: number;
+  mergeFailed: number;
+  lastMergeError?: string | null;
+}
+
+export interface WorkspaceSearchTaskStatus {
+  taskId: string;
+  workspaceId: string;
+  kind: WorkspaceSearchTaskKind;
+  state: WorkspaceSearchTaskState;
+  phase?: WorkspaceSearchTaskPhase | null;
+  message: string;
+  processed: number;
+  total?: number | null;
+  startedUnixSecs: number;
+  updatedUnixSecs: number;
+  finishedUnixSecs?: number | null;
+  cancellable: boolean;
+  error?: string | null;
+}
+
+export interface WorkspaceSearchIndexStatus {
+  repoStatus: WorkspaceSearchRepoStatus;
+  activeTask?: WorkspaceSearchTaskStatus | null;
+}
+
+export interface WorkspaceSearchIndexTaskHandle {
+  task: WorkspaceSearchTaskStatus;
+  repoStatus: WorkspaceSearchRepoStatus;
+}
+
+export interface ExplorerNodeDto {
+  path: string;
+  name: string;
+  isDirectory: boolean;
+  size?: number | null;
+  extension?: string | null;
+  lastModified?: number | null;
+  children?: ExplorerNodeDto[];
+}
+
+export interface ExplorerChildrenPageDto {
+  children: ExplorerNodeDto[];
+  total: number;
+  hasMore: boolean;
+  offset: number;
+  limit: number;
 }

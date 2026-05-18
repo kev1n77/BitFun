@@ -71,7 +71,7 @@
   padding: tokens.$size-gap-2 tokens.$size-gap-4;
   border: 1px solid tokens.$border-base;
   border-radius: tokens.$size-radius-base;
-  font-size: tokens.$font-size-sm;
+  font-size: var(--font-size-sm);
   font-weight: tokens.$font-weight-medium;
   cursor: pointer;
   transition: all tokens.$motion-base tokens.$easing-standard;

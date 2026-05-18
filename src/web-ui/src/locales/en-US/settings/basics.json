@@ -1,22 +1,20 @@
 {
   "title": "Basics",
-  "subtitle": "Interface language, theme, logging, terminal, and login startup",
+  "subtitle": "Logging, terminal, notifications, and launch at login",
   "appearance": {
     "title": "Appearance",
     "hint": "Interface language and visual theme",
     "language": "Language",
     "themes": "Themes",
-    "importTheme": "Import Theme",
-    "importing": "Importing...",
     "builtIn": "Built-in",
     "custom": "Custom",
     "export": "Export",
     "delete": "Delete",
     "confirmDelete": "Are you sure you want to delete theme \"{{name}}\"?",
-    "importSuccess": "Theme imported successfully!",
-    "importFailed": "Failed to import theme. Please check the file format.",
     "languageRowHint": "Choose one language pack as the active UI language.",
-    "themeRowHint": "Pick an installed theme or manage custom themes.",
+    "themeRowHint": "Choose the interface color theme.",
+    "systemTheme": "Match system",
+    "systemThemeDescription": "Use light or dark theme based on your OS appearance. Updates when the system switches.",
     "presets": {
       "bitfun-dark": {
         "name": "Dark",
@@ -45,7 +43,48 @@
       "bitfun-slate": {
         "name": "Slate",
         "description": "Slate gray geometric theme - Deep immersion, high contrast grayscale aesthetics"
+      },
+      "bitfun-tokyo-night": {
+        "name": "Tokyo Night",
+        "description": "Popular Tokyo Night palette - Indigo night, blue and violet highlights"
       }
+    },
+    "fontSize": {
+      "title": "Font Size",
+      "hint": "Adjust font size for the UI and chat area (editor font is configured in the editor settings).",
+      "uiSizeLabel": "UI Font",
+      "uiSizeHint": "Controls font size across navigation, panels, settings, and all other UI elements.",
+      "levels": {
+        "compact": "Compact",
+        "small": "Small",
+        "default": "Default",
+        "medium": "Medium",
+        "large": "Large",
+        "custom": "Custom"
+      },
+      "customPxLabel": "Custom size (12–20 px)",
+      "customPxPlaceholder": "14",
+      "customPxOutOfRange": "Please enter an integer between 12 and 20",
+      "resetButton": "Reset to Default",
+      "previewText": "BitFun is an AI-driven programming environment. The quick brown fox jumps over the lazy dog.",
+      "flowChatLabel": "Chat area",
+      "flowChatHint": "When off, chat uses UI +1 px and tracks UI presets. When on, pick a size (12–20 px) from the list below.",
+      "flowChatCustomToggle": "Custom chat font size",
+      "flowChatPxOption": "{{n}} px"
+    }
+  },
+  "autoUpdate": {
+    "sections": {
+      "title": "Updates",
+      "hint": "Check for new versions after startup"
+    },
+    "toggleLabel": "Automatic update check",
+    "toggleDescription": "When enabled, BitFun may prompt you shortly after launch if a newer version is available. Manual check from About is always available.",
+    "messages": {
+      "loading": "Loading...",
+      "loadFailed": "Failed to read update settings",
+      "saveFailed": "Failed to save update settings",
+      "saved": "Update preference saved"
     }
   },
   "launchAtLogin": {
@@ -71,6 +110,10 @@
     "level": {
       "description": "Controls log verbosity in real time. Changes apply immediately."
     },
+    "sensitiveDiagnostics": {
+      "label": "Include sensitive diagnostic data",
+      "description": "When enabled, local logs may include prompts, model request and response payloads, tool arguments, file paths, and webview event payloads for troubleshooting. BitFun does not upload these log files automatically."
+    },
     "path": {
       "description": "Directory where log files for this run are written."
     },
@@ -92,6 +135,7 @@
       "loadFailed": "Failed to load logging configuration",
       "saveFailed": "Failed to save logging level",
       "levelUpdated": "Logging level updated",
+      "sensitiveDiagnosticsUpdated": "Sensitive diagnostic logging preference updated",
       "refreshed": "Runtime status refreshed",
       "openedFolder": "Log folder opened",
       "openFailed": "Failed to open log folder",
@@ -129,6 +173,41 @@
       "updated": "Default terminal updated",
       "saveFailed": "Failed to save configuration",
       "refreshed": "Available terminals list refreshed"
+    }
+  },
+  "windowBehavior": {
+    "sections": {
+      "title": "Window Behavior",
+      "hint": "What happens when the close button is clicked"
+    },
+    "closeButtonLabel": "Close button action",
+    "closeButtonDescription": "Default action when the window close button (×) is clicked.",
+    "options": {
+      "quit": "Quit",
+      "minimizeToTray": "Minimize to System Tray",
+      "ask": "Ask every time"
+    },
+    "messages": {
+      "loading": "Loading...",
+      "loadFailed": "Failed to read window behavior settings",
+      "saveFailed": "Failed to save window behavior settings",
+      "saved": "Window behavior settings saved"
+    }
+  },
+  "notifications": {
+    "title": "Notifications",
+    "hint": "Toast notification preferences",
+    "dialogCompletion": {
+      "label": "Task completion notification",
+      "description": "Show a toast notification when an AI task completes while the window is not in focus"
+    },
+    "startupTips": {
+      "label": "Show tips on startup",
+      "description": "Display a usage tip card each time the app starts to help you discover features"
+    },
+    "messages": {
+      "saveSuccess": "Notification settings saved",
+      "saveFailed": "Failed to save notification settings"
     }
   }
 }

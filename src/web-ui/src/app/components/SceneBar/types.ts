@@ -4,7 +4,7 @@
 
 import type { LucideIcon } from 'lucide-react';
 
-/** Scene tab identifier — max 3 open at a time */
+/** Scene tab identifier — concurrent open count is capped by MAX_OPEN_SCENES (see scene registry) */
 export type SceneTabId =
   | 'welcome'
   | 'session'
@@ -17,9 +17,10 @@ export type SceneTabId =
   | 'skills'
   | 'miniapps'
   | 'browser'
-  | 'mermaid'
-  | 'my-agent'
+  | 'assistant'
+  | 'insights'
   | 'shell'
+  | 'panel-view'
   | `miniapp:${string}`;
 
 /** Static definition (from registry) for a scene tab type */

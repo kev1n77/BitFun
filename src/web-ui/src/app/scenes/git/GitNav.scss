@@ -22,7 +22,7 @@
   }
 
   &__title {
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     font-weight: 600;
     color: var(--color-text-primary);
     white-space: nowrap;
@@ -55,7 +55,7 @@
     display: flex;
     align-items: center;
     gap: $size-gap-2;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     color: var(--color-text-secondary);
     margin-bottom: $size-gap-1;
   }
@@ -95,7 +95,7 @@
     color: var(--color-text-secondary);
     cursor: pointer;
     text-align: left;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     font-weight: 400;
     width: 100%;
     position: relative;
@@ -113,7 +113,7 @@
 
     &.is-active {
       color: var(--color-text-primary);
-      background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+      background: var(--element-bg-soft);
       font-weight: 500;
 
       &::before {

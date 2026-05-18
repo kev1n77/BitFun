@@ -3,7 +3,7 @@
  */
 
 import React, { useMemo, useState, useCallback } from 'react';
-import { ChevronDown, ChevronUp, GitCompare } from 'lucide-react';
+import { GitCompare } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { CubeLoading } from '../../component-library';
 import type { ToolCardProps } from '../types/flow-chat';
@@ -115,12 +115,7 @@ export const GetFileDiffDisplay: React.FC<ToolCardProps> = React.memo(({
     applyExpandedState(isExpanded, !isExpanded, setIsExpanded);
   }, [applyExpandedState, isExpanded]);
 
-  const handleCardClick = useCallback((e: React.MouseEvent) => {
-    const target = e.target as HTMLElement;
-    if (target.closest('.expand-toggle-btn')) {
-      return;
-    }
-    
+  const handleCardClick = useCallback(() => {
     if (hasDiffContent && status === 'completed') {
       toggleExpanded();
     }
@@ -169,18 +164,6 @@ export const GetFileDiffDisplay: React.FC<ToolCardProps> = React.memo(({
                 <span className="deletions">-{stats.deletions}</span>
               )}
             </span>
-          )}
-          
-          {hasDiffContent && status === 'completed' && (
-            <button
-              className="expand-toggle-btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleExpanded();
-              }}
-            >
-              {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-            </button>
           )}
         </>
       }
@@ -255,6 +238,7 @@ export const GetFileDiffDisplay: React.FC<ToolCardProps> = React.memo(({
         expandedContent={renderExpandedContent()}
         errorContent={isFailed ? renderErrorContent() : null}
         isFailed={isFailed}
+        headerExpandAffordance={Boolean(hasDiffContent && status === 'completed')}
       />
     </div>
   );

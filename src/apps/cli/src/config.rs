@@ -1,6 +1,6 @@
 /// Configuration management module
 ///
-/// CLI uses core's GlobalConfig system directly (same as tauri version)
+/// CLI uses core's GlobalConfig system directly.
 /// Only CLI-specific configuration is kept here (UI, shortcuts, etc.)
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,7 @@ use std::path::PathBuf;
 /// CLI configuration (contains only CLI-specific config)
 /// AI model configuration uses core's GlobalConfig
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CliConfig {
     /// UI configuration
     pub ui: UiConfig,
@@ -22,9 +23,12 @@ pub struct CliConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UiConfig {
     /// Theme (dark, light, auto)
     pub theme: String,
+    /// Theme ID (built-in preset name; custom: filename in themes dir without ".json")
+    pub theme_id: String,
     /// Show tips
     pub show_tips: bool,
     /// Enable animation
@@ -34,6 +38,7 @@ pub struct UiConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BehaviorConfig {
     /// Auto save sessions
     pub auto_save: bool,
@@ -44,6 +49,7 @@ pub struct BehaviorConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct WorkspaceConfig {
     /// Default workspace path
     pub default_path: String,
@@ -52,6 +58,7 @@ pub struct WorkspaceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ShortcutsConfig {
     /// Send message
     pub send_message: String,
@@ -61,34 +68,59 @@ pub struct ShortcutsConfig {
     pub menu: String,
 }
 
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            theme: "dark".to_string(),
+            theme_id: "cursor".to_string(),
+            show_tips: true,
+            animation: true,
+            color_scheme: "default".to_string(),
+        }
+    }
+}
+
+impl Default for BehaviorConfig {
+    fn default() -> Self {
+        Self {
+            auto_save: true,
+            confirm_dangerous: true,
+            default_agent: "agentic".to_string(),
+        }
+    }
+}
+
+impl Default for WorkspaceConfig {
+    fn default() -> Self {
+        Self {
+            default_path: ".".to_string(),
+            exclude_patterns: vec![
+                "node_modules".to_string(),
+                ".git".to_string(),
+                "target".to_string(),
+                "dist".to_string(),
+            ],
+        }
+    }
+}
+
+impl Default for ShortcutsConfig {
+    fn default() -> Self {
+        Self {
+            send_message: "Ctrl+D".to_string(),
+            interrupt: "Ctrl+C".to_string(),
+            menu: "Esc".to_string(),
+        }
+    }
+}
+
 impl Default for CliConfig {
     fn default() -> Self {
         Self {
-            ui: UiConfig {
-                theme: "dark".to_string(),
-                show_tips: true,
-                animation: true,
-                color_scheme: "default".to_string(),
-            },
-            behavior: BehaviorConfig {
-                auto_save: true,
-                confirm_dangerous: true,
-                default_agent: "agentic".to_string(),
-            },
-            workspace: WorkspaceConfig {
-                default_path: ".".to_string(),
-                exclude_patterns: vec![
-                    "node_modules".to_string(),
-                    ".git".to_string(),
-                    "target".to_string(),
-                    "dist".to_string(),
-                ],
-            },
-            shortcuts: ShortcutsConfig {
-                send_message: "Ctrl+D".to_string(),
-                interrupt: "Ctrl+C".to_string(),
-                menu: "Esc".to_string(),
-            },
+            ui: UiConfig::default(),
+            behavior: BehaviorConfig::default(),
+            workspace: WorkspaceConfig::default(),
+            shortcuts: ShortcutsConfig::default(),
         }
     }
 }
@@ -159,6 +191,7 @@ impl CliConfig {
     }
 
     /// Get sessions directory
+    #[allow(dead_code)]
     pub fn sessions_dir() -> Result<PathBuf> {
         let sessions_dir = Self::config_dir()?.join("sessions");
         fs::create_dir_all(&sessions_dir)?;

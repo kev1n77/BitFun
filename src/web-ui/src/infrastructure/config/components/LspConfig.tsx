@@ -27,16 +27,16 @@ const LspConfig: React.FC = () => {
   const [settings, setSettings] = useState<LspSettings>(DEFAULT_LSP_SETTINGS);
   const [hasSettingsChanges, setHasSettingsChanges] = useState(false);
 
-  useEffect(() => { loadSettings(); }, []);
-
-  const loadSettings = () => {
+  function loadSettings() {
     try {
       const saved = localStorage.getItem(LSP_SETTINGS_KEY);
       if (saved) setSettings({ ...DEFAULT_LSP_SETTINGS, ...JSON.parse(saved) });
     } catch (error) {
       log.error('Failed to load settings', error);
     }
-  };
+  }
+
+  useEffect(() => { loadSettings(); }, []);
 
   const saveSettings = () => {
     try {

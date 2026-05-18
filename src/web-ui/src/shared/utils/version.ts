@@ -6,7 +6,7 @@ import { i18nService } from '@/infrastructure/i18n';
  
 const DEFAULT_VERSION_INFO: VersionInfo = {
   name: 'BitFun',
-  version: '0.2.0',
+  version: '0.2.7',
   buildDate: new Date().toISOString(),
   buildTimestamp: Date.now(),
   isDev: import.meta.env.DEV,
@@ -56,7 +56,7 @@ export function formatBuildDate(buildDate: string): string {
       second: '2-digit',
       hour12: false
     });
-  } catch (e) {
+  } catch (_error) {
     return buildDate;
   }
 }

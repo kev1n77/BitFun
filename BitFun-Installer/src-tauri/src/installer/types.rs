@@ -11,15 +11,11 @@ pub struct InstallOptions {
     pub desktop_shortcut: bool,
     /// Add to Start Menu
     pub start_menu: bool,
-    /// Register right-click context menu ("Open with BitFun")
-    pub context_menu: bool,
-    /// Add to system PATH
-    pub add_to_path: bool,
     /// Launch after installation
     pub launch_after_install: bool,
     /// First-launch app language (zh-CN / en-US)
     pub app_language: String,
-    /// First-launch theme preference (BitFun built-in theme id)
+    /// First-launch theme preference (`system` or BitFun built-in theme id)
     pub theme_preference: String,
     /// Optional first-launch model configuration.
     pub model_config: Option<ModelConfig>,
@@ -44,6 +40,49 @@ pub struct ModelConfig {
     pub custom_headers: Option<HashMap<String, String>>,
     #[serde(default)]
     pub custom_headers_mode: Option<String>,
+    /// Optional capability ids (e.g. `image_understanding`) — aligns with main app when set.
+    #[serde(default)]
+    pub capabilities: Option<Vec<String>>,
+    /// Optional model category (e.g. `multimodal`) — aligns with main app when set.
+    #[serde(default)]
+    pub category: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteModelInfo {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+}
+
+impl From<bitfun_ai_adapters::types::RemoteModelInfo> for RemoteModelInfo {
+    fn from(value: bitfun_ai_adapters::types::RemoteModelInfo) -> Self {
+        Self {
+            id: value.id,
+            display_name: value.display_name,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConnectionTestMessageCode {
+    ToolCallsNotDetected,
+    ImageInputCheckFailed,
+}
+
+impl From<bitfun_ai_adapters::types::ConnectionTestMessageCode> for ConnectionTestMessageCode {
+    fn from(value: bitfun_ai_adapters::types::ConnectionTestMessageCode) -> Self {
+        match value {
+            bitfun_ai_adapters::types::ConnectionTestMessageCode::ToolCallsNotDetected => {
+                Self::ToolCallsNotDetected
+            }
+            bitfun_ai_adapters::types::ConnectionTestMessageCode::ImageInputCheckFailed => {
+                Self::ImageInputCheckFailed
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,7 +93,21 @@ pub struct ConnectionTestResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_response: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_code: Option<ConnectionTestMessageCode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error_details: Option<String>,
+}
+
+impl From<bitfun_ai_adapters::types::ConnectionTestResult> for ConnectionTestResult {
+    fn from(value: bitfun_ai_adapters::types::ConnectionTestResult) -> Self {
+        Self {
+            success: value.success,
+            response_time_ms: value.response_time_ms,
+            model_response: value.model_response,
+            message_code: value.message_code.map(Into::into),
+            error_details: value.error_details,
+        }
+    }
 }
 
 /// Progress update sent to the frontend
@@ -89,11 +142,9 @@ impl Default for InstallOptions {
             install_path: String::new(),
             desktop_shortcut: true,
             start_menu: true,
-            context_menu: true,
-            add_to_path: true,
             launch_after_install: true,
             app_language: "zh-CN".to_string(),
-            theme_preference: "bitfun-dark".to_string(),
+            theme_preference: "system".to_string(),
             model_config: None,
         }
     }

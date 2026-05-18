@@ -10,7 +10,7 @@ export type { ContentCanvasProps } from './ContentCanvas';
 export * from './types';
 
 // Store
-export { useCanvasStore } from './stores';
+export { useCanvasStore, CanvasStoreModeContext } from './stores';
 
 // Context
 export * from './context';

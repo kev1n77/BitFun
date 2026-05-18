@@ -8,7 +8,6 @@ use bitfun_core::service::remote_connect::{
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
@@ -54,8 +53,10 @@ async fn ensure_service() -> Result<(), String> {
     }
     drop(guard);
 
-    let mut config = RemoteConnectConfig::default();
-    config.mobile_web_dir = detect_mobile_web_dir();
+    let config = RemoteConnectConfig {
+        mobile_web_dir: detect_mobile_web_dir(),
+        ..RemoteConnectConfig::default()
+    };
     let service =
         RemoteConnectService::new(config).map_err(|e| format!("init remote connect: {e}"))?;
     *holder.write().await = Some(service);
@@ -236,7 +237,7 @@ pub struct LanNetworkInfo {
 fn detect_default_gateway_ip() -> Option<String> {
     #[cfg(target_os = "macos")]
     {
-        let output = Command::new("route")
+        let output = bitfun_core::util::process_manager::create_command("route")
             .args(["-n", "get", "default"])
             .output()
             .ok()?;
@@ -252,7 +253,7 @@ fn detect_default_gateway_ip() -> Option<String> {
 
     #[cfg(target_os = "linux")]
     {
-        let output = Command::new("ip")
+        let output = bitfun_core::util::process_manager::create_command("ip")
             .args(["route", "show", "default"])
             .output()
             .ok()?;
@@ -268,7 +269,10 @@ fn detect_default_gateway_ip() -> Option<String> {
 
     #[cfg(target_os = "windows")]
     {
-        let output = Command::new("route").args(["print", "-4"]).output().ok()?;
+        let output = bitfun_core::util::process_manager::create_command("route")
+            .args(["print", "-4"])
+            .output()
+            .ok()?;
         if !output.status.success() {
             return None;
         }
@@ -478,8 +482,10 @@ pub async fn remote_connect_configure_custom_server(url: String) -> Result<(), S
     let holder = get_service_holder();
     let mut guard = holder.write().await;
     if guard.is_none() {
-        let mut config = RemoteConnectConfig::default();
-        config.custom_server_url = Some(url);
+        let config = RemoteConnectConfig {
+            custom_server_url: Some(url),
+            ..RemoteConnectConfig::default()
+        };
         let service = RemoteConnectService::new(config).map_err(|e| format!("init: {e}"))?;
         *guard = Some(service);
     }
@@ -530,13 +536,23 @@ pub async fn remote_connect_configure_bot(request: ConfigureBotRequest) -> Resul
     };
 
     if guard.is_none() {
-        let mut config = RemoteConnectConfig::default();
-        config.mobile_web_dir = detect_mobile_web_dir();
-        match &bot_config {
-            BotConfig::Feishu { .. } => config.bot_feishu = Some(bot_config),
-            BotConfig::Telegram { .. } => config.bot_telegram = Some(bot_config),
-            BotConfig::Weixin { .. } => config.bot_weixin = Some(bot_config),
-        }
+        let config = match bot_config {
+            BotConfig::Feishu { .. } => RemoteConnectConfig {
+                mobile_web_dir: detect_mobile_web_dir(),
+                bot_feishu: Some(bot_config),
+                ..RemoteConnectConfig::default()
+            },
+            BotConfig::Telegram { .. } => RemoteConnectConfig {
+                mobile_web_dir: detect_mobile_web_dir(),
+                bot_telegram: Some(bot_config),
+                ..RemoteConnectConfig::default()
+            },
+            BotConfig::Weixin { .. } => RemoteConnectConfig {
+                mobile_web_dir: detect_mobile_web_dir(),
+                bot_weixin: Some(bot_config),
+                ..RemoteConnectConfig::default()
+            },
+        };
         let service = RemoteConnectService::new(config).map_err(|e| format!("init: {e}"))?;
         *guard = Some(service);
     } else if let Some(service) = guard.as_mut() {
@@ -572,7 +588,10 @@ pub async fn remote_connect_get_bot_verbose_mode() -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn remote_connect_set_bot_verbose_mode(verbose: bool) -> Result<(), String> {
-    log::info!("remote_connect_set_bot_verbose_mode called with verbose={}", verbose);
+    log::info!(
+        "remote_connect_set_bot_verbose_mode called with verbose={}",
+        verbose
+    );
     let mut data = bot::load_bot_persistence();
     data.verbose_mode = verbose;
     bot::save_bot_persistence(&data);

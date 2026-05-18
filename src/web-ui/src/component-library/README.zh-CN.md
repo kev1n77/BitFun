@@ -1,3 +1,5 @@
+**中文** | [English](README.md)
+
 # BitFun 组件库
 
 ## 简介

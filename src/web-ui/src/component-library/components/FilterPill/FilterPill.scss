@@ -18,7 +18,7 @@
   border: 1px solid transparent;
   border-radius: 14px;
   color: var(--color-text-secondary);
-  font-size: $font-size-xs;
+  font-size: var(--font-size-xs);
   font-weight: $font-weight-medium;
   font-family: $font-family-sans;
   cursor: pointer;
@@ -31,17 +31,17 @@
   }
 
   &--active {
-    background: $git-color-branch-bg;
+    background: var(--git-color-branch-bg, #{$git-color-branch-bg});
     border-color: transparent;
-    color: $git-color-branch;
+    color: var(--git-color-branch, #{$git-color-branch});
 
     .v-filter-pill__count {
-      background: rgba(59, 130, 246, 0.15);
-      color: $git-color-branch;
+      background: color-mix(in srgb, var(--git-color-branch, #{$git-color-branch}) 22%, transparent);
+      color: var(--git-color-branch, #{$git-color-branch});
     }
 
     &:hover:not(:disabled) {
-      background: $git-color-branch-bg-hover;
+      background: var(--git-color-branch-bg-hover, #{$git-color-branch-bg-hover});
     }
   }
 

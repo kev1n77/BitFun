@@ -1,10 +1,11 @@
 import React from 'react';
 
 interface GalleryPageHeaderProps {
-  title: string;
+  title: React.ReactNode;
   subtitle?: React.ReactNode;
   actions?: React.ReactNode;
   extraContent?: React.ReactNode;
+  className?: string;
 }
 
 const GalleryPageHeader: React.FC<GalleryPageHeaderProps> = ({
@@ -12,8 +13,9 @@ const GalleryPageHeader: React.FC<GalleryPageHeaderProps> = ({
   subtitle,
   actions,
   extraContent,
+  className,
 }) => (
-  <div className="gallery-page-header">
+  <div className={['gallery-page-header', className].filter(Boolean).join(' ')}>
     <div className="gallery-page-header__identity">
       <h2 className="gallery-page-header__title">{title}</h2>
       {subtitle ? <div className="gallery-page-header__subtitle">{subtitle}</div> : null}

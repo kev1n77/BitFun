@@ -27,7 +27,7 @@
     justify-content: center;
     gap: 6px;
     padding: tokens.$size-gap-2 tokens.$size-gap-3;
-    font-size: tokens.$font-size-sm;
+    font-size: var(--font-size-sm);
     font-weight: tokens.$font-weight-medium;
     color: var(--color-text-secondary);
     cursor: pointer;
@@ -101,7 +101,7 @@
 
   &--line {
     .bitfun-tabs__nav {
-      border-bottom: 1px solid tokens.$border-base;
+      border-bottom: 1px solid var(--border-base);
     }
 
     .bitfun-tabs__tab {
@@ -134,7 +134,7 @@
       background: linear-gradient(135deg,
         tokens.$element-bg-base 0%,
         tokens.$element-bg-soft 100%);
-      border: 1px solid tokens.$border-base;
+      border: 1px solid var(--border-base);
       border-radius: tokens.$size-radius-base;
       padding: tokens.$size-gap-1;
       backdrop-filter: tokens.$blur-base;

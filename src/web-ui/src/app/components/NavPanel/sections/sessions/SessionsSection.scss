@@ -6,14 +6,19 @@
  */
 
 @use '../../../../../component-library/styles/tokens.scss' as *;
+@use '../../../../../component-library/styles/nav-panel-font-scope.scss' as nav-font;
 
 .bitfun-nav-panel {
   &__inline-list {
     display: flex;
     flex-direction: column;
-    padding: 2px $size-gap-2 $size-gap-1;
-    gap: 1px;
-    margin: 1px $size-gap-2 2px calc(#{$size-gap-2} + 14px);
+    min-width: 0;
+    max-width: 100%;
+    padding: 2px $size-gap-1 2px;
+    gap: 0;
+    // No vertical margin: spacing between assistant blocks comes from 2px top/bottom padding only
+    // (see .bitfun-nav-panel__items--session-blocks gap: 0), aligned with __workspace-item padding.
+    margin: 0 $size-gap-1 0 calc(#{$size-gap-1} + 4px);
   }
 
   &__inline-action {
@@ -26,8 +31,8 @@
     border: 1px dashed var(--border-subtle);
     border-radius: $size-radius-sm;
     background: transparent;
-    color: var(--color-text-muted);
-    font-size: 12px;
+    color: var(--color-text-primary);
+    font-size: var(--font-size-xs);
     cursor: pointer;
     flex: 1;
     min-width: 0;
@@ -46,7 +51,7 @@
   }
 
   &__inline-empty {
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     padding: 4px $size-gap-1;
     font-style: italic;
@@ -56,17 +61,22 @@
     display: flex;
     align-items: center;
     gap: 5px;
+    min-width: 0;
+    max-width: 100%;
     height: 26px;
     padding: 0 $size-gap-1;
     border: none;
     border-radius: 4px;
     background: transparent;
     color: var(--color-text-secondary);
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     font-weight: 400;
     cursor: pointer;
     width: 100%;
+    overflow: hidden;
     text-align: left;
+    overflow: hidden;
+    position: relative;
     transition: color $motion-fast $easing-standard,
                 background $motion-fast $easing-standard;
 
@@ -77,7 +87,6 @@
 
     &.is-active {
       color: var(--color-text-primary);
-      font-weight: 500;
       background: var(--element-bg-soft);
     }
 
@@ -92,15 +101,16 @@
     }
 
     &.is-child {
+      margin-top: -2px;
       min-height: 24px;
-      font-size: 12px;
-      padding-left: calc(#{$size-gap-1} + 18px);
+      font-size: var(--font-size-xs);
+      padding-left: calc(#{$size-gap-1} + 14px);
       position: relative;
 
       &::before {
         content: '';
         position: absolute;
-        left: 10px;
+        left: 8px;
         top: 0;
         width: 1px;
         height: 50%;
@@ -111,9 +121,9 @@
       &::after {
         content: '';
         position: absolute;
-        left: 10px;
+        left: 8px;
         top: 50%;
-        width: 12px;
+        width: 10px;
         height: 1px;
         background: color-mix(in srgb, var(--border-subtle) 92%, transparent);
         opacity: 0.95;
@@ -133,23 +143,35 @@
     }
   }
 
+  &__inline-item-icon-slot {
+    position: relative;
+    flex: 0 0 16px;
+    width: 16px;
+    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    overflow: visible;
+  }
+
   &__inline-item-icon {
     flex-shrink: 0;
-    opacity: 0.6;
+    opacity: 0.78;
     display: flex;
     align-items: center;
-    color: var(--color-text-muted);
-
-    &.is-code {
-      color: color-mix(in srgb, var(--color-primary) 70%, var(--color-text-muted));
-    }
+    color: inherit;
+    transform: scale(1);
+    transform-origin: center;
+    transition: opacity $motion-fast $easing-standard,
+                transform $motion-fast $easing-standard;
 
     &.is-cowork {
-      color: color-mix(in srgb, var(--color-accent-500) 70%, var(--color-text-muted));
+      color: var(--color-text-secondary);
     }
 
     &.is-running {
-      color: var(--color-primary);
+      color: var(--color-text-secondary);
+      transition: opacity $motion-fast $easing-standard;
       animation: bitfun-nav-session-spin 1s linear infinite;
     }
 
@@ -159,16 +181,30 @@
     }
   }
 
+  // 「助理会话」区块：行前导图标悬停微微放大（与顶部 __top-action-icon-slot 的 1.07 一致；运行中 Loader 仅用旋转动画）
+  &__items--session-blocks &__inline-item:hover &__inline-item-icon:not(.is-running) {
+    transform: scale(1.07);
+  }
+
   &__inline-item-main {
-    flex: 1;
+    flex: 1 1 0;
     min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
+    overflow: visible;
+  }
+
+  &__inline-item:hover &__inline-item-main,
+  &__inline-item.is-menu-open &__inline-item-main,
+  &__inline-item:focus-within &__inline-item-main {
+    padding-right: calc(var(--bitfun-nav-row-action-size) + var(--bitfun-nav-row-action-offset));
   }
 
   &__inline-item-label {
-    flex: 1;
+    flex: 1 1 0;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -181,14 +217,55 @@
     align-items: center;
     height: 12px;
     padding: 0 4px;
-    border: 1px solid color-mix(in srgb, var(--border-subtle) 85%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-accent-400, #8b5cf6) 34%, var(--border-subtle));
     border-radius: 999px;
-    background: color-mix(in srgb, var(--element-bg-soft) 42%, transparent);
-    color: var(--color-text-muted);
-    font-size: 9px;
-    font-weight: 500;
+    background: color-mix(in srgb, var(--color-accent-400, #8b5cf6) 13%, var(--element-bg-soft));
+    color: color-mix(in srgb, var(--color-accent-400, #8b5cf6) 62%, var(--color-text-primary));
+    font-size: var(--font-size-xxs);
+    font-weight: 600;
     letter-spacing: 0.02em;
-    opacity: 0.78;
+    opacity: 0.96;
+    overflow: visible;
+    white-space: nowrap;
+  }
+
+  &__inline-item-review-badge {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    height: 14px;
+    padding: 0 5px;
+    border: 1px solid color-mix(in srgb, var(--color-accent-400, #8b5cf6) 44%, var(--border-subtle));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-accent-400, #8b5cf6) 18%, var(--element-bg-soft));
+    color: color-mix(in srgb, var(--color-accent-400, #8b5cf6) 82%, var(--color-text-primary));
+    font-size: var(--font-size-xxs);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+
+    svg {
+      animation: bitfun-nav-session-spin 1s linear infinite;
+    }
+  }
+
+  // Attention badge for high-priority states (ask_user / tool_confirm)
+  &__inline-item-attention-badge {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    height: 14px;
+    padding: 0 5px;
+    border: 1px solid color-mix(in srgb, var(--color-warning, #f59e0b) 35%, var(--border-subtle));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-warning, #f59e0b) 14%, transparent);
+    color: color-mix(in srgb, var(--color-warning, #f59e0b) 80%, var(--color-text-primary));
+    font-size: var(--font-size-xxs);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
   }
 
   &__inline-item-tooltip {
@@ -199,7 +276,7 @@
   }
 
   &__inline-item-tooltip-title {
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     font-weight: 600;
     color: var(--color-text-primary);
     line-height: 1.4;
@@ -207,21 +284,92 @@
   }
 
   &__inline-item-tooltip-meta {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--color-text-secondary);
     line-height: 1.4;
     word-break: break-word;
   }
 
-  &__inline-item-actions {
-    display: none;
-    align-items: center;
-    gap: 2px;
-    flex-shrink: 0;
-    margin-left: auto;
+  &__inline-item-unread-dot {
+    position: absolute;
+    right: -1px;
+    bottom: -1px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    border: 1px solid var(--color-bg-primary, #111114);
+    background: var(--color-success, #22c55e);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--color-success, #22c55e) 35%, transparent),
+      0 0 6px color-mix(in srgb, var(--color-success, #22c55e) 42%, transparent);
 
-    .bitfun-nav-panel__inline-item:hover & {
-      display: flex;
+    &.is-error,
+    &.is-interrupted {
+      background: var(--color-error, #ef4444);
+      box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--color-error, #ef4444) 35%, transparent),
+        0 0 6px color-mix(in srgb, var(--color-error, #ef4444) 42%, transparent);
+    }
+
+    // High-priority attention states: larger, brighter, with subtle pulse
+    &.is-ask-user,
+    &.is-tool-confirm {
+      width: 8px;
+      height: 8px;
+      right: -2px;
+      bottom: -2px;
+    }
+
+    &.is-ask-user {
+      background: var(--color-warning, #f59e0b);
+      box-shadow:
+        0 0 0 1.5px color-mix(in srgb, var(--color-warning, #f59e0b) 45%, transparent),
+        0 0 8px color-mix(in srgb, var(--color-warning, #f59e0b) 55%, transparent);
+    }
+
+    &.is-tool-confirm {
+      background: var(--color-accent-500, #8b5cf6);
+      box-shadow:
+        0 0 0 1.5px color-mix(in srgb, var(--color-accent-500, #8b5cf6) 45%, transparent),
+        0 0 8px color-mix(in srgb, var(--color-accent-500, #8b5cf6) 55%, transparent);
+    }
+
+    // Pulse animation for high-priority states
+    &.is-high-priority {
+      animation: bitfun-unread-dot-pulse 2s ease-in-out infinite;
+    }
+  }
+
+  @keyframes bitfun-unread-dot-pulse {
+    0%, 100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+    50% {
+      transform: scale(1.35);
+      opacity: 0.85;
+    }
+  }
+
+  &__inline-item-actions {
+    position: absolute;
+    top: 50%;
+    right: var(--bitfun-nav-row-action-offset);
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    gap: var(--bitfun-nav-row-action-gap);
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity $motion-fast $easing-standard,
+                visibility $motion-fast $easing-standard;
+
+    .bitfun-nav-panel__inline-item:hover &,
+    &.is-open {
+      visibility: visible;
+      opacity: 1;
+      pointer-events: auto;
     }
   }
 
@@ -229,13 +377,13 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 16px;
-    height: 16px;
+    width: var(--bitfun-nav-row-action-size);
+    height: var(--bitfun-nav-row-action-size);
     padding: 0;
     border: none;
     border-radius: 4px;
     background: transparent;
-    color: var(--color-text-muted);
+    color: var(--color-text-primary);
     cursor: pointer;
     transition: color $motion-fast $easing-standard,
                 background $motion-fast $easing-standard;
@@ -248,10 +396,15 @@
   }
 
   &__inline-item-menu-popover {
+    @include nav-font.nav-panel-font-token-scope;
+
     position: fixed;
     width: max-content;
     min-width: 140px;
     max-width: min(220px, calc(100vw - 24px));
+    max-height: min(560px, calc(100vh - 16px));
+    overflow-x: hidden;
+    overflow-y: auto;
     padding: $size-gap-1 0;
     border-radius: $size-radius-base;
     background: var(--color-bg-elevated, #1e1e22);
@@ -272,7 +425,7 @@
     border: none;
     background: transparent;
     color: var(--color-text-secondary);
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     font-weight: 400;
     cursor: pointer;
     text-align: left;
@@ -321,13 +474,13 @@
     }
 
     .bitfun-input {
-      font-size: 12px;
+      font-size: var(--font-size-xs);
       line-height: 16px;
     }
 
     .bitfun-input-container:focus-within {
-      border-color: color-mix(in srgb, var(--color-primary) 65%, var(--border-subtle));
-      box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-primary) 18%, transparent);
+      border-color: color-mix(in srgb, var(--color-text-primary) 35%, var(--border-subtle));
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-text-primary) 12%, transparent);
     }
   }
 
@@ -341,22 +494,22 @@
     border: none;
     border-radius: 4px;
     background: transparent;
-    color: var(--color-text-muted);
-    font-size: 11px;
+    color: var(--color-text-primary);
+    font-size: var(--font-size-2xs);
     cursor: pointer;
     width: 100%;
     transition: color $motion-fast $easing-standard,
                 background $motion-fast $easing-standard;
 
     &:hover {
-      color: var(--color-primary);
-      background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+      color: var(--color-text-primary);
+      background: var(--element-bg-soft);
     }
   }
 
   &__inline-toggle-dots {
     letter-spacing: 1px;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     line-height: 1;
     opacity: 0.7;
   }
@@ -371,7 +524,7 @@
     border: none;
     border-radius: 4px;
     background: transparent;
-    color: var(--color-text-muted);
+    color: var(--color-text-primary);
     cursor: pointer;
     flex-shrink: 0;
     transition: color $motion-fast $easing-standard,
@@ -408,7 +561,7 @@
   // Inline item badge (count / status text)
   &__inline-item-badge {
     flex-shrink: 0;
-    font-size: 10px;
+    font-size: var(--font-size-xxs);
     line-height: 1;
     color: var(--color-text-muted);
     margin-left: auto;
@@ -476,5 +629,17 @@
   .bitfun-nav-panel__inline-item-icon.is-running {
     animation: none;
     opacity: 0.8;
+  }
+
+  .bitfun-nav-panel__inline-item-review-badge svg {
+    animation: none;
+  }
+
+  .bitfun-nav-panel__items--session-blocks .bitfun-nav-panel__inline-item:hover .bitfun-nav-panel__inline-item-icon:not(.is-running) {
+    transform: scale(1);
+  }
+
+  .bitfun-nav-panel__items--session-blocks .bitfun-nav-panel__inline-item-icon:not(.is-running) {
+    transition: opacity $motion-fast $easing-standard;
   }
 }

@@ -1,7 +1,7 @@
 use super::util::normalize_path;
 use crate::agentic::persistence::PersistenceManager;
 use crate::agentic::tools::framework::{
-    Tool, ToolRenderOptions, ToolResult, ToolUseContext, ValidationResult,
+    Tool, ToolExposure, ToolRenderOptions, ToolResult, ToolUseContext, ValidationResult,
 };
 use crate::infrastructure::PathManager;
 use crate::service::session::SessionTranscriptExportOptions;
@@ -14,6 +14,12 @@ use std::sync::Arc;
 
 /// SessionHistory tool - export a grep-friendly transcript file for a session.
 pub struct SessionHistoryTool;
+
+impl Default for SessionHistoryTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl SessionHistoryTool {
     pub fn new() -> Self {
@@ -146,6 +152,15 @@ Examples:
         )
     }
 
+    fn short_description(&self) -> String {
+        "Export an agent session transcript with an index for targeted history reads. Use this tool when you need the history of an agent session."
+            .to_string()
+    }
+
+    fn default_exposure(&self) -> ToolExposure {
+        ToolExposure::Collapsed
+    }
+
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -244,7 +259,11 @@ Examples:
             };
         }
 
-        if parsed.turns.as_ref().is_some_and(|selectors| selectors.is_empty()) {
+        if parsed
+            .turns
+            .as_ref()
+            .is_some_and(|selectors| selectors.is_empty())
+        {
             return ValidationResult {
                 result: false,
                 message: Some("turns cannot be an empty array".to_string()),
@@ -313,6 +332,7 @@ Examples:
                 transcript.index_range.start_line,
                 transcript.index_range.end_line
             )),
+            image_attachments: None,
         }])
     }
 }

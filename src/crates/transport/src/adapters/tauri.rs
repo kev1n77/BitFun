@@ -1,7 +1,7 @@
-/// Tauri transport adapter
-///
-/// Uses Tauri's app.emit() system to send events to frontend
-/// Maintains compatibility with current implementation
+﻿//! Tauri transport adapter
+//!
+//! Uses Tauri's app.emit() system to send events to frontend
+//! Maintains compatibility with current implementation
 
 #[cfg(feature = "tauri-adapter")]
 use crate::traits::{TextChunk, ToolEventPayload, TransportAdapter};
@@ -121,7 +121,9 @@ impl TransportAdapter for TauriTransportAdapter {
                 session_id,
                 turn_id,
                 round_id,
-                ..
+                round_index,
+                subagent_parent_info,
+                model_id,
             } => {
                 self.app_handle.emit(
                     "agentic://model-round-started",
@@ -129,6 +131,9 @@ impl TransportAdapter for TauriTransportAdapter {
                         "sessionId": session_id,
                         "turnId": turn_id,
                         "roundId": round_id,
+                        "roundIndex": round_index,
+                        "subagentParentInfo": subagent_parent_info,
+                        "modelId": model_id,
                     }),
                 )?;
             }
@@ -191,6 +196,9 @@ impl TransportAdapter for TauriTransportAdapter {
                 session_id,
                 turn_id,
                 subagent_parent_info,
+                partial_recovery_reason,
+                success,
+                finish_reason,
                 ..
             } => {
                 self.app_handle.emit(
@@ -199,6 +207,9 @@ impl TransportAdapter for TauriTransportAdapter {
                         "sessionId": session_id,
                         "turnId": turn_id,
                         "subagentParentInfo": subagent_parent_info,
+                        "partialRecoveryReason": partial_recovery_reason,
+                        "success": success,
+                        "finishReason": finish_reason,
                     }),
                 )?;
             }
@@ -235,6 +246,8 @@ impl TransportAdapter for TauriTransportAdapter {
                 session_id,
                 turn_id,
                 error,
+                error_category,
+                error_detail,
                 subagent_parent_info,
             } => {
                 self.app_handle.emit(
@@ -243,6 +256,8 @@ impl TransportAdapter for TauriTransportAdapter {
                         "sessionId": session_id,
                         "turnId": turn_id,
                         "error": error,
+                        "errorCategory": error_category,
+                        "errorDetail": error_detail,
                         "subagentParentInfo": subagent_parent_info,
                     }),
                 )?;
@@ -256,6 +271,8 @@ impl TransportAdapter for TauriTransportAdapter {
                 total_tokens,
                 max_context_tokens,
                 is_subagent,
+                cached_tokens,
+                token_details,
             } => {
                 self.app_handle.emit(
                     "agentic://token-usage-updated",
@@ -268,6 +285,8 @@ impl TransportAdapter for TauriTransportAdapter {
                         "totalTokens": total_tokens,
                         "maxContextTokens": max_context_tokens,
                         "isSubagent": is_subagent,
+                        "cachedTokens": cached_tokens,
+                        "tokenDetails": token_details,
                     }),
                 )?;
             }
@@ -306,6 +325,7 @@ impl TransportAdapter for TauriTransportAdapter {
                 compression_ratio,
                 duration_ms,
                 has_summary,
+                summary_source,
             } => {
                 self.app_handle.emit(
                     "agentic://context-compression-completed",
@@ -319,6 +339,7 @@ impl TransportAdapter for TauriTransportAdapter {
                         "compressionRatio": compression_ratio,
                         "durationMs": duration_ms,
                         "hasSummary": has_summary,
+                        "summarySource": summary_source,
                         "subagentParentInfo": subagent_parent_info,
                     }),
                 )?;
@@ -353,12 +374,67 @@ impl TransportAdapter for TauriTransportAdapter {
                     }),
                 )?;
             }
+            AgenticEvent::SessionModelAutoMigrated {
+                session_id,
+                previous_model_id,
+                new_model_id,
+                reason,
+            } => {
+                self.app_handle.emit(
+                    "agentic://session-model-auto-migrated",
+                    json!({
+                        "sessionId": session_id,
+                        "previousModelId": previous_model_id,
+                        "newModelId": new_model_id,
+                        "reason": reason,
+                    }),
+                )?;
+            }
+            AgenticEvent::DeepReviewQueueStateChanged {
+                session_id,
+                turn_id,
+                queue_state,
+                subagent_parent_info,
+            } => {
+                self.app_handle.emit(
+                    "agentic://deep-review-queue-state-changed",
+                    json!({
+                        "sessionId": session_id,
+                        "turnId": turn_id,
+                        "queueState": {
+                            "toolId": queue_state.tool_id,
+                            "subagentType": queue_state.subagent_type,
+                            "status": queue_state.status,
+                            "reason": queue_state.reason,
+                            "queuedReviewerCount": queue_state.queued_reviewer_count,
+                            "activeReviewerCount": queue_state.active_reviewer_count,
+                            "effectiveParallelInstances": queue_state.effective_parallel_instances,
+                            "optionalReviewerCount": queue_state.optional_reviewer_count,
+                            "queueElapsedMs": queue_state.queue_elapsed_ms,
+                            "runElapsedMs": queue_state.run_elapsed_ms,
+                            "maxQueueWaitSeconds": queue_state.max_queue_wait_seconds,
+                            "sessionConcurrencyHigh": queue_state.session_concurrency_high,
+                        },
+                        "subagentParentInfo": subagent_parent_info,
+                    }),
+                )?;
+            }
             AgenticEvent::ModelRoundCompleted {
                 session_id,
                 turn_id,
                 round_id,
                 has_tool_calls,
                 subagent_parent_info,
+                duration_ms,
+                provider_id,
+                model_id,
+                model_alias,
+                first_chunk_ms,
+                first_visible_output_ms,
+                stream_duration_ms,
+                attempt_count,
+                failure_category,
+                token_details,
             } => {
                 self.app_handle.emit(
                     "agentic://model-round-completed",
@@ -367,6 +443,38 @@ impl TransportAdapter for TauriTransportAdapter {
                         "turnId": turn_id,
                         "roundId": round_id,
                         "hasToolCalls": has_tool_calls,
+                        "subagentParentInfo": subagent_parent_info,
+                        "durationMs": duration_ms,
+                        "providerId": provider_id,
+                        "modelId": model_id,
+                        "modelAlias": model_alias,
+                        "firstChunkMs": first_chunk_ms,
+                        "firstVisibleOutputMs": first_visible_output_ms,
+                        "streamDurationMs": stream_duration_ms,
+                        "attemptCount": attempt_count,
+                        "failureCategory": failure_category,
+                        "tokenDetails": token_details,
+                    }),
+                )?;
+            }
+            AgenticEvent::UserSteeringInjected {
+                session_id,
+                turn_id,
+                round_index,
+                steering_id,
+                content,
+                display_content,
+                subagent_parent_info,
+            } => {
+                self.app_handle.emit(
+                    "agentic://user-steering-injected",
+                    json!({
+                        "sessionId": session_id,
+                        "turnId": turn_id,
+                        "roundIndex": round_index,
+                        "steeringId": steering_id,
+                        "content": content,
+                        "displayContent": display_content,
                         "subagentParentInfo": subagent_parent_info,
                     }),
                 )?;

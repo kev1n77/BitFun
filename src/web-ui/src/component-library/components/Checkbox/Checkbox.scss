@@ -72,14 +72,14 @@
   }
 
   &__label {
-    font-size: tokens.$font-size-sm;
+    font-size: var(--font-size-sm);
     font-weight: tokens.$font-weight-medium;
     color: tokens.$color-text-primary;
     line-height: tokens.$line-height-base;
   }
 
   &__description {
-    font-size: tokens.$font-size-xs;
+    font-size: var(--font-size-xs);
     color: tokens.$color-text-muted;
     line-height: tokens.$line-height-base;
   }
@@ -163,7 +163,7 @@
     }
 
     .bitfun-checkbox__label {
-      font-size: tokens.$font-size-xs;
+      font-size: var(--font-size-xs);
     }
 
     .bitfun-checkbox__description {
@@ -190,11 +190,11 @@
     }
 
     .bitfun-checkbox__label {
-      font-size: tokens.$font-size-base;
+      font-size: var(--font-size-base);
     }
 
     .bitfun-checkbox__description {
-      font-size: tokens.$font-size-xs;
+      font-size: var(--font-size-xs);
     }
   }
 }

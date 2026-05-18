@@ -2,6 +2,7 @@ import React from 'react';
 import { Play, Square, Trash2 } from 'lucide-react';
 import type { MiniAppMeta } from '@/infrastructure/api/service-api/MiniAppAPI';
 import { renderMiniAppIcon } from '../utils/miniAppIcons';
+import { pickLocalizedString, pickLocalizedTags } from '../utils/pickLocalizedString';
 import { useI18n } from '@/infrastructure/i18n';
 import './MiniAppCard.scss';
 
@@ -9,6 +10,7 @@ interface MiniAppCardProps {
   app: MiniAppMeta;
   index?: number;
   isRunning?: boolean;
+  isCustomizing?: boolean;
   onOpenDetails: (app: MiniAppMeta) => void;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
@@ -19,12 +21,16 @@ const MiniAppCard: React.FC<MiniAppCardProps> = ({
   app,
   index = 0,
   isRunning = false,
+  isCustomizing = false,
   onOpenDetails,
   onOpen,
   onDelete,
   onStop,
 }) => {
-  const { t } = useI18n('scenes/miniapp');
+  const { t, currentLanguage } = useI18n('scenes/miniapp');
+  const localizedName = pickLocalizedString(app, currentLanguage, 'name');
+  const localizedDescription = pickLocalizedString(app, currentLanguage, 'description');
+  const localizedTags = pickLocalizedTags(app, currentLanguage);
   const handleDeleteClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     onDelete(app.id);
@@ -49,6 +55,7 @@ const MiniAppCard: React.FC<MiniAppCardProps> = ({
       className={[
         'miniapp-card',
         isRunning && 'miniapp-card--running',
+        isCustomizing && 'miniapp-card--customizing',
       ]
         .filter(Boolean)
         .join(' ')}
@@ -62,7 +69,7 @@ const MiniAppCard: React.FC<MiniAppCardProps> = ({
       role="button"
       tabIndex={0}
       onKeyDown={(e) => e.key === 'Enter' && handleOpenDetails()}
-      aria-label={app.name}
+      aria-label={localizedName}
     >
       {/* Header with icon and title */}
       <div className="miniapp-card__header">
@@ -72,22 +79,27 @@ const MiniAppCard: React.FC<MiniAppCardProps> = ({
           </div>
         </div>
         <div className="miniapp-card__title-group">
-          <span className="miniapp-card__name">{app.name}</span>
+          <span className="miniapp-card__name">{localizedName}</span>
           <span className="miniapp-card__version">v{app.version}</span>
         </div>
-        {isRunning && <span className="miniapp-card__run-dot" />}
+        {(isRunning || isCustomizing) && (
+          <span className="miniapp-card__status-dots" aria-hidden="true">
+            {isRunning && <span className="miniapp-card__run-dot" />}
+            {isCustomizing && <span className="miniapp-card__customize-dot" />}
+          </span>
+        )}
       </div>
 
       {/* Body: description + tags */}
       <div className="miniapp-card__body">
-        {app.description ? (
+        {localizedDescription ? (
           <div className="miniapp-card__desc">
-            <span className="miniapp-card__desc-inner">{app.description}</span>
+            <span className="miniapp-card__desc-inner">{localizedDescription}</span>
           </div>
         ) : null}
-        {app.tags.length > 0 ? (
+        {localizedTags.length > 0 ? (
           <div className="miniapp-card__tags">
-            {app.tags.slice(0, 3).map((tag) => (
+            {localizedTags.slice(0, 3).map((tag) => (
               <span key={tag} className="miniapp-card__tag">{tag}</span>
             ))}
           </div>

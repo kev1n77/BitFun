@@ -16,9 +16,13 @@ import './GitScene.scss';
 
 interface GitSceneProps {
   workspacePath?: string;
+  isActive?: boolean;
 }
 
-const GitScene: React.FC<GitSceneProps> = ({ workspacePath: workspacePathProp }) => {
+const GitScene: React.FC<GitSceneProps> = ({
+  workspacePath: workspacePathProp,
+  isActive = true,
+}) => {
   const { workspace } = useCurrentWorkspace();
   const workspacePath = workspacePathProp ?? workspace?.rootPath ?? '';
   const { t } = useTranslation('panels/git');
@@ -33,13 +37,16 @@ const GitScene: React.FC<GitSceneProps> = ({ workspacePath: workspacePathProp })
     refresh,
   } = useGitState({
     repositoryPath: workspacePath,
-    isActive: true,
+    isActive,
     refreshOnMount: true,
     layers: ['basic', 'status'],
   });
 
   const repoLoading = statusLoading && !isRepository;
-  const handleRefresh = useCallback(() => refresh({ force: true, layers: ['basic', 'status'], reason: 'manual' }), [refresh]);
+  const handleRefresh = useCallback(
+    () => refresh({ force: true, layers: ['basic', 'status'], reason: 'manual' }),
+    [refresh]
+  );
 
   useEffect(() => {
     if (repoLoading || statusLoading) {
@@ -64,6 +71,22 @@ const GitScene: React.FC<GitSceneProps> = ({ workspacePath: workspacePathProp })
   const handleInitGitRepository = useCallback(() => {
     globalEventBus.emit('fill-chat-input', { content: t('init.chatPrompt') });
   }, [t]);
+
+  const renderView = useCallback(() => {
+    switch (activeView) {
+      case 'branches':
+        return <BranchesView workspacePath={workspacePath} />;
+      case 'graph':
+        return <GraphView workspacePath={workspacePath} />;
+      case 'working-copy':
+      default:
+        return <WorkingCopyView workspacePath={workspacePath} isActive={isActive} />;
+    }
+  }, [activeView, isActive, workspacePath]);
+
+  if (!isActive) {
+    return <div className="bitfun-git-scene" aria-hidden="true" />;
+  }
 
   if (!repoLoading && !isRepository) {
     return (
@@ -120,19 +143,7 @@ const GitScene: React.FC<GitSceneProps> = ({ workspacePath: workspacePathProp })
     );
   }
 
-  const renderView = () => {
-    switch (activeView) {
-      case 'branches':
-        return <BranchesView workspacePath={workspacePath} />;
-      case 'graph':
-        return <GraphView workspacePath={workspacePath} />;
-      case 'working-copy':
-      default:
-        return <WorkingCopyView workspacePath={workspacePath} />;
-    }
-  };
-
-  return <div className="bitfun-git-scene">{renderView()}</div>;
+  return <div className="bitfun-git-scene" data-shortcut-scope="git">{renderView()}</div>;
 };
 
 export default GitScene;

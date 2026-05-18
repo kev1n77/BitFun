@@ -468,7 +468,7 @@
 
 .bitfun-remote-connect__mode-btn {
   padding: 5px 14px;
-  font-size: $font-size-xs;
+  font-size: var(--font-size-xs);
   font-weight: $font-weight-medium;
   color: $color-text-muted;
   background: transparent;

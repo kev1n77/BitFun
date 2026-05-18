@@ -29,8 +29,10 @@ export {
 } from './ToolEventModule';
 
 export {
+  routeModelRoundStartedToToolCard,
   routeTextChunkToToolCard,
   routeToolEventToToolCard,
+  routeModelRoundStartedToToolCardInternal,
   routeTextChunkToToolCardInternal,
   routeToolEventToToolCardInternal
 } from './SubagentModule';
@@ -39,14 +41,21 @@ export {
   getModelMaxTokens,
   createChatSession,
   switchChatSession,
-  deleteChatSession
+  deleteChatSession,
+  renameChatSessionTitle,
+  forkChatSession,
 } from './SessionModule';
 
 export {
   sendMessage,
   cancelCurrentTask,
-  markCurrentTurnItemsAsCancelled
+  markCurrentTurnItemsAsCancelled,
+  drainPendingQueue,
+  installPendingQueueDrainListener
 } from './MessageModule';
+
+export { pendingQueueManager } from './PendingQueueModule';
+export type { EnqueueInput, PendingQueueListener } from './PendingQueueModule';
 
 export {
   shouldProcessEvent,

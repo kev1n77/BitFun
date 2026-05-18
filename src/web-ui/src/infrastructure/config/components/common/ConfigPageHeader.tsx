@@ -11,7 +11,7 @@ export interface ConfigPageHeaderProps {
 
 export const ConfigPageHeader: React.FC<ConfigPageHeaderProps> = ({
   title,
-  subtitle: _subtitle,
+  subtitle,
   icon: _icon,
   extra,
   className = '',
@@ -22,6 +22,9 @@ export const ConfigPageHeader: React.FC<ConfigPageHeaderProps> = ({
         <div className="bitfun-config-page-header__left">
           <div className="bitfun-config-page-header__info">
             <h2 className="bitfun-config-page-header__title">{title}</h2>
+            {subtitle ? (
+              <p className="bitfun-config-page-header__subtitle">{subtitle}</p>
+            ) : null}
           </div>
         </div>
         {extra && (

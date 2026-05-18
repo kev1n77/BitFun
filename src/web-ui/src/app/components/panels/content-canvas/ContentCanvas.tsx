@@ -12,22 +12,29 @@ import { useCanvasStore } from './stores';
 import { useTabLifecycle, useKeyboardShortcuts, usePanelTabCoordinator } from './hooks';
 import type { AnchorPosition } from './types';
 import { openMainSession, selectActiveBtwSessionTab } from '@/flow_chat/services/openBtwSession';
+import { isSamePath } from '@/shared/utils/pathUtils';
 import './ContentCanvas.scss';
 export interface ContentCanvasProps {
   /** Workspace path */
   workspacePath?: string;
   /** App mode */
   mode?: 'agent' | 'project' | 'git';
+  /** Whether the containing scene is currently visible */
+  isSceneActive?: boolean;
   /** Interaction callback */
   onInteraction?: (itemId: string, userInput: string) => Promise<void>;
   /** Before-close callback */
   onBeforeClose?: (content: any) => Promise<boolean>;
+  /** Disable pop-out and panel-close controls (used in panel-view scene) */
+  disablePopOut?: boolean;
 }
 
 export const ContentCanvas: React.FC<ContentCanvasProps> = ({
   workspacePath,
   mode = 'agent',
+  isSceneActive = true,
   onInteraction,
+  disablePopOut = false,
 }) => {
   // Store state
   const {
@@ -63,9 +70,17 @@ export const ContentCanvas: React.FC<ContentCanvasProps> = ({
       return;
     }
 
+    // Only sync when the BTW session belongs to the current workspace,
+    // preventing the wrong session from opening when switching workspaces.
+    const btwWorkspacePath = activeBtwSessionData.workspacePath;
+    if (workspacePath && btwWorkspacePath && !isSamePath(workspacePath, btwWorkspacePath)) {
+      lastSyncedBtwTabIdRef.current = activeBtwSessionTab.id;
+      return;
+    }
+
     lastSyncedBtwTabIdRef.current = activeBtwSessionTab.id;
     void openMainSession(activeBtwSessionData.parentSessionId);
-  }, [activeBtwSessionData?.parentSessionId, activeBtwSessionTab?.id, mode]);
+  }, [activeBtwSessionData?.parentSessionId, activeBtwSessionData?.workspacePath, activeBtwSessionTab?.id, mode, workspacePath]);
 
   // Check if primary group has visible tabs
   const hasPrimaryVisibleTabs = useMemo(() => {
@@ -102,7 +117,7 @@ export const ContentCanvas: React.FC<ContentCanvasProps> = ({
   const renderContent = () => {
     // Show empty state when primary group has no visible tabs
     if (!hasPrimaryVisibleTabs) {
-      return <EmptyState onClose={collapsePanel} />;
+      return <EmptyState onClose={disablePopOut ? undefined : collapsePanel} />;
     }
 
     return (
@@ -111,10 +126,12 @@ export const ContentCanvas: React.FC<ContentCanvasProps> = ({
         <div className="canvas-content-canvas__editor">
           <EditorArea
             workspacePath={workspacePath}
+            isSceneActive={isSceneActive}
             onOpenMissionControl={handleOpenMissionControl}
             onInteraction={onInteraction}
             onTabCloseWithDirtyCheck={handleCloseWithDirtyCheck}
             onTabCloseAllWithDirtyCheck={handleCloseAllWithDirtyCheck}
+            disablePopOut={disablePopOut}
           />
         </div>
 
@@ -137,7 +154,10 @@ export const ContentCanvas: React.FC<ContentCanvasProps> = ({
   };
 
   return (
-    <div className={`canvas-content-canvas ${layout.isMaximized ? 'is-maximized' : ''}`}>
+    <div
+      className={`canvas-content-canvas ${layout.isMaximized ? 'is-maximized' : ''}`}
+      data-shortcut-scope="canvas"
+    >
       {/* Main content */}
       {renderContent()}
 

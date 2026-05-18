@@ -13,7 +13,7 @@
   padding: 3px 10px;
   margin: 0 3px;
   border-radius: 12px;
-  font-size: 0.875rem;
+  font-size: 0.875em;
   font-weight: 500;
   line-height: 1.4;
   border: 1px solid;
@@ -78,7 +78,7 @@
 }
 
 .message-timestamp {
-  font-size: 0.75rem;
+  font-size: 0.75em;
   color: var(--color-text-tertiary, #9ca3af);
 }
 

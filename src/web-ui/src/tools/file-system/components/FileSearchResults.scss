@@ -31,7 +31,7 @@ $_icon-size: 16px;
   }
 
   &-hint {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     opacity: 0.7;
     margin-top: $size-gap-2;
   }
@@ -45,7 +45,7 @@ $_icon-size: 16px;
 }
 
 .bitfun-search-results__count {
-  font-size: $font-size-xs;
+  font-size: var(--font-size-xs);
   color: var(--color-text-muted);
   font-weight: $font-weight-medium;
 }
@@ -76,18 +76,28 @@ $_icon-size: 16px;
   &-main {
     @include mixins.flex-layout(row, center, start, $size-gap-2);
     flex: 1;
+    width: 100%;
     min-width: 0;
     padding: $_node-padding-y $_node-padding-x;
     cursor: pointer;
     min-height: $_node-height;
+    border: none;
     border-radius: $size-radius-sm;
     background: transparent;
     transition: all $motion-base $easing-standard;
     color: var(--color-text-secondary);
+    text-align: left;
+    font: inherit;
+    appearance: none;
 
     &:hover {
       background: var(--element-bg-base);
       color: var(--color-text-primary);
+    }
+
+    &:focus-visible {
+      outline: 1px solid var(--color-accent-500);
+      outline-offset: 1px;
     }
   }
 
@@ -95,7 +105,15 @@ $_icon-size: 16px;
     @include mixins.flex-layout(row, center, center, 0);
     flex-shrink: 0;
     min-width: $_icon-size;
-    color: $git-color-branch;
+    width: 20px;
+    height: 20px;
+    border-radius: $size-radius-sm;
+    color: var(--color-text-muted);
+
+    &--directory {
+      background: $color-warning-bg;
+      color: $color-warning;
+    }
   }
 
   &-info {
@@ -105,7 +123,7 @@ $_icon-size: 16px;
   }
 
   &-name {
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     font-weight: $font-weight-medium;
     color: inherit;
     @include mixins.text-ellipsis;
@@ -113,7 +131,7 @@ $_icon-size: 16px;
   }
 
   &-path {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     opacity: 0.6;
     @include mixins.text-ellipsis;
@@ -125,12 +143,14 @@ $_icon-size: 16px;
     flex-shrink: 0;
     padding: 2px 6px;
     min-height: 20px;
+    border: none;
     border-radius: 10px;
     background: var(--git-color-branch-bg);
     color: var(--git-color-branch);
     cursor: pointer;
     transition: all $motion-base $easing-standard;
     user-select: none;
+    appearance: none;
 
     &:hover {
       background: $git-color-branch-bg-hover;
@@ -140,13 +160,18 @@ $_icon-size: 16px;
       transform: scale(0.95);
     }
 
+    &:focus-visible {
+      outline: 1px solid var(--color-accent-500);
+      outline-offset: 1px;
+    }
+
     svg {
       flex-shrink: 0;
     }
   }
 
   &-toggle-count {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-weight: $font-weight-medium;
     line-height: 1;
   }
@@ -154,68 +179,52 @@ $_icon-size: 16px;
 
 .bitfun-search-results__matches {
   margin-top: $size-gap-1;
-  padding-left: calc($_icon-size + $size-gap-2 + $size-gap-1);
+  margin-left: $size-gap-1;
+  margin-right: $size-gap-1;
   margin-bottom: $size-gap-1;
 }
 
 .bitfun-search-results__match {
-  @include mixins.flex-layout(row, flex-start, start, $size-gap-2);
+  @include mixins.flex-layout(row, center, start, 0);
+  width: 100%;
   padding: $size-gap-1 $size-gap-2;
-  margin: 0 $size-gap-1;
+  margin: 0;
   cursor: pointer;
   transition: all $motion-base $easing-standard;
+  border: none;
   border-radius: $size-radius-sm;
   min-height: 24px;
   background: transparent;
   position: relative;
-
-  &::before {
-    content: '';
-    position: absolute;
-    left: -12px;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 8px;
-    height: 1px;
-    background: $border-base;
-    opacity: 0.5;
-  }
+  text-align: left;
+  font: inherit;
+  appearance: none;
 
   &:hover {
     background: var(--element-bg-base);
-
-    &::before {
-      opacity: 0;
-    }
   }
 
   &:active {
     background: var(--element-bg-soft);
   }
 
-  &-line {
-    flex-shrink: 0;
-    width: 40px;
-    font-size: $font-size-xs;
-    color: var(--color-text-muted);
-    font-family: $font-family-mono;
-    opacity: 0.6;
-    text-align: right;
-    user-select: none;
+  &:focus-visible {
+    outline: 1px solid var(--color-accent-500);
+    outline-offset: 1px;
   }
-
   &-content {
     flex: 1;
     min-width: 0;
     
     code {
       display: block;
-      font-size: $font-size-xs;
+      font-size: var(--font-size-xs);
       font-family: $font-family-mono;
       color: var(--color-text-secondary);
-      white-space: pre-wrap;
-      word-break: break-word;
-      line-height: 1.6;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: 1.5;
     }
   }
 }
@@ -241,7 +250,7 @@ $_icon-size: 16px;
   border-top: 1px solid $border-base;
   background: var(--element-bg-subtle);
   color: var(--color-text-muted);
-  font-size: $font-size-xs;
+  font-size: var(--font-size-xs);
   cursor: pointer;
   transition: all $motion-base $easing-standard;
   user-select: none;

@@ -3,7 +3,7 @@
  * Supports both controlled usage and imperative calls
  */
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useId, useRef } from 'react';
 import { useI18n } from '@/infrastructure/i18n';
 import { Modal } from '../Modal/Modal';
 import { Button } from '../Button/Button';
@@ -64,6 +64,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   previewMaxHeight = 200,
 }) => {
   const { t } = useI18n('components');
+  const titleId = useId();
   const hasMessage = message !== null && message !== undefined && message !== '';
   
   // Resolve i18n default values
@@ -82,7 +83,6 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
 
   const handleConfirm = () => {
     onConfirm();
-    onClose();
   };
 
   const handleCancel = () => {
@@ -94,22 +94,29 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
     <Modal
       isOpen={isOpen}
       onClose={handleCancel}
-      size="small"
+      size="medium"
       showCloseButton={false}
     >
       <div className={`confirm-dialog confirm-dialog--${type}`}>
-        <div className="confirm-dialog__icon">
+        <div className="confirm-dialog__icon" aria-hidden>
           {iconMap[type]}
         </div>
-        
+
         <div className="confirm-dialog__content">
-          <h3 className={`confirm-dialog__title${hasMessage ? '' : ' confirm-dialog__title--compact'}`}>{title}</h3>
+          <h3
+            className={`confirm-dialog__title${hasMessage ? '' : ' confirm-dialog__title--compact'}`}
+            id={titleId}
+          >
+            {title}
+          </h3>
           {hasMessage ? (
-            <div className="confirm-dialog__message">{message}</div>
+            <div className="confirm-dialog__message" role="region" aria-labelledby={titleId}>
+              {message}
+            </div>
           ) : null}
-          
+
           {preview && (
-            <div 
+            <div
               className="confirm-dialog__preview"
               style={{ maxHeight: previewMaxHeight }}
             >

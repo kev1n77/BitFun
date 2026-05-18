@@ -17,7 +17,7 @@
   position: relative;
 
   &__text {
-    font-size: $font-size-base;
+    font-size: var(--flowchat-font-size-base);
     font-weight: $font-weight-medium;
     color: var(--color-text-primary);
     white-space: nowrap;

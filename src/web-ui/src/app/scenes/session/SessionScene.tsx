@@ -12,14 +12,12 @@
 import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useApp } from '../../hooks/useApp';
-
 import ChatPane from './ChatPane';
 import AuxPane, { type AuxPaneRef } from './AuxPane';
 
 import {
   RIGHT_PANEL_CONFIG,
   PANEL_COMMON_CONFIG,
-  PANEL_SHORTCUTS,
   STORAGE_KEYS,
   PanelDisplayMode,
   getPanelDisplayMode,
@@ -36,11 +34,13 @@ import './SessionScene.scss';
 interface SessionSceneProps {
   workspacePath?: string;
   isEntering?: boolean;
+  isActive?: boolean;
 }
 
 const SessionScene: React.FC<SessionSceneProps> = ({
   workspacePath,
   isEntering = false,
+  isActive = true,
 }) => {
   const { t } = useTranslation('flow-chat');
   const { state, updateRightPanelWidth, toggleRightPanel } = useApp();
@@ -49,7 +49,7 @@ const SessionScene: React.FC<SessionSceneProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [isHovering, setIsHovering] = useState(false);
 
-  const [lastRightWidth, setLastRightWidth] = useState<number>(() =>
+  const [, setLastRightWidth] = useState<number>(() =>
     loadPanelWidth(STORAGE_KEYS.RIGHT_PANEL_LAST_WIDTH, RIGHT_PANEL_CONFIG.COMFORTABLE_DEFAULT)
   );
 
@@ -93,13 +93,6 @@ const SessionScene: React.FC<SessionSceneProps> = ({
     const targetWidth = getModeWidth(nextMode, RIGHT_PANEL_CONFIG);
     saveAndUpdateRightWidth(calculateValidRightWidth(targetWidth));
   }, [rightPanelMode, calculateValidRightWidth, saveAndUpdateRightWidth]);
-
-  const handleToggleAuxPane = useCallback(() => {
-    if (state.layout.rightPanelCollapsed) {
-      updateRightPanelWidth(calculateValidRightWidth(lastRightWidth));
-    }
-    toggleRightPanel();
-  }, [state.layout.rightPanelCollapsed, lastRightWidth, calculateValidRightWidth, updateRightPanelWidth, toggleRightPanel]);
 
   const handleMouseDownResizer = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -148,20 +141,6 @@ const SessionScene: React.FC<SessionSceneProps> = ({
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   }, [currentRightWidth, calculateValidRightWidth, updateRightPanelWidth, saveAndUpdateRightWidth, state.layout.chatCollapsed]);
-
-  // Keyboard shortcut: Ctrl+] toggle aux pane
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const isMac = navigator.platform.toUpperCase().includes('MAC');
-      const ctrlOrMeta = isMac ? e.metaKey : e.ctrlKey;
-      if (ctrlOrMeta && e.key === PANEL_SHORTCUTS.TOGGLE_RIGHT.key && !e.shiftKey) {
-        e.preventDefault();
-        handleToggleAuxPane();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleToggleAuxPane]);
 
   // No-animation expansion
   const [isAuxPaneExpandingImmediate, setIsAuxPaneExpandingImmediate] = useState(false);
@@ -296,6 +275,7 @@ const SessionScene: React.FC<SessionSceneProps> = ({
         <AuxPane
           ref={auxPaneRef}
           workspacePath={workspacePath}
+          isSceneActive={isActive}
         />
       </div>
     </div>

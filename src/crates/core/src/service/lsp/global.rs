@@ -12,12 +12,14 @@ use tokio::sync::RwLock;
 use super::file_sync::{FileSyncConfig, LspFileSync};
 use super::{LspManager, WorkspaceLspManager};
 
+type WorkspaceManagerMap = HashMap<String, Arc<WorkspaceLspManager>>;
+type GlobalWorkspaceManagers = Arc<RwLock<WorkspaceManagerMap>>;
+
 /// Global LSP manager instance.
 static GLOBAL_LSP_MANAGER: OnceLock<Arc<RwLock<LspManager>>> = OnceLock::new();
 
 /// Global workspace manager mapping.
-static WORKSPACE_MANAGERS: OnceLock<Arc<RwLock<HashMap<String, Arc<WorkspaceLspManager>>>>> =
-    OnceLock::new();
+static WORKSPACE_MANAGERS: OnceLock<GlobalWorkspaceManagers> = OnceLock::new();
 
 /// Global file sync manager.
 static GLOBAL_FILE_SYNC: OnceLock<Arc<LspFileSync>> = OnceLock::new();

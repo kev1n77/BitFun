@@ -1,30 +1,32 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { configAPI } from '@/infrastructure/api';
-import type { SkillMarketItem } from '@/infrastructure/config/types';
-import { useCurrentWorkspace } from '@/infrastructure/contexts/WorkspaceContext';
+import type { SkillLevel, SkillMarketItem } from '@/infrastructure/config/types';
+import { useWorkspaceManagerSync } from '@/infrastructure/hooks/useWorkspaceManagerSync';
 import { useNotification } from '@/shared/notification-system';
 import { createLogger } from '@/shared/utils/logger';
 
 const log = createLogger('SkillsScene:useSkillMarket');
 
-const PAGE_SIZE = 10;
+const DEFAULT_PAGE_SIZE = 10;
 const MAX_TOTAL_SKILLS = 500;
 
 interface UseSkillMarketOptions {
   searchQuery: string;
   installedSkillNames: Set<string>;
   onInstalledChanged?: () => Promise<void> | void;
+  pageSize?: number;
 }
 
 export function useSkillMarket({
   searchQuery,
   installedSkillNames,
   onInstalledChanged,
+  pageSize = DEFAULT_PAGE_SIZE,
 }: UseSkillMarketOptions) {
   const { t } = useTranslation('scenes/skills');
   const notification = useNotification();
-  const { hasWorkspace, workspacePath } = useCurrentWorkspace();
+  const { hasWorkspace, workspacePath, isRemoteWorkspace } = useWorkspaceManagerSync();
 
   const [marketSkills, setMarketSkills] = useState<SkillMarketItem[]>([]);
   const [marketLoading, setMarketLoading] = useState(true);
@@ -46,16 +48,16 @@ export function useSkillMarket({
     setMarketError(null);
     setCurrentPage(0);
     try {
-      const skillList = await fetchSkills(query, PAGE_SIZE);
+      const skillList = await fetchSkills(query, pageSize);
       setMarketSkills(skillList);
-      setHasMore(skillList.length >= PAGE_SIZE);
+      setHasMore(skillList.length >= pageSize);
     } catch (err) {
       log.error('Failed to load skill market', err);
       setMarketError(err instanceof Error ? err.message : String(err));
     } finally {
       setMarketLoading(false);
     }
-  }, [fetchSkills]);
+  }, [fetchSkills, pageSize]);
 
   useEffect(() => {
     loadFirstPage(searchQuery || undefined);
@@ -86,13 +88,13 @@ export function useSkillMarket({
     return entries.map((entry) => entry.skill);
   }, [installedSkillNames, marketSkills]);
 
-  const loadedPages = Math.ceil(displayMarketSkills.length / PAGE_SIZE);
+  const loadedPages = Math.ceil(displayMarketSkills.length / pageSize);
   const totalPages = hasMore ? loadedPages + 1 : Math.max(1, loadedPages);
 
   const paginatedSkills = useMemo(() => displayMarketSkills.slice(
-    currentPage * PAGE_SIZE,
-    (currentPage + 1) * PAGE_SIZE,
-  ), [currentPage, displayMarketSkills]);
+    currentPage * pageSize,
+    (currentPage + 1) * pageSize,
+  ), [currentPage, displayMarketSkills, pageSize]);
 
   const goToPrevPage = useCallback(() => {
     setCurrentPage((page) => Math.max(0, page - 1));
@@ -100,7 +102,7 @@ export function useSkillMarket({
 
   const goToNextPage = useCallback(async () => {
     const nextPage = currentPage + 1;
-    const neededCount = Math.min((nextPage + 1) * PAGE_SIZE, MAX_TOTAL_SKILLS);
+    const neededCount = Math.min((nextPage + 1) * pageSize, MAX_TOTAL_SKILLS);
 
     if (displayMarketSkills.length >= neededCount) {
       setCurrentPage(nextPage);
@@ -125,10 +127,11 @@ export function useSkillMarket({
     } finally {
       setLoadingMore(false);
     }
-  }, [currentPage, displayMarketSkills.length, fetchSkills, hasMore, searchQuery]);
+  }, [currentPage, displayMarketSkills.length, fetchSkills, hasMore, pageSize, searchQuery]);
 
-  const handleDownload = useCallback(async (skill: SkillMarketItem) => {
-    if (!hasWorkspace) {
+  const handleDownload = useCallback(async (skill: SkillMarketItem, targetLevel: SkillLevel = 'project') => {
+    const resolvedLevel: SkillLevel = isRemoteWorkspace ? 'user' : targetLevel;
+    if (resolvedLevel === 'project' && !hasWorkspace) {
       notification.warning(t('messages.noWorkspace'));
       return;
     }
@@ -136,8 +139,8 @@ export function useSkillMarket({
       setDownloadingPackage(skill.installId);
       const result = await configAPI.downloadSkillMarket({
         packageId: skill.installId,
-        level: 'project',
-        workspacePath: workspacePath || undefined,
+        level: resolvedLevel,
+        workspacePath: resolvedLevel === 'project' ? workspacePath || undefined : undefined,
       });
       const installedName = result.installedSkills[0] ?? skill.name;
       notification.success(t('messages.marketDownloadSuccess', { name: installedName }));
@@ -151,7 +154,7 @@ export function useSkillMarket({
     } finally {
       setDownloadingPackage(null);
     }
-  }, [hasWorkspace, notification, onInstalledChanged, t, workspacePath]);
+  }, [hasWorkspace, isRemoteWorkspace, notification, onInstalledChanged, t, workspacePath]);
 
   return {
     marketSkills: paginatedSkills,
@@ -167,6 +170,7 @@ export function useSkillMarket({
     goToNextPage,
     handleDownload,
     hasWorkspace,
+    isRemoteWorkspace,
     totalLoaded: displayMarketSkills.length,
   };
 }

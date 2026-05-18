@@ -7,6 +7,8 @@ import { useAgentCanvasStore } from '@/app/components/panels/content-canvas/stor
 import type { CanvasTab } from '@/app/components/panels/content-canvas/types';
 import { flowChatStore } from '../store/FlowChatStore';
 import { flowChatManager } from './FlowChatManager';
+import { syncSessionToModernStore } from './storeSync';
+import { resolveSessionTitle } from '../utils/sessionTitle';
 
 export const BTW_SESSION_PANEL_TYPE = 'btw-session' as const;
 
@@ -25,17 +27,55 @@ export interface BtwSessionPanelMetadata {
 
 type AgentCanvasState = ReturnType<typeof useAgentCanvasStore.getState>;
 
-const getBtwSessionDuplicateKey = (childSessionId: string) => `btw-session-${childSessionId}`;
+export const getBtwSessionDuplicateKey = (childSessionId: string) => `btw-session-${childSessionId}`;
 
 const resolveBtwSessionTitle = (childSessionId: string): string => {
   const session = flowChatStore.getState().sessions.get(childSessionId);
-  const title = session?.title?.trim();
+  const title = session
+    ? resolveSessionTitle(session, (key, options) => i18nService.t(key, options))
+    : undefined;
   if (title) return title;
   return i18nService.t('flow-chat:btw.threadLabel', { defaultValue: 'Side thread' });
 };
 
+const scheduleFrame = (callback: FrameRequestCallback): void => {
+  if (typeof globalThis.requestAnimationFrame === 'function') {
+    globalThis.requestAnimationFrame(callback);
+    return;
+  }
+  setTimeout(() => callback(Date.now()), 0);
+};
+
+const clearSessionUnreadCompletionAfterRender = (sessionId: string): void => {
+  scheduleFrame(() => {
+    scheduleFrame(() => {
+      flowChatStore.clearSessionUnreadCompletion(sessionId);
+    });
+  });
+};
+
 export const isBtwSessionPanelContent = (content: PanelContent | null | undefined): boolean =>
   content?.type === BTW_SESSION_PANEL_TYPE;
+
+const isRightPanelCollapsed = (): boolean => {
+  try {
+    if (typeof window === 'undefined') {
+      return false;
+    }
+    const layoutState = (window as unknown as {
+      __BITFUN_LAYOUT_STATE__?: { rightPanelCollapsed?: boolean };
+    }).__BITFUN_LAYOUT_STATE__;
+    return layoutState?.rightPanelCollapsed ?? false;
+  } catch {
+    return false;
+  }
+};
+
+const requestRightPanelExpansion = (): void => {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new window.CustomEvent('expand-right-panel'));
+  }
+};
 
 export const buildBtwSessionPanelContent = (
   childSessionId: string,
@@ -86,10 +126,9 @@ export async function openMainSession(
   sessionId: string,
   options?: {
     workspaceId?: string;
-    activateWorkspace?: (workspaceId: string) => Promise<void> | void;
+    activateWorkspace?: (workspaceId: string) => void | Promise<unknown>;
   }
 ): Promise<void> {
-  useSceneStore.getState().openScene('session');
   appManager.updateLayout({
     leftPanelActiveTab: 'sessions',
     leftPanelCollapsed: false,
@@ -100,10 +139,13 @@ export async function openMainSession(
   }
 
   if (flowChatStore.getState().activeSessionId === sessionId) {
-    return;
+    syncSessionToModernStore(sessionId);
+  } else {
+    await flowChatManager.switchChatSession(sessionId);
+    syncSessionToModernStore(sessionId);
   }
 
-  await flowChatManager.switchChatSession(sessionId);
+  useSceneStore.getState().openScene('session');
 }
 
 export function openBtwSessionInAuxPane(params: {
@@ -118,8 +160,22 @@ export function openBtwSessionInAuxPane(params: {
     params.workspacePath
   );
 
+  const duplicateCheckKey = content.metadata?.duplicateCheckKey;
+  const canvasStore = useAgentCanvasStore.getState();
+  if (duplicateCheckKey) {
+    const existing = canvasStore.findTabByMetadata({ duplicateCheckKey });
+    if (existing) {
+      if (params.expand !== false && isRightPanelCollapsed()) {
+        requestRightPanelExpansion();
+      }
+      canvasStore.switchToTab(existing.tab.id, existing.groupId);
+      clearSessionUnreadCompletionAfterRender(params.childSessionId);
+      return;
+    }
+  }
+
   if (params.expand !== false) {
-    window.dispatchEvent(new CustomEvent('expand-right-panel'));
+    requestRightPanelExpansion();
   }
 
   createTab({
@@ -128,8 +184,21 @@ export function openBtwSessionInAuxPane(params: {
     data: content.data,
     metadata: content.metadata,
     checkDuplicate: true,
-    duplicateCheckKey: content.metadata?.duplicateCheckKey,
+    duplicateCheckKey,
     replaceExisting: false,
     mode: 'agent',
   });
+  clearSessionUnreadCompletionAfterRender(params.childSessionId);
+}
+
+export function closeBtwSessionInAuxPane(childSessionId: string): boolean {
+  const duplicateCheckKey = getBtwSessionDuplicateKey(childSessionId);
+  const canvasStore = useAgentCanvasStore.getState();
+  const result = canvasStore.findTabByMetadata({ duplicateCheckKey });
+  if (!result) {
+    return false;
+  }
+
+  canvasStore.closeTab(result.tab.id, result.groupId, { forceRemove: true });
+  return true;
 }

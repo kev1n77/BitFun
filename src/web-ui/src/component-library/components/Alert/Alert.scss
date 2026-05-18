@@ -90,20 +90,20 @@
   }
 
   &__title {
-    font-size: tokens.$font-size-sm;
+    font-size: var(--font-size-sm);
     font-weight: tokens.$font-weight-medium;
     line-height: tokens.$line-height-base;
     margin-bottom: 2px;
   }
 
   &__message {
-    font-size: tokens.$font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-secondary);
     line-height: tokens.$line-height-base;
   }
 
   &__description {
-    font-size: tokens.$font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     line-height: tokens.$line-height-base;
     margin-top: tokens.$size-gap-1;

@@ -37,7 +37,7 @@ impl MessageEnhancer {
                 if !analysis.detected_elements.is_empty() {
                     enhanced.push_str("• Key elements: ");
                     enhanced.push_str(&analysis.detected_elements.join(", "));
-                    enhanced.push_str("\n");
+                    enhanced.push('\n');
                 }
 
                 enhanced.push_str(&format!(
@@ -45,7 +45,7 @@ impl MessageEnhancer {
                     analysis.confidence * 100.0
                 ));
 
-                enhanced.push_str("\n");
+                enhanced.push('\n');
             }
         }
 
@@ -55,10 +55,10 @@ impl MessageEnhancer {
             for ctx in other_contexts {
                 if let Some(formatted) = Self::format_context(ctx) {
                     enhanced.push_str(&formatted);
-                    enhanced.push_str("\n");
+                    enhanced.push('\n');
                 }
             }
-            enhanced.push_str("\n");
+            enhanced.push('\n');
         }
 
         enhanced.push_str("The above image analysis has already been performed. Do NOT suggest the user to view or re-analyze the image. Respond directly to the user's question based on the analysis.\n\n");

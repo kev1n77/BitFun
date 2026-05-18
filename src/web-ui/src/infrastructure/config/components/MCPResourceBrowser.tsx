@@ -1,9 +1,9 @@
  
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FileText, FileImage, FileJson, FileCode, File, Search as SearchIcon, ArrowLeft } from 'lucide-react';
-import { MCPResource } from '../../api/service-api/MCPAPI';
+import MCPAPI, { MCPResource } from '../../api/service-api/MCPAPI';
 import { Button } from '../../../component-library';
 import { createLogger } from '@/shared/utils/logger';
 import './MCPResourceBrowser.scss';
@@ -25,48 +25,31 @@ export const MCPResourceBrowser: React.FC<MCPResourceBrowserProps> = ({ serverId
   const [resourceContent, setResourceContent] = useState<string | null>(null);
   const [loadingContent, setLoadingContent] = useState(false);
 
-  useEffect(() => {
-    loadResources();
-  }, [serverId]);
+  const loadResources = useCallback(async () => {
+    if (!serverId) {
+      setResources([]);
+      setFilteredResources([]);
+      setSelectedResource(null);
+      setResourceContent(null);
+      return;
+    }
 
-  useEffect(() => {
-    filterResources();
-  }, [searchQuery, resources]);
-
-  const loadResources = async () => {
-    
-    
     setLoading(true);
     try {
-      // const resourceList = await MCPAPI.listResources(serverId);
-      // setResources(resourceList);
-      
-      
-      setTimeout(() => {
-        const mockResources: MCPResource[] = [
-          {
-            uri: 'file:///workspace/README.md',
-            name: 'README.md',
-            description: 'Project README file',
-            mimeType: 'text/markdown',
-          },
-          {
-            uri: 'file:///workspace/package.json',
-            name: 'package.json',
-            description: 'Node.js package configuration',
-            mimeType: 'application/json',
-          },
-        ];
-        setResources(mockResources);
-        setLoading(false);
-      }, 500);
+      const resourceList = await MCPAPI.listResources({
+        serverId,
+        refresh: true,
+      });
+      setResources(resourceList);
     } catch (error) {
       log.error('Failed to load resources', error);
+      setResources([]);
+    } finally {
       setLoading(false);
     }
-  };
+  }, [serverId]);
 
-  const filterResources = () => {
+  const filterResources = useCallback(() => {
     if (!searchQuery.trim()) {
       setFilteredResources(resources);
       return;
@@ -79,27 +62,54 @@ export const MCPResourceBrowser: React.FC<MCPResourceBrowserProps> = ({ serverId
       (resource.description && resource.description.toLowerCase().includes(query))
     );
     setFilteredResources(filtered);
-  };
+  }, [resources, searchQuery]);
+
+  useEffect(() => {
+    loadResources();
+  }, [serverId, loadResources]);
+
+  useEffect(() => {
+    filterResources();
+  }, [filterResources]);
 
   const loadResourceContent = async (resource: MCPResource) => {
+    if (!serverId) {
+      return;
+    }
+
     setSelectedResource(resource);
     setLoadingContent(true);
     setResourceContent(null);
 
     try {
-      
-      // const content = await MCPAPI.readResource(resource.uri);
-      // setResourceContent(content);
-      
-      
-      setTimeout(() => {
-        const mockContent = t('resourceBrowser.mockContent', { name: resource.name, uri: resource.uri });
-        setResourceContent(mockContent);
-        setLoadingContent(false);
-      }, 300);
+      const response = await MCPAPI.readResource({
+        serverId,
+        resourceUri: resource.uri,
+      });
+
+      const renderedContent = response.contents
+        .map((content, index) => {
+          const header = response.contents.length > 1
+            ? `#${index + 1} ${content.uri}${content.mimeType ? ` (${content.mimeType})` : ''}`
+            : `${content.mimeType ? `[${content.mimeType}]` : ''}`;
+
+          if (typeof content.content === 'string' && content.content.length > 0) {
+            return header ? `${header}\n\n${content.content}` : content.content;
+          }
+
+          if (content.blob) {
+            return `${header}\n\n${t('resourceBrowser.errors.binaryContent')}`;
+          }
+
+          return `${header}\n\n${t('resourceBrowser.errors.loadContentFailed')}`;
+        })
+        .join('\n\n---\n\n');
+
+      setResourceContent(renderedContent || t('resourceBrowser.empty.noResources'));
     } catch (error) {
       log.error('Failed to load resource content', { resourceUri: resource.uri, error });
       setResourceContent(t('resourceBrowser.errors.loadContentFailed'));
+    } finally {
       setLoadingContent(false);
     }
   };
@@ -185,7 +195,7 @@ export const MCPResourceBrowser: React.FC<MCPResourceBrowserProps> = ({ serverId
               <div className="viewer-header">
                 <div className="viewer-title">
                   <span className="viewer-icon">{getMimeTypeIcon(selectedResource.mimeType)}</span>
-                  <span className="viewer-name">{selectedResource.name}</span>
+                  <span className="viewer-name">{selectedResource.title || selectedResource.name}</span>
                 </div>
                 {selectedResource.mimeType && (
                   <div className="viewer-mime-type">{selectedResource.mimeType}</div>

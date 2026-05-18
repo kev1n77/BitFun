@@ -7,6 +7,44 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+fn deserialize_mode_configs<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<String, ModeConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<HashMap<String, Option<ModeConfig>>>::deserialize(deserializer)?;
+    Ok(raw
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(mode_id, config)| config.map(|config| (mode_id, config)))
+        .collect())
+}
+
+/// Web UI font preferences (settings → basics). Keys match `FontPreference` in the frontend (camelCase).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FontPreferenceSnapshot {
+    pub ui_size: UiFontSizeSnapshot,
+    pub flow_chat: FlowChatFontSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiFontSizeSnapshot {
+    pub level: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_px: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowChatFontSnapshot {
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_px: Option<u32>,
+}
+
 /// Global configuration structure - matches the frontend `GlobalConfig` exactly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -17,18 +55,46 @@ pub struct GlobalConfig {
     pub terminal: TerminalConfig,
     pub workspace: WorkspaceConfig,
     pub ai: AIConfig,
+    /// Project-scoped overlays stored in the shared config document.
+    #[serde(default, skip_serializing_if = "ProjectConfig::is_empty")]
+    pub project: ProjectConfig,
     /// MCP server configuration (stored uniformly; supports both JSON and structured formats).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp_servers: Option<serde_json::Value>,
+    /// ACP client configuration (stored as `{ "acpClients": { ... } }`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acp_clients: Option<serde_json::Value>,
     /// Theme system configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub themes: Option<ThemesConfig>,
+    /// Web UI font size preferences (`get_config` / `set_config` path `font`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font: Option<FontPreferenceSnapshot>,
     pub version: String,
     #[serde(with = "chrono::serde::ts_milliseconds")]
     pub last_modified: chrono::DateTime<chrono::Utc>,
 }
 
+/// Project-scoped configuration overlay.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectConfig {
+    /// Project-level MCP server configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_servers: Option<serde_json::Value>,
+}
+
+impl ProjectConfig {
+    fn is_empty(&self) -> bool {
+        self.mcp_servers.is_none()
+    }
+}
+
 /// App configuration.
+fn default_close_button_behavior() -> String {
+    "quit".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -47,6 +113,15 @@ pub struct AppConfig {
     #[serde(default)]
     pub session_config: AppSessionConfig,
     pub ai_experience: AIExperienceConfig,
+    /// User-defined keyboard shortcut overrides.
+    /// Stored as opaque JSON so the backend remains schema-agnostic;
+    /// the frontend owns the versioned format (StoredKeybindingsV1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keybindings: Option<serde_json::Value>,
+    /// What happens when the window close button is clicked on Windows / Linux.
+    /// Allowed values: "quit" | "minimize_to_tray" | "ask".
+    #[serde(default = "default_close_button_behavior")]
+    pub close_button_behavior: String,
 }
 
 /// App logging configuration.
@@ -56,6 +131,9 @@ pub struct AppLoggingConfig {
     /// Runtime backend log level.
     /// Allowed values: trace, debug, info, warn, error, off.
     pub level: String,
+    /// Whether diagnostic logs may include sensitive troubleshooting payloads.
+    #[serde(default = "default_true")]
+    pub include_sensitive_diagnostics: bool,
 }
 
 /// Session-related UI preferences.
@@ -65,6 +143,15 @@ pub struct AppSessionConfig {
     /// Default new session mode used by the frontend.
     /// Supported values: "code", "cowork".
     pub default_mode: String,
+}
+
+/// A user-defined quick action for the FlowChat post-coding actions menu.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AiExperienceQuickAction {
+    pub id: String,
+    pub label: String,
+    pub prompt: String,
+    pub enabled: bool,
 }
 
 /// AI experience configuration.
@@ -77,6 +164,47 @@ pub struct AIExperienceConfig {
     pub enable_welcome_panel_ai_analysis: bool,
     /// Whether to enable visual mode.
     pub enable_visual_mode: bool,
+    /// Whether to show the pixel Agent companion in the collapsed chat input.
+    pub enable_agent_companion: bool,
+    /// Where to show the Agent companion: "input" or "desktop".
+    pub agent_companion_display_mode: String,
+    /// Optional Petdex-compatible companion package selected by the user.
+    #[serde(
+        default = "default_agent_companion_pet",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agent_companion_pet: Option<AgentCompanionPetSelection>,
+    /// Whether to enable flashgrep-backed accelerated workspace search.
+    pub enable_workspace_search: bool,
+    /// User-defined quick actions (post-coding menu); persisted for the web UI.
+    #[serde(default)]
+    pub quick_actions: Vec<AiExperienceQuickAction>,
+}
+
+/// User-selected Agent companion pet package.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCompanionPetSelection {
+    pub id: String,
+    pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub source: String,
+    pub package_path: String,
+    pub spritesheet_path: String,
+    pub spritesheet_mime_type: String,
+}
+
+fn default_agent_companion_pet() -> Option<AgentCompanionPetSelection> {
+    Some(AgentCompanionPetSelection {
+        id: "panda-pix".to_string(),
+        display_name: "Panda".to_string(),
+        description: Some("Codux bundled pet atlas.".to_string()),
+        source: "preset".to_string(),
+        package_path: "/agent-companion-pets/panda-pix".to_string(),
+        spritesheet_path: "/agent-companion-pets/panda-pix/spritesheet.png".to_string(),
+        spritesheet_mime_type: "image/png".to_string(),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +227,12 @@ pub struct NotificationConfig {
     pub enabled: bool,
     pub position: String,
     pub duration: u32,
+    /// Whether to show a toast notification when a dialog turn completes while the window is not focused.
+    #[serde(default = "default_true")]
+    pub dialog_completion_notify: bool,
+    /// Whether to show built-in tip cards on startup (can be disabled by the user).
+    #[serde(default = "default_true")]
+    pub enable_startup_tips: bool,
 }
 
 /// Theme configuration.
@@ -194,7 +328,7 @@ pub struct ThemesConfig {
 impl Default for ThemesConfig {
     fn default() -> Self {
         Self {
-            current: "bitfun-slate".to_string(),
+            current: "bitfun-light".to_string(),
             custom: None,
         }
     }
@@ -307,8 +441,10 @@ pub enum ModelCapability {
 /// Model category (for UI display and filtering).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ModelCategory {
     /// General chat model.
+    #[default]
     GeneralChat,
     /// Multimodal model (text + image understanding).
     Multimodal,
@@ -324,15 +460,12 @@ pub enum ModelCategory {
     SpeechRecognition,
 }
 
-impl Default for ModelCategory {
-    fn default() -> Self {
-        Self::GeneralChat
-    }
-}
+pub use bitfun_ai_adapters::types::ReasoningMode;
 
 /// Default model configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct DefaultModelsConfig {
     /// Primary model ID (for complex tasks).
     pub primary: Option<String>,
@@ -348,17 +481,50 @@ pub struct DefaultModelsConfig {
     pub speech_recognition: Option<String>,
 }
 
-impl Default for DefaultModelsConfig {
+/// Default review-team execution policy and membership configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ReviewTeamConfig {
+    /// Additional reviewer subagent IDs configured by the user.
+    pub extra_subagent_ids: Vec<String>,
+    /// Default review depth used by the whole review team.
+    pub strategy_level: String,
+    /// Per-reviewer review depth overrides keyed by subagent ID.
+    pub member_strategy_overrides: HashMap<String, String>,
+    /// Optional timeout applied to reviewer Task calls. 0 disables the cap.
+    pub reviewer_timeout_seconds: u64,
+    /// Optional timeout applied to ReviewJudge Task calls. 0 disables the cap.
+    pub judge_timeout_seconds: u64,
+    /// Whether ReviewFixer may be launched by DeepReview.
+    pub auto_fix_enabled: bool,
+    /// Minimum number of target files that triggers same-role reviewer splitting.
+    /// 0 disables file splitting.
+    pub reviewer_file_split_threshold: usize,
+    /// Maximum number of same-role reviewer instances per role when file splitting is active.
+    pub max_same_role_instances: usize,
+}
+
+impl Default for ReviewTeamConfig {
     fn default() -> Self {
         Self {
-            primary: None,
-            fast: None,
-            search: None,
-            image_understanding: None,
-            image_generation: None,
-            speech_recognition: None,
+            extra_subagent_ids: Vec::new(),
+            strategy_level: "normal".to_string(),
+            member_strategy_overrides: HashMap::new(),
+            reviewer_timeout_seconds: 3600,
+            judge_timeout_seconds: 2400,
+            auto_fix_enabled: false,
+            reviewer_file_split_threshold: 20,
+            max_same_role_instances: 3,
         }
     }
+}
+
+fn default_review_team_configs() -> HashMap<String, ReviewTeamConfig> {
+    HashMap::from([("default".to_string(), ReviewTeamConfig::default())])
+}
+
+fn default_review_team_rate_limit_status() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
 }
 
 /// AI configuration.
@@ -372,7 +538,7 @@ pub struct AIConfig {
     /// agent_type -> model_id
     pub agent_models: HashMap<String, String>,
 
-    /// Model mapping for functional agents (e.g. startchat-func-agent, git-func-agent).
+    /// Model mapping for functional agents (e.g. startchat-func-agent, session-title-func-agent).
     /// func_agent_name -> model_id
     #[serde(default)]
     pub func_agent_models: HashMap<String, String>,
@@ -383,16 +549,37 @@ pub struct AIConfig {
 
     /// Mode configuration.
     /// mode_id -> ModeConfig
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_mode_configs")]
     pub mode_configs: HashMap<String, ModeConfig>,
 
-    /// SubAgent configuration (enable/disable state).
-    /// subagent_id -> SubAgentConfig
+    /// Per-parent sparse subagent availability overrides.
+    /// parent_agent_id -> (subagent_key -> override_state)
     #[serde(default)]
-    pub subagent_configs: HashMap<String, SubAgentConfig>,
+    pub agent_subagent_overrides: AgentSubagentOverrideConfig,
+
+    /// Review team configuration.
+    /// team_id -> ReviewTeamConfig
+    #[serde(default = "default_review_team_configs")]
+    pub review_teams: HashMap<String, ReviewTeamConfig>,
+
+    /// Runtime rate-limit snapshot for Review Team launches.
+    #[serde(default = "default_review_team_rate_limit_status")]
+    pub review_team_rate_limit_status: serde_json::Value,
+
+    /// Workspace path -> Review Team strategy override.
+    #[serde(default)]
+    pub review_team_project_strategy_overrides: HashMap<String, String>,
+
+    /// Maximum number of subagents that may execute concurrently.
+    #[serde(default = "default_subagent_max_concurrency")]
+    pub subagent_max_concurrency: usize,
 
     /// Global proxy configuration.
     pub proxy: ProxyConfig,
+
+    /// Streaming idle timeout in seconds; `None` means wait indefinitely.
+    #[serde(default = "default_stream_idle_timeout")]
+    pub stream_idle_timeout_secs: Option<u64>,
 
     /// Tool execution timeout in seconds; `None` means wait indefinitely.
     #[serde(default = "default_tool_execution_timeout")]
@@ -410,28 +597,66 @@ pub struct AIConfig {
     #[serde(default)]
     pub debug_mode_config: DebugModeConfig,
 
-    /// Known tools (all non-MCP tools from the registry at last startup).
-    /// Used to detect added and removed tools.
+    /// Allow Computer use (desktop automation) when the desktop host is available (all session modes).
     #[serde(default)]
-    pub known_tools: Vec<String>,
+    pub computer_use_enabled: bool,
+
+    /// Preferred browser for CDP browser control. Empty/default uses the system default browser.
+    #[serde(default)]
+    pub browser_control_preferred_browser: String,
+
+    /// Maximum number of rounds per dialog turn before soft-pausing.
+    #[serde(default = "default_max_rounds")]
+    pub max_rounds: usize,
 }
 
 impl AIConfig {
     /// Resolves a configured model reference by `id`, `name`, or `model_name`.
+    ///
+    /// Returns the model id only when the matched model is `enabled`. This is the
+    /// single source of truth for "is this model usable right now?" and is the
+    /// variant every runtime path (client factory, execution engine, etc.) should
+    /// use. UI / migration code that needs to look up disabled entries should call
+    /// [`Self::resolve_model_reference_any`] instead.
     pub fn resolve_model_reference(&self, model_ref: &str) -> Option<String> {
+        self.models
+            .iter()
+            .find(|m| {
+                m.enabled && (m.id == model_ref || m.name == model_ref || m.model_name == model_ref)
+            })
+            .map(|m| m.id.clone())
+    }
+
+    /// Resolves a model reference regardless of `enabled` state. UI / migration
+    /// only — never use this on the runtime model-selection path.
+    pub fn resolve_model_reference_any(&self, model_ref: &str) -> Option<String> {
         self.models
             .iter()
             .find(|m| m.id == model_ref || m.name == model_ref || m.model_name == model_ref)
             .map(|m| m.id.clone())
     }
 
+    /// Returns true if the given reference points to a model that exists and is
+    /// currently enabled.
+    pub fn is_model_reference_active(&self, model_ref: &str) -> bool {
+        self.resolve_model_reference(model_ref).is_some()
+    }
+
+    /// Returns the id of the first enabled model, if any. Used as a final
+    /// fallback when a configured default points to a disabled / missing model.
+    pub fn first_enabled_model_id(&self) -> Option<String> {
+        self.models.iter().find(|m| m.enabled).map(|m| m.id.clone())
+    }
+
     /// Resolves a model selector value.
     ///
     /// Special values:
-    /// - `primary`: must resolve to a valid primary model
+    /// - `primary`: must resolve to a valid (enabled) primary model
     /// - `fast`: first tries the configured fast model, then falls back to primary
     ///
-    /// Regular values are resolved by `id`, `name`, or `model_name`.
+    /// Regular values are resolved by `id`, `name`, or `model_name`. All lookups
+    /// require the target model to be enabled — disabled models are treated as if
+    /// they did not exist.
     pub fn resolve_model_selection(&self, model_ref: &str) -> Option<String> {
         match model_ref {
             "primary" => self
@@ -464,21 +689,43 @@ pub struct ModeConfig {
     /// Mode ID (e.g. agentic, debug, requirement, ui-design).
     pub mode_id: String,
 
-    /// Available tools.
-    pub available_tools: Vec<String>,
+    /// Tools explicitly enabled by the user that are not part of the mode defaults.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub added_tools: Vec<String>,
 
-    /// Whether this mode is enabled.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
+    /// Default tools explicitly disabled by the user.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_tools: Vec<String>,
 
-    /// Default tools for this mode (from the mode registry; not read from config).
-    /// Used only for frontend display and reset; persisted but overwritten on load.
-    #[serde(skip_deserializing)]
+    /// User-level skills disabled for this mode.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_user_skills: Vec<String>,
+
+    /// User-level built-in skills explicitly enabled even though the mode default disables them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enabled_user_skills: Vec<String>,
+}
+
+/// API view of a mode configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModeConfigView {
+    pub mode_id: String,
+    pub enabled_tools: Vec<String>,
     pub default_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_user_skills: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enabled_user_skills: Vec<String>,
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// Default is no timeout (wait forever).
+fn default_stream_idle_timeout() -> Option<u64> {
+    None
 }
 
 /// Default is no timeout (wait forever).
@@ -495,13 +742,36 @@ fn default_skip_tool_confirmation() -> bool {
     true
 }
 
+fn default_subagent_max_concurrency() -> usize {
+    5
+}
+
+pub const DEFAULT_MAX_ROUNDS: usize = 200;
+
+fn default_max_rounds() -> usize {
+    DEFAULT_MAX_ROUNDS
+}
+
 impl Default for ModeConfig {
     fn default() -> Self {
         Self {
             mode_id: String::new(),
-            available_tools: Vec::new(),
-            enabled: true,
+            added_tools: Vec::new(),
+            removed_tools: Vec::new(),
+            disabled_user_skills: Vec::new(),
+            enabled_user_skills: Vec::new(),
+        }
+    }
+}
+
+impl Default for ModeConfigView {
+    fn default() -> Self {
+        Self {
+            mode_id: String::new(),
+            enabled_tools: Vec::new(),
             default_tools: Vec::new(),
+            disabled_user_skills: Vec::new(),
+            enabled_user_skills: Vec::new(),
         }
     }
 }
@@ -727,23 +997,18 @@ impl Default for LanguageDebugTemplate {
     }
 }
 
-/// SubAgent configuration (enabled/disabled per sub-agent).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SubAgentConfig {
-    /// Whether this SubAgent is enabled.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentSubagentOverrideState {
+    Enabled,
+    Disabled,
 }
 
-impl Default for SubAgentConfig {
-    fn default() -> Self {
-        Self { enabled: true }
-    }
-}
+pub type ParentSubagentOverrideConfig = HashMap<String, AgentSubagentOverrideState>;
+pub type AgentSubagentOverrideConfig = HashMap<String, ParentSubagentOverrideConfig>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, from = "AIModelConfigCompat")]
 pub struct AIModelConfig {
     pub id: String,
     pub name: String,
@@ -763,8 +1028,6 @@ pub struct AIModelConfig {
     pub max_tokens: Option<u32>,
     pub temperature: Option<f64>,
     pub top_p: Option<f64>,
-    pub frequency_penalty: Option<f64>,
-    pub presence_penalty: Option<f64>,
     pub enabled: bool,
     /// Model category (primary category used for UI filtering).
     pub category: ModelCategory,
@@ -776,14 +1039,22 @@ pub struct AIModelConfig {
     /// Additional metadata (JSON, for extensibility).
     pub metadata: Option<serde_json::Value>,
 
-    /// Whether to display the thinking process (for hybrid/thinking models such as o1).
-    #[serde(default)]
+    /// Compatibility-only input field for older saved configs.
+    ///
+    /// New code should use `reasoning_mode`. This field is deserialized for migration and
+    /// compatibility, then omitted from future saves. When `reasoning_mode` is absent, `true`
+    /// maps to `enabled` and `false` maps to `default`.
+    #[serde(default, skip_serializing)]
     pub enable_thinking_process: bool,
 
-    /// Whether preserved thinking is supported (Preserved Thinking).
-    /// If false, `reasoning_content` from previous turns is ignored when sending messages.
-    #[serde(default)]
-    pub support_preserved_thinking: bool,
+    /// Provider-agnostic reasoning mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_mode: Option<ReasoningMode>,
+
+    /// Whether to parse OpenAI-compatible text chunks containing `<think>...</think>` into
+    /// streaming reasoning content.
+    #[serde(default = "default_true")]
+    pub inline_think_in_text: bool,
 
     /// Custom HTTP request headers.
     #[serde(default)]
@@ -798,32 +1069,141 @@ pub struct AIModelConfig {
     #[serde(default)]
     pub skip_ssl_verify: bool,
 
-    /// Reasoning effort level for OpenAI Responses API (o-series / GPT-5+).
-    /// Valid values: "low", "medium", "high", "xhigh". None = use API default.
+    /// Reasoning effort level for providers that support explicit effort controls.
+    /// Valid values are provider-specific. None = use API default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+
+    /// Optional Anthropic manual thinking token budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_budget_tokens: Option<u32>,
 
     /// Custom request body (JSON string, used to override default request body fields).
     #[serde(default)]
     pub custom_request_body: Option<String>,
+
+    /// Custom request body mode: "merge" (default) or "trim" (keep only essential runtime
+    /// fields, then apply custom JSON).
+    #[serde(default)]
+    pub custom_request_body_mode: Option<String>,
+
+    /// Authentication source for this model. Defaults to a static API key for
+    /// backward compatibility; selecting a CLI source causes the AI client
+    /// factory to look up `~/.codex/auth.json` or `~/.gemini/...` at request
+    /// time and inject the resolved Bearer token / extra headers.
+    #[serde(default)]
+    pub auth: AuthConfig,
 }
 
-/// Proxy configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Where to obtain the runtime auth material for an `AIModelConfig`.
+///
+/// Stored on disk as `{"type":"api_key"}` / `{"type":"codex_cli"}` /
+/// `{"type":"gemini_cli"}`; the concrete sub-mode (apikey vs OAuth) is
+/// auto-detected from the CLI's on-disk state at resolution time so the user
+/// only has to choose "use Codex CLI" once.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AuthConfig {
+    /// Use the inline `api_key` string (default; legacy behavior).
+    #[default]
+    ApiKey,
+    /// Reuse `~/.codex/auth.json` (apikey or ChatGPT-login).
+    CodexCli,
+    /// Reuse `~/.gemini/.env` or `~/.gemini/oauth_creds.json`.
+    GeminiCli,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
-pub struct ProxyConfig {
-    /// Whether the proxy is enabled.
-    pub enabled: bool,
-
-    /// Proxy URL (format: http://host:port or socks5://host:port).
-    pub url: String,
-
-    /// Proxy username (optional).
-    pub username: Option<String>,
-
-    /// Proxy password (optional).
-    pub password: Option<String>,
+struct AIModelConfigCompat {
+    id: String,
+    name: String,
+    provider: String,
+    model_name: String,
+    base_url: String,
+    request_url: Option<String>,
+    api_key: String,
+    context_window: Option<u32>,
+    max_tokens: Option<u32>,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+    enabled: bool,
+    category: ModelCategory,
+    capabilities: Vec<ModelCapability>,
+    recommended_for: Vec<String>,
+    metadata: Option<serde_json::Value>,
+    enable_thinking_process: Option<bool>,
+    reasoning_mode: Option<ReasoningMode>,
+    #[serde(default = "default_true")]
+    inline_think_in_text: bool,
+    custom_headers: Option<std::collections::HashMap<String, String>>,
+    custom_headers_mode: Option<String>,
+    skip_ssl_verify: bool,
+    reasoning_effort: Option<String>,
+    thinking_budget_tokens: Option<u32>,
+    custom_request_body: Option<String>,
+    custom_request_body_mode: Option<String>,
+    #[serde(default)]
+    auth: AuthConfig,
 }
+
+impl From<AIModelConfigCompat> for AIModelConfig {
+    fn from(value: AIModelConfigCompat) -> Self {
+        let reasoning_mode = value.reasoning_mode.or_else(|| {
+            value.enable_thinking_process.map(|enabled| {
+                if enabled {
+                    ReasoningMode::Enabled
+                } else {
+                    ReasoningMode::Default
+                }
+            })
+        });
+
+        Self {
+            id: value.id,
+            name: value.name,
+            provider: value.provider,
+            model_name: value.model_name,
+            base_url: value.base_url,
+            request_url: value.request_url,
+            api_key: value.api_key,
+            context_window: value.context_window,
+            max_tokens: value.max_tokens,
+            temperature: value.temperature,
+            top_p: value.top_p,
+            enabled: value.enabled,
+            category: value.category,
+            capabilities: value.capabilities,
+            recommended_for: value.recommended_for,
+            metadata: value.metadata,
+            enable_thinking_process: value.enable_thinking_process.unwrap_or(false),
+            reasoning_mode,
+            inline_think_in_text: value.inline_think_in_text,
+            custom_headers: value.custom_headers,
+            custom_headers_mode: value.custom_headers_mode,
+            skip_ssl_verify: value.skip_ssl_verify,
+            reasoning_effort: value.reasoning_effort,
+            thinking_budget_tokens: value.thinking_budget_tokens,
+            custom_request_body: value.custom_request_body,
+            custom_request_body_mode: value.custom_request_body_mode,
+            auth: value.auth,
+        }
+    }
+}
+
+impl AIModelConfig {
+    pub fn effective_reasoning_mode(&self) -> ReasoningMode {
+        self.reasoning_mode.unwrap_or({
+            if self.enable_thinking_process {
+                ReasoningMode::Enabled
+            } else {
+                ReasoningMode::Default
+            }
+        })
+    }
+}
+
+pub use bitfun_ai_adapters::types::ProxyConfig;
 
 /// Configuration provider interface.
 #[async_trait]
@@ -896,8 +1276,11 @@ impl Default for GlobalConfig {
             terminal: TerminalConfig::default(),
             workspace: WorkspaceConfig::default(),
             ai: AIConfig::default(),
+            project: ProjectConfig::default(),
             mcp_servers: None,
+            acp_clients: None,
             themes: Some(ThemesConfig::default()),
+            font: None,
             version: "1.0.0".to_string(),
             last_modified: chrono::Utc::now(),
         }
@@ -927,9 +1310,13 @@ impl Default for AppConfig {
                 enabled: true,
                 position: "topRight".to_string(),
                 duration: 5000,
+                dialog_completion_notify: true,
+                enable_startup_tips: true,
             },
             session_config: AppSessionConfig::default(),
             ai_experience: AIExperienceConfig::default(),
+            keybindings: None,
+            close_button_behavior: default_close_button_behavior(),
         }
     }
 }
@@ -939,6 +1326,7 @@ impl Default for AppLoggingConfig {
         Self {
             // Set to Debug in early development for easier diagnostics
             level: "debug".to_string(),
+            include_sensitive_diagnostics: true,
         }
     }
 }
@@ -957,6 +1345,11 @@ impl Default for AIExperienceConfig {
             enable_session_title_generation: true,
             enable_welcome_panel_ai_analysis: false,
             enable_visual_mode: false,
+            enable_agent_companion: true,
+            agent_companion_display_mode: "desktop".to_string(),
+            agent_companion_pet: default_agent_companion_pet(),
+            enable_workspace_search: false,
+            quick_actions: Vec::new(),
         }
     }
 }
@@ -1067,7 +1460,7 @@ impl Default for EditorConfig {
                 side: "right".to_string(),
                 size: "proportional".to_string(),
             },
-            theme: "vs-dark".to_string(),
+            theme: "vs".to_string(),
             auto_save: "afterDelay".to_string(),
             auto_save_delay: 1000,
             format_on_save: true,
@@ -1151,24 +1544,20 @@ impl Default for AIConfig {
             func_agent_models: std::collections::HashMap::new(),
             default_models: DefaultModelsConfig::default(),
             mode_configs: std::collections::HashMap::new(),
-            subagent_configs: std::collections::HashMap::new(),
+            agent_subagent_overrides: std::collections::HashMap::new(),
+            review_teams: default_review_team_configs(),
+            review_team_rate_limit_status: default_review_team_rate_limit_status(),
+            review_team_project_strategy_overrides: std::collections::HashMap::new(),
+            subagent_max_concurrency: default_subagent_max_concurrency(),
             proxy: ProxyConfig::default(),
+            stream_idle_timeout_secs: default_stream_idle_timeout(),
             tool_execution_timeout_secs: default_tool_execution_timeout(),
             tool_confirmation_timeout_secs: default_tool_confirmation_timeout(),
             skip_tool_confirmation: true,
             debug_mode_config: DebugModeConfig::default(),
-            known_tools: Vec::new(),
-        }
-    }
-}
-
-impl Default for ProxyConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            url: String::new(),
-            username: None,
-            password: None,
+            computer_use_enabled: false,
+            browser_control_preferred_browser: String::new(),
+            max_rounds: default_max_rounds(),
         }
     }
 }
@@ -1187,20 +1576,22 @@ impl Default for AIModelConfig {
             max_tokens: None,
             temperature: None,
             top_p: None,
-            frequency_penalty: None,
-            presence_penalty: None,
             enabled: false,
             category: ModelCategory::GeneralChat,
             capabilities: vec![],
             recommended_for: vec![],
             metadata: None,
             enable_thinking_process: false,
-            support_preserved_thinking: false,
+            reasoning_mode: None,
+            inline_think_in_text: true,
             custom_headers: None,
             custom_headers_mode: None,
             skip_ssl_verify: false,
             reasoning_effort: None,
+            thinking_budget_tokens: None,
             custom_request_body: None,
+            custom_request_body_mode: None,
+            auth: AuthConfig::ApiKey,
         }
     }
 }
@@ -1229,6 +1620,8 @@ impl Default for NotificationConfig {
             enabled: true,
             position: "topRight".to_string(),
             duration: 5000,
+            dialog_completion_notify: true,
+            enable_startup_tips: true,
         }
     }
 }
@@ -1339,7 +1732,10 @@ impl AIModelConfig {
         match self.category {
             ModelCategory::GeneralChat => vec![ModelCapability::TextChat],
             ModelCategory::Multimodal => {
-                vec![ModelCapability::TextChat, ModelCapability::ImageUnderstanding]
+                vec![
+                    ModelCapability::TextChat,
+                    ModelCapability::ImageUnderstanding,
+                ]
             }
             ModelCategory::ImageGeneration => vec![ModelCapability::ImageGeneration],
             ModelCategory::Embedding => vec![ModelCapability::Embedding],
@@ -1361,5 +1757,437 @@ impl AIModelConfig {
         if self.capabilities.is_empty() {
             self.capabilities = self.default_capabilities_for_category();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AIConfig, AIExperienceConfig, AIModelConfig, AppLoggingConfig, GlobalConfig, ReasoningMode,
+    };
+
+    #[test]
+    fn deserializes_compatibility_thinking_flag_into_reasoning_mode() {
+        let config: AIModelConfig = serde_json::from_value(serde_json::json!({
+            "id": "model_1",
+            "name": "Provider",
+            "provider": "openai",
+            "model_name": "test-model",
+            "base_url": "https://example.com/v1",
+            "api_key": "key",
+            "enabled": true,
+            "enable_thinking_process": true
+        }))
+        .expect("legacy config should deserialize");
+
+        assert_eq!(config.reasoning_mode, Some(ReasoningMode::Enabled));
+        assert!(config.enable_thinking_process);
+    }
+
+    #[test]
+    fn global_config_preserves_project_mcp_servers() {
+        let config: GlobalConfig = serde_json::from_value(serde_json::json!({
+            "project": {
+                "mcp_servers": [
+                    {
+                        "id": "project-docs",
+                        "name": "Project Docs",
+                        "server_type": "local",
+                        "command": "docs-mcp",
+                        "args": []
+                    }
+                ]
+            }
+        }))
+        .expect("project scoped MCP config should deserialize");
+
+        assert_eq!(
+            config
+                .project
+                .mcp_servers
+                .as_ref()
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(1)
+        );
+
+        let serialized = serde_json::to_value(&config).expect("config should serialize");
+        assert_eq!(
+            serialized["project"]["mcp_servers"][0]["id"],
+            "project-docs"
+        );
+    }
+
+    #[test]
+    fn defaults_agent_companion_pet_to_panda() {
+        let config: AIExperienceConfig =
+            serde_json::from_value(serde_json::json!({})).expect("empty config should default");
+
+        let pet = config
+            .agent_companion_pet
+            .as_ref()
+            .expect("default companion pet should be present");
+        assert_eq!(pet.id, "panda-pix");
+        assert_eq!(pet.display_name, "Panda");
+        assert_eq!(pet.package_path, "/agent-companion-pets/panda-pix");
+        assert_eq!(
+            pet.spritesheet_path,
+            "/agent-companion-pets/panda-pix/spritesheet.png"
+        );
+    }
+
+    #[test]
+    fn preserves_selected_agent_companion_pet() {
+        let config: AIExperienceConfig = serde_json::from_value(serde_json::json!({
+            "enable_session_title_generation": true,
+            "enable_welcome_panel_ai_analysis": false,
+            "enable_visual_mode": false,
+            "enable_agent_companion": true,
+            "agent_companion_display_mode": "desktop",
+            "agent_companion_pet": {
+                "id": "boxcat",
+                "displayName": "Boxcat",
+                "description": "A tiny cat tucked inside a cardboard box for cozy coding sessions.",
+                "source": "preset",
+                "packagePath": "/agent-companion-pets/boxcat",
+                "spritesheetPath": "/agent-companion-pets/boxcat/spritesheet.webp",
+                "spritesheetMimeType": "image/webp"
+            }
+        }))
+        .expect("AI experience config with selected companion pet should deserialize");
+
+        let pet = config
+            .agent_companion_pet
+            .as_ref()
+            .expect("selected companion pet should be retained");
+        assert_eq!(pet.id, "boxcat");
+        assert_eq!(pet.display_name, "Boxcat");
+        assert_eq!(pet.package_path, "/agent-companion-pets/boxcat");
+        assert_eq!(config.agent_companion_display_mode, "desktop");
+
+        let serialized = serde_json::to_value(&config).expect("config should serialize");
+        assert_eq!(serialized["agent_companion_pet"]["displayName"], "Boxcat");
+        assert_eq!(
+            serialized["agent_companion_pet"]["spritesheetPath"],
+            "/agent-companion-pets/boxcat/spritesheet.webp"
+        );
+    }
+
+    #[test]
+    fn ai_experience_quick_actions_round_trip_through_global_config() {
+        let config: GlobalConfig = serde_json::from_value(serde_json::json!({
+            "app": {
+                "language": "en-US",
+                "auto_update": true,
+                "telemetry": true,
+                "startup_behavior": "default",
+                "confirm_on_exit": true,
+                "restore_windows": false,
+                "zoom_level": 100,
+                "sidebar": { "width": 260, "collapsed": false },
+                "right_panel": { "width": 400, "collapsed": true },
+                "notifications": {
+                    "enabled": true,
+                    "position": "top-right",
+                    "duration": 4000,
+                    "dialog_completion_notify": true,
+                    "enable_startup_tips": true
+                },
+                "session_config": { "default_mode": "code" },
+                "ai_experience": {
+                    "enable_session_title_generation": true,
+                    "enable_welcome_panel_ai_analysis": false,
+                    "enable_visual_mode": false,
+                    "enable_agent_companion": true,
+                    "agent_companion_display_mode": "desktop",
+                    "enable_workspace_search": false,
+                    "quick_actions": [
+                        {
+                            "id": "custom_1",
+                            "label": "Run tests",
+                            "prompt": "Run the test suite",
+                            "enabled": true
+                        }
+                    ]
+                }
+            }
+        }))
+        .expect("minimal app config with quick_actions should deserialize");
+
+        let actions = &config.app.ai_experience.quick_actions;
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].id, "custom_1");
+        assert_eq!(actions[0].label, "Run tests");
+
+        let serialized = serde_json::to_value(&config).expect("config should serialize");
+        assert_eq!(
+            serialized["app"]["ai_experience"]["quick_actions"][0]["id"],
+            "custom_1"
+        );
+    }
+
+    #[test]
+    fn deserializes_compatibility_false_thinking_flag_into_default_reasoning_mode() {
+        let config: AIModelConfig = serde_json::from_value(serde_json::json!({
+            "id": "model_1",
+            "name": "Provider",
+            "provider": "openai",
+            "model_name": "test-model",
+            "base_url": "https://example.com/v1",
+            "api_key": "key",
+            "enabled": true,
+            "enable_thinking_process": false
+        }))
+        .expect("legacy config should deserialize");
+
+        assert_eq!(config.reasoning_mode, Some(ReasoningMode::Default));
+        assert!(!config.enable_thinking_process);
+    }
+
+    #[test]
+    fn serialization_omits_compatibility_thinking_flag() {
+        let config: AIModelConfig = serde_json::from_value(serde_json::json!({
+            "id": "model_1",
+            "name": "Provider",
+            "provider": "openai",
+            "model_name": "test-model",
+            "base_url": "https://example.com/v1",
+            "api_key": "key",
+            "enabled": true,
+            "enable_thinking_process": true
+        }))
+        .expect("legacy config should deserialize");
+
+        let value = serde_json::to_value(&config).expect("config should serialize");
+
+        assert!(value.get("enable_thinking_process").is_none());
+        assert_eq!(
+            value.get("reasoning_mode").and_then(|v| v.as_str()),
+            Some("enabled")
+        );
+    }
+
+    #[test]
+    fn default_model_config_enables_inline_think_in_text() {
+        let config = AIModelConfig::default();
+        assert!(config.inline_think_in_text);
+    }
+
+    #[test]
+    fn deserializes_missing_inline_think_in_text_as_enabled() {
+        let config: AIModelConfig = serde_json::from_value(serde_json::json!({
+            "id": "model_1",
+            "name": "Provider",
+            "provider": "openai",
+            "model_name": "test-model",
+            "base_url": "https://example.com/v1",
+            "api_key": "key",
+            "enabled": true
+        }))
+        .expect("config without inline_think_in_text should deserialize");
+
+        assert!(config.inline_think_in_text);
+    }
+
+    #[test]
+    fn default_ai_config_uses_no_stream_idle_timeout() {
+        let config = AIConfig::default();
+
+        assert_eq!(config.stream_idle_timeout_secs, None);
+        assert_eq!(config.subagent_max_concurrency, 5);
+        let review_team = config
+            .review_teams
+            .get("default")
+            .expect("default review team config should exist");
+        assert_eq!(review_team.reviewer_timeout_seconds, 3600);
+        assert_eq!(review_team.judge_timeout_seconds, 2400);
+        assert!(!review_team.auto_fix_enabled);
+        assert_eq!(review_team.strategy_level, "normal");
+        assert!(review_team.member_strategy_overrides.is_empty());
+        assert_eq!(config.review_team_rate_limit_status, serde_json::json!({}));
+        assert!(config.review_team_project_strategy_overrides.is_empty());
+    }
+
+    #[test]
+    fn deserializes_missing_stream_idle_timeout_as_none() {
+        let config: AIConfig = serde_json::from_value(serde_json::json!({
+            "models": [],
+            "agent_models": {},
+            "func_agent_models": {},
+            "default_models": {},
+            "mode_configs": {},
+            "agent_subagent_overrides": {},
+            "proxy": {
+                "enabled": false,
+                "url": ""
+            }
+        }))
+        .expect("config without stream_idle_timeout_secs should deserialize");
+
+        assert_eq!(config.stream_idle_timeout_secs, None);
+        assert_eq!(config.subagent_max_concurrency, 5);
+        assert!(config.review_teams.contains_key("default"));
+    }
+
+    #[test]
+    fn app_logging_defaults_to_sensitive_diagnostics_enabled() {
+        let config: AppLoggingConfig = serde_json::from_value(serde_json::json!({
+            "level": "trace"
+        }))
+        .expect("logging config without sensitive preference should deserialize");
+
+        assert!(config.include_sensitive_diagnostics);
+    }
+
+    #[test]
+    fn deserializes_explicit_subagent_max_concurrency() {
+        let config: AIConfig = serde_json::from_value(serde_json::json!({
+            "models": [],
+            "agent_models": {},
+            "func_agent_models": {},
+            "default_models": {},
+            "mode_configs": {},
+            "agent_subagent_overrides": {},
+            "subagent_max_concurrency": 9,
+            "proxy": {
+                "enabled": false,
+                "url": ""
+            }
+        }))
+        .expect("config with subagent_max_concurrency should deserialize");
+
+        assert_eq!(config.subagent_max_concurrency, 9);
+    }
+
+    #[test]
+    fn deserializes_mode_configs_with_null_entries() {
+        let config: AIConfig = serde_json::from_value(serde_json::json!({
+            "models": [],
+            "agent_models": {},
+            "func_agent_models": {},
+            "default_models": {},
+            "mode_configs": {
+                "Claw": null,
+                "Cowork": {
+                    "mode_id": "Cowork",
+                    "removed_tools": ["shell"]
+                }
+            },
+            "agent_subagent_overrides": {},
+            "proxy": {
+                "enabled": false,
+                "url": ""
+            }
+        }))
+        .expect("config with null mode config entries should deserialize");
+
+        assert!(!config.mode_configs.contains_key("Claw"));
+        assert_eq!(
+            config
+                .mode_configs
+                .get("Cowork")
+                .expect("non-null mode config should be retained")
+                .removed_tools,
+            vec!["shell".to_string()]
+        );
+    }
+
+    #[test]
+    fn deserializes_explicit_default_review_team_config() {
+        let config: AIConfig = serde_json::from_value(serde_json::json!({
+            "models": [],
+            "agent_models": {},
+            "func_agent_models": {},
+            "default_models": {},
+            "mode_configs": {},
+            "agent_subagent_overrides": {},
+            "review_teams": {
+                "default": {
+                    "extra_subagent_ids": ["ExtraReviewer"],
+                    "reviewer_timeout_seconds": 120,
+                    "judge_timeout_seconds": 90,
+                    "strategy_level": "deep",
+                    "member_strategy_overrides": {
+                        "ReviewSecurity": "quick",
+                        "ExtraReviewer": "normal"
+                    },
+                    "auto_fix_enabled": false
+                }
+            },
+            "proxy": {
+                "enabled": false,
+                "url": ""
+            }
+        }))
+        .expect("config with review_teams should deserialize");
+
+        let review_team = config
+            .review_teams
+            .get("default")
+            .expect("default review team config should be retained");
+        assert_eq!(review_team.extra_subagent_ids, vec!["ExtraReviewer"]);
+        assert_eq!(review_team.reviewer_timeout_seconds, 120);
+        assert_eq!(review_team.judge_timeout_seconds, 90);
+        assert_eq!(review_team.strategy_level, "deep");
+        assert_eq!(
+            review_team.member_strategy_overrides.get("ReviewSecurity"),
+            Some(&"quick".to_string())
+        );
+        assert_eq!(
+            review_team.member_strategy_overrides.get("ExtraReviewer"),
+            Some(&"normal".to_string())
+        );
+        assert!(!review_team.auto_fix_enabled);
+
+        let serialized = serde_json::to_value(&config).expect("config should serialize");
+        assert_eq!(
+            serialized["review_teams"]["default"]["strategy_level"],
+            "deep"
+        );
+        assert_eq!(
+            serialized["review_teams"]["default"]["member_strategy_overrides"]["ReviewSecurity"],
+            "quick"
+        );
+    }
+
+    #[test]
+    fn review_team_auxiliary_config_is_not_stored_inside_review_team_map() {
+        let config: AIConfig = serde_json::from_value(serde_json::json!({
+            "models": [],
+            "agent_models": {},
+            "review_teams": {
+                "default": {
+                    "strategy_level": "normal"
+                }
+            },
+            "review_team_rate_limit_status": {
+                "remaining": 2
+            },
+            "review_team_project_strategy_overrides": {
+                "d:/workspace/repo": "quick"
+            }
+        }))
+        .expect("review team auxiliary config should deserialize");
+
+        assert!(config.review_teams.contains_key("default"));
+        assert!(!config.review_teams.contains_key("rate_limit_status"));
+        assert_eq!(
+            config.review_team_rate_limit_status["remaining"],
+            serde_json::json!(2)
+        );
+        assert_eq!(
+            config
+                .review_team_project_strategy_overrides
+                .get("d:/workspace/repo"),
+            Some(&"quick".to_string())
+        );
+
+        let serialized =
+            serde_json::to_value(&config).expect("review team auxiliary config should serialize");
+        assert!(serialized["review_teams"]["rate_limit_status"].is_null());
+        assert_eq!(
+            serialized["review_team_project_strategy_overrides"]["d:/workspace/repo"],
+            "quick"
+        );
     }
 }

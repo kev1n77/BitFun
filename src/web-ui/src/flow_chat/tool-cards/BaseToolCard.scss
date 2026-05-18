@@ -1,3 +1,5 @@
+@use '../components/modern/SmoothHeightCollapse.scss';
+
 /**
  * Common tool card styles
  * Provides unified card appearance and interaction effects
@@ -7,13 +9,15 @@
 .base-tool-card-wrapper {
   display: flex;
   flex-direction: column;
-  margin: 6px 0;
+  margin: 4px 0;
   border-radius: 8px;
   border: 1px solid var(--border-base);
   background: var(--color-bg-flowchat);
   backdrop-filter: blur(10px);
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   overflow: hidden;
+  width: 100%;
+  box-sizing: border-box;
   
   &:hover {
     border-color: var(--border-medium);
@@ -29,7 +33,9 @@
       inset 0 2px 4px rgba(0, 0, 0, 0.4);
   }
   
-  &.has-expanded {
+  /* Divider when body below header: success expanded panel or failed error panel */
+  &:has(> .base-tool-card-expanded-collapse:not(.smooth-height-collapse--closed)),
+  &:has(> .base-tool-card-error-collapse:not(.smooth-height-collapse--closed)) {
     .base-tool-card-header::after {
       content: '';
       position: absolute;
@@ -38,6 +44,8 @@
       right: 0;
       height: 1px;
       background: var(--border-base);
+      pointer-events: none;
+      z-index: 2;
     }
   }
   
@@ -87,12 +95,13 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 9px 10px;
+  padding: var(--tool-card-header-pad-y) var(--tool-card-header-pad-right) var(--tool-card-header-pad-y) var(--tool-card-header-pad-x);
   position: relative;
   z-index: 11;
   flex-shrink: 0;
   min-height: 0;
-  line-height: 1.2;
+  /* 1.2 clips CJK / some Latin descenders inside overflow:hidden; keep room for em-box */
+  line-height: 1.45;
   width: 100%;
   box-sizing: border-box;
   background: transparent;
@@ -118,59 +127,13 @@
 
 }
 
-/* ========== Header sub-element styles ========== */
-
-.tool-card-icon.tool-identifier-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  transition: all 0.2s ease;
-
-  svg {
-    width: 16px;
-    height: 16px;
-  }
+/* Chevron swap: only when card opts in via headerExpandAffordance (includes status-error with collapsible details). */
+.base-tool-card-wrapper:hover .base-tool-card.base-tool-card--header-expandable:not(.status-cancelled) .tool-card-icon-slot--expandable .tool-card-icon-main {
+  opacity: 0;
 }
 
-/* Status icon (at right border) */
-.tool-card-status-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  margin-left: 4px;
-  padding-left: 4px;
-  border-left: 1px solid var(--border-base);
-  transition: all 0.2s ease;
-
-  svg {
-    width: 14px;
-    height: 14px;
-  }
-
-  /* Loading icon */
-  .loading {
-    width: 16px !important;
-    height: 16px !important;
-    gap: 0 !important;
-  }
-
-  .loading__spinner {
-    width: 16px !important;
-    height: 16px !important;
-    border-width: 2px !important;
-    box-shadow: 0 0 8px var(--loading-color-light) !important;
-  }
-
-  .icon-completed {
-    color: var(--color-success);
-  }
-
-  .icon-error {
-    color: var(--color-error);
-    filter: drop-shadow(0 0 4px rgba(239, 68, 68, 0.4));
-  }
+.base-tool-card-wrapper:hover .base-tool-card.base-tool-card--header-expandable:not(.status-cancelled) .tool-card-icon-slot--expandable .tool-card-icon-expand-hint {
+  opacity: 1;
 }
 
 /* Action text */
@@ -181,7 +144,7 @@
   transition: color 0.2s ease;
   letter-spacing: -0.01em;
   flex-shrink: 0;
-  line-height: 1.2;
+  line-height: 1.45;
 }
 
 /* Main content */
@@ -189,17 +152,25 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
   font-size: 12px;
   font-weight: 500;
   color: var(--color-text-primary);
   transition: color 0.2s ease;
   letter-spacing: -0.01em;
-  line-height: 1.2;
+  line-height: 1.45;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+
+  > * {
+    min-width: 0;
+  }
+
+  svg {
+    flex-shrink: 0;
+  }
 }
 
 /* Right extra content */
@@ -208,25 +179,36 @@
   align-items: center;
   gap: 2px;
   flex-shrink: 0;
+  min-width: 0;
+
+  svg {
+    flex-shrink: 0;
+  }
 }
 
 /* ========== Expanded content area ========== */
 .base-tool-card-expanded {
-  padding: 10px 10px;
+  /* Full-bleed dividers in children use these (header pad-x is 0; do not conflate). */
+  --tool-card-expanded-pad-x: 9px;
+  --tool-card-expanded-pad-y: 8px;
+  padding: var(--tool-card-expanded-pad-y) var(--tool-card-expanded-pad-x);
   background: transparent;
   position: relative;
-  animation: expandDown 0.2s ease-out;
+  opacity: 1;
+  transform: none;
   box-sizing: border-box;
 }
 
 /* ========== Error details area ========== */
 .base-tool-card-error {
-  margin-top: 8px;
-  padding: 8px 12px 8px 22px;
+  margin-top: 6px;
+  padding: 7px 10px 7px 20px;
   margin-left: 6px;
   background: none !important;
   border: none !important;
   box-shadow: none !important;
+  /* Outside the clickable .base-tool-card row; do not inherit pointer from wrapper */
+  cursor: default;
 
   .error-content {
     display: flex;
@@ -308,6 +290,30 @@
   .tool-card-action,
   .tool-card-content {
     color: var(--color-text-muted);
+  }
+}
+
+/* ========== Loading state: A (border pulse) + E (text fade) ========== */
+
+/* Hide the right-side spinner/cube during loading */
+.base-tool-card-wrapper--loading-shimmer .tool-card-status-icon:has(.cube-loading),
+.base-tool-card-wrapper--loading-shimmer .tool-card-status-icon:has(svg.animate-spin) {
+  display: none !important;
+}
+
+/* E — icon + text fade together */
+.base-tool-card-wrapper--loading-shimmer .tool-card-icon-marks,
+.base-tool-card-wrapper--loading-shimmer .tool-card-action,
+.base-tool-card-wrapper--loading-shimmer .tool-card-content {
+  animation: tool-card-text-fade 1.6s ease-in-out infinite;
+}
+
+@keyframes tool-card-text-fade {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
   }
 }
 

@@ -106,7 +106,7 @@
   }
   
   &__title {
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     font-weight: $font-weight-medium;
     color: var(--color-text-primary);
     display: flex;
@@ -120,7 +120,7 @@
   }
   
   &__subtitle {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     display: flex;
     align-items: center;
@@ -219,7 +219,7 @@
     align-items: center;
     gap: $size-gap-1;
     padding: $size-gap-2;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     border-radius: $size-radius-sm;
     margin-top: $size-gap-2;
     
@@ -281,7 +281,7 @@
     }
     
     .bitfun-context-card__title {
-      font-size: $font-size-xs;
+      font-size: var(--font-size-xs);
     }
     
     .bitfun-context-card__preview,

@@ -127,16 +127,22 @@ export class StartupPage extends BasePage {
     try {
       console.log(`[StartupPage] Opening workspace: ${workspacePath}`);
 
-      // Call Tauri command directly via browser.execute
-      await browser.execute((path: string) => {
-        // @ts-ignore - Tauri API is available in the app
-        return window.__TAURI__.core.invoke('open_workspace', {
-          request: { path }
-        });
+      await browser.execute(async (path: string) => {
+        const { workspaceManager } = await import('/src/infrastructure/services/business/workspaceManager.ts');
+        await workspaceManager.openWorkspace(path);
       }, workspacePath);
 
-      // Wait for workspace to load
-      await this.wait(2000);
+      await browser.waitUntil(async () => {
+        return browser.execute(async (targetPath: string) => {
+          const { globalStateAPI } = await import('/src/shared/types/global-state.ts');
+          const currentWorkspace = await globalStateAPI.getCurrentWorkspace();
+          return currentWorkspace?.rootPath === targetPath;
+        }, workspacePath);
+      }, {
+        timeout: 15000,
+        interval: 500,
+        timeoutMsg: `Workspace did not become active: ${workspacePath}`,
+      });
 
       console.log('[StartupPage] Workspace opened successfully');
     } catch (error) {

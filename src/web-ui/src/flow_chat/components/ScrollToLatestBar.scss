@@ -12,27 +12,16 @@
   cursor: pointer;
   pointer-events: none;
   
-  // Default height: ChatInput active (box ~80px + bottom gap 16px = 96px, add 49px margin for content visibility)
-  height: 145px;
+  // Default height fallback (overridden by inline style when inputHeight is measured).
+  // Active non-expanded: ~80px input + 4px gap + 6px clearance + 24px gradient ≈ 114px.
+  height: 114px;
   
   transition: height 0.35s cubic-bezier(0.4, 0, 0.2, 1);
   
   // ========== ChatInput collapsed ==========
   &--input-collapsed {
-    // Pill height ~42px + bottom gap 16px = 58px, add 17px margin
-    height: 75px;
-  }
-  
-  // ========== ChatInput expanded ==========
-  &--input-expanded {
-    // Account for app headers and offsets
-    height: calc(100vh - 200px);
-    
-    // Keep content layer within visible area
-    .scroll-to-latest-bar__content {
-      top: auto;
-      bottom: 4px;
-    }
+    // Pill ~42px + 4px gap + 6px clearance + 24px gradient ≈ 76px (fallback only)
+    height: 76px;
   }
   
   // ========== Gradient background layer ==========
@@ -61,9 +50,10 @@
   }
   
   // ========== Divider content layer ==========
+  // bottom is driven by inline style (inputHeight + 4 + 6); CSS value is fallback only.
   &__content {
     position: absolute;
-    top: 4px;
+    bottom: 90px;
     left: 0;
     right: 0;
     pointer-events: auto;
@@ -71,57 +61,41 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 12px;
-    padding: 0 24px;
     
-    transition: opacity 0.2s ease;
+    transition: bottom 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
   }
   
-  // ========== Divider ==========
-  &__line {
-    flex: 1;
-    max-width: 120px;
-    height: 1px;
-    background: linear-gradient(
-      90deg,
-      transparent 0%,
-      rgba(96, 165, 250, 0.35) 50%,
-      transparent 100%
-    );
-  }
-  
-  // ========== Hint text ==========
-  &__text {
-    font-size: 11px;
-    font-weight: 400;
-    color: rgba(96, 165, 250, 0.6);
-    white-space: nowrap;
-    letter-spacing: 0.05em;
-    user-select: none;
+  // ========== Circle arrow button ==========
+  &__btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    border: 1.5px solid var(--border-base);
+    background: var(--color-bg-scene);
+    color: var(--color-text-muted);
+    cursor: pointer;
+    pointer-events: none;
+    padding: 0;
     
-    transition: color 0.2s ease;
+    transition: border-color 0.2s ease, color 0.2s ease, transform 0.15s ease;
   }
   
   // ========== Hover state ==========
   &:hover {
-    .scroll-to-latest-bar__text {
-      color: rgba(96, 165, 250, 0.85);
-    }
-    
-    .scroll-to-latest-bar__line {
-      background: linear-gradient(
-        90deg,
-        transparent 0%,
-        rgba(96, 165, 250, 0.5) 50%,
-        transparent 100%
-      );
+    .scroll-to-latest-bar__btn {
+      border-color: var(--border-medium);
+      color: var(--color-text-primary);
+      transform: translateY(1px);
     }
   }
   
   // ========== Active state ==========
   &:active {
-    .scroll-to-latest-bar__text {
-      color: rgba(96, 165, 250, 0.7);
+    .scroll-to-latest-bar__btn {
+      transform: translateY(2px);
     }
   }
   
@@ -129,8 +103,9 @@
   &:focus-visible {
     outline: none;
     
-    .scroll-to-latest-bar__text {
-      color: rgba(96, 165, 250, 0.9);
+    .scroll-to-latest-bar__btn {
+      border-color: var(--border-strong);
+      color: var(--color-text-primary);
     }
   }
 }
@@ -138,23 +113,15 @@
 // ========== Responsive tweaks ==========
 @media (max-width: 768px) {
   .scroll-to-latest-bar {
-    height: 135px;
+    height: 123px;
     
     &--input-collapsed {
-      height: 70px;
+      height: 58px;
     }
     
-    &__content {
-      gap: 10px;
-      padding: 0 16px;
-    }
-    
-    &__line {
-      max-width: 80px;
-    }
-    
-    &__text {
-      font-size: 10px;
+    &__btn {
+      width: 26px;
+      height: 26px;
     }
   }
 }

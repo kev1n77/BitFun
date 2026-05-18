@@ -41,7 +41,7 @@
       display: flex;
       align-items: center;
       gap: tokens.$size-gap-3;
-      font-size: tokens.$font-size-sm;
+      font-size: var(--font-size-sm);
       position: relative;
       z-index: 2;
 
@@ -100,7 +100,7 @@
   }
 
   &__name {
-    font-size: tokens.$font-size-sm;
+    font-size: var(--font-size-sm);
     font-weight: tokens.$font-weight-semibold;
     color: tokens.$color-text-primary;
     margin-bottom: 2px;
@@ -108,7 +108,7 @@
   }
 
   &__description {
-    font-size: tokens.$font-size-xs;
+    font-size: var(--font-size-xs);
     color: tokens.$color-text-muted;
     line-height: 1.4;
   }
@@ -175,7 +175,7 @@
   }
 
   &__input-label {
-    font-size: tokens.$font-size-xs;
+    font-size: var(--font-size-xs);
     font-weight: tokens.$font-weight-semibold;
     color: tokens.$color-text-secondary;
     margin-bottom: tokens.$size-gap-2;
@@ -194,7 +194,7 @@
 
     pre {
       margin: 0;
-      font-size: tokens.$font-size-xs;
+      font-size: var(--font-size-xs);
       color: tokens.$color-text-secondary;
       font-family: tokens.$font-family-mono;
       line-height: 1.5;
@@ -232,7 +232,7 @@
   }
 
   &__result-label {
-    font-size: tokens.$font-size-xs;
+    font-size: var(--font-size-xs);
     font-weight: tokens.$font-weight-semibold;
     color: tokens.$color-text-secondary;
     margin-bottom: tokens.$size-gap-2;
@@ -253,7 +253,7 @@
 
     pre {
       margin: 0;
-      font-size: tokens.$font-size-xs;
+      font-size: var(--font-size-xs);
       color: tokens.$color-text-secondary;
       font-family: tokens.$font-family-mono;
       line-height: 1.5;
@@ -284,7 +284,7 @@
   }
 
   &__error-message {
-    font-size: tokens.$font-size-sm;
+    font-size: var(--font-size-sm);
     color: tokens.$color-text-secondary;
     line-height: tokens.$line-height-base;
     flex: 1;

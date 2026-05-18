@@ -1,0 +1,43 @@
+[中文](AGENTS-CN.md) | **English**
+
+# AGENTS.md
+
+## Scope
+
+This file applies to `BitFun-Installer`. Use the top-level `AGENTS.md` for repository-wide rules.
+
+## What matters here
+
+`BitFun-Installer` is a separate Tauri + React app, not part of the main Cargo workspace.
+
+Important areas called out by the module README:
+
+- `src-tauri/src/installer/commands.rs`: Tauri IPC and uninstall execution
+- `src-tauri/src/installer/registry.rs`: Windows registry integration
+- `src-tauri/src/installer/shortcut.rs`: shortcut creation
+- `src-tauri/src/installer/extract.rs`: archive extraction
+- `src/hooks/useInstaller.ts`: frontend installer state flow
+
+Install flow:
+
+```text
+Language Select → Options → Progress → Model Setup → Theme Setup
+```
+
+## Commands
+
+```bash
+pnpm --dir BitFun-Installer run installer:dev
+pnpm --dir BitFun-Installer run tauri:dev
+pnpm --dir BitFun-Installer run type-check
+pnpm --dir BitFun-Installer run build
+pnpm --dir BitFun-Installer run installer:build
+```
+
+## Verification
+
+```bash
+pnpm --dir BitFun-Installer run type-check && pnpm --dir BitFun-Installer run installer:build
+```
+
+If you modify uninstall flow, also validate the uninstall mode entry points described in `BitFun-Installer/README.md`.

@@ -11,8 +11,7 @@
   .mcp-tool-info {
     display: flex;
     align-items: center;
-    gap: 8px;
-    flex-wrap: nowrap;
+    min-width: 0;
 
     .tool-name {
       font-weight: 600;
@@ -20,19 +19,6 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-    }
-
-    .server-tag {
-      display: inline-flex;
-      align-items: center;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 600;
-      flex-shrink: 0;
-      white-space: nowrap;
-      color: rgba(99, 102, 241, 0.75);
-      background: rgba(99, 102, 241, 0.08);
     }
   }
 
@@ -156,24 +142,6 @@
     .error-message {
       color: rgba(239, 68, 68, 0.9);
       font-size: 13px;
-      margin-bottom: 8px;
-    }
-
-    .error-meta {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 12px;
-      color: var(--tool-card-text-secondary);
-
-      .error-separator {
-        color: rgba(255, 255, 255, 0.3);
-      }
-
-      .error-tool,
-      .error-server {
-        color: rgba(239, 68, 68, 0.7);
-      }
     }
   }
 

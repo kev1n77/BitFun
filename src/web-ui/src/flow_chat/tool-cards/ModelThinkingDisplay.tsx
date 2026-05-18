@@ -98,9 +98,9 @@ export const ModelThinkingDisplay: React.FC<ModelThinkingDisplayProps> = ({ thin
     applyExpandedState(isExpanded, nextExpanded, setIsExpanded);
   };
 
-  const headerLabel = isExpanded
+  const headerLabel = (isExpanded
     ? (isActive ? t('toolCards.think.thinking') : t('toolCards.think.thinkingProcess'))
-    : contentLengthText;
+    : contentLengthText).replace(/ /g, '\u00A0');
 
   const wrapperClassName = [
     'flow-thinking-item',

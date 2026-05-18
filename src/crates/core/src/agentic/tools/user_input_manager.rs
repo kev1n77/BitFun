@@ -21,6 +21,12 @@ pub struct UserInputManager {
     channels: Arc<DashMap<String, oneshot::Sender<UserInputResponse>>>,
 }
 
+impl Default for UserInputManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UserInputManager {
     /// Create a new manager instance
     pub fn new() -> Self {

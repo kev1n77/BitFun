@@ -23,7 +23,7 @@
     display: flex;
     align-items: center;
     gap: $size-gap-2;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     font-weight: $font-weight-medium;
     color: var(--color-text-secondary);
   }
@@ -48,7 +48,7 @@
     align-items: center;
     gap: $size-gap-1;
     padding: 4px 8px;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-weight: $font-weight-medium;
     color: var(--color-text-muted);
     background: transparent;
@@ -106,14 +106,14 @@
   }
   
   &__empty-text {
-    font-size: $font-size-base;
+    font-size: var(--font-size-base);
     font-weight: $font-weight-medium;
     color: var(--color-text-muted);
     margin: 0 0 $size-gap-1;
   }
   
   &__empty-hint {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-disabled);
     margin: 0;
     max-width: 300px;

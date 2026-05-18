@@ -72,14 +72,6 @@ const WorkspaceBody: React.FC<WorkspaceBodyProps> = ({
     document.body.classList.add('bitfun-is-dragging-nav-collapse');
     document.body.classList.add('bitfun-is-resizing-nav');
 
-    const cleanup = () => {
-      document.body.classList.remove('bitfun-is-dragging-nav-collapse');
-      document.body.classList.remove('bitfun-is-resizing-nav');
-      document.body.classList.remove('bitfun-divider-hovered');
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-
     const handleMouseMove = (moveEvent: MouseEvent) => {
       if (hasCollapsed) return;
       const deltaX = moveEvent.clientX - startX;
@@ -97,6 +89,14 @@ const WorkspaceBody: React.FC<WorkspaceBodyProps> = ({
     };
 
     const handleMouseUp = () => cleanup();
+
+    function cleanup() {
+      document.body.classList.remove('bitfun-is-dragging-nav-collapse');
+      document.body.classList.remove('bitfun-is-resizing-nav');
+      document.body.classList.remove('bitfun-divider-hovered');
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    }
 
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);

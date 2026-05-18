@@ -110,45 +110,45 @@
   --mermaid-branch-label: #{$color-text-primary};
   
   // ==================== Background and container ====================
-  --mermaid-bg: #{$color-bg-primary};
+  --mermaid-bg: var(--color-bg-scene);
   --mermaid-container-border: #{$border-subtle};
 }
 
 // ==================== Light theme overrides ====================
-// Subtle blue-gray palette.
+// Neutral gray surfaces (aligned with bitfun-light accent).
 [data-theme-type="light"],
 [data-theme*="light"],
 .light {
-  // Node styles - subtle blue-gray.
-  --mermaid-node-fill: rgba(71, 102, 143, 0.08);
-  --mermaid-node-fill-hover: rgba(71, 102, 143, 0.14);
+  // Node styles
+  --mermaid-node-fill: rgba(15, 23, 42, 0.06);
+  --mermaid-node-fill-hover: rgba(15, 23, 42, 0.10);
   --mermaid-node-stroke: rgba(100, 116, 139, 0.35);
-  --mermaid-node-stroke-hover: rgba(90, 123, 178, 0.6);
+  --mermaid-node-stroke-hover: rgba(51, 65, 85, 0.55);
   --mermaid-node-text: #1e293b;
   
-  // Edges - soft blue-gray.
+  // Edges
   --mermaid-edge-stroke: rgba(100, 116, 139, 0.35);
-  --mermaid-edge-stroke-hover: rgba(90, 123, 178, 0.6);
+  --mermaid-edge-stroke-hover: rgba(51, 65, 85, 0.5);
   --mermaid-edge-label-bg: #f7f8fa;
   --mermaid-edge-label-border: rgba(100, 116, 139, 0.25);
   --mermaid-edge-label-text: #475569;
   --mermaid-arrow-color: #64748b;
   
-  // Subgraph/cluster - subtle blue-gray background.
-  --mermaid-cluster-fill: rgba(71, 102, 143, 0.05);
+  // Subgraph/cluster
+  --mermaid-cluster-fill: rgba(15, 23, 42, 0.04);
   --mermaid-cluster-stroke: rgba(100, 116, 139, 0.25);
   --mermaid-cluster-text: #475569;
   
-  // Highlight - calm blue-gray.
-  --mermaid-highlight-stroke: #5a7bb2;
-  --mermaid-highlight-glow: drop-shadow(0 0 6px rgba(90, 123, 178, 0.30));
-  --mermaid-selected-stroke: #4a6694;
+  // Highlight - slate (matches light theme focus / accent)
+  --mermaid-highlight-stroke: #334155;
+  --mermaid-highlight-glow: drop-shadow(0 0 6px rgba(15, 23, 42, 0.18));
+  --mermaid-selected-stroke: #1e293b;
   
   // Interaction effects
   --mermaid-hover-filter: brightness(0.97);
   
-  // Sequence diagram - blue-gray.
-  --mermaid-actor-fill: rgba(71, 102, 143, 0.08);
+  // Sequence diagram
+  --mermaid-actor-fill: rgba(15, 23, 42, 0.06);
   --mermaid-actor-stroke: rgba(100, 116, 139, 0.35);
   --mermaid-actor-text: #1e293b;
   --mermaid-signal-stroke: rgba(100, 116, 139, 0.35);
@@ -156,18 +156,18 @@
   --mermaid-note-fill: rgba(184, 134, 58, 0.12);
   --mermaid-note-stroke: rgba(192, 140, 66, 0.4);
   --mermaid-note-text: #92400e;
-  --mermaid-activation-fill: rgba(90, 123, 178, 0.15);
-  --mermaid-activation-stroke: rgba(90, 123, 178, 0.4);
+  --mermaid-activation-fill: rgba(15, 23, 42, 0.10);
+  --mermaid-activation-stroke: rgba(51, 65, 85, 0.35);
   
-  // Gantt chart - blue-gray background.
+  // Gantt chart
   --mermaid-section-fill: #f7f8fa;
-  --mermaid-section-alt-fill: #f0f4f8;
+  --mermaid-section-alt-fill: #f0f1f3;
   --mermaid-grid-stroke: rgba(100, 116, 139, 0.15);
   --mermaid-task-text: #1e293b;
   --mermaid-done-fill: rgba(91, 154, 111, 0.15);
   --mermaid-done-stroke: #5b9a6f;
-  --mermaid-active-fill: rgba(90, 123, 178, 0.15);
-  --mermaid-active-stroke: #5a7bb2;
+  --mermaid-active-fill: rgba(15, 23, 42, 0.08);
+  --mermaid-active-stroke: #334155;
   --mermaid-crit-fill: rgba(194, 101, 101, 0.15);
   --mermaid-crit-stroke: #c26565;
   
@@ -175,10 +175,10 @@
   --mermaid-pie-stroke: #f7f8fa;
   --mermaid-pie-title-text: #1e293b;
   --mermaid-pie-legend-text: #475569;
-  --mermaid-pie-1: #5a7bb2;
+  --mermaid-pie-1: #475569;
   
-  // Class diagram - blue-gray.
-  --mermaid-class-fill: rgba(71, 102, 143, 0.08);
+  // Class diagram
+  --mermaid-class-fill: rgba(15, 23, 42, 0.06);
   --mermaid-class-stroke: rgba(100, 116, 139, 0.35);
   --mermaid-class-text: #1e293b;
   --mermaid-class-divider: rgba(100, 116, 139, 0.20);
@@ -188,7 +188,7 @@
   --mermaid-branch-label: #1e293b;
   
   // Background
-  --mermaid-bg: #f7f8fa;
+  --mermaid-bg: var(--color-bg-scene);
   --mermaid-container-border: rgba(100, 116, 139, 0.18);
 }
 
@@ -245,10 +245,4 @@
   stroke: var(--mermaid-highlight-stroke);
   stroke-dasharray: none;
   filter: var(--mermaid-highlight-glow);
-}
-
-/// Interactive element styles
-@mixin mermaid-interactive {
-  cursor: pointer;
-  transition: all var(--mermaid-transition-duration) var(--mermaid-transition-easing);
 }

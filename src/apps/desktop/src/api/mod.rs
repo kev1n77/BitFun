@@ -1,16 +1,19 @@
 //! API layer module
 
+pub mod acp_client_api;
 pub mod agentic_api;
-pub mod ai_memory_api;
-pub mod ai_rules_api;
+pub mod announcement_api;
 pub mod app_state;
 pub mod browser_api;
+pub mod browser_control_api;
 pub mod btw_api;
 pub mod clipboard_file_api;
 pub mod commands;
+pub mod computer_use_api;
 pub mod config_api;
 pub mod context_upload_api;
 pub mod cron_api;
+pub mod debug_api;
 pub mod diff_api;
 pub mod dto;
 pub mod editor_ai_api;
@@ -22,10 +25,14 @@ pub mod lsp_api;
 pub mod lsp_workspace_api;
 pub mod mcp_api;
 pub mod miniapp_api;
+pub mod path_target;
 pub mod project_context_api;
 pub mod remote_connect_api;
+pub mod review_platform_api;
 pub mod runtime_api;
+pub mod search_api;
 pub mod session_api;
+pub mod session_storage_path;
 pub mod skill_api;
 pub mod snapshot_service;
 pub mod ssh_api;
@@ -34,7 +41,7 @@ pub mod storage_commands;
 pub mod subagent_api;
 pub mod system_api;
 pub mod terminal_api;
-pub mod token_usage_api;
 pub mod tool_api;
+pub mod workspace_activation;
 
 pub use app_state::{AppState, AppStatistics, HealthStatus, RemoteWorkspace};

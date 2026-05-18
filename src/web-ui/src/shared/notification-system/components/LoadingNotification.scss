@@ -42,7 +42,7 @@
 
   
   &__spinner {
-    color: var(--color-info);
+    color: #ca8a04;
     animation: bitfun-spin 1s linear infinite;
   }
 
@@ -75,7 +75,7 @@
   }
 
   &__title {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-weight: $font-weight-medium;
     color: var(--color-text-primary);
     margin-bottom: 2px;

@@ -2,22 +2,50 @@
 //!
 //! This module manages SSH connections using the pure-Russ SSH implementation
 
+use crate::service::remote_ssh::password_vault::SSHPasswordVault;
 use crate::service::remote_ssh::types::{
-    SavedConnection, ServerInfo, SSHConnectionConfig, SSHConnectionResult, SSHAuthMethod,
-    SSHConfigEntry, SSHConfigLookupResult,
+    SSHAuthMethod, SSHCommandOptions, SSHCommandResult, SSHConfigEntry, SSHConfigLookupResult,
+    SSHConnectionConfig, SSHConnectionResult, SavedConnection, ServerInfo,
 };
 use anyhow::{anyhow, Context};
+use async_trait::async_trait;
 use russh::client::{DisconnectReason, Handle, Handler, Msg};
+use russh::Sig;
 use russh_keys::key::PublicKey;
 use russh_keys::PublicKeyBase64;
 use russh_sftp::client::fs::ReadDir;
 use russh_sftp::client::SftpSession;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::net::TcpStream;
-use async_trait::async_trait;
 #[cfg(feature = "ssh_config")]
 use ssh_config::SSHConfig;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::sync::Once;
+use tokio::net::TcpStream;
+use tokio::time::{Duration, Instant};
+
+const SSH_COMMAND_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const SSH_COMMAND_INTERRUPT_DRAIN_GRACE: Duration = Duration::from_millis(500);
+
+/// OpenSSH keyword matching is case-insensitive, but `ssh_config` stores keys as written in the file
+/// (e.g. `HostName` vs `Hostname`). Resolve by ASCII case-insensitive compare.
+#[cfg(feature = "ssh_config")]
+fn ssh_cfg_get<'a>(
+    settings: &std::collections::HashMap<&'a str, &'a str>,
+    canonical_key: &str,
+) -> Option<&'a str> {
+    settings
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(canonical_key))
+        .map(|(_, v)| *v)
+}
+
+#[cfg(feature = "ssh_config")]
+fn ssh_cfg_has(settings: &std::collections::HashMap<&str, &str>, canonical_key: &str) -> bool {
+    settings
+        .keys()
+        .any(|k| k.eq_ignore_ascii_case(canonical_key))
+}
 
 /// Known hosts entry
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -37,6 +65,13 @@ struct ActiveConnection {
     sftp_session: Arc<tokio::sync::RwLock<Option<Arc<SftpSession>>>>,
     #[allow(dead_code)]
     server_key: Option<PublicKey>,
+    /// Liveness flag; flipped to false from `SSHHandler::disconnected`.
+    /// Allows `is_connected` and SFTP/exec entry points to detect a dead session
+    /// without waiting for the next failed I/O.
+    alive: Arc<AtomicBool>,
+    /// Per-connection lock to serialize transparent reconnect attempts and
+    /// avoid stampedes when multiple SFTP/exec calls hit a dead session at once.
+    reconnect_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// SSH client handler with host key verification
@@ -44,7 +79,7 @@ struct SSHHandler {
     /// Expected host key (if connecting to known host)
     expected_key: Option<(String, u16, PublicKey)>,
     /// Callback for new host key verification
-    verify_callback: Option<Box<dyn Fn(String, u16, &PublicKey) -> bool + Send + Sync>>,
+    verify_callback: Option<Box<HostKeyVerifyCallback>>,
     /// Known hosts storage for verification
     known_hosts: Option<Arc<tokio::sync::RwLock<HashMap<String, KnownHostEntry>>>>,
     /// Host info for known hosts lookup
@@ -55,7 +90,12 @@ struct SSHHandler {
     /// surface them after connect_stream() returns.
     /// Uses std::sync::Mutex so it can be read from sync map_err closures.
     disconnect_reason: Arc<std::sync::Mutex<Option<String>>>,
+    /// Shared liveness flag, flipped to false on disconnect so the manager
+    /// can detect dead sessions and trigger transparent reconnect.
+    alive: Arc<AtomicBool>,
 }
+
+type HostKeyVerifyCallback = dyn Fn(String, u16, &PublicKey) -> bool + Send + Sync;
 
 impl SSHHandler {
     #[allow(dead_code)]
@@ -67,6 +107,7 @@ impl SSHHandler {
             host: None,
             port: None,
             disconnect_reason: Arc::new(std::sync::Mutex::new(None)),
+            alive: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -79,6 +120,7 @@ impl SSHHandler {
             host: None,
             port: None,
             disconnect_reason: Arc::new(std::sync::Mutex::new(None)),
+            alive: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -94,6 +136,7 @@ impl SSHHandler {
             host: None,
             port: None,
             disconnect_reason: Arc::new(std::sync::Mutex::new(None)),
+            alive: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -101,8 +144,9 @@ impl SSHHandler {
         host: String,
         port: u16,
         known_hosts: Arc<tokio::sync::RwLock<HashMap<String, KnownHostEntry>>>,
-    ) -> (Self, Arc<std::sync::Mutex<Option<String>>>) {
+    ) -> (Self, Arc<std::sync::Mutex<Option<String>>>, Arc<AtomicBool>) {
         let disconnect_reason = Arc::new(std::sync::Mutex::new(None));
+        let alive = Arc::new(AtomicBool::new(true));
         let handler = Self {
             expected_key: None,
             verify_callback: None,
@@ -110,8 +154,9 @@ impl SSHHandler {
             host: Some(host),
             port: Some(port),
             disconnect_reason: disconnect_reason.clone(),
+            alive: alive.clone(),
         };
-        (handler, disconnect_reason)
+        (handler, disconnect_reason, alive)
     }
 }
 
@@ -154,11 +199,19 @@ impl Handler for SSHHandler {
                 log::debug!("Server key matches expected key for {}:{}", host, port);
                 return Ok(true);
             }
-            log::warn!("Server key mismatch for {}:{}. Expected fingerprint: {}, got: {}",
-                host, port, expected.fingerprint(), server_fingerprint);
+            log::warn!(
+                "Server key mismatch for {}:{}. Expected fingerprint: {}, got: {}",
+                host,
+                port,
+                expected.fingerprint(),
+                server_fingerprint
+            );
             return Err(HandlerError(format!(
                 "Host key mismatch for {}:{}: expected {}, got {}",
-                host, port, expected.fingerprint(), server_fingerprint
+                host,
+                port,
+                expected.fingerprint(),
+                server_fingerprint
             )));
         }
 
@@ -177,7 +230,10 @@ impl Handler for SSHHandler {
                     } else {
                         log::warn!(
                             "Host key changed for {}:{}. Expected: {}, got: {}",
-                            host, port, stored_fingerprint, server_fingerprint
+                            host,
+                            port,
+                            stored_fingerprint,
+                            server_fingerprint
                         );
                         return Err(HandlerError(format!(
                             "Host key changed for {}:{} — stored fingerprint {} does not match server fingerprint {}. \
@@ -197,7 +253,9 @@ impl Handler for SSHHandler {
                 log::debug!("Server key verified via callback for {}:{}", host, port);
                 return Ok(true);
             }
-            return Err(HandlerError("Host key rejected by verify callback".to_string()));
+            return Err(HandlerError(
+                "Host key rejected by verify callback".to_string(),
+            ));
         }
 
         // 4. First time connection - accept the key (like standard SSH client's StrictHostKeyChecking=accept-new)
@@ -226,10 +284,18 @@ impl Handler for SSHHandler {
                 format!("Connection closed with error: {}", e)
             }
         };
-        log::warn!("SSH disconnected ({}:{}): {}", self.host.as_deref().unwrap_or("?"), self.port.unwrap_or(22), msg);
+        log::warn!(
+            "SSH disconnected ({}:{}): {}",
+            self.host.as_deref().unwrap_or("?"),
+            self.port.unwrap_or(22),
+            msg
+        );
         if let Ok(mut guard) = self.disconnect_reason.lock() {
             *guard = Some(msg);
         }
+        // Flip the shared liveness flag so the manager can detect the dead
+        // session and trigger transparent reconnect on the next SFTP/exec call.
+        self.alive.store(false, Ordering::SeqCst);
         // Propagate errors so russh surfaces them; swallow clean server disconnect.
         match reason {
             DisconnectReason::ReceivedDisconnect(_) => Ok(()),
@@ -248,8 +314,10 @@ pub struct SSHConnectionManager {
     known_hosts: Arc<tokio::sync::RwLock<HashMap<String, KnownHostEntry>>>,
     known_hosts_path: std::path::PathBuf,
     /// Remote workspace persistence (multiple workspaces)
-    remote_workspaces: Arc<tokio::sync::RwLock<Vec<crate::service::remote_ssh::types::RemoteWorkspace>>>,
+    remote_workspaces:
+        Arc<tokio::sync::RwLock<Vec<crate::service::remote_ssh::types::RemoteWorkspace>>>,
     remote_workspace_path: std::path::PathBuf,
+    password_vault: std::sync::Arc<SSHPasswordVault>,
 }
 
 impl SSHConnectionManager {
@@ -258,6 +326,7 @@ impl SSHConnectionManager {
         let config_path = data_dir.join("ssh_connections.json");
         let known_hosts_path = data_dir.join("known_hosts");
         let remote_workspace_path = data_dir.join("remote_workspace.json");
+        let password_vault = std::sync::Arc::new(SSHPasswordVault::new(data_dir));
         Self {
             connections: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             saved_connections: Arc::new(tokio::sync::RwLock::new(Vec::new())),
@@ -266,6 +335,7 @@ impl SSHConnectionManager {
             known_hosts_path,
             remote_workspaces: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             remote_workspace_path,
+            password_vault,
         }
     }
 
@@ -276,8 +346,8 @@ impl SSHConnectionManager {
         }
 
         let content = tokio::fs::read_to_string(&self.known_hosts_path).await?;
-        let entries: Vec<KnownHostEntry> = serde_json::from_str(&content)
-            .context("Failed to parse known hosts")?;
+        let entries: Vec<KnownHostEntry> =
+            serde_json::from_str(&content).context("Failed to parse known hosts")?;
 
         let mut guard = self.known_hosts.write().await;
         for entry in entries {
@@ -303,13 +373,23 @@ impl SSHConnectionManager {
     }
 
     /// Add a known host
-    pub async fn add_known_host(&self, host: String, port: u16, key: &PublicKey) -> anyhow::Result<()> {
+    pub async fn add_known_host(
+        &self,
+        host: String,
+        port: u16,
+        key: &PublicKey,
+    ) -> anyhow::Result<()> {
         let entry = KnownHostEntry {
             host: host.clone(),
             port,
             key_type: format!("{:?}", key.name()),
             fingerprint: key.fingerprint(),
-            public_key: key.public_key_bytes().to_vec().iter().map(|b| format!("{:02x}", b)).collect(),
+            public_key: key
+                .public_key_bytes()
+                .to_vec()
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect(),
         };
 
         let key = format!("{}:{}", host, port);
@@ -361,14 +441,25 @@ impl SSHConnectionManager {
 
         let content = tokio::fs::read_to_string(&self.remote_workspace_path).await?;
         // Try array format first, fall back to single-object for backward compat
-        let workspaces: Vec<crate::service::remote_ssh::types::RemoteWorkspace> =
+        let mut workspaces: Vec<crate::service::remote_ssh::types::RemoteWorkspace> =
             serde_json::from_str(&content)
                 .or_else(|_| {
                     // Legacy: single workspace object
-                    serde_json::from_str::<crate::service::remote_ssh::types::RemoteWorkspace>(&content)
-                        .map(|ws| vec![ws])
+                    serde_json::from_str::<crate::service::remote_ssh::types::RemoteWorkspace>(
+                        &content,
+                    )
+                    .map(|ws| vec![ws])
                 })
                 .context("Failed to parse remote workspace(s)")?;
+
+        let before = workspaces.len();
+        workspaces.retain(|w| !w.connection_id.is_empty() && !w.remote_path.is_empty());
+        if workspaces.len() < before {
+            log::warn!(
+                "Dropped {} persisted remote workspace(s) with empty connectionId or remotePath",
+                before - workspaces.len()
+            );
+        }
 
         let mut guard = self.remote_workspaces.write().await;
         *guard = workspaces;
@@ -389,32 +480,97 @@ impl SSHConnectionManager {
         Ok(())
     }
 
-    /// Add/update a persisted remote workspace
-    pub async fn set_remote_workspace(&self, workspace: crate::service::remote_ssh::types::RemoteWorkspace) -> anyhow::Result<()> {
+    /// Add/update a persisted remote workspace (key = `connection_id` + `remote_path`).
+    pub async fn set_remote_workspace(
+        &self,
+        mut workspace: crate::service::remote_ssh::types::RemoteWorkspace,
+    ) -> anyhow::Result<()> {
+        workspace.remote_path =
+            crate::service::remote_ssh::workspace_state::normalize_remote_workspace_path(
+                &workspace.remote_path,
+            );
         {
             let mut guard = self.remote_workspaces.write().await;
-            // Replace existing entry with same remote_path, or append
-            guard.retain(|w| w.remote_path != workspace.remote_path);
+            let rp = workspace.remote_path.clone();
+            let cid = workspace.connection_id.clone();
+            guard.retain(|w| {
+                !(w.connection_id == cid
+                    && crate::service::remote_ssh::workspace_state::normalize_remote_workspace_path(
+                        &w.remote_path,
+                    ) == rp)
+            });
             guard.push(workspace);
         }
         self.save_remote_workspaces().await
     }
 
     /// Get all persisted remote workspaces
-    pub async fn get_remote_workspaces(&self) -> Vec<crate::service::remote_ssh::types::RemoteWorkspace> {
+    pub async fn get_remote_workspaces(
+        &self,
+    ) -> Vec<crate::service::remote_ssh::types::RemoteWorkspace> {
         self.remote_workspaces.read().await.clone()
     }
 
+    /// Drop persisted remote workspace restore entries whose saved SSH profile is gone.
+    pub async fn prune_remote_workspaces_without_saved_connections(
+        &self,
+    ) -> anyhow::Result<Vec<crate::service::remote_ssh::types::RemoteWorkspace>> {
+        let saved_ids: Vec<String> = self
+            .saved_connections
+            .read()
+            .await
+            .iter()
+            .map(|c| c.id.clone())
+            .collect();
+
+        let removed = {
+            let mut guard = self.remote_workspaces.write().await;
+            let mut removed = Vec::new();
+            guard.retain(|w| {
+                let keep = saved_ids.iter().any(|id| id == &w.connection_id);
+                if !keep {
+                    removed.push(w.clone());
+                }
+                keep
+            });
+            removed
+        };
+
+        if !removed.is_empty() {
+            log::warn!(
+                "Removed {} persisted remote workspace(s) without saved SSH connection",
+                removed.len()
+            );
+            self.save_remote_workspaces().await?;
+        }
+
+        Ok(removed)
+    }
+
     /// Get first persisted remote workspace (legacy compat)
-    pub async fn get_remote_workspace(&self) -> Option<crate::service::remote_ssh::types::RemoteWorkspace> {
+    pub async fn get_remote_workspace(
+        &self,
+    ) -> Option<crate::service::remote_ssh::types::RemoteWorkspace> {
         self.remote_workspaces.read().await.first().cloned()
     }
 
-    /// Remove a specific remote workspace by path
-    pub async fn remove_remote_workspace(&self, remote_path: &str) -> anyhow::Result<()> {
+    /// Remove a specific remote workspace by **connection** + **remote path** (not path alone).
+    pub async fn remove_remote_workspace(
+        &self,
+        connection_id: &str,
+        remote_path: &str,
+    ) -> anyhow::Result<()> {
+        let rp = crate::service::remote_ssh::workspace_state::normalize_remote_workspace_path(
+            remote_path,
+        );
         {
             let mut guard = self.remote_workspaces.write().await;
-            guard.retain(|w| w.remote_path != remote_path);
+            guard.retain(|w| {
+                !(w.connection_id == connection_id
+                    && crate::service::remote_ssh::workspace_state::normalize_remote_workspace_path(
+                        &w.remote_path,
+                    ) == rp)
+            });
         }
         self.save_remote_workspaces().await
     }
@@ -443,14 +599,20 @@ impl SSHConnectionManager {
 
         if !ssh_config_path.exists() {
             log::debug!("SSH config not found at {:?}", ssh_config_path);
-            return SSHConfigLookupResult { found: false, config: None };
+            return SSHConfigLookupResult {
+                found: false,
+                config: None,
+            };
         }
 
         let config_content = match tokio::fs::read_to_string(&ssh_config_path).await {
             Ok(c) => c,
             Err(e) => {
                 log::warn!("Failed to read SSH config: {:?}", e);
-                return SSHConfigLookupResult { found: false, config: None };
+                return SSHConfigLookupResult {
+                    found: false,
+                    config: None,
+                };
             }
         };
 
@@ -458,7 +620,10 @@ impl SSHConnectionManager {
             Ok(c) => c,
             Err(e) => {
                 log::warn!("Failed to parse SSH config: {:?}", e);
-                return SSHConfigLookupResult { found: false, config: None };
+                return SSHConfigLookupResult {
+                    found: false,
+                    config: None,
+                };
             }
         };
 
@@ -467,23 +632,28 @@ impl SSHConnectionManager {
 
         if host_settings.is_empty() {
             log::debug!("No SSH config found for host: {}", host);
-            return SSHConfigLookupResult { found: false, config: None };
+            return SSHConfigLookupResult {
+                found: false,
+                config: None,
+            };
         }
 
-        log::debug!("Found SSH config for host: {} with {} settings", host, host_settings.len());
+        log::debug!(
+            "Found SSH config for host: {} with {} settings",
+            host,
+            host_settings.len()
+        );
 
-        // Extract fields from the HashMap - keys are case-insensitive
-        let hostname = host_settings.get("Hostname").map(|s| s.to_string());
-        let user = host_settings.get("User").map(|s| s.to_string());
-        let port = host_settings.get("Port")
-            .and_then(|s| s.parse::<u16>().ok());
-        let identity_file = host_settings.get("IdentityFile")
-            .map(|f| shellexpand::tilde(f).to_string());
+        // Canonical OpenSSH names; lookup is case-insensitive (see ssh_cfg_get).
+        let hostname = ssh_cfg_get(&host_settings, "HostName").map(|s| s.to_string());
+        let user = ssh_cfg_get(&host_settings, "User").map(|s| s.to_string());
+        let port = ssh_cfg_get(&host_settings, "Port").and_then(|s| s.parse::<u16>().ok());
+        let identity_file =
+            ssh_cfg_get(&host_settings, "IdentityFile").map(|f| shellexpand::tilde(f).to_string());
 
-        // Check if proxy command is set (agent forwarding vs proxy command)
-        let has_proxy_command = host_settings.contains_key("ProxyCommand");
+        let has_proxy_command = ssh_cfg_has(&host_settings, "ProxyCommand");
 
-        return SSHConfigLookupResult {
+        SSHConfigLookupResult {
             found: true,
             config: Some(SSHConfigEntry {
                 host: host.to_string(),
@@ -493,12 +663,15 @@ impl SSHConnectionManager {
                 identity_file,
                 agent: if has_proxy_command { None } else { Some(true) },
             }),
-        };
+        }
     }
 
     #[cfg(not(feature = "ssh_config"))]
     pub async fn get_ssh_config(&self, _host: &str) -> SSHConfigLookupResult {
-        SSHConfigLookupResult { found: false, config: None }
+        SSHConfigLookupResult {
+            found: false,
+            config: None,
+        }
     }
 
     /// List all hosts defined in ~/.ssh/config
@@ -552,13 +725,12 @@ impl SSHConnectionManager {
                 // Query config for this host to get details
                 let settings = config.query(alias);
 
-                let identity_file = settings.get("IdentityFile")
+                let identity_file = ssh_cfg_get(&settings, "IdentityFile")
                     .map(|f| shellexpand::tilde(f).to_string());
 
-                let hostname = settings.get("Hostname").map(|s| s.to_string());
-                let user = settings.get("User").map(|s| s.to_string());
-                let port = settings.get("Port")
-                    .and_then(|s| s.parse::<u16>().ok());
+                let hostname = ssh_cfg_get(&settings, "HostName").map(|s| s.to_string());
+                let user = ssh_cfg_get(&settings, "User").map(|s| s.to_string());
+                let port = ssh_cfg_get(&settings, "Port").and_then(|s| s.parse::<u16>().ok());
 
                 hosts.push(SSHConfigEntry {
                     host: alias.to_string(),
@@ -582,7 +754,11 @@ impl SSHConnectionManager {
 
     /// Load saved connections from disk
     pub async fn load_saved_connections(&self) -> anyhow::Result<()> {
-        log::info!("load_saved_connections: config_path={:?}, exists={}", self.config_path, self.config_path.exists());
+        log::info!(
+            "load_saved_connections: config_path={:?}, exists={}",
+            self.config_path,
+            self.config_path.exists()
+        );
 
         if !self.config_path.exists() {
             return Ok(());
@@ -590,14 +766,80 @@ impl SSHConnectionManager {
 
         let content = tokio::fs::read_to_string(&self.config_path).await?;
         log::info!("load_saved_connections: content={}", content);
-        let saved: Vec<SavedConnection> = serde_json::from_str(&content)
-            .context("Failed to parse saved SSH connections")?;
+        let saved: Vec<SavedConnection> =
+            serde_json::from_str(&content).context("Failed to parse saved SSH connections")?;
 
         let mut guard = self.saved_connections.write().await;
         *guard = saved;
 
+        // Migrate old-format connection IDs that include the port
+        // (e.g. "ssh-root@host:22") to the new stable format ("ssh-root@host").
+        // This ensures historical sessions can still find the connection after
+        // the user changes the port.
+        let mut migrated_ids = Vec::new();
+        for conn in guard.iter_mut() {
+            if let Some(new_id) = Self::migrate_connection_id(&conn.id) {
+                let old_id = conn.id.clone();
+                log::info!("Migrating saved connection ID: {} -> {}", old_id, new_id);
+                conn.id = new_id.clone();
+                migrated_ids.push((old_id, new_id));
+            }
+        }
+        if !migrated_ids.is_empty() {
+            drop(guard);
+            for (old_id, new_id) in &migrated_ids {
+                if let Err(e) = self.password_vault.migrate_entry(old_id, new_id).await {
+                    log::warn!(
+                        "Failed to migrate SSH password vault entry from {} to {}: {}",
+                        old_id,
+                        new_id,
+                        e
+                    );
+                }
+            }
+            // Persist the migrated IDs to disk.
+            if let Err(e) = self.save_connections().await {
+                log::warn!("Failed to persist migrated connection IDs: {}", e);
+            }
+        } else {
+            drop(guard);
+        }
+
+        let removed = self.prune_saved_connections_without_credentials().await?;
+        if !removed.is_empty() {
+            log::warn!(
+                "Removed {} saved SSH connection(s) with unavailable local credentials during load",
+                removed.len()
+            );
+        }
+
+        let guard = self.saved_connections.read().await;
         log::info!("load_saved_connections: loaded {} connections", guard.len());
         Ok(())
+    }
+
+    /// If `id` follows the old format `ssh-{user}@{host}:{port}`, return the
+    /// new stable format `ssh-{user}@{host}`.  Otherwise return `None`.
+    fn migrate_connection_id(id: &str) -> Option<String> {
+        if !id.starts_with("ssh-") {
+            return None;
+        }
+        let rest = &id[4..]; // "{user}@{host}:{port}"
+        let at_pos = rest.find('@')?;
+        let colon_pos = rest.rfind(':')?;
+        if colon_pos <= at_pos {
+            return None;
+        }
+        // Verify the suffix after the last colon is a valid port number.
+        let port_str = &rest[colon_pos + 1..];
+        if port_str.parse::<u16>().is_ok() {
+            let stable = format!("ssh-{}", &rest[..colon_pos]);
+            // Only return if the ID actually changes (i.e. the port was present).
+            if stable != id {
+                return Some(stable);
+            }
+        }
+        None
     }
 
     /// Save connections to disk
@@ -613,23 +855,118 @@ impl SSHConnectionManager {
         }
 
         tokio::fs::write(&self.config_path, content).await?;
-        log::info!("save_connections: saved {} connections to {:?}", guard.len(), self.config_path);
+        log::info!(
+            "save_connections: saved {} connections to {:?}",
+            guard.len(),
+            self.config_path
+        );
         Ok(())
     }
 
     /// Get list of saved connections
     pub async fn get_saved_connections(&self) -> Vec<SavedConnection> {
+        if let Err(e) = self.prune_saved_connections_without_credentials().await {
+            log::warn!("Failed to prune unavailable saved SSH connections: {}", e);
+        }
         self.saved_connections.read().await.clone()
+    }
+
+    /// Remove saved profiles that cannot reconnect without user input, plus their
+    /// persisted remote-workspace restore records. Passwords from older clients
+    /// may not have a vault entry after an upgrade; keeping those profiles causes
+    /// startup restore loops and hides matching SSH config hosts in the dialog.
+    pub async fn prune_saved_connections_without_credentials(&self) -> anyhow::Result<Vec<String>> {
+        let saved_snapshot = self.saved_connections.read().await.clone();
+        let mut removed_ids = Vec::new();
+        for conn in saved_snapshot {
+            if !matches!(
+                conn.auth_type,
+                crate::service::remote_ssh::types::SavedAuthType::Password
+            ) {
+                continue;
+            }
+            match self.password_vault.load(&conn.id).await {
+                Ok(Some(_)) => {}
+                Ok(None) => removed_ids.push(conn.id),
+                Err(e) => {
+                    log::warn!(
+                        "Treating saved SSH password profile as unavailable: id={}, error={}",
+                        conn.id,
+                        e
+                    );
+                    removed_ids.push(conn.id);
+                }
+            }
+        }
+
+        if removed_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let removed_ids = {
+            let mut guard = self.saved_connections.write().await;
+            guard.retain(|conn| !removed_ids.iter().any(|id| id == &conn.id));
+            removed_ids
+        };
+
+        for id in &removed_ids {
+            if let Err(e) = self.password_vault.remove(id).await {
+                log::warn!(
+                    "Failed to remove SSH password vault entry for {}: {}",
+                    id,
+                    e
+                );
+            }
+        }
+        self.remove_remote_workspaces_for_connections(&removed_ids)
+            .await?;
+        self.save_connections().await?;
+        Ok(removed_ids)
+    }
+
+    /// SSH `host` field from the saved profile with this `connection_id` (works when not connected).
+    /// Used to resolve session mirror paths when workspace metadata omitted `sshHost`.
+    pub async fn get_saved_host_for_connection_id(&self, connection_id: &str) -> Option<String> {
+        let cid = connection_id.trim();
+        if cid.is_empty() {
+            return None;
+        }
+        let guard = self.saved_connections.read().await;
+        guard
+            .iter()
+            .find(|c| c.id == cid)
+            .map(|c| c.host.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 
     /// Save a connection configuration
     pub async fn save_connection(&self, config: &SSHConnectionConfig) -> anyhow::Result<()> {
+        match &config.auth {
+            SSHAuthMethod::Password { password } => {
+                if password.is_empty() && self.password_vault.load(&config.id).await?.is_none() {
+                    anyhow::bail!(
+                        "Cannot save password SSH connection without a password or stored vault entry"
+                    );
+                }
+                if !password.is_empty() {
+                    self.password_vault
+                        .store(&config.id, password)
+                        .await
+                        .with_context(|| format!("store ssh password vault for {}", config.id))?;
+                }
+            }
+            SSHAuthMethod::PrivateKey { .. } => {
+                self.password_vault.remove(&config.id).await?;
+            }
+        }
+
         let mut guard = self.saved_connections.write().await;
 
-        // Remove existing entry with same id OR same host+port+username (dedup)
+        // Remove existing entry with same id OR same host+username (dedup).
+        // Using host+username (without port) so that changing the port replaces
+        // the old entry instead of creating a duplicate.
         guard.retain(|c| {
-            c.id != config.id
-                && !(c.host == config.host && c.port == config.port && c.username == config.username)
+            c.id != config.id && !(c.host == config.host && c.username == config.username)
         });
 
         // Add new entry
@@ -640,16 +977,41 @@ impl SSHConnectionManager {
             port: config.port,
             username: config.username.clone(),
             auth_type: match &config.auth {
-                SSHAuthMethod::Password { .. } => crate::service::remote_ssh::types::SavedAuthType::Password,
-                SSHAuthMethod::PrivateKey { key_path, .. } => crate::service::remote_ssh::types::SavedAuthType::PrivateKey { key_path: key_path.clone() },
-                SSHAuthMethod::Agent => crate::service::remote_ssh::types::SavedAuthType::Agent,
+                SSHAuthMethod::Password { .. } => {
+                    crate::service::remote_ssh::types::SavedAuthType::Password
+                }
+                SSHAuthMethod::PrivateKey { key_path, .. } => {
+                    crate::service::remote_ssh::types::SavedAuthType::PrivateKey {
+                        key_path: key_path.clone(),
+                    }
+                }
             },
             default_workspace: config.default_workspace.clone(),
             last_connected: Some(chrono::Utc::now().timestamp() as u64),
         });
 
         drop(guard);
+
         self.save_connections().await
+    }
+
+    /// Decrypt stored password for password-based saved connections (auto-reconnect).
+    pub async fn load_stored_password(
+        &self,
+        connection_id: &str,
+    ) -> anyhow::Result<Option<String>> {
+        self.password_vault.load(connection_id).await
+    }
+
+    /// Whether the vault has a stored password for this connection (skip auto-reconnect when false).
+    pub async fn has_stored_password(&self, connection_id: &str) -> bool {
+        match self.load_stored_password(connection_id).await {
+            Ok(opt) => opt.is_some(),
+            Err(e) => {
+                log::warn!("has_stored_password failed for {}: {}", connection_id, e);
+                false
+            }
+        }
     }
 
     /// Delete a saved connection
@@ -657,7 +1019,33 @@ impl SSHConnectionManager {
         let mut guard = self.saved_connections.write().await;
         guard.retain(|c| c.id != connection_id);
         drop(guard);
+        self.password_vault.remove(connection_id).await?;
+        self.remove_remote_workspaces_for_connections(&[connection_id.to_string()])
+            .await?;
         self.save_connections().await
+    }
+
+    async fn remove_remote_workspaces_for_connections(
+        &self,
+        connection_ids: &[String],
+    ) -> anyhow::Result<()> {
+        if connection_ids.is_empty() {
+            return Ok(());
+        }
+        let removed = {
+            let mut guard = self.remote_workspaces.write().await;
+            let before = guard.len();
+            guard.retain(|w| !connection_ids.iter().any(|id| id == &w.connection_id));
+            before - guard.len()
+        };
+        if removed > 0 {
+            log::warn!(
+                "Removed {} persisted remote workspace(s) for unavailable SSH connection(s)",
+                removed
+            );
+            self.save_remote_workspaces().await?;
+        }
+        Ok(())
     }
 
     /// Connect to a remote SSH server
@@ -665,7 +1053,10 @@ impl SSHConnectionManager {
     /// # Arguments
     /// * `config` - SSH connection configuration
     /// * `timeout_secs` - Connection timeout in seconds (default: 30)
-    pub async fn connect(&self, config: SSHConnectionConfig) -> anyhow::Result<SSHConnectionResult> {
+    pub async fn connect(
+        &self,
+        config: SSHConnectionConfig,
+    ) -> anyhow::Result<SSHConnectionResult> {
         self.connect_with_timeout(config, 30).await
     }
 
@@ -675,6 +1066,40 @@ impl SSHConnectionManager {
         config: SSHConnectionConfig,
         timeout_secs: u64,
     ) -> anyhow::Result<SSHConnectionResult> {
+        let (handle, alive, server_info) = self.establish_session(&config, timeout_secs).await?;
+
+        let connection_id = config.id.clone();
+
+        let mut guard = self.connections.write().await;
+        guard.insert(
+            connection_id.clone(),
+            ActiveConnection {
+                handle: Arc::new(handle),
+                config,
+                server_info: server_info.clone(),
+                sftp_session: Arc::new(tokio::sync::RwLock::new(None)),
+                server_key: None,
+                alive,
+                reconnect_lock: Arc::new(tokio::sync::Mutex::new(())),
+            },
+        );
+
+        Ok(SSHConnectionResult {
+            success: true,
+            connection_id: Some(connection_id),
+            error: None,
+            server_info,
+        })
+    }
+
+    /// Build a fresh SSH session (handshake + auth + server info probe) without
+    /// touching the connection map. Reused by both [`Self::connect_with_timeout`]
+    /// and the transparent reconnect path in [`Self::ensure_alive_or_reconnect`].
+    async fn establish_session(
+        &self,
+        config: &SSHConnectionConfig,
+        timeout_secs: u64,
+    ) -> anyhow::Result<(Handle<SSHHandler>, Arc<AtomicBool>, Option<ServerInfo>)> {
         let addr = format!("{}:{}", config.host, config.port);
 
         // Connect to the server with timeout
@@ -689,8 +1114,15 @@ impl SSHConnectionManager {
         // Create SSH transport config
         let key_pair = match &config.auth {
             SSHAuthMethod::Password { .. } => None,
-            SSHAuthMethod::PrivateKey { key_path, passphrase } => {
-                log::info!("Attempting private key auth with key_path: {}, passphrase provided: {}", key_path, passphrase.is_some());
+            SSHAuthMethod::PrivateKey {
+                key_path,
+                passphrase,
+            } => {
+                log::info!(
+                    "Attempting private key auth with key_path: {}, passphrase provided: {}",
+                    key_path,
+                    passphrase.is_some()
+                );
                 // Try to read the specified key file
                 let expanded = shellexpand::tilde(key_path);
                 log::info!("Expanded key path: {}", expanded);
@@ -701,12 +1133,22 @@ impl SSHConnectionManager {
                     }
                     Err(e) => {
                         // If specified key fails, try default ~/.ssh/id_rsa
-                        log::warn!("Failed to read private key at '{}': {}, trying default ~/.ssh/id_rsa", expanded, e);
+                        log::warn!(
+                            "Failed to read private key at '{}': {}, trying default ~/.ssh/id_rsa",
+                            expanded,
+                            e
+                        );
                         if let Ok(home) = std::env::var("HOME") {
                             let default_key = format!("{}/.ssh/id_rsa", home);
                             log::info!("Trying default key at: {}", default_key);
-                            std::fs::read_to_string(&default_key)
-                                .map_err(|e| anyhow!("Failed to read private key '{}' and default key '{}': {}", key_path, default_key, e))?
+                            std::fs::read_to_string(&default_key).map_err(|e| {
+                                anyhow!(
+                                    "Failed to read private key '{}' and default key '{}': {}",
+                                    key_path,
+                                    default_key,
+                                    e
+                                )
+                            })?
                         } else {
                             return Err(anyhow!("Failed to read private key '{}': {}, and could not determine home directory", key_path, e));
                         }
@@ -721,13 +1163,17 @@ impl SSHConnectionManager {
                 log::info!("Successfully decoded private key");
                 Some(key_pair)
             }
-            SSHAuthMethod::Agent => None,
         };
 
         let ssh_config = Arc::new(russh::client::Config {
-            inactivity_timeout: Some(std::time::Duration::from_secs(60)),
+            // Tolerate brief network blips (NAT timeouts, Wi-Fi roaming) by
+            // widening the inactivity window and allowing more missed keepalives
+            // before declaring the session dead. Combined with transparent
+            // reconnect, this prevents the user-visible "early eof" cascade
+            // while idly browsing the remote file picker.
+            inactivity_timeout: Some(std::time::Duration::from_secs(180)),
             keepalive_interval: Some(std::time::Duration::from_secs(30)),
-            keepalive_max: 3,
+            keepalive_max: 6,
             // Broad algorithm list for compatibility with both modern and legacy SSH servers.
             // Modern algorithms first (preferred), legacy ones appended as fallback.
             preferred: russh::Preferred {
@@ -737,8 +1183,8 @@ impl SSHConnectionManager {
                     russh::kex::CURVE25519_PRE_RFC_8731,
                     russh::kex::DH_G16_SHA512,
                     russh::kex::DH_G14_SHA256,
-                    russh::kex::DH_G14_SHA1,  // legacy servers
-                    russh::kex::DH_G1_SHA1,   // very old servers
+                    russh::kex::DH_G14_SHA1, // legacy servers
+                    russh::kex::DH_G1_SHA1,  // very old servers
                     russh::kex::EXTENSION_SUPPORT_AS_CLIENT,
                     russh::kex::EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT,
                 ]),
@@ -749,7 +1195,7 @@ impl SSHConnectionManager {
                     russh_keys::key::ECDSA_SHA2_NISTP521,
                     russh_keys::key::RSA_SHA2_256,
                     russh_keys::key::RSA_SHA2_512,
-                    russh_keys::key::SSH_RSA,  // legacy servers that only advertise ssh-rsa
+                    russh_keys::key::SSH_RSA, // legacy servers that only advertise ssh-rsa
                 ]),
                 ..russh::Preferred::DEFAULT
             },
@@ -757,7 +1203,7 @@ impl SSHConnectionManager {
         });
 
         // Create handler with known_hosts for verification
-        let (handler, disconnect_reason) = SSHHandler::with_known_hosts(
+        let (handler, disconnect_reason, alive) = SSHHandler::with_known_hosts(
             config.host.clone(),
             config.port,
             self.known_hosts.clone(),
@@ -805,14 +1251,24 @@ impl SSHConnectionManager {
         let auth_success: bool = match &config.auth {
             SSHAuthMethod::Password { password } => {
                 log::debug!("Using password authentication");
-                handle.authenticate_password(&config.username, password.clone()).await
+                handle
+                    .authenticate_password(&config.username, password.clone())
+                    .await
                     .map_err(|e| anyhow!("Password authentication failed: {:?}", e))?
             }
-            SSHAuthMethod::PrivateKey { key_path, passphrase: _ } => {
+            SSHAuthMethod::PrivateKey {
+                key_path,
+                passphrase: _,
+            } => {
                 log::info!("Using public key authentication with key: {}", key_path);
                 if let Some(ref key) = key_pair {
-                    log::info!("Attempting to authenticate user '{}' with public key", config.username);
-                    let result = handle.authenticate_publickey(&config.username, Arc::new(key.clone())).await;
+                    log::info!(
+                        "Attempting to authenticate user '{}' with public key",
+                        config.username
+                    );
+                    let result = handle
+                        .authenticate_publickey(&config.username, Arc::new(key.clone()))
+                        .await;
                     log::info!("Public key auth result: {:?}", result);
                     match result {
                         Ok(true) => {
@@ -820,7 +1276,10 @@ impl SSHConnectionManager {
                             true
                         }
                         Ok(false) => {
-                            log::warn!("Public key authentication rejected by server for user '{}'", config.username);
+                            log::warn!(
+                                "Public key authentication rejected by server for user '{}'",
+                                config.username
+                            );
                             false
                         }
                         Err(e) => {
@@ -832,103 +1291,313 @@ impl SSHConnectionManager {
                     return Err(anyhow!("Failed to load private key"));
                 }
             }
-            SSHAuthMethod::Agent => {
-                log::debug!("Using SSH agent authentication - agent auth not supported, returning false");
-                // Agent auth is not supported in russh - return false to indicate auth failed
-                // The caller should try another auth method
-                false
-            }
         };
 
         if !auth_success {
             log::warn!("Authentication returned false for user {}", config.username);
-            return Err(anyhow!("Authentication failed for user {}", config.username));
+            return Err(anyhow!(
+                "Authentication failed for user {}",
+                config.username
+            ));
         }
         log::info!("Authentication successful for user {}", config.username);
 
-        // Get server info
-        let server_info = Self::get_server_info_internal(&handle).await;
+        // Resolve remote home to an absolute path (SFTP does not expand `~`; never rely on literal `~` in UI).
+        let mut server_info = Self::get_server_info_internal(&handle).await;
+        if server_info
+            .as_ref()
+            .map(|s| s.home_dir.trim().is_empty())
+            .unwrap_or(true)
+        {
+            if let Some(home) = Self::probe_remote_home_dir(&handle).await {
+                match &mut server_info {
+                    Some(si) => si.home_dir = home,
+                    None => {
+                        server_info = Some(ServerInfo {
+                            os_type: "unknown".to_string(),
+                            hostname: "unknown".to_string(),
+                            home_dir: home,
+                        });
+                    }
+                }
+            }
+        }
 
-        let connection_id = config.id.clone();
-
-        // Store connection
-        let mut guard = self.connections.write().await;
-        guard.insert(
-            connection_id.clone(),
-            ActiveConnection {
-                handle: Arc::new(handle),
-                config,
-                server_info: server_info.clone(),
-                sftp_session: Arc::new(tokio::sync::RwLock::new(None)),
-                server_key: None,
-            },
-        );
-
-        Ok(SSHConnectionResult {
-            success: true,
-            connection_id: Some(connection_id),
-            error: None,
-            server_info,
-        })
+        Ok((handle, alive, server_info))
     }
 
-    /// Get server information
+    /// Get server information (partial lines allowed so we can still fill `home_dir` via [`Self::probe_remote_home_dir`]).
     async fn get_server_info_internal(handle: &Handle<SSHHandler>) -> Option<ServerInfo> {
-        // Try to get server info via SSH session
-        let (stdout, _stderr, exit_status) = Self::execute_command_internal(handle, "uname -s && hostname && echo $HOME")
-            .await
-            .ok()?;
+        let result = Self::execute_command_internal(
+            handle,
+            "uname -s && hostname && echo $HOME",
+            SSHCommandOptions::default(),
+        )
+        .await
+        .ok()?;
 
-        if exit_status != 0 {
+        if result.exit_code != 0 {
             return None;
         }
 
-        let lines: Vec<&str> = stdout.trim().lines().collect();
-        if lines.len() < 3 {
+        let lines: Vec<&str> = result.stdout.trim().lines().collect();
+        if lines.is_empty() {
             return None;
         }
 
         Some(ServerInfo {
             os_type: lines[0].to_string(),
-            hostname: lines[1].to_string(),
-            home_dir: lines[2].to_string(),
+            hostname: lines.get(1).unwrap_or(&"").to_string(),
+            home_dir: lines.get(2).unwrap_or(&"").to_string(),
         })
     }
 
+    /// Resolve remote home directory via SSH `exec` (tilde and `$HOME` are expanded by the remote shell).
+    async fn probe_remote_home_dir(handle: &Handle<SSHHandler>) -> Option<String> {
+        const PROBES: &[&str] = &[
+            "sh -c 'echo ~'",
+            "echo $HOME",
+            "bash -lc 'echo ~'",
+            "bash -c 'echo ~'",
+            "sh -c 'getent passwd \"$(id -un)\" 2>/dev/null | cut -d: -f6'",
+        ];
+        for cmd in PROBES {
+            let Ok(result) =
+                Self::execute_command_internal(handle, cmd, SSHCommandOptions::default()).await
+            else {
+                continue;
+            };
+            if result.exit_code != 0 {
+                continue;
+            }
+            let first = result.stdout.trim().lines().next().unwrap_or("").trim();
+            if first.is_empty() || first == "~" {
+                continue;
+            }
+            return Some(first.to_string());
+        }
+        None
+    }
+
     /// Execute a command on the remote server
+    async fn interrupt_exec_channel(
+        session: &russh::Channel<Msg>,
+        signal: Sig,
+    ) -> anyhow::Result<()> {
+        session.signal(signal).await?;
+        let _ = session.eof().await;
+        Ok(())
+    }
+
     async fn execute_command_internal(
         handle: &Handle<SSHHandler>,
         command: &str,
-    ) -> std::result::Result<(String, String, i32), anyhow::Error> {
+        options: SSHCommandOptions,
+    ) -> std::result::Result<SSHCommandResult, anyhow::Error> {
+        let execution_started_at = Instant::now();
+        let command_preview = if command.len() > 160 {
+            format!("{}...", &command[..160])
+        } else {
+            command.to_string()
+        };
+        log::debug!(
+            "Remote exec started: timeout_ms={:?}, has_cancellation={}, command_preview={}",
+            options.timeout_ms,
+            options.cancellation_token.is_some(),
+            command_preview
+        );
         let mut session = handle.channel_open_session().await?;
         session.exec(true, command).await?;
 
         let mut stdout = String::new();
         let mut stderr = String::new();
-        let mut exit_status: i32 = -1;
+        let mut exit_status: Option<i32> = None;
+        let mut interrupted = false;
+        let mut timed_out = false;
+        let stdout_first_chunk_once = Once::new();
+        let stderr_first_chunk_once = Once::new();
+        let mut eof_logged = false;
+        let mut close_logged = false;
+        let timeout_deadline = options
+            .timeout_ms
+            .map(|ms| Instant::now() + Duration::from_millis(ms));
+        let mut interrupt_drain_deadline: Option<Instant> = None;
 
         loop {
-            match session.wait().await {
+            let now = Instant::now();
+
+            if !interrupted
+                && options
+                    .cancellation_token
+                    .as_ref()
+                    .is_some_and(|token| token.is_cancelled())
+            {
+                interrupted = true;
+                interrupt_drain_deadline = Some(now + SSH_COMMAND_INTERRUPT_DRAIN_GRACE);
+                log::warn!(
+                    "Remote exec cancellation requested: timeout_ms={:?}, stdout_len={}, stderr_len={}, duration_ms={}, command_preview={}",
+                    options.timeout_ms,
+                    stdout.len(),
+                    stderr.len(),
+                    execution_started_at.elapsed().as_millis(),
+                    command_preview
+                );
+                if let Err(e) = Self::interrupt_exec_channel(&session, Sig::INT).await {
+                    log::debug!("Failed to interrupt remote exec channel via SIGINT: {}", e);
+                }
+            }
+
+            if !timed_out && timeout_deadline.is_some_and(|deadline| now >= deadline) {
+                timed_out = true;
+                interrupt_drain_deadline = Some(now + SSH_COMMAND_INTERRUPT_DRAIN_GRACE);
+                log::warn!(
+                    "Remote exec timeout reached: timeout_ms={:?}, stdout_len={}, stderr_len={}, duration_ms={}, command_preview={}",
+                    options.timeout_ms,
+                    stdout.len(),
+                    stderr.len(),
+                    execution_started_at.elapsed().as_millis(),
+                    command_preview
+                );
+                if let Err(e) = Self::interrupt_exec_channel(&session, Sig::INT).await {
+                    log::debug!("Failed to interrupt timed out remote exec channel: {}", e);
+                }
+            }
+
+            let wait_budget = if let Some(deadline) = interrupt_drain_deadline {
+                if now >= deadline {
+                    let _ = session.close().await;
+                    break;
+                }
+                (deadline - now).min(SSH_COMMAND_WAIT_POLL_INTERVAL)
+            } else if let Some(deadline) = timeout_deadline {
+                if now >= deadline {
+                    SSH_COMMAND_WAIT_POLL_INTERVAL
+                } else {
+                    (deadline - now).min(SSH_COMMAND_WAIT_POLL_INTERVAL)
+                }
+            } else {
+                SSH_COMMAND_WAIT_POLL_INTERVAL
+            };
+
+            let next_msg = match tokio::time::timeout(wait_budget, session.wait()).await {
+                Ok(msg) => msg,
+                Err(_) => continue,
+            };
+
+            match next_msg {
                 Some(russh::ChannelMsg::Data { ref data }) => {
+                    stdout_first_chunk_once.call_once(|| {
+                        log::debug!(
+                            "Remote exec first stdout chunk received: timeout_ms={:?}, chunk_len={}, duration_ms={}, command_preview={}",
+                            options.timeout_ms,
+                            data.len(),
+                            execution_started_at.elapsed().as_millis(),
+                            command_preview
+                        );
+                    });
                     stdout.push_str(&String::from_utf8_lossy(data));
                 }
                 Some(russh::ChannelMsg::ExtendedData { ref data, .. }) => {
+                    stderr_first_chunk_once.call_once(|| {
+                        log::debug!(
+                            "Remote exec first stderr chunk received: timeout_ms={:?}, chunk_len={}, duration_ms={}, command_preview={}",
+                            options.timeout_ms,
+                            data.len(),
+                            execution_started_at.elapsed().as_millis(),
+                            command_preview
+                        );
+                    });
                     stderr.push_str(&String::from_utf8_lossy(data));
                 }
-                Some(russh::ChannelMsg::ExitStatus { exit_status: status }) => {
-                    exit_status = status as i32;
+                Some(russh::ChannelMsg::ExitStatus {
+                    exit_status: status,
+                }) => {
+                    exit_status = Some(status as i32);
+                    log::debug!(
+                        "Remote exec exit status received: exit_code={}, stdout_len={}, stderr_len={}, duration_ms={}, command_preview={}",
+                        status,
+                        stdout.len(),
+                        stderr.len(),
+                        execution_started_at.elapsed().as_millis(),
+                        command_preview
+                    );
                 }
-                Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) => {
-                    break;
+                Some(russh::ChannelMsg::ExitSignal { signal_name, .. }) => {
+                    interrupted = interrupted || matches!(signal_name, Sig::INT | Sig::TERM);
+                    log::debug!(
+                        "Remote exec exit signal received: signal={:?}, stdout_len={}, stderr_len={}, duration_ms={}, command_preview={}",
+                        signal_name,
+                        stdout.len(),
+                        stderr.len(),
+                        execution_started_at.elapsed().as_millis(),
+                        command_preview
+                    );
+                }
+                Some(russh::ChannelMsg::Eof) => {
+                    if !eof_logged {
+                        eof_logged = true;
+                        log::debug!(
+                            "Remote exec EOF received: stdout_len={}, stderr_len={}, duration_ms={}, command_preview={}",
+                            stdout.len(),
+                            stderr.len(),
+                            execution_started_at.elapsed().as_millis(),
+                            command_preview
+                        );
+                    }
+                }
+                Some(russh::ChannelMsg::Close) => {
+                    if !close_logged {
+                        close_logged = true;
+                        log::debug!(
+                            "Remote exec channel close received: stdout_len={}, stderr_len={}, duration_ms={}, command_preview={}",
+                            stdout.len(),
+                            stderr.len(),
+                            execution_started_at.elapsed().as_millis(),
+                            command_preview
+                        );
+                    }
                 }
                 None => {
+                    log::debug!(
+                        "Remote exec stream ended: stdout_len={}, stderr_len={}, duration_ms={}, command_preview={}",
+                        stdout.len(),
+                        stderr.len(),
+                        execution_started_at.elapsed().as_millis(),
+                        command_preview
+                    );
                     break;
                 }
-                _ => {}
+                Some(_) => {}
             }
         }
 
-        Ok((stdout, stderr, exit_status))
+        let result = SSHCommandResult {
+            stdout,
+            stderr,
+            exit_code: exit_status.unwrap_or_else(|| {
+                if timed_out {
+                    124
+                } else if interrupted {
+                    130
+                } else {
+                    -1
+                }
+            }),
+            interrupted,
+            timed_out,
+        };
+        log::debug!(
+            "Remote exec completed: exit_code={}, interrupted={}, timed_out={}, stdout_len={}, stderr_len={}, duration_ms={}, command_preview={}",
+            result.exit_code,
+            result.interrupted,
+            result.timed_out,
+            result.stdout.len(),
+            result.stderr.len(),
+            execution_started_at.elapsed().as_millis(),
+            command_preview
+        );
+
+        Ok(result)
     }
 
     /// Disconnect from a server
@@ -944,10 +1613,225 @@ impl SSHConnectionManager {
         guard.clear();
     }
 
-    /// Check if connected
+    /// Check if connected.
+    ///
+    /// Returns true only when there is an entry in the connections map AND its
+    /// liveness flag is still set. A previously-connected session that the
+    /// server (or network) tore down is considered NOT connected even though
+    /// the entry has not yet been pruned, so the UI cannot mistakenly believe
+    /// the session is healthy.
     pub async fn is_connected(&self, connection_id: &str) -> bool {
         let guard = self.connections.read().await;
-        guard.contains_key(connection_id)
+        guard
+            .get(connection_id)
+            .map(|c| c.alive.load(Ordering::SeqCst))
+            .unwrap_or(false)
+    }
+
+    async fn load_connection_config_from_saved(
+        &self,
+        connection_id: &str,
+    ) -> anyhow::Result<Option<SSHConnectionConfig>> {
+        let saved = {
+            let guard = self.saved_connections.read().await;
+            guard.iter().find(|conn| conn.id == connection_id).cloned()
+        };
+
+        let Some(saved) = saved else {
+            return Ok(None);
+        };
+
+        let auth = match saved.auth_type {
+            crate::service::remote_ssh::types::SavedAuthType::Password => {
+                let password =
+                    self.password_vault.load(connection_id).await?.ok_or_else(|| {
+                        anyhow!(
+                            "Saved SSH connection {} requires a password, but no stored vault entry is available",
+                            connection_id
+                        )
+                    })?;
+                SSHAuthMethod::Password { password }
+            }
+            crate::service::remote_ssh::types::SavedAuthType::PrivateKey { key_path } => {
+                SSHAuthMethod::PrivateKey {
+                    key_path,
+                    passphrase: None,
+                }
+            }
+        };
+
+        Ok(Some(SSHConnectionConfig {
+            id: saved.id,
+            name: saved.name,
+            host: saved.host,
+            port: saved.port,
+            username: saved.username,
+            auth,
+            default_workspace: saved.default_workspace,
+        }))
+    }
+
+    /// Ensure the connection is alive; if it was torn down (network blip,
+    /// server-side timeout), transparently reconnect using the saved config
+    /// and (for password auth) the encrypted password vault.
+    ///
+    /// Also detects config drift (e.g. the user changed the port after the
+    /// connection was established) and forces a reconnect with the updated
+    /// parameters so that historical sessions never use a stale port.
+    ///
+    /// Uses a per-connection mutex to prevent reconnect stampedes when many
+    /// concurrent SFTP/exec calls hit a dead session at the same time.
+    /// Idempotent: returns Ok(()) immediately when the session is already alive
+    /// **and** its config matches the latest saved profile.
+    async fn ensure_alive_or_reconnect(&self, connection_id: &str) -> anyhow::Result<()> {
+        // Always read the latest saved config — this is the source of truth
+        // after the user edits a connection (e.g. changes the port).
+        let saved_config = self
+            .load_connection_config_from_saved(connection_id)
+            .await?;
+
+        let (alive_flag, reconnect_lock, active_config) = {
+            let guard = self.connections.read().await;
+            if let Some(conn) = guard.get(connection_id) {
+                (
+                    conn.alive.clone(),
+                    conn.reconnect_lock.clone(),
+                    Some(conn.config.clone()),
+                )
+            } else {
+                (
+                    Arc::new(AtomicBool::new(false)),
+                    Arc::new(tokio::sync::Mutex::new(())),
+                    None,
+                )
+            }
+        };
+
+        // If the connection is alive, check for config drift before returning.
+        if alive_flag.load(Ordering::SeqCst) {
+            if let Some(ref saved) = saved_config {
+                if let Some(ref active) = active_config {
+                    if !saved.connection_params_equal(active) {
+                        log::warn!(
+                            "SSH config for {} has drifted (e.g. port {} -> {}), forcing reconnect",
+                            connection_id,
+                            active.port,
+                            saved.port
+                        );
+                        // Mark as dead so the reconnect path below is taken.
+                        alive_flag.store(false, Ordering::SeqCst);
+                    } else {
+                        return Ok(());
+                    }
+                } else {
+                    return Ok(());
+                }
+            } else {
+                return Ok(());
+            }
+        }
+
+        // Serialize concurrent reconnect attempts for the same connection.
+        let _guard = reconnect_lock.lock().await;
+        // Re-check under lock; another task may have already restored the session.
+        if alive_flag.load(Ordering::SeqCst) {
+            // Re-check config drift under lock as well.
+            if let Some(ref saved) = saved_config {
+                let guard = self.connections.read().await;
+                if let Some(conn) = guard.get(connection_id) {
+                    if saved.connection_params_equal(&conn.config) {
+                        return Ok(());
+                    }
+                }
+            } else {
+                return Ok(());
+            }
+        }
+
+        // Prefer the latest saved config for reconnection; fall back to the
+        // active config only when no saved profile exists (should be rare).
+        let mut config = match saved_config {
+            Some(c) => c,
+            None => active_config.ok_or_else(|| {
+                anyhow!(
+                    "Connection {} not found and no saved SSH profile is available",
+                    connection_id
+                )
+            })?,
+        };
+
+        let is_existing_connection = {
+            let guard = self.connections.read().await;
+            guard.contains_key(connection_id)
+        };
+        if is_existing_connection {
+            log::warn!(
+                "SSH session {} is dead; attempting transparent reconnect",
+                connection_id
+            );
+        } else {
+            log::info!(
+                "SSH session {} is not active; attempting to connect using saved SSH profile",
+                connection_id
+            );
+        }
+
+        // Refresh the password from the encrypted vault if password auth was
+        // configured but the in-memory copy is empty (defensive — covers cases
+        // where callers cleared it intentionally).
+        if let SSHAuthMethod::Password { ref password } = config.auth {
+            if password.is_empty() {
+                match self.password_vault.load(connection_id).await {
+                    Ok(Some(pwd)) => {
+                        config.auth = SSHAuthMethod::Password { password: pwd };
+                    }
+                    Ok(None) => {
+                        return Err(anyhow!(
+                            "SSH session {} is dead and no stored password is available for reconnect",
+                            connection_id
+                        ));
+                    }
+                    Err(e) => {
+                        return Err(anyhow!("Failed to load stored SSH password: {}", e));
+                    }
+                }
+            }
+        }
+
+        let (handle, alive, server_info) = self.establish_session(&config, 30).await?;
+
+        // Replace the handle, update the config to the latest saved version,
+        // and clear the cached SFTP session so subsequent operations open a
+        // fresh channel on the new transport.
+        {
+            let mut guard = self.connections.write().await;
+            if let Some(conn) = guard.get_mut(connection_id) {
+                conn.handle = Arc::new(handle);
+                conn.config = config;
+                conn.alive = alive;
+                if let Some(si) = server_info.as_ref() {
+                    conn.server_info = Some(si.clone());
+                }
+                let mut sftp_guard = conn.sftp_session.write().await;
+                *sftp_guard = None;
+            } else {
+                guard.insert(
+                    connection_id.to_string(),
+                    ActiveConnection {
+                        handle: Arc::new(handle),
+                        config,
+                        server_info,
+                        sftp_session: Arc::new(tokio::sync::RwLock::new(None)),
+                        server_key: None,
+                        alive,
+                        reconnect_lock: Arc::new(tokio::sync::Mutex::new(())),
+                    },
+                );
+            }
+        }
+
+        log::info!("SSH session {} reconnected successfully", connection_id);
+        Ok(())
     }
 
     /// Execute a command on the remote server
@@ -956,20 +1840,114 @@ impl SSHConnectionManager {
         connection_id: &str,
         command: &str,
     ) -> anyhow::Result<(String, String, i32)> {
-        let guard = self.connections.read().await;
-        let conn = guard
-            .get(connection_id)
-            .ok_or_else(|| anyhow!("Connection {} not found", connection_id))?;
+        let result = self
+            .execute_command_with_options(connection_id, command, SSHCommandOptions::default())
+            .await?;
 
-        Self::execute_command_internal(&conn.handle, command)
+        if result.timed_out {
+            return Err(anyhow!("Command timed out"));
+        }
+        if result.interrupted {
+            return Err(anyhow!("Command was cancelled"));
+        }
+
+        Ok((result.stdout, result.stderr, result.exit_code))
+    }
+
+    /// Execute a command on the remote server with structured timeout/cancellation handling.
+    pub async fn execute_command_with_options(
+        &self,
+        connection_id: &str,
+        command: &str,
+        options: SSHCommandOptions,
+    ) -> anyhow::Result<SSHCommandResult> {
+        self.ensure_alive_or_reconnect(connection_id).await?;
+        let handle = {
+            let guard = self.connections.read().await;
+            guard
+                .get(connection_id)
+                .ok_or_else(|| anyhow!("Connection {} not found", connection_id))?
+                .handle
+                .clone()
+        };
+
+        Self::execute_command_internal(&handle, command, options)
             .await
             .map_err(|e| anyhow!("Command execution failed: {}", e))
+    }
+
+    /// Open a long-lived non-PTY exec channel for streaming stdin/stdout protocols.
+    pub async fn open_exec_channel(
+        &self,
+        connection_id: &str,
+        command: &str,
+    ) -> anyhow::Result<russh::Channel<Msg>> {
+        self.ensure_alive_or_reconnect(connection_id).await?;
+        let handle = {
+            let guard = self.connections.read().await;
+            guard
+                .get(connection_id)
+                .ok_or_else(|| anyhow!("Connection {} not found", connection_id))?
+                .handle
+                .clone()
+        };
+
+        let channel = handle
+            .channel_open_session()
+            .await
+            .map_err(|e| anyhow!("Failed to open SSH exec channel: {}", e))?;
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|e| anyhow!("Failed to start remote command: {}", e))?;
+        Ok(channel)
     }
 
     /// Get server info for a connection
     pub async fn get_server_info(&self, connection_id: &str) -> Option<ServerInfo> {
         let guard = self.connections.read().await;
         guard.get(connection_id).and_then(|c| c.server_info.clone())
+    }
+
+    /// If `home_dir` is missing, run [`Self::probe_remote_home_dir`] and persist it on the connection.
+    pub async fn resolve_remote_home_if_missing(&self, connection_id: &str) -> Option<ServerInfo> {
+        let need_probe = {
+            let guard = self.connections.read().await;
+            match guard.get(connection_id) {
+                None => return None,
+                Some(conn) => conn
+                    .server_info
+                    .as_ref()
+                    .map(|s| s.home_dir.trim().is_empty())
+                    .unwrap_or(true),
+            }
+        };
+        if !need_probe {
+            return self.get_server_info(connection_id).await;
+        }
+        let handle = {
+            let guard = self.connections.read().await;
+            guard.get(connection_id)?.handle.clone()
+        };
+        let Some(home) = Self::probe_remote_home_dir(&handle).await else {
+            return self.get_server_info(connection_id).await;
+        };
+        {
+            let mut guard = self.connections.write().await;
+            if let Some(conn) = guard.get_mut(connection_id) {
+                match conn.server_info.as_mut() {
+                    Some(si) => si.home_dir = home.clone(),
+                    None => {
+                        conn.server_info = Some(ServerInfo {
+                            os_type: "unknown".to_string(),
+                            hostname: "unknown".to_string(),
+                            home_dir: home,
+                        });
+                    }
+                }
+            }
+        }
+        self.get_server_info(connection_id).await
     }
 
     /// Get connection configuration
@@ -982,8 +1960,53 @@ impl SSHConnectionManager {
     // SFTP Operations
     // ============================================================================
 
-    /// Get or create SFTP session for a connection
+    /// Expand leading `~` using the remote user's home from [`ServerInfo`] (SFTP paths are not shell-expanded).
+    pub async fn resolve_sftp_path(
+        &self,
+        connection_id: &str,
+        path: &str,
+    ) -> anyhow::Result<String> {
+        let path = path.trim();
+        if path.is_empty() {
+            return Err(anyhow!("Empty remote path"));
+        }
+        if path == "~" || path.starts_with("~/") {
+            let guard = self.connections.read().await;
+            let home = guard
+                .get(connection_id)
+                .and_then(|c| c.server_info.as_ref())
+                .map(|s| s.home_dir.trim())
+                .filter(|h| !h.is_empty());
+            let home = match home {
+                Some(h) => h.to_string(),
+                None => {
+                    return Err(anyhow!(
+                        "Cannot use '~' in remote path: home directory is not available for this connection"
+                    ));
+                }
+            };
+            if path == "~" || path == "~/" {
+                return Ok(home);
+            }
+            let rest = path[2..].trim_start_matches('/');
+            if rest.is_empty() {
+                return Ok(home);
+            }
+            Ok(format!("{}/{}", home.trim_end_matches('/'), rest))
+        } else {
+            Ok(path.to_string())
+        }
+    }
+
+    /// Get or create SFTP session for a connection.
+    ///
+    /// Detects dead transports up-front via [`Self::ensure_alive_or_reconnect`]
+    /// so a transient SSH disconnect (e.g. NAT timeout while the user is idly
+    /// browsing the remote folder picker) is recovered transparently instead
+    /// of cascading into a stale cached SFTP handle that fails forever.
     pub async fn get_sftp(&self, connection_id: &str) -> anyhow::Result<Arc<SftpSession>> {
+        self.ensure_alive_or_reconnect(connection_id).await?;
+
         // First check if we have an existing SFTP session
         {
             let guard = self.connections.read().await;
@@ -1005,12 +2028,17 @@ impl SSHConnectionManager {
         };
 
         // Open a channel and request SFTP subsystem
-        let channel = handle.channel_open_session().await
+        let channel = handle
+            .channel_open_session()
+            .await
             .map_err(|e| anyhow!("Failed to open channel for SFTP: {}", e))?;
-        channel.request_subsystem(true, "sftp").await
+        channel
+            .request_subsystem(true, "sftp")
+            .await
             .map_err(|e| anyhow!("Failed to request SFTP subsystem: {}", e))?;
 
-        let sftp = SftpSession::new(channel.into_stream()).await
+        let sftp = SftpSession::new(channel.into_stream())
+            .await
             .map_err(|e| anyhow!("Failed to create SFTP session: {}", e))?;
 
         let sftp = Arc::new(sftp);
@@ -1029,102 +2057,195 @@ impl SSHConnectionManager {
 
     /// Read a file via SFTP
     pub async fn sftp_read(&self, connection_id: &str, path: &str) -> anyhow::Result<Vec<u8>> {
+        let path = self.resolve_sftp_path(connection_id, path).await?;
         let sftp = self.get_sftp(connection_id).await?;
-        let mut file = sftp.open(path).await
+        let mut file = sftp
+            .open(&path)
+            .await
             .map_err(|e| anyhow!("Failed to open remote file '{}': {}", path, e))?;
 
         let mut buffer = Vec::new();
         use tokio::io::AsyncReadExt;
-        file.read_to_end(&mut buffer).await
+        file.read_to_end(&mut buffer)
+            .await
             .map_err(|e| anyhow!("Failed to read remote file '{}': {}", path, e))?;
 
         Ok(buffer)
     }
 
     /// Write a file via SFTP
-    pub async fn sftp_write(&self, connection_id: &str, path: &str, content: &[u8]) -> anyhow::Result<()> {
+    pub async fn sftp_write(
+        &self,
+        connection_id: &str,
+        path: &str,
+        content: &[u8],
+    ) -> anyhow::Result<()> {
+        let path = self.resolve_sftp_path(connection_id, path).await?;
         let sftp = self.get_sftp(connection_id).await?;
-        let mut file = sftp.create(path).await
+        let mut file = sftp
+            .create(&path)
+            .await
             .map_err(|e| anyhow!("Failed to create remote file '{}': {}", path, e))?;
 
         use tokio::io::AsyncWriteExt;
-        file.write_all(content).await
+        file.write_all(content)
+            .await
             .map_err(|e| anyhow!("Failed to write remote file '{}': {}", path, e))?;
 
-        file.flush().await
+        file.flush()
+            .await
             .map_err(|e| anyhow!("Failed to flush remote file '{}': {}", path, e))?;
 
         Ok(())
     }
 
-    /// Read directory via SFTP
+    /// Read directory via SFTP.
+    ///
+    /// Retries once after dropping the cached SFTP session and forcing a
+    /// reconnect attempt, so a stale SFTP channel left over from a prior
+    /// network blip does not permanently break the remote folder picker.
     pub async fn sftp_read_dir(&self, connection_id: &str, path: &str) -> anyhow::Result<ReadDir> {
+        let resolved = self.resolve_sftp_path(connection_id, path).await?;
         let sftp = self.get_sftp(connection_id).await?;
-        let entries = sftp.read_dir(path).await
-            .map_err(|e| anyhow!("Failed to read directory '{}': {}", path, e))?;
-        Ok(entries)
+        match sftp.read_dir(&resolved).await {
+            Ok(entries) => Ok(entries),
+            Err(first_err) => {
+                log::warn!(
+                    "SFTP read_dir '{}' failed (will retry once after refreshing session): {}",
+                    resolved,
+                    first_err
+                );
+                self.invalidate_sftp_session(connection_id).await;
+                // Force the alive flag to false so ensure_alive_or_reconnect rebuilds
+                // the underlying SSH transport too — the previous failure may indicate
+                // the channel was torn down even though the keepalive callback has not
+                // fired yet.
+                self.mark_dead(connection_id).await;
+                let sftp = self.get_sftp(connection_id).await?;
+                sftp.read_dir(&resolved)
+                    .await
+                    .map_err(|e| anyhow!("Failed to read directory '{}': {}", resolved, e))
+            }
+        }
+    }
+
+    /// Drop the cached SFTP session for a connection so the next call opens a
+    /// fresh channel. Safe to call when no session is cached.
+    async fn invalidate_sftp_session(&self, connection_id: &str) {
+        let guard = self.connections.read().await;
+        if let Some(conn) = guard.get(connection_id) {
+            let mut sftp_guard = conn.sftp_session.write().await;
+            *sftp_guard = None;
+        }
+    }
+
+    /// Force the liveness flag to false. Triggers a transparent reconnect on
+    /// the next call to [`Self::ensure_alive_or_reconnect`].
+    async fn mark_dead(&self, connection_id: &str) {
+        let guard = self.connections.read().await;
+        if let Some(conn) = guard.get(connection_id) {
+            conn.alive.store(false, Ordering::SeqCst);
+        }
     }
 
     /// Create directory via SFTP
     pub async fn sftp_mkdir(&self, connection_id: &str, path: &str) -> anyhow::Result<()> {
+        let path = self.resolve_sftp_path(connection_id, path).await?;
         let sftp = self.get_sftp(connection_id).await?;
-        sftp.create_dir(path).await
+        sftp.create_dir(&path)
+            .await
             .map_err(|e| anyhow!("Failed to create directory '{}': {}", path, e))?;
         Ok(())
     }
 
     /// Create directory and all parents via SFTP
     pub async fn sftp_mkdir_all(&self, connection_id: &str, path: &str) -> anyhow::Result<()> {
+        let path = self.resolve_sftp_path(connection_id, path).await?;
         let sftp = self.get_sftp(connection_id).await?;
 
         // Check if path exists
-        match sftp.as_ref().try_exists(path).await {
+        match sftp.as_ref().try_exists(&path).await {
             Ok(true) => return Ok(()), // Already exists
             Ok(false) => {}
             Err(_) => {}
         }
 
-        // Try to create
-        sftp.as_ref().create_dir(path).await
-            .map_err(|e| anyhow!("Failed to create directory '{}': {}", path, e))?;
+        for dir in sftp_mkdir_all_prefixes(&path) {
+            match sftp.as_ref().try_exists(&dir).await {
+                Ok(true) => continue,
+                Ok(false) | Err(_) => {}
+            }
+
+            if let Err(error) = sftp.as_ref().create_dir(&dir).await {
+                match sftp.as_ref().try_exists(&dir).await {
+                    Ok(true) => continue,
+                    Ok(false) | Err(_) => {
+                        return Err(anyhow!("Failed to create directory '{}': {}", dir, error));
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
     /// Remove file via SFTP
     pub async fn sftp_remove(&self, connection_id: &str, path: &str) -> anyhow::Result<()> {
+        let path = self.resolve_sftp_path(connection_id, path).await?;
         let sftp = self.get_sftp(connection_id).await?;
-        sftp.remove_file(path).await
+        sftp.remove_file(&path)
+            .await
             .map_err(|e| anyhow!("Failed to remove file '{}': {}", path, e))?;
         Ok(())
     }
 
     /// Remove directory via SFTP
     pub async fn sftp_rmdir(&self, connection_id: &str, path: &str) -> anyhow::Result<()> {
+        let path = self.resolve_sftp_path(connection_id, path).await?;
         let sftp = self.get_sftp(connection_id).await?;
-        sftp.remove_dir(path).await
+        sftp.remove_dir(&path)
+            .await
             .map_err(|e| anyhow!("Failed to remove directory '{}': {}", path, e))?;
         Ok(())
     }
 
     /// Rename/move via SFTP
-    pub async fn sftp_rename(&self, connection_id: &str, old_path: &str, new_path: &str) -> anyhow::Result<()> {
+    pub async fn sftp_rename(
+        &self,
+        connection_id: &str,
+        old_path: &str,
+        new_path: &str,
+    ) -> anyhow::Result<()> {
+        let old_path = self.resolve_sftp_path(connection_id, old_path).await?;
+        let new_path = self.resolve_sftp_path(connection_id, new_path).await?;
         let sftp = self.get_sftp(connection_id).await?;
-        sftp.rename(old_path, new_path).await
+        sftp.rename(&old_path, &new_path)
+            .await
             .map_err(|e| anyhow!("Failed to rename '{}' to '{}': {}", old_path, new_path, e))?;
         Ok(())
     }
 
     /// Check if path exists via SFTP
     pub async fn sftp_exists(&self, connection_id: &str, path: &str) -> anyhow::Result<bool> {
+        let path = self.resolve_sftp_path(connection_id, path).await?;
         let sftp = self.get_sftp(connection_id).await?;
-        sftp.as_ref().try_exists(path).await
+        sftp.as_ref()
+            .try_exists(&path)
+            .await
             .map_err(|e| anyhow!("Failed to check if '{}' exists: {}", path, e))
     }
 
     /// Get file metadata via SFTP
-    pub async fn sftp_stat(&self, connection_id: &str, path: &str) -> anyhow::Result<russh_sftp::client::fs::Metadata> {
+    pub async fn sftp_stat(
+        &self,
+        connection_id: &str,
+        path: &str,
+    ) -> anyhow::Result<russh_sftp::client::fs::Metadata> {
+        let path = self.resolve_sftp_path(connection_id, path).await?;
         let sftp = self.get_sftp(connection_id).await?;
-        sftp.as_ref().metadata(path).await
+        sftp.as_ref()
+            .metadata(&path)
+            .await
             .map_err(|e| anyhow!("Failed to stat '{}': {}", path, e))
     }
 
@@ -1145,23 +2266,22 @@ impl SSHConnectionManager {
             .ok_or_else(|| anyhow!("Connection {} not found", connection_id))?;
 
         // Open a session channel
-        let channel = conn.handle.channel_open_session().await
+        let channel = conn
+            .handle
+            .channel_open_session()
+            .await
             .map_err(|e| anyhow!("Failed to open channel: {}", e))?;
 
         // Request PTY — `false` = don't wait for reply (reply handled in reader loop)
-        channel.request_pty(
-            false,
-            "xterm-256color",
-            cols,
-            rows,
-            0,
-            0,
-            &[],
-        ).await
+        channel
+            .request_pty(false, "xterm-256color", cols, rows, 0, 0, &[])
+            .await
             .map_err(|e| anyhow!("Failed to request PTY: {}", e))?;
 
         // Start shell — `false` = don't wait for reply
-        channel.request_shell(false).await
+        channel
+            .request_shell(false)
+            .await
             .map_err(|e| anyhow!("Failed to start shell: {}", e))?;
 
         Ok(PTYSession {
@@ -1180,7 +2300,10 @@ impl SSHConnectionManager {
         // Return a fingerprint based on connection info
         // Note: Actual server key fingerprint requires access to the SSH transport layer
         // For security verification, the server key is verified during connection via SSHHandler
-        let fingerprint = format!("{}:{}:{}", conn.config.host, conn.config.port, conn.config.username);
+        let fingerprint = format!(
+            "{}:{}:{}",
+            conn.config.host, conn.config.port, conn.config.username
+        );
         Ok(fingerprint)
     }
 }
@@ -1208,7 +2331,9 @@ impl PTYSession {
     /// Write data to PTY
     pub async fn write(&self, data: &[u8]) -> anyhow::Result<()> {
         let channel = self.channel.lock().await;
-        channel.data(data).await
+        channel
+            .data(data)
+            .await
             .map_err(|e| anyhow!("Failed to write to PTY: {}", e))?;
         Ok(())
     }
@@ -1217,7 +2342,9 @@ impl PTYSession {
     pub async fn resize(&self, cols: u32, rows: u32) -> anyhow::Result<()> {
         let channel = self.channel.lock().await;
         // Use default pixel dimensions (80x24 characters)
-        channel.window_change(cols, rows, 0, 0).await
+        channel
+            .window_change(cols, rows, 0, 0)
+            .await
             .map_err(|e| anyhow!("Failed to resize PTY: {}", e))?;
         Ok(())
     }
@@ -1230,7 +2357,9 @@ impl PTYSession {
         loop {
             match channel.wait().await {
                 Some(russh::ChannelMsg::Data { data }) => return Ok(Some(data.to_vec())),
-                Some(russh::ChannelMsg::ExtendedData { data, .. }) => return Ok(Some(data.to_vec())),
+                Some(russh::ChannelMsg::ExtendedData { data, .. }) => {
+                    return Ok(Some(data.to_vec()))
+                }
                 Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) => return Ok(None),
                 Some(russh::ChannelMsg::ExitStatus { .. }) => return Ok(None),
                 Some(_) => {
@@ -1245,9 +2374,13 @@ impl PTYSession {
     /// Close PTY session
     pub async fn close(self) -> anyhow::Result<()> {
         let channel = self.channel.lock().await;
-        channel.eof().await
+        channel
+            .eof()
+            .await
             .map_err(|e| anyhow!("Failed to close PTY: {}", e))?;
-        channel.close().await
+        channel
+            .close()
+            .await
             .map_err(|e| anyhow!("Failed to close channel: {}", e))?;
         Ok(())
     }
@@ -1274,8 +2407,8 @@ pub struct PortForward {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PortForwardDirection {
-    Local,  // -L: forward local port to remote
-    Remote, // -R: forward remote port to local
+    Local,   // -L: forward local port to remote
+    Remote,  // -R: forward remote port to local
     Dynamic, // -D: dynamic SOCKS proxy
 }
 
@@ -1334,8 +2467,12 @@ impl PortForwardManager {
         let mut guard = self.forwards.write().await;
         guard.insert(id.clone(), forward);
 
-        log::info!("[TODO] Local port forward registered: localhost:{} -> {}:{}",
-            local_port, remote_host, remote_port);
+        log::info!(
+            "[TODO] Local port forward registered: localhost:{} -> {}:{}",
+            local_port,
+            remote_host,
+            remote_port
+        );
         log::warn!("Port forwarding is not fully implemented - connections will not be forwarded");
 
         Ok(id)
@@ -1371,8 +2508,12 @@ impl PortForwardManager {
         let mut guard = self.forwards.write().await;
         guard.insert(id.clone(), forward);
 
-        log::info!("Started remote port forward (placeholder): *:{} -> {}:{}",
-            remote_port, local_host, local_port);
+        log::info!(
+            "Started remote port forward (placeholder): *:{} -> {}:{}",
+            remote_port,
+            local_host,
+            local_port
+        );
 
         // TODO: Implement actual SSH reverse port forwarding
         log::warn!("Remote port forwarding is not fully implemented - data will not be forwarded");
@@ -1384,7 +2525,8 @@ impl PortForwardManager {
     pub async fn stop_forward(&self, forward_id: &str) -> anyhow::Result<()> {
         let mut guard = self.forwards.write().await;
         if let Some(forward) = guard.remove(forward_id) {
-            log::info!("Stopped port forward: {} ({}:{} -> {}:{})",
+            log::info!(
+                "Stopped port forward: {} ({}:{} -> {}:{})",
                 forward.id,
                 match forward.direction {
                     PortForwardDirection::Local => "local",
@@ -1393,7 +2535,8 @@ impl PortForwardManager {
                 },
                 forward.local_port,
                 forward.remote_host,
-                forward.remote_port);
+                forward.remote_port
+            );
         }
         Ok(())
     }
@@ -1422,5 +2565,195 @@ impl PortForwardManager {
 impl Default for PortForwardManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn sftp_mkdir_all_prefixes(path: &str) -> Vec<String> {
+    let is_absolute = path.starts_with('/');
+    let mut current = String::new();
+    let mut prefixes = Vec::new();
+
+    for component in path.split('/').filter(|component| !component.is_empty()) {
+        if current.is_empty() {
+            if is_absolute {
+                current.push('/');
+            }
+            current.push_str(component);
+        } else {
+            current.push('/');
+            current.push_str(component);
+        }
+        prefixes.push(current.clone());
+    }
+
+    prefixes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service::remote_ssh::types::{RemoteWorkspace, SavedAuthType, SavedConnection};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_data_dir(name: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "bitfun-remote-ssh-manager-{}-{}-{}",
+            name,
+            std::process::id(),
+            nanos
+        ))
+    }
+
+    #[tokio::test]
+    async fn prunes_password_connection_without_vault_entry() {
+        let dir = test_data_dir("missing-vault");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let manager = SSHConnectionManager::new(dir.clone());
+
+        let saved = vec![SavedConnection {
+            id: "ssh-root@example.com:22".to_string(),
+            name: "root@example.com".to_string(),
+            host: "example.com".to_string(),
+            port: 22,
+            username: "root".to_string(),
+            auth_type: SavedAuthType::Password,
+            default_workspace: None,
+            last_connected: Some(1),
+        }];
+        tokio::fs::write(
+            dir.join("ssh_connections.json"),
+            serde_json::to_string_pretty(&saved).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        manager.load_saved_connections().await.unwrap();
+
+        assert!(manager.get_saved_connections().await.is_empty());
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_saving_password_connection_without_password() {
+        let dir = test_data_dir("empty-password-save");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let manager = SSHConnectionManager::new(dir.clone());
+
+        let result = manager
+            .save_connection(&SSHConnectionConfig {
+                id: "ssh-root@example.com:22".to_string(),
+                name: "root@example.com".to_string(),
+                host: "example.com".to_string(),
+                port: 22,
+                username: "root".to_string(),
+                auth: SSHAuthMethod::Password {
+                    password: String::new(),
+                },
+                default_workspace: None,
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert!(manager.get_saved_connections().await.is_empty());
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn restores_connection_config_from_saved_password_profile() {
+        let dir = test_data_dir("restore-password-config");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let manager = SSHConnectionManager::new(dir.clone());
+
+        manager
+            .save_connection(&SSHConnectionConfig {
+                id: "ssh-root@example.com:22".to_string(),
+                name: "root@example.com".to_string(),
+                host: "example.com".to_string(),
+                port: 22,
+                username: "root".to_string(),
+                auth: SSHAuthMethod::Password {
+                    password: "secret".to_string(),
+                },
+                default_workspace: Some("/root/project".to_string()),
+            })
+            .await
+            .unwrap();
+
+        let restored = manager
+            .load_connection_config_from_saved("ssh-root@example.com:22")
+            .await
+            .unwrap()
+            .expect("expected saved config");
+
+        assert_eq!(restored.host, "example.com");
+        assert_eq!(restored.username, "root");
+        assert_eq!(restored.default_workspace.as_deref(), Some("/root/project"));
+        match restored.auth {
+            SSHAuthMethod::Password { password } => assert_eq!(password, "secret"),
+            other => panic!("expected password auth, got {:?}", other),
+        }
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn prunes_remote_workspaces_without_saved_connection() {
+        let dir = test_data_dir("missing-saved");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let manager = SSHConnectionManager::new(dir.clone());
+
+        let workspaces = vec![RemoteWorkspace {
+            connection_id: "ssh-root@example.com:22".to_string(),
+            remote_path: "/root/project".to_string(),
+            connection_name: "root@example.com".to_string(),
+            ssh_host: "example.com".to_string(),
+        }];
+        tokio::fs::write(
+            dir.join("remote_workspace.json"),
+            serde_json::to_string_pretty(&workspaces).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        manager.load_remote_workspace().await.unwrap();
+        let removed = manager
+            .prune_remote_workspaces_without_saved_connections()
+            .await
+            .unwrap();
+
+        assert_eq!(removed.len(), 1);
+        assert!(manager.get_remote_workspaces().await.is_empty());
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[test]
+    fn mkdir_all_prefixes_expand_absolute_posix_path() {
+        assert_eq!(
+            sftp_mkdir_all_prefixes("/home/wgq/workspace/bot_detection/.bitfun/bin"),
+            vec![
+                "/home".to_string(),
+                "/home/wgq".to_string(),
+                "/home/wgq/workspace".to_string(),
+                "/home/wgq/workspace/bot_detection".to_string(),
+                "/home/wgq/workspace/bot_detection/.bitfun".to_string(),
+                "/home/wgq/workspace/bot_detection/.bitfun/bin".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn mkdir_all_prefixes_collapse_redundant_separators() {
+        assert_eq!(
+            sftp_mkdir_all_prefixes("/home//wgq///project/"),
+            vec![
+                "/home".to_string(),
+                "/home/wgq".to_string(),
+                "/home/wgq/project".to_string(),
+            ]
+        );
     }
 }

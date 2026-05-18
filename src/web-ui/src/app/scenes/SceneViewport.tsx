@@ -12,23 +12,29 @@ import React, { Suspense, lazy } from 'react';
 import type { SceneTabId } from '../components/SceneBar/types';
 import { useSceneManager } from '../hooks/useSceneManager';
 import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
+import { useDialogCompletionNotify } from '../hooks/useDialogCompletionNotify';
+import { ProcessingIndicator } from '@/flow_chat/components/modern/ProcessingIndicator';
+import SettingsScene from './settings/SettingsScene';
+import AssistantScene from './assistant/AssistantScene';
+import SessionScene from './session/SessionScene';
 import './SceneViewport.scss';
 
-const SessionScene    = lazy(() => import('./session/SessionScene'));
+// Session is the primary interaction path. Keep it in the main scene bundle so
+// first open does not stall on a lazy chunk fetch/parse before FlowChat mounts.
 const TerminalScene   = lazy(() => import('./terminal/TerminalScene'));
 const GitScene        = lazy(() => import('./git/GitScene'));
-const SettingsScene   = lazy(() => import('./settings/SettingsScene'));
 const FileViewerScene = lazy(() => import('./file-viewer/FileViewerScene'));
 const ProfileScene    = lazy(() => import('./profile/ProfileScene'));
 const AgentsScene       = lazy(() => import('./agents/AgentsScene'));
 const SkillsScene     = lazy(() => import('./skills/SkillsScene'));
 const MiniAppGalleryScene = lazy(() => import('./miniapps/MiniAppGalleryScene'));
 const BrowserScene    = lazy(() => import('./browser/BrowserScene'));
-const MermaidEditorScene = lazy(() => import('./mermaid/MermaidEditorScene'));
-const MyAgentScene    = lazy(() => import('./my-agent/MyAgentScene'));
+const InsightsScene   = lazy(() => import('./my-agent/InsightsScene'));
 const ShellScene      = lazy(() => import('./shell/ShellScene'));
 const WelcomeScene    = lazy(() => import('./welcome/WelcomeScene'));
 const MiniAppScene    = lazy(() => import('./miniapps/MiniAppScene'));
+const PanelViewScene  = lazy(() => import('./panel-view/PanelViewScene'));
+
 
 interface SceneViewportProps {
   workspacePath?: string;
@@ -38,46 +44,72 @@ interface SceneViewportProps {
 const SceneViewport: React.FC<SceneViewportProps> = ({ workspacePath, isEntering = false }) => {
   const { openTabs, activeTabId } = useSceneManager();
   const { t } = useI18n('common');
+  useDialogCompletionNotify();
 
   // All tabs closed — show empty state
   if (openTabs.length === 0) {
     return (
-      <div className="bitfun-scene-viewport bitfun-scene-viewport--empty">
-        <p className="bitfun-scene-viewport__empty-hint">{t('welcomeScene.emptyHint')}</p>
+      <div className="bitfun-scene-viewport">
+        <div className="bitfun-scene-viewport__clip bitfun-scene-viewport__clip--empty">
+          <p className="bitfun-scene-viewport__empty-hint">{t('welcomeScene.emptyHint')}</p>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="bitfun-scene-viewport">
-      <Suspense fallback={null}>
-        {openTabs.map(tab => (
-          <div
-            key={tab.id}
-            className={[
-              'bitfun-scene-viewport__scene',
-              tab.id === activeTabId && 'bitfun-scene-viewport__scene--active',
-            ].filter(Boolean).join(' ')}
-            aria-hidden={tab.id !== activeTabId}
-          >
-            {renderScene(tab.id, workspacePath, isEntering)}
-          </div>
-        ))}
-      </Suspense>
+      <div className="bitfun-scene-viewport__clip">
+        {openTabs.map(tab => {
+          const isActive = tab.id === activeTabId;
+          return (
+            <div
+              key={tab.id}
+              className={[
+                'bitfun-scene-viewport__scene',
+                isActive && 'bitfun-scene-viewport__scene--active',
+              ].filter(Boolean).join(' ')}
+              aria-hidden={!isActive}
+            >
+              <Suspense
+                fallback={
+                  isActive ? (
+                    <div
+                      className="bitfun-scene-viewport__lazy-fallback"
+                      role="status"
+                      aria-busy="true"
+                      aria-label={t('loading.scenes')}
+                    >
+                      <ProcessingIndicator visible />
+                    </div>
+                  ) : null
+                }
+              >
+                {renderScene(tab.id, workspacePath, isEntering, isActive)}
+              </Suspense>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 };
 
-function renderScene(id: SceneTabId, workspacePath?: string, isEntering?: boolean) {
+function renderScene(
+  id: SceneTabId,
+  workspacePath?: string,
+  isEntering?: boolean,
+  isActive: boolean = false
+) {
   switch (id) {
     case 'welcome':
       return <WelcomeScene />;
     case 'session':
-      return <SessionScene workspacePath={workspacePath} isEntering={isEntering} />;
+      return <SessionScene workspacePath={workspacePath} isEntering={isEntering} isActive={isActive} />;
     case 'terminal':
-      return <TerminalScene />;
+      return <TerminalScene isActive={isActive} />;
     case 'git':
-      return <GitScene workspacePath={workspacePath} />;
+      return <GitScene workspacePath={workspacePath} isActive={isActive} />;
     case 'settings':
       return <SettingsScene />;
     case 'file-viewer':
@@ -92,12 +124,14 @@ function renderScene(id: SceneTabId, workspacePath?: string, isEntering?: boolea
       return <MiniAppGalleryScene />;
     case 'browser':
       return <BrowserScene />;
-    case 'mermaid':
-      return <MermaidEditorScene />;
-    case 'my-agent':
-      return <MyAgentScene workspacePath={workspacePath} />;
+    case 'assistant':
+      return <AssistantScene workspacePath={workspacePath} />;
+    case 'insights':
+      return <InsightsScene />;
     case 'shell':
-      return <ShellScene />;
+      return <ShellScene isActive={isActive} />;
+    case 'panel-view':
+      return <PanelViewScene workspacePath={workspacePath} />;
     default:
       if (typeof id === 'string' && id.startsWith('miniapp:')) {
         return <MiniAppScene appId={id.slice('miniapp:'.length)} />;

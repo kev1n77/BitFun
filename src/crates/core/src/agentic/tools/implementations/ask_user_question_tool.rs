@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
 use crate::agentic::tools::framework::{Tool, ToolResult, ToolUseContext};
@@ -40,9 +39,21 @@ pub struct AskUserQuestionInput {
 /// AskUserQuestion tool
 pub struct AskUserQuestionTool;
 
+impl Default for AskUserQuestionTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AskUserQuestionTool {
     pub fn new() -> Self {
         Self
+    }
+
+    fn is_acp_context(context: Option<&ToolUseContext>) -> bool {
+        context
+            .and_then(|ctx| ctx.custom_data.get("acp_transport"))
+            .is_some_and(|value| value == "true" || value == &json!(true))
     }
 
     /// Validate question format (supports multiple questions)
@@ -165,17 +176,39 @@ impl Tool for AskUserQuestionTool {
     }
 
     async fn description(&self) -> BitFunResult<String> {
-        Ok(r#"Use this tool when you need to ask the user question during execution. This allows you to:
+        Ok(r#"Use this tool when you need to ask the user questions during execution. This allows you to:
 1. Gather user preferences or requirements
 2. Clarify ambiguous instructions
 3. Get decisions on implementation choices as you work
-4. Offer choices to the user about what direction to take.
+4. Offer choices to the user about what direction to take
+
+WHEN TO USE:
+- The request is ambiguous or could be interpreted in multiple ways
+- Multiple valid approaches exist with different trade-offs
+- The change affects critical files or has significant impact
+- You are unsure about the user's intent or preferences
+- The decision has security, performance, or architectural implications
+
+WHEN NOT TO USE:
+- The request is clear and specific
+- You are following an already-approved plan exactly
+- The change is trivial and clearly correct
+
+RECOMMENDATION GUIDELINES:
+- Always state your recommendation and reasoning
+- Make your recommended option the first option in the list
+- Add "(Recommended)" at the end of the recommended option's label
+- Provide 2-4 clear options with descriptions of trade-offs
 
 Usage notes:
 - This tool ends the current dialog turn and waits for the user's reply before the assistant continues
 - Put all questions you need into a single AskUserQuestion call instead of calling it repeatedly in one response
 - Users will always be able to select "Other" to provide custom text input
 - Use multiSelect: true to allow multiple answers to be selected for a question"#.to_string())
+    }
+
+    fn short_description(&self) -> String {
+        "Ask the user focused follow-up questions during execution.".to_string()
     }
 
     fn input_schema(&self) -> Value {
@@ -252,6 +285,10 @@ Usage notes:
         true
     }
 
+    async fn is_available_in_context(&self, context: Option<&ToolUseContext>) -> bool {
+        !Self::is_acp_context(context)
+    }
+
     async fn call_impl(
         &self,
         input: &Value,
@@ -307,10 +344,9 @@ Usage notes:
             tool_id
         );
 
-        // 7. Wait for user answer (10 minute timeout)
-        let timeout_duration = Duration::from_secs(600); // 10 minutes
-        match timeout(timeout_duration, rx).await {
-            Ok(Ok(response)) => {
+        // 7. Wait for user answer until the user responds, cancels, or the turn is cancelled.
+        match rx.await {
+            Ok(response) => {
                 debug!(
                     "AskUserQuestion tool received user response, tool_id: {}",
                     tool_id
@@ -337,9 +373,10 @@ Usage notes:
                         "status": "answered"
                     }),
                     result_for_assistant: Some(result_text),
+                    image_attachments: None,
                 }])
             }
-            Ok(Err(_)) => {
+            Err(_) => {
                 warn!("AskUserQuestion tool channel closed, tool_id: {}", tool_id);
                 Ok(vec![ToolResult::Result {
                     data: json!({
@@ -347,25 +384,53 @@ Usage notes:
                         "status": "cancelled"
                     }),
                     result_for_assistant: Some("User input request was cancelled.".to_string()),
-                }])
-            }
-            Err(_) => {
-                warn!(
-                    "AskUserQuestion tool timeout after 600 seconds, tool_id: {}",
-                    tool_id
-                );
-                manager.cancel(&tool_id); // Clean up channel
-
-                Ok(vec![ToolResult::Result {
-                    data: json!({
-                        "questions_count": tool_input.questions.len(),
-                        "status": "timeout"
-                    }),
-                    result_for_assistant: Some(
-                        "User didn't answer your questions within 600 seconds.".to_string(),
-                    ),
+                    image_attachments: None,
                 }])
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AskUserQuestionTool;
+    use crate::agentic::tools::framework::{Tool, ToolUseContext};
+    use std::collections::HashMap;
+
+    fn context_with_custom_data(custom_data: HashMap<String, serde_json::Value>) -> ToolUseContext {
+        ToolUseContext {
+            tool_call_id: None,
+            agent_type: None,
+            session_id: None,
+            dialog_turn_id: None,
+            workspace: None,
+            unlocked_collapsed_tools: Vec::new(),
+            custom_data,
+            computer_use_host: None,
+            cancellation_token: None,
+            runtime_tool_restrictions: Default::default(),
+            workspace_services: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn ask_user_question_is_hidden_for_acp_transport() {
+        let tool = AskUserQuestionTool::new();
+        let mut custom_data = HashMap::new();
+        custom_data.insert(
+            "acp_transport".to_string(),
+            serde_json::Value::String("true".to_string()),
+        );
+        let context = context_with_custom_data(custom_data);
+
+        assert!(!tool.is_available_in_context(Some(&context)).await);
+    }
+
+    #[tokio::test]
+    async fn ask_user_question_remains_available_without_acp_transport() {
+        let tool = AskUserQuestionTool::new();
+        let context = context_with_custom_data(HashMap::new());
+
+        assert!(tool.is_available_in_context(Some(&context)).await);
     }
 }

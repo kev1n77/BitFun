@@ -244,6 +244,25 @@ impl CronService {
         Ok(existed)
     }
 
+    /// Remove all scheduled jobs bound to the given session (e.g. after session delete).
+    pub async fn delete_jobs_for_session(&self, session_id: &str) -> BitFunResult<usize> {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            return Ok(0);
+        }
+        let _guard = self.mutation_lock.lock().await;
+        let mut jobs = self.jobs.write().await;
+        let before = jobs.len();
+        jobs.retain(|_, job| job.session_id.trim() != session_id);
+        let removed = before - jobs.len();
+        if removed > 0 {
+            self.persist_jobs_locked(&jobs).await?;
+            drop(jobs);
+            self.wakeup.notify_one();
+        }
+        Ok(removed)
+    }
+
     pub async fn run_job_now(&self, job_id: &str) -> BitFunResult<CronJob> {
         {
             let _guard = self.mutation_lock.lock().await;
@@ -500,6 +519,7 @@ impl CronService {
                 scheduled_job_policy(),
                 None,
                 None,
+                None,
             )
             .await;
 
@@ -532,14 +552,28 @@ impl CronService {
                 job.state.last_run_status = Some(CronJobRunStatus::Error);
                 job.state.last_error = Some(error.clone());
                 job.state.last_run_finished_at_ms = Some(now_after_submit);
-                job.state.retry_at_ms = Some(now_after_submit + DEFAULT_RETRY_DELAY_MS);
-                job.state.consecutive_failures = job.state.consecutive_failures.saturating_add(1);
                 job.updated_at_ms = now_after_submit;
 
-                warn!(
-                    "Failed to enqueue scheduled job: job_id={}, session_id={}, error={}",
-                    job.id, job.session_id, error
-                );
+                if cron_enqueue_error_is_missing_session(&error) {
+                    job.enabled = false;
+                    job.state.next_run_at_ms = None;
+                    job.state.pending_trigger_at_ms = None;
+                    job.state.retry_at_ms = None;
+                    job.state.consecutive_failures =
+                        job.state.consecutive_failures.saturating_add(1);
+                    info!(
+                        "Scheduled job auto-disabled (session no longer exists): job_id={}, session_id={}",
+                        job.id, job.session_id
+                    );
+                } else {
+                    job.state.retry_at_ms = Some(now_after_submit + DEFAULT_RETRY_DELAY_MS);
+                    job.state.consecutive_failures =
+                        job.state.consecutive_failures.saturating_add(1);
+                    warn!(
+                        "Failed to enqueue scheduled job: job_id={}, session_id={}, error={}",
+                        job.id, job.session_id, error
+                    );
+                }
             }
         }
 
@@ -717,4 +751,9 @@ struct EnqueueInput {
     session_id: String,
     workspace_path: String,
     user_input: String,
+}
+
+/// Permanent failure: coordinator cannot load session metadata (session deleted from disk).
+fn cron_enqueue_error_is_missing_session(error: &str) -> bool {
+    error.contains("Session metadata not found")
 }

@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use tokio::task;
 use uuid::Uuid;
@@ -160,7 +160,7 @@ fn build_log_line(entry: DebugLogEntry, config: &DebugLogConfig) -> Value {
     })
 }
 
-fn ensure_parent_exists(path: &PathBuf) -> Result<()> {
+fn ensure_parent_exists(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }

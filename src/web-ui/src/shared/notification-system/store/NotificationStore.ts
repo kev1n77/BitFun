@@ -11,7 +11,7 @@ const DEFAULT_CONFIG: NotificationConfig = {
   defaultDuration: 3000,
   enableSound: false,
   enableAnimation: true,
-  position: 'bottom-right'
+  position: 'bottom-left'
 };
 
 
@@ -109,7 +109,7 @@ class NotificationStore {
     
     
     let notificationHistory = [...this.state.notificationHistory];
-    let unreadCount = this.state.unreadCount;
+    const unreadCount = this.state.unreadCount;
     
     if (updatedNotification && 
         (updatedNotification.variant === 'progress' || updatedNotification.variant === 'loading')) {

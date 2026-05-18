@@ -3,7 +3,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { configAPI } from '@/infrastructure/api';
 import type { SkillInfo, SkillLevel, SkillValidationResult } from '@/infrastructure/config/types';
-import { useCurrentWorkspace } from '@/infrastructure/contexts/WorkspaceContext';
+import { useWorkspaceManagerSync } from '@/infrastructure/hooks/useWorkspaceManagerSync';
 import { useNotification } from '@/shared/notification-system';
 import { createLogger } from '@/shared/utils/logger';
 import type { InstalledFilter } from '../skillsSceneStore';
@@ -18,7 +18,7 @@ interface UseInstalledSkillsOptions {
 export function useInstalledSkills({ searchQuery, activeFilter }: UseInstalledSkillsOptions) {
   const { t } = useTranslation('scenes/skills');
   const notification = useNotification();
-  const { workspacePath, hasWorkspace } = useCurrentWorkspace();
+  const { workspacePath, hasWorkspace, isRemoteWorkspace } = useWorkspaceManagerSync();
 
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -118,6 +118,10 @@ export function useInstalledSkills({ searchQuery, activeFilter }: UseInstalledSk
       notification.warning(t('messages.noWorkspace'));
       return false;
     }
+    if (formLevel === 'project' && isRemoteWorkspace) {
+      notification.warning('Remote workspaces do not support project skill installation yet.');
+      return false;
+    }
     try {
       setIsAdding(true);
       await configAPI.addSkill({
@@ -139,12 +143,12 @@ export function useInstalledSkills({ searchQuery, activeFilter }: UseInstalledSk
     } finally {
       setIsAdding(false);
     }
-  }, [formLevel, formPath, hasWorkspace, loadSkills, notification, resetForm, t, validationResult, workspacePath]);
+  }, [formLevel, formPath, hasWorkspace, isRemoteWorkspace, loadSkills, notification, resetForm, t, validationResult, workspacePath]);
 
   const handleDelete = useCallback(async (skill: SkillInfo) => {
     try {
       await configAPI.deleteSkill({
-        skillName: skill.name,
+        skillKey: skill.key,
         workspacePath: workspacePath || undefined,
       });
       notification.success(t('messages.deleteSuccess', { name: skill.name }));
@@ -164,7 +168,17 @@ export function useInstalledSkills({ searchQuery, activeFilter }: UseInstalledSk
 
   const filteredSkills = useMemo(() => {
     return skills.filter((skill) => {
-      const matchesFilter = activeFilter === 'all' || skill.level === activeFilter;
+      let matchesFilter = true;
+      if (activeFilter === 'user') {
+        matchesFilter = skill.level === 'user' && !skill.isBuiltin;
+      } else if (activeFilter === 'project') {
+        matchesFilter = skill.level === 'project' && !skill.isBuiltin;
+      } else if (activeFilter === 'builtin') {
+        matchesFilter = skill.isBuiltin;
+      } else if (activeFilter === 'suite') {
+        matchesFilter = skill.isBuiltin;
+      }
+
       const matchesQuery = !normalizedQuery || [
         skill.name,
         skill.description,
@@ -176,8 +190,10 @@ export function useInstalledSkills({ searchQuery, activeFilter }: UseInstalledSk
 
   const counts = useMemo(() => ({
     all: skills.length,
-    user: skills.filter((skill) => skill.level === 'user').length,
-    project: skills.filter((skill) => skill.level === 'project').length,
+    builtin: skills.filter((skill) => skill.isBuiltin).length,
+    user: skills.filter((skill) => skill.level === 'user' && !skill.isBuiltin).length,
+    project: skills.filter((skill) => skill.level === 'project' && !skill.isBuiltin).length,
+    suite: skills.filter((skill) => skill.isBuiltin).length,
   }), [skills]);
 
   return {
@@ -200,5 +216,6 @@ export function useInstalledSkills({ searchQuery, activeFilter }: UseInstalledSk
     resetForm,
     workspacePath,
     hasWorkspace,
+    isRemoteWorkspace,
   };
 }

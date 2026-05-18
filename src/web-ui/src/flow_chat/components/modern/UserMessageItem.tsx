@@ -5,16 +5,21 @@
 
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Copy, Check, RotateCcw, Loader2, ArrowDownToLine, X } from 'lucide-react';
-import type { DialogTurn } from '../../types/flow-chat';
+import { Copy, Check, RotateCcw, Loader2, ArrowDownToLine, X, CircleUser } from 'lucide-react';
+import type { DialogTurn, FlowUserSteeringItem } from '../../types/flow-chat';
 import { useFlowChatContext } from './FlowChatContext';
 import { useActiveSession } from '../../store/modernFlowChatStore';
 import { flowChatStore } from '../../store/FlowChatStore';
 import { snapshotAPI } from '@/infrastructure/api';
 import { notificationService } from '@/shared/notification-system';
 import { globalEventBus } from '@/infrastructure/event-bus';
-import { ReproductionStepsBlock, Tooltip } from '@/component-library';
+import { shouldIgnoreCardToggleClick } from '@/shared/utils/textSelection';
+import { ReproductionStepsBlock, Tooltip, confirmDanger } from '@/component-library';
 import { createLogger } from '@/shared/utils/logger';
+import type { SessionUsageReport } from '@/infrastructure/api/service-api/SessionAPI';
+import { SessionUsageReportCard } from '../usage/SessionUsageReportCard';
+import type { SessionUsagePanelTab } from '../usage/sessionUsagePanelTypes';
+import { coerceSessionUsageReport } from '../usage/usageReportUtils';
 import './UserMessageItem.scss';
 
 const log = createLogger('UserMessageItem');
@@ -22,12 +27,18 @@ const log = createLogger('UserMessageItem');
 interface UserMessageItemProps {
   message: DialogTurn['userMessage'];
   turnId: string;
+  steeringStatus?: FlowUserSteeringItem['status'];
 }
 
 export const UserMessageItem = React.memo<UserMessageItemProps>(
-  ({ message, turnId }) => {
+  ({ message, turnId, steeringStatus }) => {
     const { t } = useTranslation('flow-chat');
-    const { config, sessionId, activeSessionOverride } = useFlowChatContext();
+    const {
+      config,
+      sessionId,
+      activeSessionOverride,
+      allowUserMessageRollback = true,
+    } = useFlowChatContext();
     const activeSessionFromStore = useActiveSession();
     const activeSession = activeSessionOverride ?? activeSessionFromStore;
     const [copied, setCopied] = useState(false);
@@ -37,36 +48,44 @@ export const UserMessageItem = React.memo<UserMessageItemProps>(
     const [lightboxImage, setLightboxImage] = useState<string | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const contentRef = useRef<HTMLDivElement>(null);
+    const messageContent = typeof message?.content === 'string' ? message.content : String(message?.content || '');
+    const messageImages = useMemo(() => message?.images ?? [], [message?.images]);
+    const isUsageReportMessage = message?.metadata?.localCommandKind === 'usage_report';
+    const isUsageReportLoading = message?.metadata?.usageReportStatus === 'loading';
+    const usageReport = coerceSessionUsageReport(message?.metadata?.usageReport);
 
     const turnIndex = activeSession?.dialogTurns.findIndex(t => t.id === turnId) ?? -1;
     const dialogTurn = turnIndex >= 0 ? activeSession?.dialogTurns[turnIndex] : null;
     const isFailed = dialogTurn?.status === 'error';
-    const canRollback = !!sessionId && turnIndex >= 0 && !isRollingBack;
-
-    
-    // Avoid zero-size errors by rendering a placeholder instead of null.
-    if (!message) {
-      return <div style={{ minHeight: '1px' }} />;
-    }
+    const canRollback =
+      !steeringStatus &&
+      allowUserMessageRollback &&
+      !!sessionId &&
+      turnIndex >= 0 &&
+      !isRollingBack;
+    const steeringTag = steeringStatus === 'pending'
+      ? {
+          className: 'user-message-item__steering-tag--pending',
+          label: t('steering.statusPending'),
+        }
+      : null;
 
     const { displayText, reproductionSteps } = useMemo(() => {
-      const contentStr = typeof message.content === 'string' ? message.content : String(message.content || '');
-
       const reproductionRegex = /<reproduction_steps>([\s\S]*?)<\/reproduction_steps\s*>?/g;
-      const reproductionMatch = reproductionRegex.exec(contentStr);
+      const reproductionMatch = reproductionRegex.exec(messageContent);
       const reproduction = reproductionMatch ? reproductionMatch[1].trim() : null;
 
-      let cleaned = contentStr.replace(reproductionRegex, '').trim();
+      let cleaned = messageContent.replace(reproductionRegex, '').trim();
 
       // Strip [Image: ...] context lines when images are shown as thumbnails.
-      if (message.images && message.images.length > 0) {
+      if (messageImages.length > 0) {
         cleaned = cleaned
           .replace(/\[Image:.*?\]\n(?:Path:.*?\n|Image ID:.*?\n)?/g, '')
           .trim();
       }
 
       return { displayText: cleaned, reproductionSteps: reproduction };
-    }, [message.content, message.images]);
+    }, [messageContent, messageImages]);
     
     // Check whether content overflows.
     useEffect(() => {
@@ -95,19 +114,31 @@ export const UserMessageItem = React.memo<UserMessageItemProps>(
     const handleCopy = useCallback(async (e: React.MouseEvent) => {
       e.stopPropagation(); // Prevent toggle via bubbling.
       try {
-        await navigator.clipboard.writeText(message.content);
+        await navigator.clipboard.writeText(messageContent);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       } catch (error) {
         log.error('Failed to copy', error);
       }
-    }, [message.content]);
+    }, [messageContent]);
 
     const handleRollback = useCallback(async (e: React.MouseEvent) => {
       e.stopPropagation();
       if (!canRollback || !sessionId) return;
 
-      const confirmed = await window.confirm(t('message.rollbackConfirm', { index: turnIndex + 1 }));
+      const index = turnIndex + 1;
+      const confirmed = await confirmDanger(
+        t('message.rollbackDialogTitle', { index }),
+        (
+          <>
+            <p className="confirm-dialog__message-intro">{t('message.rollbackDialogIntro')}</p>
+            <ul className="confirm-dialog__bullet-list">
+              <li>{t('message.rollbackDialogBulletFiles')}</li>
+              <li>{t('message.rollbackDialogBulletHistory')}</li>
+            </ul>
+          </>
+        )
+      );
       if (!confirmed) return;
 
       setIsRollingBack(true);
@@ -124,6 +155,15 @@ export const UserMessageItem = React.memo<UserMessageItemProps>(
           globalEventBus.emit('editor:file-changed', { filePath });
         });
 
+        // 3) Restore the original user input back into the chat input box.
+        //    Rollback is an explicit user action — always fill to avoid the
+        //    content silently disappearing when the input already has text.
+        if (messageContent.trim().length > 0) {
+          globalEventBus.emit('fill-chat-input', {
+            content: messageContent,
+          });
+        }
+
         notificationService.success(t('message.rollbackSuccess'));
       } catch (error) {
         log.error('Rollback failed', error);
@@ -131,10 +171,14 @@ export const UserMessageItem = React.memo<UserMessageItemProps>(
       } finally {
         setIsRollingBack(false);
       }
-    }, [canRollback, sessionId, t, turnIndex]);
+    }, [canRollback, sessionId, t, turnIndex, messageContent]);
     
     // Toggle expanded state.
-    const handleToggleExpand = useCallback(() => {
+    const handleToggleExpand = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+      if (shouldIgnoreCardToggleClick(event, contentRef.current)) {
+        return;
+      }
+
       // Only allow expand/collapse when there is overflow.
       if (!hasOverflow && !expanded) {
         return;
@@ -146,9 +190,23 @@ export const UserMessageItem = React.memo<UserMessageItemProps>(
     const handleFillToInput = useCallback((e: React.MouseEvent) => {
       e.stopPropagation();
       globalEventBus.emit('fill-chat-input', {
-        content: message.content
+        content: messageContent
       });
-    }, [message.content]);
+    }, [messageContent]);
+
+    const handleOpenUsageReport = useCallback((report: SessionUsageReport, initialTab?: SessionUsagePanelTab) => {
+      void import('../../services/openSessionUsageReport').then(({ openSessionUsagePanel }) => {
+        openSessionUsagePanel({
+          report,
+          markdown: messageContent,
+          sessionId: activeSession?.sessionId ?? sessionId,
+          workspacePath: activeSession?.workspacePath,
+          initialTab,
+          title: t('usage.title'),
+          expand: true,
+        });
+      });
+    }, [activeSession?.sessionId, activeSession?.workspacePath, messageContent, sessionId, t]);
     
     // Collapse when clicking outside.
     useEffect(() => {
@@ -165,6 +223,23 @@ export const UserMessageItem = React.memo<UserMessageItemProps>(
         document.removeEventListener('mousedown', handleClickOutside);
       };
     }, [expanded]);
+
+    // Avoid zero-size errors by rendering a placeholder instead of null.
+    if (!message) {
+      return <div style={{ minHeight: '1px' }} />;
+    }
+
+    if (isUsageReportMessage) {
+      return (
+        <SessionUsageReportCard
+          report={usageReport}
+          markdown={messageContent}
+          generatedAt={message.metadata?.generatedAt}
+          isLoading={isUsageReportLoading}
+          onOpenDetails={usageReport ? handleOpenUsageReport : undefined}
+        />
+      );
+    }
     
     return (
       <div 
@@ -177,47 +252,90 @@ export const UserMessageItem = React.memo<UserMessageItemProps>(
           </div>
         )}
         <div className="user-message-item__main">
-          <div 
-            ref={contentRef}
-            className="user-message-item__content"
-            onClick={handleToggleExpand}
-            title={(hasOverflow || expanded) ? (expanded ? t('message.clickToCollapse') : t('message.clickToExpand')) : undefined}
-            style={{ cursor: (hasOverflow || expanded) ? 'pointer' : 'text' }}
+          {isFailed && (
+            <span className="user-message-item__failed-avatar" aria-hidden>
+              <CircleUser size={18} strokeWidth={1.75} />
+            </span>
+          )}
+          <div
+            className={
+              isFailed
+                ? 'user-message-item__failed-inline-cluster'
+                : 'user-message-item__main-contents-bridge'
+            }
           >
-            {displayText}
-          </div>
-          <div className="user-message-item__actions">
-            <button
-              className={`user-message-item__copy-btn ${copied ? 'copied' : ''}`}
-              onClick={handleCopy}
-              title={copied ? t('message.copyFailed') : t('message.copy')}
-            >
-              {copied ? <Check size={14} /> : <Copy size={14} />}
-            </button>
             {isFailed ? (
-              <Tooltip content={t('message.fillToInput')}>
-                <button
-                  className="user-message-item__copy-btn"
-                  onClick={handleFillToInput}
+              <div className="user-message-item__failed-body">
+                <div 
+                  ref={contentRef}
+                  className="user-message-item__content"
+                  onClick={handleToggleExpand}
+                  title={(hasOverflow || expanded) ? (expanded ? t('message.clickToCollapse') : t('message.clickToExpand')) : undefined}
+                  style={{
+                    cursor: (hasOverflow || expanded) ? 'pointer' : 'text',
+                  }}
                 >
-                  <ArrowDownToLine size={14} />
-                </button>
-              </Tooltip>
+                  {displayText}
+                </div>
+                {steeringTag && (
+                  <div className={`user-message-item__steering-tag ${steeringTag.className}`}>
+                    {steeringTag.label}
+                  </div>
+                )}
+              </div>
             ) : (
-              <Tooltip content={canRollback ? t('message.rollbackTo', { index: turnIndex + 1 }) : t('message.cannotRollback')}>
-                <button
-                  className="user-message-item__rollback-btn"
-                  onClick={handleRollback}
-                  disabled={!canRollback}
+              <>
+                <div 
+                  ref={contentRef}
+                  className="user-message-item__content"
+                  onClick={handleToggleExpand}
+                  title={(hasOverflow || expanded) ? (expanded ? t('message.clickToCollapse') : t('message.clickToExpand')) : undefined}
+                  style={{
+                    cursor: (hasOverflow || expanded) ? 'pointer' : 'text',
+                  }}
                 >
-                  {isRollingBack ? (
-                    <Loader2 size={14} className="user-message-item__rollback-spinner" />
-                  ) : (
-                    <RotateCcw size={14} />
-                  )}
-                </button>
-              </Tooltip>
+                  {displayText}
+                </div>
+                {steeringTag && (
+                  <div className={`user-message-item__steering-tag ${steeringTag.className}`}>
+                    {steeringTag.label}
+                  </div>
+                )}
+              </>
             )}
+            <div className="user-message-item__actions">
+              <button
+                className={`user-message-item__copy-btn ${copied ? 'copied' : ''}`}
+                onClick={handleCopy}
+                title={copied ? t('message.copyFailed') : t('message.copy')}
+              >
+                {copied ? <Check size={14} /> : <Copy size={14} />}
+              </button>
+              {isFailed ? (
+                <Tooltip content={t('message.fillToInput')}>
+                  <button
+                    className="user-message-item__copy-btn"
+                    onClick={handleFillToInput}
+                  >
+                    <ArrowDownToLine size={14} />
+                  </button>
+                </Tooltip>
+              ) : allowUserMessageRollback && !steeringStatus ? (
+                <Tooltip content={canRollback ? t('message.rollbackTo', { index: turnIndex + 1 }) : t('message.cannotRollback')}>
+                  <button
+                    className="user-message-item__rollback-btn"
+                    onClick={handleRollback}
+                    disabled={!canRollback}
+                  >
+                    {isRollingBack ? (
+                      <Loader2 size={14} className="user-message-item__rollback-spinner" />
+                    ) : (
+                      <RotateCcw size={14} />
+                    )}
+                  </button>
+                </Tooltip>
+              ) : null}
+            </div>
           </div>
         </div>
 
@@ -254,4 +372,3 @@ export const UserMessageItem = React.memo<UserMessageItemProps>(
 );
 
 UserMessageItem.displayName = 'UserMessageItem';
-

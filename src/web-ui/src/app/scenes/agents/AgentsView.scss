@@ -38,7 +38,7 @@
     align-items: center;
     gap: 5px;
     padding: 4px $size-gap-3;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-family: $font-family-sans;
     font-weight: $font-weight-medium;
     color: var(--color-text-muted);
@@ -78,7 +78,7 @@
   &__panel-label {
     flex-shrink: 0;
     padding: 10px $size-gap-4;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-weight: $font-weight-semibold;
     color: var(--color-text-muted);
     text-transform: uppercase;
@@ -93,7 +93,7 @@
   }
 }
 
-// ─── Onboarding ───────────────────────────────────────────────────────────────
+// ─── Agents empty state ───────────────────────────────────────────────────────
 .tv-onboard {
   display: flex;
   flex-direction: column;
@@ -128,7 +128,7 @@
 
   &__title {
     margin: 0;
-    font-size: $font-size-2xl;
+    font-size: var(--font-size-2xl);
     font-weight: $font-weight-semibold;
     color: var(--color-text-primary);
     letter-spacing: -0.4px;
@@ -136,13 +136,13 @@
 
   &__sub {
     margin: 0;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     color: var(--color-text-muted);
     line-height: 1.7;
   }
 
   &__section-label {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-weight: $font-weight-semibold;
     color: var(--color-text-muted);
     text-transform: uppercase;
@@ -199,13 +199,13 @@
   }
 
   &__tpl-name {
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     font-weight: $font-weight-semibold;
     color: var(--color-text-primary);
   }
 
   &__tpl-desc {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     white-space: nowrap;
     overflow: hidden;
@@ -214,7 +214,7 @@
 
   &__tpl-cnt {
     flex-shrink: 0;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-disabled);
     background: var(--element-bg-medium);
     padding: 2px 7px;
@@ -239,7 +239,7 @@
     border-radius: $size-radius-sm;
     padding: 7px $size-gap-6;
     color: var(--color-text-muted);
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     cursor: pointer;
     transition: all $motion-fast $easing-standard;
     font-family: $font-family-sans;

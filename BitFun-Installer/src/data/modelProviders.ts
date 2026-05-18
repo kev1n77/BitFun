@@ -1,6 +1,7 @@
 import type { ModelConfig } from '../types/installer';
 
-export type ApiFormat = 'openai' | 'anthropic';
+/** Matches main app `src/web-ui/.../modelConfigs.ts` ApiFormat for presets. */
+export type ApiFormat = 'openai' | 'anthropic' | 'gemini' | 'responses';
 
 export interface ProviderUrlOption {
   url: string;
@@ -19,20 +20,40 @@ export interface ProviderTemplate {
   baseUrlOptions?: ProviderUrlOption[];
 }
 
+/** Same order as `AIModelConfig.tsx` `providerOrder`. */
 export const PROVIDER_DISPLAY_ORDER: string[] = [
+  'openbitfun',
   'zhipu',
   'qwen',
   'deepseek',
   'volcengine',
+  'minimax',
+  'moonshot',
+  'gemini',
+  'anthropic',
   'siliconflow',
   'nvidia',
   'openrouter',
-  'minimax',
-  'moonshot',
-  'anthropic',
 ];
 
 export const PROVIDER_TEMPLATES: Record<string, ProviderTemplate> = {
+  openbitfun: {
+    id: 'openbitfun',
+    nameKey: 'model.providers.openbitfun.name',
+    descriptionKey: 'model.providers.openbitfun.description',
+    baseUrl: 'https://api.openbitfun.com',
+    format: 'anthropic',
+    models: [],
+  },
+  gemini: {
+    id: 'gemini',
+    nameKey: 'model.providers.gemini.name',
+    descriptionKey: 'model.providers.gemini.description',
+    baseUrl: 'https://generativelanguage.googleapis.com',
+    format: 'gemini',
+    models: ['gemini-3.1-pro-preview', 'gemini-3.1-flash-lite-preview'],
+    helpUrl: 'https://aistudio.google.com/app/apikey',
+  },
   anthropic: {
     id: 'anthropic',
     nameKey: 'model.providers.anthropic.name',
@@ -48,7 +69,7 @@ export const PROVIDER_TEMPLATES: Record<string, ProviderTemplate> = {
     descriptionKey: 'model.providers.minimax.description',
     baseUrl: 'https://api.minimaxi.com/anthropic',
     format: 'anthropic',
-    models: ['MiniMax-M2.5', 'MiniMax-M2.1'],
+    models: ['MiniMax-M2.7-highspeed', 'MiniMax-M2.5-highspeed'],
     helpUrl: 'https://platform.minimax.io/',
     baseUrlOptions: [
       {
@@ -78,7 +99,7 @@ export const PROVIDER_TEMPLATES: Record<string, ProviderTemplate> = {
     descriptionKey: 'model.providers.deepseek.description',
     baseUrl: 'https://api.deepseek.com/v1',
     format: 'openai',
-    models: ['deepseek-chat', 'deepseek-reasoner'],
+    models: ['deepseek-v4-flash', 'deepseek-v4-pro'],
     helpUrl: 'https://platform.deepseek.com/api_keys',
   },
   zhipu: {

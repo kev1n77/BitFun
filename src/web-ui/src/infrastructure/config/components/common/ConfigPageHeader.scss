@@ -42,11 +42,12 @@
 
 .bitfun-config-page-header__subtitle {
   margin: 0;
+  margin-top: 2px;
   font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
   line-height: var(--line-height-relaxed);
   font-family: var(--font-family-sans);
-  display: none;
+  max-width: 100%;
 }
 
 .bitfun-config-page-header__extra {

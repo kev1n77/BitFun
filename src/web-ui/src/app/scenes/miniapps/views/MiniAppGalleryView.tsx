@@ -4,7 +4,6 @@ import {
   FolderPlus,
   LayoutGrid,
   Play,
-  RefreshCw,
   Sparkles,
   Square,
   Tag,
@@ -28,9 +27,11 @@ import {
 } from '@/app/components';
 import type { SceneTabId } from '@/app/components/SceneBar/types';
 import { getMiniAppIconGradient, renderMiniAppIcon } from '../utils/miniAppIcons';
+import { pickLocalizedString, pickLocalizedTags } from '../utils/pickLocalizedString';
 import { useCurrentWorkspace } from '@/infrastructure/contexts/WorkspaceContext';
 import { useMiniAppStore } from '../miniAppStore';
 import { useI18n } from '@/infrastructure/i18n';
+import { useGallerySceneAutoRefresh } from '@/app/hooks/useGallerySceneAutoRefresh';
 import './MiniAppGalleryView.scss';
 
 const log = createLogger('MiniAppGalleryView');
@@ -39,12 +40,14 @@ const MiniAppGalleryView: React.FC = () => {
   const apps = useMiniAppStore((state) => state.apps);
   const loading = useMiniAppStore((state) => state.loading);
   const runningWorkerIds = useMiniAppStore((state) => state.runningWorkerIds);
+  const customizingAppIds = useMiniAppStore((state) => state.customizingAppIds);
   const setApps = useMiniAppStore((state) => state.setApps);
   const setLoading = useMiniAppStore((state) => state.setLoading);
+  const setRunningWorkerIds = useMiniAppStore((state) => state.setRunningWorkerIds);
   const markWorkerStopped = useMiniAppStore((state) => state.markWorkerStopped);
   const { workspacePath } = useCurrentWorkspace();
   const { openScene, activateScene, closeScene, openTabs } = useSceneManager();
-  const { t } = useI18n('scenes/miniapp');
+  const { t, currentLanguage } = useI18n('scenes/miniapp');
 
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
@@ -53,6 +56,7 @@ const MiniAppGalleryView: React.FC = () => {
 
   const openTabIds = useMemo(() => new Set(openTabs.map((tab) => tab.id)), [openTabs]);
   const runningIdSet = useMemo(() => new Set(runningWorkerIds), [runningWorkerIds]);
+  const customizingIdSet = useMemo(() => new Set(customizingAppIds), [customizingAppIds]);
 
   const runningApps = useMemo(
     () =>
@@ -70,15 +74,23 @@ const MiniAppGalleryView: React.FC = () => {
   const filtered = useMemo(() => {
     return apps.filter((app) => {
       const keyword = search.toLowerCase();
+      // Search across the localized strings + raw fallback so users can search
+      // either the displayed text OR the author's original wording.
+      const localizedName = pickLocalizedString(app, currentLanguage, 'name').toLowerCase();
+      const localizedDesc = pickLocalizedString(app, currentLanguage, 'description').toLowerCase();
+      const localizedTags = pickLocalizedTags(app, currentLanguage).map((t) => t.toLowerCase());
       const matchSearch =
         !search ||
+        localizedName.includes(keyword) ||
+        localizedDesc.includes(keyword) ||
         app.name.toLowerCase().includes(keyword) ||
         app.description.toLowerCase().includes(keyword) ||
+        localizedTags.some((tag) => tag.includes(keyword)) ||
         app.tags.some((tag) => tag.toLowerCase().includes(keyword));
       const matchCategory = categoryFilter === 'all' || app.category === categoryFilter;
       return matchSearch && matchCategory;
     });
-  }, [apps, search, categoryFilter]);
+  }, [apps, search, categoryFilter, currentLanguage]);
 
   const handleOpenApp = useCallback(
     (appId: string) => {
@@ -134,15 +146,26 @@ const MiniAppGalleryView: React.FC = () => {
     }
   };
 
-  const handleRefresh = async () => {
+  const refetchMiniAppGallery = useCallback(async () => {
     setLoading(true);
     try {
-      const refreshed = await miniAppAPI.listMiniApps();
+      const [refreshed, running] = await Promise.all([
+        miniAppAPI.listMiniApps(),
+        miniAppAPI.workerListRunning(),
+      ]);
       setApps(refreshed);
+      setRunningWorkerIds(running);
+    } catch (error) {
+      log.error('Failed to refresh miniapp gallery', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [setApps, setLoading, setRunningWorkerIds]);
+
+  useGallerySceneAutoRefresh({
+    sceneId: 'miniapps',
+    refetch: refetchMiniAppGallery,
+  });
 
   const handleAddFromFolder = async () => {
     try {
@@ -193,6 +216,7 @@ const MiniAppGalleryView: React.FC = () => {
             app={app}
             index={index}
             isRunning={runningIdSet.has(app.id)}
+            isCustomizing={customizingIdSet.has(app.id)}
             onOpenDetails={setSelectedApp}
             onOpen={handleOpenApp}
             onDelete={handleDeleteRequest}
@@ -219,18 +243,6 @@ const MiniAppGalleryView: React.FC = () => {
             >
               <FolderPlus size={15} />
             </button>
-            <button
-              type="button"
-              className="gallery-action-btn"
-              onClick={handleRefresh}
-              disabled={loading}
-              title={t('refreshList')}
-            >
-              <RefreshCw
-                size={15}
-                className={loading ? 'gallery-spinning' : undefined}
-              />
-            </button>
           </>
         )}
       />
@@ -248,6 +260,7 @@ const MiniAppGalleryView: React.FC = () => {
                   app={app}
                   index={index}
                   isRunning
+                  isCustomizing={customizingIdSet.has(app.id)}
                   onOpenDetails={setSelectedApp}
                   onOpen={handleOpenApp}
                   onDelete={handleDeleteRequest}
@@ -298,9 +311,9 @@ const MiniAppGalleryView: React.FC = () => {
         onClose={() => setSelectedApp(null)}
         icon={selectedApp ? renderMiniAppIcon(selectedApp.icon || 'box', 24) : <Box size={24} />}
         iconGradient={selectedApp ? getMiniAppIconGradient(selectedApp.icon || 'box') : undefined}
-        title={selectedApp?.name ?? ''}
+        title={selectedApp ? pickLocalizedString(selectedApp, currentLanguage, 'name') : ''}
         badges={selectedApp?.category ? <Badge variant="info">{selectedApp.category}</Badge> : null}
-        description={selectedApp?.description}
+        description={selectedApp ? pickLocalizedString(selectedApp, currentLanguage, 'description') : undefined}
         meta={selectedApp ? <span>v{selectedApp.version}</span> : null}
         actions={selectedApp ? (
           <>
@@ -321,16 +334,19 @@ const MiniAppGalleryView: React.FC = () => {
           </>
         ) : null}
       >
-        {selectedApp?.tags.length ? (
-          <div className="miniapp-gallery__detail-tags">
-            {selectedApp.tags.map((tag) => (
-              <span key={tag} className="miniapp-gallery__detail-tag">
-                <Tag size={11} />
-                {tag}
-              </span>
-            ))}
-          </div>
-        ) : null}
+        {selectedApp ? (() => {
+          const detailTags = pickLocalizedTags(selectedApp, currentLanguage);
+          return detailTags.length ? (
+            <div className="miniapp-gallery__detail-tags">
+              {detailTags.map((tag) => (
+                <span key={tag} className="miniapp-gallery__detail-tag">
+                  <Tag size={11} />
+                  {tag}
+                </span>
+              ))}
+            </div>
+          ) : null;
+        })() : null}
       </GalleryDetailModal>
 
       <ConfirmDialog

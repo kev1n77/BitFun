@@ -5,17 +5,79 @@
 import { FlowChatStore } from '../../store/FlowChatStore';
 import { createLogger } from '@/shared/utils/logger';
 import type { FlowChatContext, FlowTextItem, SubagentTextChunkData, SubagentToolEventData } from './types';
+import type { FlowThinkingItem } from '../../types/flow-chat';
 import { processToolEvent } from './ToolEventModule';
 import type { ToolEventData } from '../EventBatcher';
+import {
+  clearRuntimeStatus,
+  scheduleModelResponseStatus,
+} from './RuntimeStatusModule';
 
 const log = createLogger('SubagentModule');
+
+function getSubagentTextItemId(parentToolId: string, sessionId: string, roundId: string): string {
+  return `subagent-text-${parentToolId}-${sessionId}-${roundId}`;
+}
+
+function findParentTurnId(parentSession: { dialogTurns: Array<{ id: string; modelRounds: Array<{ items: Array<{ id: string }> }> }> }, parentToolId: string): string | null {
+  for (const turn of parentSession.dialogTurns) {
+    const hasParentTool = turn.modelRounds.some(round =>
+      round.items.some(item => item.id === parentToolId)
+    );
+    if (hasParentTool) {
+      return turn.id;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Create a placeholder text item when a subagent model round starts.
+ * This gives users immediate visual feedback that the subagent is running,
+ * rather than waiting for the first text chunk.
+ */
+export function routeModelRoundStartedToToolCard(
+  context: FlowChatContext,
+  parentSessionId: string,
+  parentToolId: string,
+  data: {
+    sessionId: string;
+    turnId: string;
+    roundId: string;
+  }
+): void {
+  const store = FlowChatStore.getInstance();
+  const parentSession = store.getState().sessions.get(parentSessionId);
+
+  if (!parentSession) {
+    log.debug('Parent session not found (Subagent ModelRoundStarted)', { parentSessionId });
+    return;
+  }
+
+  const parentTurnId = findParentTurnId(parentSession, parentToolId);
+  if (!parentTurnId) {
+    log.debug('Parent tool DialogTurn not found (ModelRoundStarted)', { parentSessionId, parentToolId });
+    return;
+  }
+
+  const parentTool = store.findToolItem(parentSessionId, parentTurnId, parentToolId);
+  const parentTimestamp = parentTool?.timestamp || Date.now();
+
+  scheduleModelResponseStatus(context, parentSessionId, parentTurnId, data.roundId, {
+    scope: 'subagent',
+    parentToolId,
+    parentTimestamp,
+    subagentSessionId: data.sessionId,
+  });
+}
 
 /**
  * Route subagent text chunks to the parent tool card.
  * Supports "text" and "thinking" content types.
  */
 export function routeTextChunkToToolCard(
-  _context: FlowChatContext,
+  context: FlowChatContext,
   parentSessionId: string,
   parentToolId: string,
   data: SubagentTextChunkData
@@ -28,57 +90,61 @@ export function routeTextChunkToToolCard(
     return;
   }
 
-  let parentTurnId: string | null = null;
-  for (const turn of parentSession.dialogTurns) {
-    const hasParentTool = turn.modelRounds.some(round => 
-      round.items.some(item => item.id === parentToolId)
-    );
-    if (hasParentTool) {
-      parentTurnId = turn.id;
-      break;
-    }
-  }
-  
+  const parentTurnId = findParentTurnId(parentSession, parentToolId);
   if (!parentTurnId) {
     log.debug('Parent tool DialogTurn not found', { parentSessionId, parentToolId });
     return;
   }
+
+  clearRuntimeStatus(context, parentSessionId, parentTurnId, {
+    subagentSessionId: data.sessionId,
+    scope: 'subagent',
+  });
   
   const isThinking = data.contentType === 'thinking';
   const itemPrefix = isThinking ? 'subagent-thinking' : 'subagent-text';
   // Format: subagent-{type}-{parentToolId}-{sessionId}-{roundId}
-  const itemId = `${itemPrefix}-${parentToolId}-${data.sessionId}-${data.roundId}`;
+  const itemId = isThinking
+    ? `${itemPrefix}-${parentToolId}-${data.sessionId}-${data.roundId}`
+    : getSubagentTextItemId(parentToolId, data.sessionId, data.roundId);
   
   const isThinkingEnd = isThinking && !!data.isThinkingEnd;
   const textContent = data.text;
   
   const parentTurn = parentSession.dialogTurns.find(turn => turn.id === parentTurnId);
-  let existingItem: FlowTextItem | import('../../types/flow-chat').FlowThinkingItem | null = null;
+  let existingItem: FlowTextItem | FlowThinkingItem | null = null;
   
   if (parentTurn) {
     for (const round of parentTurn.modelRounds) {
       const found = round.items.find(item => item.id === itemId);
       if (found) {
-        existingItem = found as FlowTextItem | import('../../types/flow-chat').FlowThinkingItem;
+        existingItem = found as FlowTextItem | FlowThinkingItem;
         break;
       }
     }
   }
   
   if (existingItem) {
+    // Strip the zero-width-space placeholder when the first real text arrives.
+    const baseContent = existingItem.content === '\u200B' ? '' : existingItem.content;
+    const content = baseContent + textContent;
+
     if (isThinkingEnd) {
       store.updateModelRoundItem(parentSessionId, parentTurnId, itemId, {
-        content: existingItem.content + textContent,
+        content,
         isStreaming: false,
         isCollapsed: true,
         status: 'completed',
-        timestamp: Date.now()
+        timestamp: Date.now(),
       } as any);
       
     } else {
       store.updateModelRoundItem(parentSessionId, parentTurnId, itemId, {
-        content: existingItem.content + textContent,
-        timestamp: Date.now()
+        content,
+        isStreaming: true,
+        isMarkdown: !isThinking,
+        status: 'streaming',
+        timestamp: Date.now(),
       } as any);
     }
   } else {
@@ -155,6 +221,11 @@ export function routeToolEventToToolCard(
   }
   
   const { toolEvent } = data;
+
+  clearRuntimeStatus(context, parentSessionId, parentTurnId, {
+    subagentSessionId: data.sessionId,
+    scope: 'subagent',
+  });
   
   // Keep subagent item timestamps right after the parent tool.
   const parentTool = store.findToolItem(parentSessionId, parentTurnId, parentToolId);
@@ -185,6 +256,22 @@ export function routeTextChunkToToolCardInternal(
   }
 ): void {
   routeTextChunkToToolCard(context, parentSessionId, parentToolId, chunkData);
+}
+
+/**
+ * Internal ModelRoundStarted routing for batch/direct event processing.
+ */
+export function routeModelRoundStartedToToolCardInternal(
+  context: FlowChatContext,
+  parentSessionId: string,
+  parentToolId: string,
+  roundData: {
+    sessionId: string;
+    turnId: string;
+    roundId: string;
+  }
+): void {
+  routeModelRoundStartedToToolCard(context, parentSessionId, parentToolId, roundData);
 }
 
 /**

@@ -1,11 +1,12 @@
 {
   "name": "bitfun-e2e-tests",
   "version": "1.0.0",
-  "description": "E2E tests for BitFun using WebDriverIO and tauri-driver",
+  "description": "E2E tests for BitFun using WebDriverIO and the embedded BitFun WebDriver",
   "type": "module",
   "scripts": {
     "test": "wdio run ./config/wdio.conf.ts",
     "test:l0": "wdio run ./config/wdio.conf.ts --spec \"./specs/l0-smoke.spec.ts\"",
+    "test:l0:protocol": "wdio run ./config/wdio.conf.ts --spec \"./specs/l0-webdriver-protocol.spec.ts\"",
     "test:l0:all": "wdio run ./config/wdio.conf_l0.ts",
     "test:l0:workspace": "wdio run ./config/wdio.conf.ts --spec \"./specs/l0-open-workspace.spec.ts\"",
     "test:l0:observe": "wdio run ./config/wdio.conf.ts --spec \"./specs/l0-observe.spec.ts\"",
@@ -26,7 +27,6 @@
     "test:l1:git-panel": "wdio run ./config/wdio.conf.ts --spec \"./specs/l1-git-panel.spec.ts\"",
     "test:l1:settings": "wdio run ./config/wdio.conf.ts --spec \"./specs/l1-settings.spec.ts\"",
     "test:l1:session": "wdio run ./config/wdio.conf.ts --spec \"./specs/l1-session.spec.ts\"",
-    "test:l1:mermaid-export": "wdio run ./config/wdio.conf.ts --spec \"./specs/l1-mermaid-export.spec.ts\"",
     "test:l1:dialog": "wdio run ./config/wdio.conf.ts --spec \"./specs/l1-dialog.spec.ts\"",
     "test:l1:chat-flow": "wdio run ./config/wdio.conf.ts --spec \"./specs/l1-chat.spec.ts\"",
     "test:smoke": "wdio run ./config/wdio.conf.ts --spec \"./specs/startup/*.spec.ts\"",

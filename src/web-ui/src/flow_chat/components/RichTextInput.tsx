@@ -5,6 +5,11 @@
 
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import type { ContextItem } from '../../shared/types/context';
+import { getRichTextExternalSyncAction } from './richTextInputSync';
+import {
+  getWidgetPromptReferenceMatches,
+  parseWidgetPromptReferenceToken,
+} from '@/tools/generative-widget/widgetPromptReference';
 import './RichTextInput.scss';
 
 /** @ mention state */
@@ -17,6 +22,7 @@ export interface MentionState {
 export interface RichTextInputProps {
   value: string;
   onChange: (value: string, contexts: ContextItem[]) => void;
+  onLargePaste?: (text: string) => string | null;
   onKeyDown?: (e: React.KeyboardEvent) => void;
   onCompositionStart?: () => void;
   onCompositionEnd?: () => void;
@@ -31,9 +37,87 @@ export interface RichTextInputProps {
   onMentionStateChange?: (state: MentionState) => void;
 }
 
+function getContextDisplayName(context: ContextItem): string {
+  switch (context.type) {
+    case 'file': return context.fileName;
+    case 'directory': return context.directoryName;
+    case 'code-snippet': return `${context.fileName}:${context.startLine}-${context.endLine}`;
+    case 'pull-request': return context.label;
+    case 'image': return context.imageName;
+    case 'terminal-command': return context.command;
+    case 'git-ref': return context.refValue;
+    case 'url': return context.title || context.url;
+    case 'mermaid-node': return context.nodeText;
+    case 'mermaid-diagram': return context.diagramTitle || 'Mermaid diagram';
+    case 'web-element': return context.tagName;
+    default: {
+      const exhaustive: never = context;
+      return String(exhaustive);
+    }
+  }
+}
+
+function getContextTagFormat(context: ContextItem): string {
+  switch (context.type) {
+    case 'file': return `#file:${context.fileName}`;
+    case 'directory': return `#dir:${context.directoryName}`;
+    case 'code-snippet': return `#code:${context.fileName}:${context.startLine}-${context.endLine}`;
+    case 'pull-request': return `#pr:${context.label.replace(/\s+/g, '_')}`;
+    case 'image': return `#img:${context.imageName}`;
+    case 'terminal-command': return `#cmd:${context.command}`;
+    case 'git-ref': return `#git:${context.refValue}`;
+    case 'url': return `#link:${context.title || context.url}`;
+    case 'mermaid-node': return `#chart:${context.nodeText}`;
+    case 'mermaid-diagram': return `#mermaid:${context.diagramTitle || 'Mermaid diagram'}`;
+    case 'web-element': return `#element:${context.tagName}`;
+    default: {
+      const exhaustive: never = context;
+      return String(exhaustive);
+    }
+  }
+}
+
+function getContextFullPath(context: ContextItem): string {
+  switch (context.type) {
+    case 'file':
+      return context.filePath;
+    case 'directory':
+      return context.directoryPath + (context.recursive ? ' (recursive)' : '');
+    case 'code-snippet':
+      return `${context.filePath} (lines ${context.startLine}-${context.endLine})`;
+    case 'pull-request':
+      return [
+        context.repository,
+        context.remoteId ? `remote:${context.remoteId}` : null,
+        context.pullRequestNumber ? `PR #${context.pullRequestNumber}` : null,
+        context.section,
+        context.sourceUrl,
+      ].filter(Boolean).join(' · ') || context.label;
+    case 'image':
+      return context.imagePath;
+    case 'terminal-command':
+      return context.workingDirectory ? `${context.command} @ ${context.workingDirectory}` : context.command;
+    case 'git-ref':
+      return `Git ${context.refType}: ${context.refValue}`;
+    case 'url':
+      return context.url;
+    case 'mermaid-node':
+      return context.diagramTitle ? `${context.diagramTitle} - ${context.nodeText}` : context.nodeText;
+    case 'mermaid-diagram':
+      return `Mermaid diagram${context.diagramTitle ? ': ' + context.diagramTitle : ''} (${context.diagramCode.length} chars)`;
+    case 'web-element':
+      return context.path;
+    default: {
+      const exhaustive: never = context;
+      return String(exhaustive);
+    }
+  }
+}
+
 export const RichTextInput = React.forwardRef<HTMLDivElement, RichTextInputProps>(({
   value,
   onChange,
+  onLargePaste,
   onKeyDown,
   onCompositionStart,
   onCompositionEnd,
@@ -52,80 +136,10 @@ export const RichTextInput = React.forwardRef<HTMLDivElement, RichTextInputProps
   const isComposingRef = useRef(false);
   const lastContextIdsRef = useRef<Set<string>>(new Set());
   const mentionStateRef = useRef<MentionState>({ isActive: false, query: '', startOffset: 0 });
-  const isLocalChangeRef = useRef(false);
-
-  // Display name without the # prefix
-  const getContextDisplayName = (context: ContextItem): string => {
-    switch (context.type) {
-      case 'file': return context.fileName;
-      case 'directory': return context.directoryName;
-      case 'code-snippet': return `${context.fileName}:${context.startLine}-${context.endLine}`;
-      case 'image': return context.imageName;
-      case 'terminal-command': return context.command;
-      case 'git-ref': return context.refValue;
-      case 'url': return context.title || context.url;
-      case 'mermaid-node': return context.nodeText;
-      case 'mermaid-diagram': return context.diagramTitle || 'Mermaid diagram';
-      case 'web-element': return context.tagName;
-      default:
-        // TypeScript exhaustiveness check
-        const _exhaustive: never = context;
-        return String(_exhaustive);
-    }
-  };
-
-  // # tag format for text extraction
-  const getContextTagFormat = (context: ContextItem): string => {
-    switch (context.type) {
-      case 'file': return `#file:${context.fileName}`;
-      case 'directory': return `#dir:${context.directoryName}`;
-      case 'code-snippet': return `#code:${context.fileName}:${context.startLine}-${context.endLine}`;
-      case 'image': return `#img:${context.imageName}`;
-      case 'terminal-command': return `#cmd:${context.command}`;
-      case 'git-ref': return `#git:${context.refValue}`;
-      case 'url': return `#link:${context.title || context.url}`;
-      case 'mermaid-node': return `#chart:${context.nodeText}`;
-      case 'mermaid-diagram': return `#mermaid:${context.diagramTitle || 'Mermaid diagram'}`;
-      case 'web-element': return `#element:${context.tagName}`;
-      default:
-        // TypeScript exhaustiveness check
-        const _exhaustive: never = context;
-        return String(_exhaustive);
-    }
-  };
-
-  // Full context path for tooltips
-  const getContextFullPath = (context: ContextItem): string => {
-    switch (context.type) {
-      case 'file': 
-        return context.filePath;
-      case 'directory': 
-        return context.directoryPath + (context.recursive ? ' (recursive)' : '');
-      case 'code-snippet': 
-        return `${context.filePath} (lines ${context.startLine}-${context.endLine})`;
-      case 'image': 
-        return context.imagePath;
-      case 'terminal-command': 
-        return context.workingDirectory ? `${context.command} @ ${context.workingDirectory}` : context.command;
-      case 'git-ref': 
-        return `Git ${context.refType}: ${context.refValue}`;
-      case 'url': 
-        return context.url;
-      case 'mermaid-node': 
-        return context.diagramTitle ? `${context.diagramTitle} - ${context.nodeText}` : context.nodeText;
-      case 'mermaid-diagram': 
-        return `Mermaid diagram${context.diagramTitle ? ': ' + context.diagramTitle : ''} (${context.diagramCode.length} chars)`;
-      case 'web-element':
-        return context.path;
-      default:
-        // TypeScript exhaustiveness check
-        const _exhaustive: never = context;
-        return String(_exhaustive);
-    }
-  };
+  const triggerSyncRef = useRef<(() => void) | null>(null);
 
   // Create tag element with pill style
-  const createTagElement = (context: ContextItem): HTMLSpanElement => {
+  const createTagElement = useCallback((context: ContextItem): HTMLSpanElement => {
     const tag = document.createElement('span');
     tag.className = 'rich-text-tag-pill';
     tag.contentEditable = 'false';
@@ -154,7 +168,88 @@ export const RichTextInput = React.forwardRef<HTMLDivElement, RichTextInputProps
     tag.appendChild(remove);
     
     return tag;
-  };
+  }, [onRemoveContext]);
+
+  const removeInlineTokenElement = useCallback((element: HTMLElement) => {
+    const nextSibling = element.nextSibling;
+    if (nextSibling && nextSibling.nodeType === Node.TEXT_NODE && nextSibling.textContent === ' ') {
+      nextSibling.remove();
+    }
+    element.remove();
+  }, []);
+
+  const createWidgetReferenceElement = useCallback((token: string): HTMLSpanElement | null => {
+    const payload = parseWidgetPromptReferenceToken(token);
+    if (!payload) {
+      return null;
+    }
+
+    const tag = document.createElement('span');
+    tag.className = 'rich-text-tag-pill rich-text-tag-pill--widget-ref';
+    tag.contentEditable = 'false';
+    tag.dataset.tagFormat = token;
+    tag.dataset.inlineTokenType = 'widget-ref';
+    tag.title = payload.promptText;
+
+    const badge = document.createElement('span');
+    badge.className = 'rich-text-tag-pill__badge';
+    badge.textContent = 'UI';
+
+    const text = document.createElement('span');
+    text.className = 'rich-text-tag-pill__text rich-text-tag-pill__text--widget-ref';
+    text.textContent = payload.displayText;
+
+    const remove = document.createElement('button');
+    remove.className = 'rich-text-tag-pill__remove';
+    remove.textContent = '×';
+    remove.title = 'Remove';
+    remove.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      removeInlineTokenElement(tag);
+      requestAnimationFrame(() => {
+        internalRef.current?.focus();
+        triggerSyncRef.current?.();
+      });
+    };
+
+    tag.appendChild(badge);
+    tag.appendChild(text);
+    tag.appendChild(remove);
+
+    return tag;
+  }, [internalRef, removeInlineTokenElement]);
+
+  const renderValueWithInlineTokens = useCallback((editor: HTMLElement, text: string) => {
+    const fragment = document.createDocumentFragment();
+    const matches = getWidgetPromptReferenceMatches(text);
+
+    if (matches.length === 0) {
+      editor.textContent = text;
+      return;
+    }
+
+    let cursor = 0;
+    for (const match of matches) {
+      if (match.start > cursor) {
+        fragment.appendChild(document.createTextNode(text.slice(cursor, match.start)));
+      }
+
+      const tokenElement = createWidgetReferenceElement(match.token);
+      if (tokenElement) {
+        fragment.appendChild(tokenElement);
+      } else {
+        fragment.appendChild(document.createTextNode(match.token));
+      }
+      cursor = match.end;
+    }
+
+    if (cursor < text.length) {
+      fragment.appendChild(document.createTextNode(text.slice(cursor)));
+    }
+
+    editor.replaceChildren(fragment);
+  }, [createWidgetReferenceElement]);
 
   /** Map textContent offsets to a DOM Range to replace only the @ span. */
   const getRangeByTextOffsets = useCallback((root: Node, start: number, end: number): Range | null => {
@@ -194,8 +289,16 @@ export const RichTextInput = React.forwardRef<HTMLDivElement, RichTextInputProps
     return null;
   }, []);
 
+  function sanitizeText(text: string): string {
+    // Strip zero-width and control characters that WebKit/WebView may inject
+    // (e.g. from dead-key sequences, function keys, arrow keys, etc.)
+    // Preserve normal whitespace: space (0x20), tab (0x09), newline (0x0A), carriage return (0x0D).
+    // eslint-disable-next-line no-control-regex -- This intentionally removes specific ASCII control-character ranges.
+    return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u200B-\u200F\u2028\u2029\uFEFF\u2060\u00AD]/g, '');
+  }
+
   // Extract plain text including # tag format
-  const extractTextContent = (): string => {
+  const extractTextContent = useCallback((): string => {
     if (!internalRef.current) return '';
     
     let text = '';
@@ -204,12 +307,20 @@ export const RichTextInput = React.forwardRef<HTMLDivElement, RichTextInputProps
         text += node.textContent || '';
       } else if (node.nodeType === Node.ELEMENT_NODE) {
         const element = node as HTMLElement;
+        
+        const isBlock = element.tagName === 'DIV' || element.tagName === 'P';
+        if (isBlock && text.length > 0 && !text.endsWith('\n')) {
+          text += '\n';
+        }
+        
         // For tag elements, use the stored full format with # prefix
-        if (element.classList.contains('rich-text-tag-pill')) {
+        if (element.hasAttribute('data-tag-format')) {
           const tagFormat = element.getAttribute('data-tag-format');
           if (tagFormat) {
             text += tagFormat;
           }
+        } else if (element.tagName === 'BR') {
+          text += '\n';
         } else {
           node.childNodes.forEach(traverse);
         }
@@ -218,7 +329,7 @@ export const RichTextInput = React.forwardRef<HTMLDivElement, RichTextInputProps
     
     internalRef.current.childNodes.forEach(traverse);
     return sanitizeText(text).trim();
-  };
+  }, [internalRef]);
 
   // Detect @ mention
   const detectMention = useCallback(() => {
@@ -302,13 +413,6 @@ export const RichTextInput = React.forwardRef<HTMLDivElement, RichTextInputProps
       onMentionStateChange?.({ isActive: false, query: '', startOffset: 0 });
     }
   }, [onMentionStateChange, internalRef]);
-
-  const sanitizeText = (text: string): string => {
-    // Strip zero-width and control characters that WebKit/WebView may inject
-    // (e.g. from dead-key sequences, function keys, arrow keys, etc.)
-    // Preserve normal whitespace: space (0x20), tab (0x09), newline (0x0A), carriage return (0x0D).
-    return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u200B-\u200F\u2028\u2029\uFEFF\u2060\u00AD]/g, '');
-  };
 
   /** Compute the cursor's character offset within the editor. */
   const getCursorOffset = useCallback((editor: HTMLElement): number => {
@@ -395,14 +499,15 @@ export const RichTextInput = React.forwardRef<HTMLDivElement, RichTextInputProps
     );
     const visibleContexts = contexts.filter(context => visibleContextIds.has(context.id));
 
-    isLocalChangeRef.current = true;
     onChange(textContent, visibleContexts);
     
     // Ensure detection runs after DOM updates
     requestAnimationFrame(() => {
       detectMention();
     });
-  }, [contexts, onChange, detectMention, internalRef]);
+  }, [contexts, detectMention, extractTextContent, getCursorOffset, internalRef, onChange, setCursorOffset]);
+
+  triggerSyncRef.current = handleInput;
 
   const handleBeforeInput = useCallback((e: React.FormEvent<HTMLDivElement>) => {
     const inputEvent = e.nativeEvent as InputEvent;
@@ -446,14 +551,15 @@ export const RichTextInput = React.forwardRef<HTMLDivElement, RichTextInputProps
     }
     
     const text = e.clipboardData.getData('text/plain');
-    document.execCommand('insertText', false, text);
+    const largePastePlaceholder = onLargePaste?.(text);
+    document.execCommand('insertText', false, largePastePlaceholder ?? text);
     
     // Mark that we just pasted to prevent mention detection in the next input event
     isComposingRef.current = true;
     requestAnimationFrame(() => {
       isComposingRef.current = false;
     });
-  }, [onMentionStateChange]);
+  }, [internalRef, onLargePaste, onMentionStateChange]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     const nativeIsComposing = (e.nativeEvent as KeyboardEvent).isComposing;
@@ -466,11 +572,17 @@ export const RichTextInput = React.forwardRef<HTMLDivElement, RichTextInputProps
         
         if (range.collapsed && range.startOffset === 0) {
           const previousSibling = range.startContainer.previousSibling;
-          if (previousSibling && (previousSibling as HTMLElement).classList?.contains('rich-text-tag-pill')) {
+          const tokenElement = previousSibling instanceof HTMLElement && previousSibling.hasAttribute('data-tag-format')
+            ? previousSibling
+            : null;
+          if (tokenElement) {
             e.preventDefault();
-            const contextId = (previousSibling as HTMLElement).dataset.contextId;
+            const contextId = tokenElement.dataset.contextId;
             if (contextId) {
               onRemoveContext(contextId);
+            } else {
+              removeInlineTokenElement(tokenElement);
+              handleInput();
             }
             return;
           }
@@ -483,7 +595,7 @@ export const RichTextInput = React.forwardRef<HTMLDivElement, RichTextInputProps
     }
 
     onKeyDown?.(e);
-  }, [onKeyDown, onRemoveContext]);
+  }, [handleInput, internalRef, onKeyDown, onRemoveContext, removeInlineTokenElement]);
 
   // Insert tag at cursor
   const insertTagAtCursor = useCallback((context: ContextItem) => {
@@ -515,7 +627,7 @@ export const RichTextInput = React.forwardRef<HTMLDivElement, RichTextInputProps
       internalRef.current.appendChild(space);
       handleInput();
     }
-  }, [createTagElement, handleInput]);
+  }, [createTagElement, handleInput, internalRef]);
 
   // Replace @ mention span with a tag, preserving existing tags
   const insertTagReplacingMention = useCallback((context: ContextItem) => {
@@ -555,13 +667,39 @@ export const RichTextInput = React.forwardRef<HTMLDivElement, RichTextInputProps
     insertTagAtCursor(context);
     mentionStateRef.current = { isActive: false, query: '', startOffset: 0 };
     onMentionStateChange?.({ isActive: false, query: '', startOffset: 0 });
-  }, [createTagElement, getRangeByTextOffsets, handleInput, insertTagAtCursor, onMentionStateChange]);
+  }, [createTagElement, getRangeByTextOffsets, handleInput, insertTagAtCursor, internalRef, onMentionStateChange]);
+
+  /** Insert @ at caret and open the file/folder mention picker (e.g. from ChatInput + menu). */
+  const openMention = useCallback(() => {
+    const editor = internalRef.current;
+    if (!editor) return;
+
+    editor.focus();
+    const sel = window.getSelection();
+    let range: Range | null = null;
+    if (sel && sel.rangeCount > 0) {
+      range = sel.getRangeAt(0);
+    }
+    if (!range || !editor.contains(range.commonAncestorContainer)) {
+      range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    }
+
+    document.execCommand('insertText', false, '@');
+    requestAnimationFrame(() => {
+      detectMention();
+    });
+  }, [detectMention, internalRef]);
 
   // Expose methods to parent
   useEffect(() => {
     if (internalRef.current) {
       (internalRef.current as any).insertTag = insertTagAtCursor;
       (internalRef.current as any).insertTagReplacingMention = insertTagReplacingMention;
+      (internalRef.current as any).openMention = openMention;
       (internalRef.current as any).closeMention = () => {
         if (mentionStateRef.current.isActive) {
           mentionStateRef.current = { isActive: false, query: '', startOffset: 0 };
@@ -569,17 +707,12 @@ export const RichTextInput = React.forwardRef<HTMLDivElement, RichTextInputProps
         }
       };
     }
-  }, [insertTagAtCursor, insertTagReplacingMention, onMentionStateChange, internalRef]);
+  }, [insertTagAtCursor, insertTagReplacingMention, openMention, onMentionStateChange, internalRef]);
 
   // Initialize and sync value changes from external sources.
-  // Skip syncing when the change originated from local user input
-  // to avoid resetting the cursor position.
+  // This editor is effectively controlled by comparing the parent's value
+  // with the current DOM content, rather than tracking a "skip next sync" flag.
   useEffect(() => {
-    if (isLocalChangeRef.current) {
-      isLocalChangeRef.current = false;
-      return;
-    }
-
     const editor = internalRef.current;
     if (!editor) return;
 
@@ -593,16 +726,19 @@ export const RichTextInput = React.forwardRef<HTMLDivElement, RichTextInputProps
     }
     
     const currentContent = extractTextContent();
+    const syncAction = getRichTextExternalSyncAction(value, currentContent);
     
-    // If value is empty, clear editor content
-    if (!value && currentContent !== '') {
+    if (syncAction === 'noop') {
+      return;
+    }
+
+    if (syncAction === 'clear') {
       editor.textContent = '';
       return;
     }
     
-    // External updates require syncing
-    if (value && value !== currentContent) {
-      editor.textContent = value;
+    if (syncAction === 'replace') {
+      renderValueWithInlineTokens(editor, value);
       
       // Restore cursor to the end
       requestAnimationFrame(() => {
@@ -617,7 +753,7 @@ export const RichTextInput = React.forwardRef<HTMLDivElement, RichTextInputProps
         editor.focus();
       });
     }
-  }, [value]);
+  }, [extractTextContent, internalRef, renderValueWithInlineTokens, value]);
 
   // Remove tags for deleted contexts
   useEffect(() => {

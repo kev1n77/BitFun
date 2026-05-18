@@ -247,10 +247,30 @@
     }
 
     &__item--selected {
-      background: color-mix(in srgb, var(--color-accent-primary) 10%, transparent);
+      // Fallback when color-mix is unsupported; keeps keyboard highlight visible on light surfaces
+      background: var(--element-bg-medium);
+      background: color-mix(
+        in srgb,
+        var(--color-accent-primary, var(--color-accent-500)) 22%,
+        var(--color-bg-elevated) 78%
+      );
 
       .file-mention-picker__item-name {
-        color: var(--color-text-primary);
+        color: color-mix(
+          in srgb,
+          var(--color-accent-primary, var(--color-accent-500)) 72%,
+          var(--color-text-primary)
+        );
+      }
+
+      .file-mention-picker__icon,
+      .file-mention-picker__expand-icon {
+        color: color-mix(
+          in srgb,
+          var(--color-accent-primary, var(--color-accent-500)) 65%,
+          var(--color-text-primary)
+        );
+        opacity: 0.92;
       }
     }
 

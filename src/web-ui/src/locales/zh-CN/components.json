@@ -42,13 +42,17 @@
   },
   "markdown": {
     "copySuccess": "复制成功",
-    "copyCode": "复制代码"
+    "copyCode": "复制代码",
+    "openInExplorer": "在资源管理器中打开",
+    "openInBrowser": "通过浏览器打开",
+    "openInBuiltInBrowser": "通过内置浏览器打开",
+    "copyLink": "复制链接",
+    "copyFilePath": "复制文件路径"
   },
   "mermaidBlock": {
     "renderFailed": "图表渲染失败",
     "codeIncomplete": "代码不完整，等待更多内容...",
     "rendering": "正在渲染图表...",
-    "openInEditor": "在编辑器中打开",
     "showCode": "查看源码",
     "hideCode": "隐藏源码",
     "copyCode": "复制代码"
@@ -272,6 +276,14 @@
     },
     "previewApp": {
       "title": "BitFun 组件库",
+      "themeLabel": "主题",
+      "themeTypeLight": "浅色",
+      "themeTypeDark": "深色",
+      "themeDescriptionLight": "浅色主题",
+      "themeDescriptionDark": "深色主题",
+      "sidebarTitle": "组件导航",
+      "expandSidebar": "展开导航",
+      "collapseSidebar": "收起导航",
       "emptyState": "请从左侧选择一个分类查看组件"
     },
     "layouts": {
@@ -330,12 +342,14 @@
   },
   "tabs": {
     "close": "关闭标签",
+    "popOut": "弹出为独立场景",
     "closeOthers": "关闭其他标签",
     "closeAll": "关闭所有标签",
     "closeRight": "关闭右侧标签",
     "pin": "固定标签",
     "unpin": "取消固定",
     "unsaved": "未保存",
+    "fileDeleted": "已删除",
     "missionControl": "全景模式",
     "hiddenTabsCount": "{{count}} 个隐藏标签",
     "confirmCloseWithDirty": "文件 \"{{title}}\" 有未保存的更改。\n\n是否放弃更改并关闭？",
@@ -517,7 +531,11 @@
     "projectRequestMessage": "我想创建一个新项目：\n\n{{description}}\n\n请帮我设计项目结构并开始实现。",
     "projectRequestSent": "已将项目需求发送给小方，开始协作创建！",
     "projectRequestSendFailed": "发送项目描述失败，请手动输入",
-    "flowChatInitFailed": "初始化失败，请刷新页面重试"
+    "flowChatInitFailed": "初始化失败，请刷新页面重试",
+    "windowFullscreenEntered": "已进入窗口全屏",
+    "windowFullscreenExited": "已退出窗口全屏",
+    "windowFullscreenExitHint": "按 {{shortcut}} 退出。",
+    "windowFullscreenEnterHint": "按 {{shortcut}} 再次进入。"
   },
   "bottomBar": {
     "sessions": "Agent 工作台",
@@ -591,8 +609,6 @@
       "close": "关闭"
     },
     "loading": {
-      "mermaidPanel": "加载Mermaid双模式面板...",
-      "mermaidEditor": "加载Mermaid编辑器...",
       "gitDiff": "加载Git差异...",
       "gitGraph": "加载Git图表...",
       "gitBranchHistory": "加载分支提交历史...",
@@ -614,9 +630,7 @@
       "fileOperations": "文件操作"
     },
     "fallback": {
-      "noCodeContent": "无代码内容",
-      "mermaidChartTitle": "Mermaid图表",
-      "mermaidDefaultCode": "flowchart TD\n    A[开始] --> B[结束]"
+      "noCodeContent": "无代码内容"
     }
   }
 }

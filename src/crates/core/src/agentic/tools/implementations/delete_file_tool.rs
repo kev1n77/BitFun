@@ -1,6 +1,8 @@
 use crate::agentic::tools::framework::{
     Tool, ToolRenderOptions, ToolResult, ToolUseContext, ValidationResult,
 };
+use crate::agentic::tools::workspace_paths::is_bitfun_runtime_uri;
+use crate::agentic::tools::ToolPathOperation;
 use crate::util::errors::{BitFunError, BitFunResult};
 use async_trait::async_trait;
 use log::debug;
@@ -10,8 +12,14 @@ use tokio::fs;
 
 /// File deletion tool - provides safe file/directory deletion functionality
 ///
-/// This tool automatically integrates with the snapshot system, all deletion operations are recorded and support rollback
+/// This tool records a lightweight checkpoint before deletion. Rollback is not automatic.
 pub struct DeleteFileTool;
+
+impl Default for DeleteFileTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl DeleteFileTool {
     pub fn new() -> Self {
@@ -26,7 +34,7 @@ impl Tool for DeleteFileTool {
     }
 
     async fn description(&self) -> BitFunResult<String> {
-        Ok(r#"Deletes a file or directory from the filesystem. This operation is tracked by the snapshot system and can be rolled back if needed.
+        Ok(r#"Deletes a file or directory from the filesystem. This operation records a lightweight checkpoint before deletion, but rollback is not automatic.
 
 Usage guidelines:
 1. **File Deletion**:
@@ -40,13 +48,13 @@ Usage guidelines:
    - Be careful with recursive deletion as it will remove all contents
 
 3. **Path Requirements**:
-   - You can use either relative paths (e.g., "temp/data.txt") or absolute paths (e.g., "/workspace/temp/data.txt")
+   - You can use either relative paths (e.g., "temp/data.txt"), absolute paths inside the current workspace, or exact `bitfun://runtime/...` URIs returned by another tool
    - Relative paths will be automatically resolved relative to the workspace directory
    - The path must exist in the filesystem
 
 4. **Safety Features**:
-    - All deletions are tracked by the snapshot system
-    - Users can review and roll back deletions if needed
+    - Deletions record a lightweight checkpoint when session context is available
+    - The checkpoint captures Git branch/dirty-state metadata when cheap
     - The tool requires user confirmation for execution
 
 5. **Best Practices**:
@@ -57,23 +65,27 @@ Usage guidelines:
 Example usage:
 ```json
 {
-  "path": "/workspace/old_file.txt"
+  "path": "old_file.txt"
 }
 ```
 
 Example for directory:
 ```json
 {
-  "path": "/workspace/temp_folder",
+  "path": "temp_folder",
   "recursive": true
 }
 ```
 
 Important notes:
  - NEVER use bash `rm` commands when this tool is available
- - This tool provides better safety through the snapshot system
- - All deletions can be rolled back through the snapshot interface
+ - This tool provides better safety through checkpoint metadata
+ - Rollback is not automatic; use the recorded checkpoint metadata to guide recovery
  - The tool will fail gracefully if permissions are insufficient"#.to_string())
+    }
+
+    fn short_description(&self) -> String {
+        "Delete a file or directory from the filesystem.".to_string()
     }
 
     fn input_schema(&self) -> Value {
@@ -82,7 +94,7 @@ Important notes:
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The absolute path to the file or directory to delete"
+                    "description": "The file or directory to delete. Use a workspace-relative path, an absolute path inside the current workspace, or an exact bitfun://runtime URI returned by another tool."
                 },
                 "recursive": {
                     "type": "boolean",
@@ -131,46 +143,96 @@ Important notes:
             };
         }
 
-        let path = Path::new(path_str);
-
-        if !path.is_absolute() {
-            return ValidationResult {
-                result: false,
-                message: Some("path must be an absolute path".to_string()),
-                error_code: Some(400),
-                meta: None,
-            };
-        }
-
-        let is_remote = context.map(|c| c.is_remote()).unwrap_or(false);
-        if !is_remote {
-            if !path.exists() {
+        let resolved = match context.map(|ctx| ctx.resolve_tool_path(path_str)) {
+            Some(Ok(value)) => value,
+            Some(Err(err)) => {
                 return ValidationResult {
                     result: false,
-                    message: Some(format!("Path does not exist: {}", path_str)),
+                    message: Some(err.to_string()),
+                    error_code: Some(400),
+                    meta: None,
+                };
+            }
+            None => {
+                if is_bitfun_runtime_uri(path_str) {
+                    return ValidationResult {
+                        result: false,
+                        message: Some(
+                            "Tool context is required to resolve bitfun runtime URIs".to_string(),
+                        ),
+                        error_code: Some(400),
+                        meta: None,
+                    };
+                }
+
+                let local_path = Path::new(path_str);
+                if !local_path.is_absolute() {
+                    return ValidationResult {
+                        result: false,
+                        message: Some("path must be an absolute path".to_string()),
+                        error_code: Some(400),
+                        meta: None,
+                    };
+                }
+
+                if !local_path.exists() {
+                    return ValidationResult {
+                        result: false,
+                        message: Some(format!("Path does not exist: {}", path_str)),
+                        error_code: Some(404),
+                        meta: None,
+                    };
+                }
+
+                return ValidationResult {
+                    result: true,
+                    message: None,
+                    error_code: None,
+                    meta: None,
+                };
+            }
+        };
+
+        if let Some(ctx) = context {
+            if let Err(err) = ctx.enforce_path_operation(ToolPathOperation::Delete, &resolved) {
+                return ValidationResult {
+                    result: false,
+                    message: Some(err.to_string()),
+                    error_code: Some(400),
+                    meta: None,
+                };
+            }
+        }
+
+        if !resolved.uses_remote_workspace_backend() {
+            let local_path = Path::new(&resolved.resolved_path);
+            if !local_path.exists() {
+                return ValidationResult {
+                    result: false,
+                    message: Some(format!("Path does not exist: {}", resolved.logical_path)),
                     error_code: Some(404),
                     meta: None,
                 };
             }
 
-            if path.is_dir() {
+            if local_path.is_dir() {
                 let recursive = input
                     .get("recursive")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                let is_empty = match fs::read_dir(path).await {
+                let is_empty = match fs::read_dir(local_path).await {
                     Ok(mut entries) => entries.next_entry().await.ok().flatten().is_none(),
                     Err(_) => false,
                 };
 
                 if !is_empty && !recursive {
                     return ValidationResult {
-                        result: false,
-                        message: Some(format!("Directory is not empty: {}. Set recursive=true to delete non-empty directories", path_str)),
-                        error_code: Some(400),
-                        meta: Some(json!({
-                            "is_directory": true,
+                            result: false,
+                            message: Some(format!("Directory is not empty: {}. Set recursive=true to delete non-empty directories", resolved.logical_path)),
+                            error_code: Some(400),
+                            meta: Some(json!({
+                                "is_directory": true,
                             "is_empty": false,
                             "requires_recursive": true
                         })),
@@ -234,16 +296,26 @@ Important notes:
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        // Remote workspace: delete via shell command
-        if context.is_remote() {
+        let resolved = context.resolve_tool_path(path_str)?;
+        context.enforce_path_operation(ToolPathOperation::Delete, &resolved)?;
+        context
+            .record_light_checkpoint(
+                "Delete",
+                &resolved.logical_path,
+                vec![resolved.logical_path.clone()],
+            )
+            .await;
+
+        // Remote workspace path: delete via shell command
+        if resolved.uses_remote_workspace_backend() {
             let ws_shell = context.ws_shell().ok_or_else(|| {
                 BitFunError::tool("Workspace shell not available for remote Delete".to_string())
             })?;
 
             let rm_cmd = if recursive {
-                format!("rm -rf '{}'", path_str.replace('\'', "'\\''"))
+                format!("rm -rf '{}'", resolved.resolved_path.replace('\'', "'\\''"))
             } else {
-                format!("rm -f '{}'", path_str.replace('\'', "'\\''"))
+                format!("rm -f '{}'", resolved.resolved_path.replace('\'', "'\\''"))
             };
 
             let (_stdout, stderr, exit_code) = ws_shell
@@ -252,12 +324,15 @@ Important notes:
                 .map_err(|e| BitFunError::tool(format!("Failed to delete on remote: {}", e)))?;
 
             if exit_code != 0 && !stderr.is_empty() {
-                return Err(BitFunError::tool(format!("Remote delete failed: {}", stderr)));
+                return Err(BitFunError::tool(format!(
+                    "Remote delete failed: {}",
+                    stderr
+                )));
             }
 
             let result_data = json!({
                 "success": true,
-                "path": path_str,
+                "path": resolved.logical_path,
                 "is_directory": recursive,
                 "recursive": recursive,
                 "is_remote": true
@@ -266,16 +341,17 @@ Important notes:
             return Ok(vec![ToolResult::Result {
                 data: result_data,
                 result_for_assistant: Some(result_text),
+                image_attachments: None,
             }]);
         }
 
-        let path = Path::new(path_str);
+        let path = Path::new(&resolved.resolved_path);
         let is_directory = path.is_dir();
 
         debug!(
             "DeleteFile tool deleting {}: {}",
             if is_directory { "directory" } else { "file" },
-            path_str
+            resolved.logical_path
         );
 
         if is_directory {
@@ -296,7 +372,7 @@ Important notes:
 
         let result_data = json!({
             "success": true,
-            "path": path_str,
+            "path": resolved.logical_path,
             "is_directory": is_directory,
             "recursive": recursive
         });
@@ -306,6 +382,7 @@ Important notes:
         Ok(vec![ToolResult::Result {
             data: result_data,
             result_for_assistant: Some(result_text),
+            image_attachments: None,
         }])
     }
 }

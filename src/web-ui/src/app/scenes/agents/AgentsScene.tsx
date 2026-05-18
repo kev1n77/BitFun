@@ -1,17 +1,19 @@
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import type { TFunction } from 'i18next';
 import {
-  ArrowLeft,
   Bot,
   Cpu,
+  RotateCcw,
+  Pencil,
   Plus,
   Puzzle,
-  RefreshCw,
   Search as SearchIcon,
-  Users,
+  ShieldCheck,
+  Trash2,
   Wrench,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { Badge, Button, IconButton, Search } from '@/component-library';
+import { Badge, Button, IconButton, Search, Switch, confirmDanger } from '@/component-library';
 import {
   GalleryDetailModal,
   GalleryEmpty,
@@ -22,107 +24,235 @@ import {
   GalleryZone,
 } from '@/app/components';
 import AgentCard from './components/AgentCard';
-import CoreAgentCard, { type CoreAgentMeta } from './components/CoreAgentCard';
 import AgentTeamCard from './components/AgentTeamCard';
-import AgentTeamTabBar from './components/AgentTeamTabBar';
-import AgentGallery from './components/AgentGallery';
-import AgentTeamComposer from './components/AgentTeamComposer';
-import CapabilityBar from './components/CapabilityBar';
+import CoreAgentCard, { type CoreAgentMeta } from './components/CoreAgentCard';
 import CreateAgentPage from './components/CreateAgentPage';
+import ReviewTeamPage, { ReviewTeamErrorBoundary } from './components/ReviewTeamPage';
 import {
-  CAPABILITY_CATEGORIES,
-  MOCK_AGENT_TEAMS,
-  computeAgentTeamCapabilities,
   type AgentWithCapabilities,
   useAgentsStore,
 } from './agentsStore';
 import { useAgentsList } from './hooks/useAgentsList';
-import { AGENT_ICON_MAP, CAPABILITY_ACCENT, AGENT_TEAM_ICON_MAP, getAgentTeamAccent } from './agentsIcons';
+import { AGENT_ICON_MAP, CAPABILITY_ACCENT } from './agentsIcons';
 import { getCardGradient } from '@/shared/utils/cardGradients';
-import { getAgentBadge } from './utils';
+import { getAgentBadge, getAgentDescription, getCapabilityLabel } from './utils';
 import './AgentsView.scss';
 import './AgentsScene.scss';
+import { useGallerySceneAutoRefresh } from '@/app/hooks/useGallerySceneAutoRefresh';
+import { CORE_AGENT_IDS, isAgentInOverviewZone } from './agentVisibility';
+import { SubagentAPI } from '@/infrastructure/api/service-api/SubagentAPI';
+import type { ModeSkillInfo } from '@/infrastructure/config/types';
+import type { SubagentInfo } from '@/infrastructure/api/service-api/SubagentAPI';
+import { useNotification } from '@/shared/notification-system';
+import { useCurrentWorkspace } from '@/infrastructure/contexts/WorkspaceContext';
+import { loadDefaultReviewTeam, type ReviewTeam } from '@/shared/services/reviewTeamService';
 
-const EXAMPLE_TEAM_IDS = new Set(MOCK_AGENT_TEAMS.map((team) => team.id));
+const UNGROUPED_SKILL_GROUP = '__ungrouped__';
 
-const HIDDEN_AGENT_IDS = new Set(['Claw']);
-
-const CORE_AGENT_IDS = new Set(['agentic', 'Cowork']);
-
-const AgentTeamEditorView: React.FC = () => {
-  const { t } = useTranslation('scenes/agents');
-  const { openHome } = useAgentsStore();
-
-  return (
-    <div className="tv tv--editor">
-      <div className="tv__editor-bar">
-        <button className="tv__back-btn" onClick={openHome}>
-          <ArrowLeft size={14} />
-          <span>{t('home.backToOverview')}</span>
-        </button>
-      </div>
-
-      <AgentTeamTabBar />
-
-      <div className="tv__body">
-        <aside className="tv__gallery">
-          <div className="tv__panel-label">{t('gallery.title')}</div>
-          <AgentGallery />
-        </aside>
-
-        <main className="tv__composer">
-          <AgentTeamComposer />
-        </main>
-      </div>
-
-      <CapabilityBar />
-    </div>
-  );
+const SKILL_GROUP_ORDER: Record<string, number> = {
+  office: 0,
+  meta: 1,
+  team: 2,
+  [UNGROUPED_SKILL_GROUP]: 99,
 };
+
+interface SkillGroup {
+  key: string;
+  label: string;
+  skills: ModeSkillInfo[];
+  enabledCount: number;
+  totalCount: number;
+}
+
+type CapabilityTab = 'tools' | 'skills' | 'subagents';
+
+function getConfiguredEnabledSkillKeys(skills: ModeSkillInfo[]): string[] {
+  return skills.filter((skill) => skill.effectiveEnabled).map((skill) => skill.key);
+}
+
+function modeHasSkillTool(enabledTools: string[]): boolean {
+  return enabledTools.includes('Skill');
+}
+
+function modeHasTaskTool(enabledTools: string[]): boolean {
+  return enabledTools.includes('Task');
+}
+
+function buildDuplicateSkillNameSet(skills: ModeSkillInfo[]): Set<string> {
+  const counts = new Map<string, number>();
+  for (const skill of skills) {
+    counts.set(skill.name, (counts.get(skill.name) ?? 0) + 1);
+  }
+  return new Set(
+    [...counts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([name]) => name),
+  );
+}
+
+function formatSkillOrigin(skill: ModeSkillInfo): string {
+  return `${skill.level}/${skill.sourceSlot}`;
+}
+
+function formatSkillDisplayName(skill: ModeSkillInfo, duplicateNames: Set<string>): string {
+  if (!duplicateNames.has(skill.name)) {
+    return skill.name;
+  }
+  return `${skill.name} [${formatSkillOrigin(skill)}]`;
+}
+
+function getSkillGroupKey(skill: ModeSkillInfo): string {
+  return skill.groupKey?.trim() || UNGROUPED_SKILL_GROUP;
+}
+
+function getSkillGroupLabel(groupKey: string, t: TFunction<'scenes/agents'>): string {
+  switch (groupKey) {
+    case 'office':
+      return t('agentsOverview.skillGroups.office');
+    case 'computer-use':
+      return t('agentsOverview.skillGroups.computerUse');
+    case 'meta':
+      return t('agentsOverview.skillGroups.meta');
+    case 'team':
+      return t('agentsOverview.skillGroups.team');
+    default:
+      return t('agentsOverview.skillGroups.other');
+  }
+}
+
+function getSkillTitle(skill: ModeSkillInfo, t: TFunction<'scenes/agents'>): string {
+  return [
+    skill.description || skill.name,
+    `key: ${skill.key}`,
+    skill.effectiveEnabled && !skill.selectedForRuntime
+      ? t('agentsOverview.skillShadowed')
+      : null,
+  ].filter(Boolean).join('\n');
+}
+
+function buildSkillGroups(
+  skills: ModeSkillInfo[],
+  enabledSkillKeys: string[],
+  t: TFunction<'scenes/agents'>,
+): SkillGroup[] {
+  const enabledSkillKeySet = new Set(enabledSkillKeys);
+  const groups = new Map<string, ModeSkillInfo[]>();
+
+  for (const skill of skills) {
+    const groupKey = getSkillGroupKey(skill);
+    const items = groups.get(groupKey);
+    if (items) {
+      items.push(skill);
+    } else {
+      groups.set(groupKey, [skill]);
+    }
+  }
+
+  return [...groups.entries()]
+    .map(([groupKey, groupSkills]) => ({
+      key: groupKey,
+      label: getSkillGroupLabel(groupKey, t),
+      skills: [...groupSkills].sort((a, b) => {
+        const aEnabled = enabledSkillKeySet.has(a.key);
+        const bEnabled = enabledSkillKeySet.has(b.key);
+        if (aEnabled && !bEnabled) return -1;
+        if (!aEnabled && bEnabled) return 1;
+        return a.name.localeCompare(b.name) || a.key.localeCompare(b.key);
+      }),
+      enabledCount: groupSkills.filter((skill) => enabledSkillKeySet.has(skill.key)).length,
+      totalCount: groupSkills.length,
+    }))
+    .sort((a, b) => {
+      const orderDiff = (SKILL_GROUP_ORDER[a.key] ?? 50) - (SKILL_GROUP_ORDER[b.key] ?? 50);
+      if (orderDiff !== 0) {
+        return orderDiff;
+      }
+      return a.label.localeCompare(b.label);
+    });
+}
 
 const AgentsHomeView: React.FC = () => {
   const { t } = useTranslation('scenes/agents');
+  const notification = useNotification();
+  const { workspacePath } = useCurrentWorkspace();
+  const [deletingAgent, setDeletingAgent] = useState(false);
   const {
-    agentTeams,
-    agentSoloEnabled,
     searchQuery,
     agentFilterLevel,
     agentFilterType,
     setSearchQuery,
     setAgentFilterLevel,
     setAgentFilterType,
-    setAgentSoloEnabled,
-    openAgentTeamEditor,
     openCreateAgent,
-    addAgentTeam,
+    openEditAgent,
+    openReviewTeam,
   } = useAgentsStore();
   const [selectedAgentId, setSelectedAgentId] = React.useState<string | null>(null);
-  const [selectedTeamId, setSelectedTeamId] = React.useState<string | null>(null);
+  const [activeCapabilityTab, setActiveCapabilityTab] = React.useState<CapabilityTab>('tools');
   const [toolsEditing, setToolsEditing] = React.useState(false);
   const [skillsEditing, setSkillsEditing] = React.useState(false);
+  const [subagentsEditing, setSubagentsEditing] = React.useState(false);
   const [pendingTools, setPendingTools] = React.useState<string[] | null>(null);
   const [pendingSkills, setPendingSkills] = React.useState<string[] | null>(null);
+  const [pendingSubagentIds, setPendingSubagentIds] = React.useState<string[] | null>(null);
   const [savingTools, setSavingTools] = React.useState(false);
   const [savingSkills, setSavingSkills] = React.useState(false);
+  const [savingSubagents, setSavingSubagents] = React.useState(false);
+  const [reviewTeam, setReviewTeam] = useState<ReviewTeam | null>(null);
 
   const {
     allAgents,
     filteredAgents,
     loading,
     availableTools,
-    availableSkills,
+    getModeSkills,
+    getModeManageableSubagents,
     counts,
+    hiddenAgentIds,
     loadAgents,
     getModeConfig,
-    handleToggleTool,
+    handleSetTools,
     handleResetTools,
-    handleToggleSkill,
+    handleSetSkills,
+    handleResetSkills,
+    handleSetSubagentEnabled,
   } = useAgentsList({
     searchQuery,
     filterLevel: agentFilterLevel,
     filterType: agentFilterType,
     t,
   });
+
+  useGallerySceneAutoRefresh({
+    sceneId: 'agents',
+    refetch: () => {
+      void loadAgents();
+      void loadDefaultReviewTeam(workspacePath || undefined).then(setReviewTeam).catch(() => {
+        setReviewTeam(null);
+      });
+    },
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const loadedTeam = await loadDefaultReviewTeam(workspacePath || undefined);
+        if (!cancelled) {
+          setReviewTeam(loadedTeam);
+        }
+      } catch {
+        if (!cancelled) {
+          setReviewTeam(null);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [workspacePath]);
 
   const coreAgentMeta = useMemo((): Record<string, CoreAgentMeta> => ({
     agentic: {
@@ -135,33 +265,19 @@ const AgentsHomeView: React.FC = () => {
       accentColor: '#14b8a6',
       accentBg: 'rgba(20,184,166,0.10)',
     },
+    ComputerUse: {
+      role: t('coreAgentsZone.modes.computerUse.role'),
+      accentColor: '#f59e0b',
+      accentBg: 'rgba(245,158,11,0.10)',
+    },
   }), [t]);
-
-  const filteredTeams = useMemo(() => agentTeams.filter((team) => {
-    if (!searchQuery) return true;
-    const query = searchQuery.toLowerCase();
-    return team.name.toLowerCase().includes(query) || team.description.toLowerCase().includes(query);
-  }), [agentTeams, searchQuery]);
 
   const coreAgents = useMemo(() => allAgents.filter((agent) => CORE_AGENT_IDS.has(agent.id)), [allAgents]);
 
   const visibleAgents = useMemo(
-    () => filteredAgents.filter((agent) => !HIDDEN_AGENT_IDS.has(agent.id) && !CORE_AGENT_IDS.has(agent.id)),
-    [filteredAgents],
+    () => filteredAgents.filter((agent) => isAgentInOverviewZone(agent, hiddenAgentIds)),
+    [filteredAgents, hiddenAgentIds],
   );
-
-  const handleCreateTeam = useCallback(() => {
-    const id = `agent-team-${Date.now()}`;
-    addAgentTeam({
-      id,
-      name: t('teamsZone.newTeamName'),
-      icon: 'users',
-      description: '',
-      strategy: 'collaborative',
-      shareContext: true,
-    });
-    openAgentTeamEditor(id);
-  }, [addAgentTeam, openAgentTeamEditor, t]);
 
   const scrollToZone = useCallback((targetId: string) => {
     document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -190,57 +306,239 @@ const AgentsHomeView: React.FC = () => {
     () => (selectedAgent?.agentKind === 'mode' ? getModeConfig(selectedAgent.id) : null),
     [getModeConfig, selectedAgent],
   );
-  const selectedAgentTools = selectedAgent?.agentKind === 'mode'
-    ? (selectedAgentModeConfig?.available_tools ?? selectedAgent.defaultTools ?? [])
-    : (selectedAgent?.defaultTools ?? []);
-  const selectedAgentSkills = selectedAgentModeConfig?.available_skills ?? [];
-  const selectedAgentSkillItems = availableSkills.filter((skill) => selectedAgentSkills.includes(skill.name));
-  const selectedTeam = useMemo(
-    () => agentTeams.find((team) => team.id === selectedTeamId) ?? null,
-    [agentTeams, selectedTeamId],
+  const selectedAgentModeSkills = useMemo(
+    () => (selectedAgent?.agentKind === 'mode' ? getModeSkills(selectedAgent.id) : []),
+    [getModeSkills, selectedAgent],
   );
-  const selectedAgentTeamMembers = useMemo(
-    () => selectedTeam
-      ? selectedTeam.members
-        .map((member) => allAgents.find((agent) => agent.id === member.agentId))
-        .filter((agent): agent is AgentWithCapabilities => Boolean(agent))
-      : [],
-    [allAgents, selectedTeam],
+  const selectedAgentManageableSubagents = useMemo(
+    () => (selectedAgent?.agentKind === 'mode' ? getModeManageableSubagents(selectedAgent.id) : []),
+    [getModeManageableSubagents, selectedAgent],
   );
-  const selectedTeamTopCaps = useMemo(() => {
-    if (!selectedTeam) return [];
-    const caps = computeAgentTeamCapabilities(selectedTeam, allAgents);
-    return CAPABILITY_CATEGORIES
-      .filter((category) => caps[category] > 0)
-      .sort((a, b) => caps[b] - caps[a])
-      .slice(0, 3);
-  }, [allAgents, selectedTeam]);
+  const selectedAgentTools = useMemo(() => (
+    selectedAgent?.agentKind === 'mode'
+      ? (selectedAgentModeConfig?.enabled_tools ?? selectedAgent.defaultTools ?? [])
+      : (selectedAgent?.defaultTools ?? [])
+  ), [selectedAgent, selectedAgentModeConfig]);
+  const selectedAgentHasSkillTool = selectedAgent?.agentKind === 'mode'
+    ? modeHasSkillTool(selectedAgentTools)
+    : false;
+  const selectedAgentHasTaskTool = selectedAgent?.agentKind === 'mode'
+    ? modeHasTaskTool(selectedAgentTools)
+    : false;
+  const selectedAgentEnabledSubagents = useMemo(
+    () => selectedAgentManageableSubagents.filter((subagent) => subagent.effectiveEnabled),
+    [selectedAgentManageableSubagents],
+  );
+  const selectedAgentDefaultEnabledSubagentIds = useMemo(
+    () => selectedAgentManageableSubagents
+      .filter((subagent) => subagent.defaultEnabled)
+      .map((subagent) => subagent.id),
+    [selectedAgentManageableSubagents],
+  );
+  const selectedAgentEnabledSubagentIds = useMemo(
+    () => selectedAgentEnabledSubagents.map((subagent) => subagent.id),
+    [selectedAgentEnabledSubagents],
+  );
+  const selectedAgentSkills = useMemo(
+    () => getConfiguredEnabledSkillKeys(selectedAgentModeSkills),
+    [selectedAgentModeSkills],
+  );
+  const selectedAgentSkillItems = useMemo(
+    () => selectedAgentModeSkills.filter((skill) => skill.effectiveEnabled),
+    [selectedAgentModeSkills],
+  );
+  const selectedAgentSkillGroups = useMemo(
+    () => buildSkillGroups(selectedAgentModeSkills, selectedAgentSkills, t),
+    [selectedAgentModeSkills, selectedAgentSkills, t],
+  );
+  const editableSkillGroups = useMemo(
+    () => buildSkillGroups(selectedAgentModeSkills, pendingSkills ?? selectedAgentSkills, t),
+    [pendingSkills, selectedAgentModeSkills, selectedAgentSkills, t],
+  );
+  const selectedAgentDuplicateSkillNames = useMemo(
+    () => buildDuplicateSkillNameSet(selectedAgentModeSkills),
+    [selectedAgentModeSkills],
+  );
+  const getDisplayedToolCount = useCallback((agent: AgentWithCapabilities): number => {
+    if (agent.agentKind === 'mode') {
+      return getModeConfig(agent.id)?.enabled_tools?.length
+        ?? agent.defaultTools?.length
+        ?? agent.toolCount
+        ?? 0;
+    }
+    return agent.toolCount ?? agent.defaultTools?.length ?? 0;
+  }, [getModeConfig]);
+  const selectedAgentToolCount = selectedAgent ? getDisplayedToolCount(selectedAgent) : 0;
+  const selectedAgentCapabilityTabs = useMemo(() => {
+    const tabs: Array<{
+      key: CapabilityTab;
+      icon: typeof Wrench;
+      label: string;
+      count: string;
+    }> = [];
 
+    if (selectedAgentTools.length > 0) {
+      const currentToolCount = selectedAgent?.agentKind === 'mode'
+        ? (toolsEditing ? (pendingTools ?? selectedAgentTools).length : selectedAgentTools.length)
+        : selectedAgentTools.length;
+      const totalToolCount = selectedAgent?.agentKind === 'mode'
+        ? availableTools.length
+        : selectedAgentTools.length;
+
+      tabs.push({
+        key: 'tools',
+        icon: Wrench,
+        label: t('agentsOverview.tools'),
+        count: selectedAgent?.agentKind === 'mode'
+          ? `${currentToolCount}/${totalToolCount}`
+          : `${currentToolCount}`,
+      });
+    }
+
+    if (selectedAgent?.agentKind === 'mode' && selectedAgentHasSkillTool && selectedAgentModeSkills.length > 0) {
+      tabs.push({
+        key: 'skills',
+        icon: Puzzle,
+        label: t('agentsOverview.skills'),
+        count: `${(skillsEditing ? (pendingSkills ?? selectedAgentSkills) : selectedAgentSkills).length}/${selectedAgentModeSkills.length}`,
+      });
+    }
+
+    if (selectedAgent?.agentKind === 'mode' && selectedAgentHasTaskTool) {
+      const currentSubagentIds = subagentsEditing
+        ? (pendingSubagentIds ?? selectedAgentEnabledSubagentIds)
+        : selectedAgentEnabledSubagentIds;
+      tabs.push({
+        key: 'subagents',
+        icon: Bot,
+        label: t('agentsOverview.subagents'),
+        count: `${currentSubagentIds.length}/${selectedAgentManageableSubagents.length}`,
+      });
+    }
+
+    return tabs;
+  }, [
+    availableTools.length,
+    pendingSkills,
+    pendingSubagentIds,
+    pendingTools,
+    selectedAgent,
+    selectedAgentEnabledSubagentIds,
+    selectedAgentHasSkillTool,
+    selectedAgentHasTaskTool,
+    selectedAgentManageableSubagents.length,
+    selectedAgentModeSkills.length,
+    selectedAgentSkills,
+    selectedAgentTools,
+    skillsEditing,
+    subagentsEditing,
+    t,
+    toolsEditing,
+  ]);
+  const currentCapabilityTab = useMemo(() => {
+    if (selectedAgentCapabilityTabs.some((tab) => tab.key === activeCapabilityTab)) {
+      return activeCapabilityTab;
+    }
+    return selectedAgentCapabilityTabs[0]?.key ?? 'tools';
+  }, [activeCapabilityTab, selectedAgentCapabilityTabs]);
+  const isCurrentTabEditing = currentCapabilityTab === 'tools'
+    ? toolsEditing
+    : currentCapabilityTab === 'skills'
+      ? skillsEditing
+      : subagentsEditing;
   const resetEditState = useCallback(() => {
     setToolsEditing(false);
     setSkillsEditing(false);
+    setSubagentsEditing(false);
     setPendingTools(null);
     setPendingSkills(null);
+    setPendingSubagentIds(null);
     setSavingTools(false);
     setSavingSkills(false);
+    setSavingSubagents(false);
   }, []);
 
+  const togglePendingSkill = useCallback((skillKey: string) => {
+    setPendingSkills((prev) => {
+      const current = prev ?? selectedAgentSkills;
+      return current.includes(skillKey)
+        ? current.filter((key) => key !== skillKey)
+        : [...current, skillKey];
+    });
+  }, [selectedAgentSkills]);
+
+  const setPendingSkillGroupEnabled = useCallback((skills: ModeSkillInfo[], enabled: boolean) => {
+    setPendingSkills((prev) => {
+      const current = prev ?? selectedAgentSkills;
+      const groupKeys = new Set(skills.map((skill) => skill.key));
+
+      if (!enabled) {
+        return current.filter((key) => !groupKeys.has(key));
+      }
+
+      const next = [...current];
+      for (const skill of skills) {
+        if (!next.includes(skill.key)) {
+          next.push(skill.key);
+        }
+      }
+      return next;
+    });
+  }, [selectedAgentSkills]);
+
   const openAgentDetails = useCallback((agent: AgentWithCapabilities) => {
-    setSelectedTeamId(null);
     setSelectedAgentId(agent.id);
+    setActiveCapabilityTab('tools');
     resetEditState();
   }, [resetEditState]);
 
   const closeAgentDetails = useCallback(() => {
     setSelectedAgentId(null);
+    setActiveCapabilityTab('tools');
     resetEditState();
   }, [resetEditState]);
 
-  const openTeamDetails = useCallback((teamId: string) => {
-    setSelectedAgentId(null);
-    resetEditState();
-    setSelectedTeamId(teamId);
-  }, [resetEditState]);
+  useEffect(() => {
+    if (!selectedAgentCapabilityTabs.some((tab) => tab.key === activeCapabilityTab)) {
+      setActiveCapabilityTab(selectedAgentCapabilityTabs[0]?.key ?? 'tools');
+    }
+  }, [activeCapabilityTab, selectedAgentCapabilityTabs]);
+
+  const handleDeleteCustomAgent = useCallback(async () => {
+    if (!selectedAgent) return;
+    if (
+      selectedAgent.agentKind !== 'subagent'
+      || (selectedAgent.subagentSource !== 'user' && selectedAgent.subagentSource !== 'project')
+    ) {
+      return;
+    }
+    const id = selectedAgent.id;
+    const name = selectedAgent.name;
+    const ok = await confirmDanger(
+      t('agentsOverview.deleteAgent'),
+      t('agentsOverview.deleteConfirm', { name }),
+    );
+    if (!ok) return;
+    setDeletingAgent(true);
+    try {
+      await SubagentAPI.deleteSubagent(id);
+      notification.success(t('agentsOverview.deleteSuccess', { name }));
+      closeAgentDetails();
+      await loadAgents();
+    } catch (e) {
+      notification.error(
+        `${t('agentsOverview.deleteFailed')}${e instanceof Error ? e.message : String(e)}`,
+      );
+    } finally {
+      setDeletingAgent(false);
+    }
+  }, [selectedAgent, closeAgentDetails, loadAgents, notification, t]);
+
+  const canManageCustomSubagent = Boolean(
+    selectedAgent
+    && selectedAgent.agentKind === 'subagent'
+    && (selectedAgent.subagentSource === 'user' || selectedAgent.subagentSource === 'project'),
+  );
 
   return (
     <GalleryLayout className="bitfun-agents-scene">
@@ -259,16 +557,16 @@ const AgentsHomeView: React.FC = () => {
             <button
               type="button"
               className="gallery-anchor-btn"
-              onClick={() => scrollToZone('agents-zone')}
+              onClick={() => scrollToZone('teams-zone')}
             >
-              {t('nav.agents')}
+              {t('nav.teams', { defaultValue: 'Teams' })}
             </button>
             <button
               type="button"
               className="gallery-anchor-btn"
-              onClick={() => scrollToZone('agent-teams-zone')}
+              onClick={() => scrollToZone('agents-zone')}
             >
-              {t('nav.teams')}
+              {t('nav.agents')}
             </button>
           </div>
         )}
@@ -291,19 +589,6 @@ const AgentsHomeView: React.FC = () => {
                 </button>
               )}
             />
-            <button
-              type="button"
-              className="gallery-action-btn"
-              onClick={() => void loadAgents()}
-              disabled={loading}
-              aria-label={t('page.refresh')}
-              title={t('page.refresh')}
-            >
-              <RefreshCw
-                size={15}
-                className={loading ? 'gallery-spinning' : undefined}
-              />
-            </button>
           </>
         )}
       />
@@ -332,12 +617,76 @@ const AgentsHomeView: React.FC = () => {
                   agent={agent}
                   index={index}
                   meta={coreAgentMeta[agent.id] ?? { role: agent.name, accentColor: '#6366f1', accentBg: 'rgba(99,102,241,0.10)' }}
-                  skillCount={agent.agentKind === 'mode' ? (getModeConfig(agent.id)?.available_skills?.length ?? 0) : 0}
+                  toolCount={getDisplayedToolCount(agent)}
+                  skillCount={agent.agentKind === 'mode' && modeHasSkillTool(getModeConfig(agent.id)?.enabled_tools ?? agent.defaultTools ?? [])
+                    ? getConfiguredEnabledSkillKeys(getModeSkills(agent.id)).length
+                    : 0}
+                  subagentCount={agent.agentKind === 'mode' && modeHasTaskTool(getModeConfig(agent.id)?.enabled_tools ?? agent.defaultTools ?? [])
+                    ? (agent.visibleSubagentCount ?? 0)
+                    : 0}
                   onOpenDetails={openAgentDetails}
                 />
               ))}
             </div>
           )}
+        </GalleryZone>
+
+        <GalleryZone
+          id="teams-zone"
+          title={t('teamsZone.title', {
+            defaultValue: 'Agent Teams',
+          })}
+          subtitle={t('teamsZone.subtitle', {
+            defaultValue:
+              'Organize multi-agent lineups for deeper tasks. A professional code review team is now available.',
+          })}
+          tools={(
+            <>
+              <button
+                type="button"
+                className="gallery-action-btn"
+                onClick={openReviewTeam}
+              >
+                <ShieldCheck size={15} />
+                <span>{t('reviewTeams.detail.open', { defaultValue: 'Configure team' })}</span>
+              </button>
+              <span className="gallery-zone-count">{reviewTeam ? 1 : 0}</span>
+            </>
+          )}
+        >
+          {loading && !reviewTeam ? renderSkeletons('team') : null}
+
+          {!loading && reviewTeam ? (
+            <GalleryGrid minCardWidth={360}>
+              <AgentTeamCard
+                index={0}
+                title={t('reviewTeams.default.name', {
+                  defaultValue: 'Code Review Team',
+                })}
+                subtitle={t('reviewTeams.default.summary', {
+                  defaultValue:
+                    'A deep-review code team with locked logic, performance, security, architecture, and quality-gate roles.',
+                })}
+                roleName={t('reviewTeams.detail.localOnly', {
+                  defaultValue: 'Code review',
+                })}
+                tagNames={t('reviewTeams.default.tags', {
+                  returnObjects: true,
+                  defaultValue: ['Quality', 'Performance', 'Architecture'],
+                }) as string[]}
+                onOpen={openReviewTeam}
+              />
+            </GalleryGrid>
+          ) : null}
+
+          {!loading && !reviewTeam ? (
+            <GalleryEmpty
+              icon={<ShieldCheck size={32} strokeWidth={1.5} />}
+              message={t('teamsZone.empty', {
+                defaultValue: 'No agent teams are available right now.',
+              })}
+            />
+          ) : null}
         </GalleryZone>
 
         <GalleryZone
@@ -414,63 +763,18 @@ const AgentsHomeView: React.FC = () => {
                   key={agent.id}
                   agent={agent}
                   index={index}
-                  soloEnabled={agentSoloEnabled[agent.id] ?? agent.enabled}
-                  skillCount={agent.agentKind === 'mode' ? (getModeConfig(agent.id)?.available_skills?.length ?? 0) : 0}
-                  onToggleSolo={setAgentSoloEnabled}
+                  toolCount={getDisplayedToolCount(agent)}
+                  skillCount={agent.agentKind === 'mode' && modeHasSkillTool(getModeConfig(agent.id)?.enabled_tools ?? agent.defaultTools ?? [])
+                    ? getConfiguredEnabledSkillKeys(getModeSkills(agent.id)).length
+                    : 0}
+                  subagentCount={agent.agentKind === 'mode' && modeHasTaskTool(getModeConfig(agent.id)?.enabled_tools ?? agent.defaultTools ?? [])
+                    ? (agent.visibleSubagentCount ?? 0)
+                    : 0}
                   onOpenDetails={openAgentDetails}
                 />
               ))}
             </GalleryGrid>
           ) : null}
-        </GalleryZone>
-
-        <GalleryZone
-          id="agent-teams-zone"
-          title={t('teamsZone.title')}
-          subtitle={t('teamsZone.subtitle')}
-          tools={(
-            <>
-              <button
-                type="button"
-                className="gallery-action-btn gallery-action-btn--primary"
-                onClick={handleCreateTeam}
-              >
-                <Users size={15} />
-                <span>{t('teamsZone.create')}</span>
-              </button>
-              <span className="gallery-zone-count">{filteredTeams.length}</span>
-            </>
-          )}
-        >
-          {filteredTeams.length === 0 ? (
-            <GalleryEmpty
-              icon={<Users size={32} strokeWidth={1.5} />}
-              message={agentTeams.length === 0 ? t('teamsZone.empty.noTeams') : t('teamsZone.empty.noMatch')}
-            />
-          ) : (
-            <GalleryGrid minCardWidth={360}>
-              {filteredTeams.map((team, index) => {
-                const caps = computeAgentTeamCapabilities(team, allAgents);
-                const topCaps = CAPABILITY_CATEGORIES
-                  .filter((category) => caps[category] > 0)
-                  .sort((a, b) => caps[b] - caps[a])
-                  .slice(0, 3);
-
-                return (
-                  <AgentTeamCard
-                    key={team.id}
-                    team={team}
-                    allAgents={allAgents}
-                    index={index}
-                    isExample={EXAMPLE_TEAM_IDS.has(team.id)}
-                    onEdit={openAgentTeamEditor}
-                    onOpenDetails={(currentTeam) => openTeamDetails(currentTeam.id)}
-                    topCapabilities={topCaps}
-                  />
-                );
-              })}
-            </GalleryGrid>
-          )}
         </GalleryZone>
       </div>
 
@@ -489,16 +793,20 @@ const AgentsHomeView: React.FC = () => {
               {selectedAgent.agentKind === 'mode' ? <Cpu size={10} /> : <Bot size={10} />}
               {getAgentBadge(t, selectedAgent.agentKind, selectedAgent.subagentSource).label}
             </Badge>
-            {!selectedAgent.enabled ? <Badge variant="neutral">{t('agentCard.badges.disabled')}</Badge> : null}
             {selectedAgent.model ? <Badge variant="neutral">{selectedAgent.model}</Badge> : null}
           </>
         ) : null}
-        description={selectedAgent?.description}
+        description={selectedAgent
+          ? getAgentDescription(t, selectedAgent)
+          : undefined}
         meta={selectedAgent ? (
           <>
-            <span>{t('agentCard.meta.tools', { count: selectedAgent.toolCount ?? selectedAgentTools.length })}</span>
-            {selectedAgent.agentKind === 'mode' ? (
+            <span>{t('agentCard.meta.tools', { count: selectedAgentToolCount })}</span>
+            {selectedAgent.agentKind === 'mode' && selectedAgentHasSkillTool ? (
               <span>{t('agentCard.meta.skills', { count: selectedAgentSkills.length })}</span>
+            ) : null}
+            {selectedAgent.agentKind === 'mode' && selectedAgentHasTaskTool ? (
+              <span>{t('agentCard.meta.subagents', { count: selectedAgentManageableSubagents.filter((subagent) => subagent.effectiveEnabled).length })}</span>
             ) : null}
           </>
         ) : null}
@@ -512,7 +820,7 @@ const AgentsHomeView: React.FC = () => {
                     className="agent-card__cap-label"
                     style={{ color: CAPABILITY_ACCENT[cap.category] }}
                   >
-                    {cap.category}
+                    {getCapabilityLabel(t, cap.category)}
                   </span>
                   <div className="agent-card__cap-bar">
                     {Array.from({ length: 5 }).map((_, i) => (
@@ -528,72 +836,178 @@ const AgentsHomeView: React.FC = () => {
               ))}
             </div>
 
-            {selectedAgentTools.length > 0 ? (
+            {selectedAgentCapabilityTabs.length > 0 ? (
               <div className="agent-card__section">
                 <div className="agent-card__section-head">
-                  <div className="agent-card__section-title">
-                    <Wrench size={12} />
-                    <span>{t('agentsOverview.tools')}</span>
-                    <span className="agent-card__section-count">
-                      {selectedAgent.agentKind === 'mode'
-                        ? `${(toolsEditing ? (pendingTools ?? selectedAgentTools) : selectedAgentTools).length}/${availableTools.length}`
-                        : `${selectedAgentTools.length}`}
-                    </span>
+                  <div className="agent-card__tab-list" role="tablist" aria-label={t('agentsOverview.capabilities')}>
+                    {selectedAgentCapabilityTabs.map((tab) => {
+                      const TabIcon = tab.icon;
+                      const isActive = tab.key === currentCapabilityTab;
+                      return (
+                        <button
+                          key={tab.key}
+                          type="button"
+                          role="tab"
+                          aria-selected={isActive}
+                          className={`agent-card__tab${isActive ? ' is-active' : ''}`}
+                          onClick={() => setActiveCapabilityTab(tab.key)}
+                        >
+                          <TabIcon size={12} />
+                          <span>{tab.label}</span>
+                          {isActive ? (
+                            <span className="agent-card__tab-count">{tab.count}</span>
+                          ) : null}
+                        </button>
+                      );
+                    })}
                   </div>
                   {selectedAgent.agentKind === 'mode' ? (
                     <div className="agent-card__section-actions">
-                      {toolsEditing ? (
+                      {isCurrentTabEditing ? (
                         <>
                           <IconButton
                             size="small"
                             variant="ghost"
-                            tooltip={t('agentsOverview.toolsReset')}
+                            tooltip={
+                              currentCapabilityTab === 'tools'
+                                ? t('agentsOverview.toolsReset')
+                                : currentCapabilityTab === 'skills'
+                                  ? t('agentsOverview.reset')
+                                  : t('agentsOverview.reset')
+                            }
                             onClick={async () => {
-                              await handleResetTools(selectedAgent.id);
-                              setToolsEditing(false);
-                              setPendingTools(null);
+                              if (currentCapabilityTab === 'tools') {
+                                await handleResetTools(selectedAgent.id);
+                                setToolsEditing(false);
+                                setPendingTools(null);
+                                return;
+                              }
+                              if (currentCapabilityTab === 'skills') {
+                                await handleResetSkills(selectedAgent.id);
+                                setSkillsEditing(false);
+                                setPendingSkills(null);
+                                return;
+                              }
+                              setSavingSubagents(true);
+                              try {
+                                const currentEnabledIds = new Set(selectedAgentEnabledSubagentIds);
+                                const defaultEnabledIds = new Set(selectedAgentDefaultEnabledSubagentIds);
+                                const changedSubagents = selectedAgentManageableSubagents.filter((subagent) =>
+                                  currentEnabledIds.has(subagent.id) !== defaultEnabledIds.has(subagent.id));
+
+                                if (changedSubagents.length === 0) {
+                                  setSubagentsEditing(false);
+                                  setPendingSubagentIds(null);
+                                  return;
+                                }
+
+                                for (const subagent of changedSubagents) {
+                                  await handleSetSubagentEnabled(
+                                    selectedAgent.id,
+                                    subagent.id,
+                                    defaultEnabledIds.has(subagent.id),
+                                  );
+                                }
+                              } finally {
+                                setSavingSubagents(false);
+                                setSubagentsEditing(false);
+                                setPendingSubagentIds(null);
+                              }
                             }}
                           >
-                            <RefreshCw size={12} />
+                            <RotateCcw size={12} />
                           </IconButton>
                           <Button
                             variant="ghost"
                             size="small"
                             onClick={() => {
-                              setToolsEditing(false);
-                              setPendingTools(null);
+                              if (currentCapabilityTab === 'tools') {
+                                setToolsEditing(false);
+                                setPendingTools(null);
+                                return;
+                              }
+                              if (currentCapabilityTab === 'skills') {
+                                setSkillsEditing(false);
+                                setPendingSkills(null);
+                                return;
+                              }
+                              setSubagentsEditing(false);
+                              setPendingSubagentIds(null);
                             }}
                           >
-                            {t('agentsOverview.toolsCancel')}
+                            {t('agentsOverview.cancel')}
                           </Button>
                           <Button
                             variant="primary"
                             size="small"
-                            isLoading={savingTools}
+                            isLoading={
+                              currentCapabilityTab === 'tools'
+                                ? savingTools
+                                : currentCapabilityTab === 'skills'
+                                  ? savingSkills
+                                  : savingSubagents
+                            }
                             onClick={async () => {
-                              if (!pendingTools) {
-                                setToolsEditing(false);
+                              if (currentCapabilityTab === 'tools') {
+                                if (!pendingTools) {
+                                  setToolsEditing(false);
+                                  return;
+                                }
+                                setSavingTools(true);
+                                try {
+                                  await handleSetTools(selectedAgent.id, pendingTools);
+                                } finally {
+                                  setSavingTools(false);
+                                  setToolsEditing(false);
+                                  setPendingTools(null);
+                                }
                                 return;
                               }
-                              setSavingTools(true);
+
+                              if (currentCapabilityTab === 'skills') {
+                                if (!pendingSkills) {
+                                  setSkillsEditing(false);
+                                  return;
+                                }
+                                setSavingSkills(true);
+                                try {
+                                  await handleSetSkills(selectedAgent.id, pendingSkills);
+                                } finally {
+                                  setSavingSkills(false);
+                                  setSkillsEditing(false);
+                                  setPendingSkills(null);
+                                }
+                                return;
+                              }
+
+                              const nextEnabledIds = new Set(pendingSubagentIds ?? selectedAgentEnabledSubagentIds);
+                              const currentEnabledIds = new Set(selectedAgentEnabledSubagentIds);
+                              const changedSubagents = selectedAgentManageableSubagents.filter((subagent) =>
+                                currentEnabledIds.has(subagent.id) !== nextEnabledIds.has(subagent.id));
+
+                              if (changedSubagents.length === 0) {
+                                setSubagentsEditing(false);
+                                setPendingSubagentIds(null);
+                                return;
+                              }
+
+                              setSavingSubagents(true);
                               try {
-                                await Promise.all(
-                                  availableTools
-                                    .filter((tool) => {
-                                      const wasOn = selectedAgentTools.includes(tool.name);
-                                      const isOn = pendingTools.includes(tool.name);
-                                      return wasOn !== isOn;
-                                    })
-                                    .map((tool) => handleToggleTool(selectedAgent.id, tool.name)),
-                                );
+                                for (const subagent of changedSubagents) {
+                                  await handleSetSubagentEnabled(
+                                    selectedAgent.id,
+                                    subagent.id,
+                                    nextEnabledIds.has(subagent.id),
+                                  );
+                                }
                               } finally {
-                                setSavingTools(false);
-                                setToolsEditing(false);
-                                setPendingTools(null);
+                                setSavingSubagents(false);
+                                setSubagentsEditing(false);
+                                setPendingSubagentIds(null);
                               }
                             }}
                           >
-                            {t('agentsOverview.toolsSave')}
+                            {t('agentsOverview.save')}
                           </Button>
                         </>
                       ) : (
@@ -601,269 +1015,269 @@ const AgentsHomeView: React.FC = () => {
                           variant="secondary"
                           size="small"
                           onClick={() => {
-                            setPendingTools([...selectedAgentTools]);
-                            setToolsEditing(true);
+                            if (currentCapabilityTab === 'tools') {
+                              setPendingTools([...selectedAgentTools]);
+                              setToolsEditing(true);
+                              return;
+                            }
+                            if (currentCapabilityTab === 'skills') {
+                              setPendingSkills([...selectedAgentSkills]);
+                              setSkillsEditing(true);
+                              return;
+                            }
+                            setPendingSubagentIds([...selectedAgentEnabledSubagentIds]);
+                            setSubagentsEditing(true);
                           }}
                         >
-                          {t('agentsOverview.toolsEdit')}
+                          {t('manage')}
                         </Button>
                       )}
                     </div>
                   ) : null}
                 </div>
 
-                {selectedAgent.agentKind === 'mode' && toolsEditing ? (
-                  <div className="agent-card__token-grid">
-                    {[...availableTools]
-                      .sort((a, b) => {
-                        const draft = pendingTools ?? selectedAgentTools;
-                        const aOn = draft.includes(a.name);
-                        const bOn = draft.includes(b.name);
-                        if (aOn && !bOn) return -1;
-                        if (!aOn && bOn) return 1;
-                        return 0;
-                      })
-                      .map((tool) => {
-                        const draft = pendingTools ?? selectedAgentTools;
-                        const isOn = draft.includes(tool.name);
+                {currentCapabilityTab === 'tools' ? (
+                  selectedAgent.agentKind === 'mode' && toolsEditing ? (
+                    <div className="agent-card__token-grid">
+                      {[...availableTools]
+                        .sort((a, b) => {
+                          const draft = pendingTools ?? selectedAgentTools;
+                          const aOn = draft.includes(a.name);
+                          const bOn = draft.includes(b.name);
+                          if (aOn && !bOn) return -1;
+                          if (!aOn && bOn) return 1;
+                          return 0;
+                        })
+                        .map((tool) => {
+                          const draft = pendingTools ?? selectedAgentTools;
+                          const isOn = draft.includes(tool.name);
+                          return (
+                            <button
+                              key={tool.name}
+                              type="button"
+                              className={`agent-card__token${isOn ? ' is-on' : ''}`}
+                              title={tool.description || tool.name}
+                              onClick={() => {
+                                setPendingTools((prev) => {
+                                  const current = prev ?? selectedAgentTools;
+                                  return isOn
+                                    ? current.filter((n) => n !== tool.name)
+                                    : [...current, tool.name];
+                                });
+                              }}
+                            >
+                              <span className="agent-card__token-name">{tool.name}</span>
+                            </button>
+                          );
+                        })}
+                    </div>
+                  ) : (
+                    <div className="agent-card__chip-grid">
+                      {selectedAgentTools.map((tool) => (
+                        <span key={tool} className="agent-card__chip" title={tool}>
+                          {tool.replace(/_/g, ' ')}
+                        </span>
+                      ))}
+                    </div>
+                  )
+                ) : null}
+
+                {currentCapabilityTab === 'skills'
+                && selectedAgent.agentKind === 'mode'
+                && selectedAgentHasSkillTool
+                && selectedAgentModeSkills.length > 0 ? (
+                  skillsEditing ? (
+                    <div className="agent-card__skill-groups">
+                      {editableSkillGroups.map((group) => {
+                        const allEnabled = group.enabledCount === group.totalCount;
+                        const someEnabled = group.enabledCount > 0;
+
+                        return (
+                          <div key={group.key} className="agent-card__skill-group">
+                            <div className="agent-card__skill-group-head">
+                              <div className="agent-card__skill-group-title-wrap">
+                                <span className="agent-card__skill-group-title">{group.label}</span>
+                                <span className="agent-card__skill-group-count">
+                                  {`${group.enabledCount}/${group.totalCount}`}
+                                </span>
+                              </div>
+                              <div
+                                className="agent-card__skill-group-actions"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <Switch
+                                  size="small"
+                                  checked={allEnabled}
+                                  onChange={(e) =>
+                                    setPendingSkillGroupEnabled(group.skills, e.target.checked)
+                                  }
+                                  aria-label={
+                                    allEnabled
+                                      ? t('agentsOverview.disableGroup')
+                                      : t('agentsOverview.enableGroup')
+                                  }
+                                />
+                                {someEnabled && !allEnabled ? (
+                                  <Button
+                                    variant="ghost"
+                                    size="small"
+                                    onClick={() => setPendingSkillGroupEnabled(group.skills, false)}
+                                  >
+                                    {t('agentsOverview.clearGroup')}
+                                  </Button>
+                                ) : null}
+                              </div>
+                            </div>
+                            <div className="agent-card__token-grid">
+                              {group.skills.map((skill) => {
+                                const isOn = (pendingSkills ?? selectedAgentSkills).includes(skill.key);
+                                const displayName = formatSkillDisplayName(
+                                  skill,
+                                  selectedAgentDuplicateSkillNames,
+                                );
+
+                                return (
+                                  <button
+                                    key={skill.key}
+                                    type="button"
+                                    className={`agent-card__token${isOn ? ' is-on' : ''}`}
+                                    title={getSkillTitle(skill, t)}
+                                    onClick={() => togglePendingSkill(skill.key)}
+                                  >
+                                    <span className="agent-card__token-name">{displayName}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="agent-card__skill-groups">
+                      {selectedAgentSkillItems.length === 0 ? (
+                        <span className="agent-card__empty-inline">
+                          {t('agentsOverview.noSkills')}
+                        </span>
+                      ) : (
+                        selectedAgentSkillGroups
+                          .filter((group) => group.enabledCount > 0)
+                          .map((group) => (
+                            <div key={group.key} className="agent-card__skill-group">
+                              <div className="agent-card__skill-group-head">
+                                <div className="agent-card__skill-group-title-wrap">
+                                  <span className="agent-card__skill-group-title">{group.label}</span>
+                                  <span className="agent-card__skill-group-count">
+                                    {group.enabledCount}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="agent-card__chip-grid">
+                                {group.skills
+                                  .filter((skill) => skill.effectiveEnabled)
+                                  .map((skill) => (
+                                    <span
+                                      key={skill.key}
+                                      className="agent-card__chip"
+                                      title={getSkillTitle(skill, t)}
+                                    >
+                                      {formatSkillDisplayName(skill, selectedAgentDuplicateSkillNames)}
+                                    </span>
+                                  ))}
+                              </div>
+                            </div>
+                          ))
+                      )}
+                    </div>
+                  )
+                ) : null}
+
+                {currentCapabilityTab === 'subagents'
+                && selectedAgent.agentKind === 'mode'
+                && selectedAgentHasTaskTool ? (
+                  selectedAgentManageableSubagents.length === 0 ? (
+                    <span className="agent-card__empty-inline">
+                      {t('agentsOverview.noSubagents')}
+                    </span>
+                  ) : subagentsEditing ? (
+                    <div className="agent-card__token-grid">
+                      {selectedAgentManageableSubagents.map((subagent: SubagentInfo) => {
+                        const isOn = (pendingSubagentIds ?? selectedAgentEnabledSubagentIds).includes(subagent.id);
                         return (
                           <button
-                            key={tool.name}
+                            key={subagent.key}
                             type="button"
                             className={`agent-card__token${isOn ? ' is-on' : ''}`}
-                            title={tool.description || tool.name}
+                            title={subagent.description || subagent.name}
                             onClick={() => {
-                              setPendingTools((prev) => {
-                                const current = prev ?? selectedAgentTools;
+                              setPendingSubagentIds((prev) => {
+                                const current = prev ?? selectedAgentEnabledSubagentIds;
                                 return isOn
-                                  ? current.filter((n) => n !== tool.name)
-                                  : [...current, tool.name];
+                                  ? current.filter((id) => id !== subagent.id)
+                                  : [...current, subagent.id];
                               });
                             }}
                           >
-                            <span className="agent-card__token-name">{tool.name}</span>
+                            <span className="agent-card__token-name">{subagent.name}</span>
                           </button>
                         );
                       })}
-                  </div>
-                ) : (
-                  <div className="agent-card__chip-grid">
-                    {selectedAgentTools.map((tool) => (
-                      <span key={tool} className="agent-card__chip" title={tool}>
-                        {tool.replace(/_/g, ' ')}
-                      </span>
-                    ))}
-                  </div>
-                )}
+                    </div>
+                  ) : (
+                    <div className="agent-card__chip-grid">
+                      {selectedAgentEnabledSubagents.length === 0 ? (
+                        <span className="agent-card__empty-inline">
+                          {t('agentsOverview.noSubagents')}
+                        </span>
+                      ) : (
+                        selectedAgentEnabledSubagents.map((subagent: SubagentInfo) => (
+                          <span
+                            key={subagent.key}
+                            className="agent-card__chip"
+                            title={subagent.description || subagent.name}
+                          >
+                            {subagent.name}
+                          </span>
+                        ))
+                      )}
+                    </div>
+                  )
+                ) : null}
               </div>
             ) : null}
-
-            {selectedAgent.agentKind === 'mode' && availableSkills.length > 0 ? (
+            {canManageCustomSubagent ? (
               <div className="agent-card__section">
                 <div className="agent-card__section-head">
                   <div className="agent-card__section-title">
-                    <Puzzle size={12} />
-                    <span>{t('agentsOverview.skills')}</span>
-                    <span className="agent-card__section-count">
-                      {`${(skillsEditing ? (pendingSkills ?? selectedAgentSkills) : selectedAgentSkills).length}/${availableSkills.length}`}
-                    </span>
-                  </div>
-                  <div className="agent-card__section-actions">
-                    {skillsEditing ? (
-                      <>
-                        <Button
-                          variant="ghost"
-                          size="small"
-                          onClick={() => {
-                            setSkillsEditing(false);
-                            setPendingSkills(null);
-                          }}
-                        >
-                          {t('agentsOverview.skillsCancel')}
-                        </Button>
-                        <Button
-                          variant="primary"
-                          size="small"
-                          isLoading={savingSkills}
-                          onClick={async () => {
-                            if (!pendingSkills) {
-                              setSkillsEditing(false);
-                              return;
-                            }
-                            setSavingSkills(true);
-                            try {
-                              await Promise.all(
-                                availableSkills
-                                  .filter((skill) => {
-                                    const wasOn = selectedAgentSkills.includes(skill.name);
-                                    const isOn = pendingSkills.includes(skill.name);
-                                    return wasOn !== isOn;
-                                  })
-                                  .map((skill) => handleToggleSkill(selectedAgent.id, skill.name)),
-                              );
-                            } finally {
-                              setSavingSkills(false);
-                              setSkillsEditing(false);
-                              setPendingSkills(null);
-                            }
-                          }}
-                        >
-                          {t('agentsOverview.skillsSave')}
-                        </Button>
-                      </>
-                    ) : (
-                      <Button
-                        variant="secondary"
-                        size="small"
-                        onClick={() => {
-                          setPendingSkills([...selectedAgentSkills]);
-                          setSkillsEditing(true);
-                        }}
-                      >
-                        {t('agentsOverview.skillsEdit')}
-                      </Button>
-                    )}
+                    <span>{t('agentsOverview.customActions')}</span>
                   </div>
                 </div>
-
-                {skillsEditing ? (
-                  <div className="agent-card__token-grid">
-                    {[...availableSkills]
-                      .sort((a, b) => {
-                        const draft = pendingSkills ?? selectedAgentSkills;
-                        const aOn = draft.includes(a.name);
-                        const bOn = draft.includes(b.name);
-                        if (aOn && !bOn) return -1;
-                        if (!aOn && bOn) return 1;
-                        return 0;
-                      })
-                      .map((skill) => {
-                        const draft = pendingSkills ?? selectedAgentSkills;
-                        const isOn = draft.includes(skill.name);
-                        return (
-                          <button
-                            key={skill.name}
-                            type="button"
-                            className={`agent-card__token${isOn ? ' is-on' : ''}`}
-                            title={skill.description || skill.name}
-                            onClick={() => {
-                              setPendingSkills((prev) => {
-                                const current = prev ?? selectedAgentSkills;
-                                return isOn
-                                  ? current.filter((n) => n !== skill.name)
-                                  : [...current, skill.name];
-                              });
-                            }}
-                          >
-                            <span className="agent-card__token-name">{skill.name}</span>
-                          </button>
-                        );
-                      })}
-                  </div>
-                ) : (
-                  <div className="agent-card__chip-grid">
-                    {selectedAgentSkillItems.length === 0 ? (
-                      <span className="agent-card__empty-inline">
-                        {t('agentsOverview.noSkills')}
-                      </span>
-                    ) : (
-                      selectedAgentSkillItems.map((skill) => (
-                        <span key={skill.name} className="agent-card__chip" title={skill.description || skill.name}>
-                          {skill.name}
-                        </span>
-                      ))
-                    )}
-                  </div>
-                )}
+                <div className="agent-card__section-actions" style={{ gap: 8 }}>
+                  <Button
+                    variant="secondary"
+                    size="small"
+                    onClick={() => {
+                      const id = selectedAgent?.id;
+                      closeAgentDetails();
+                      if (id) openEditAgent(id);
+                    }}
+                  >
+                    <Pencil size={12} style={{ marginRight: 6 }} />
+                    {t('agentsOverview.editAgent')}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="small"
+                    isLoading={deletingAgent}
+                    onClick={() => void handleDeleteCustomAgent()}
+                  >
+                    <Trash2 size={12} style={{ marginRight: 6 }} />
+                    {t('agentsOverview.deleteAgent')}
+                  </Button>
+                </div>
               </div>
             ) : null}
           </>
-        ) : null}
-      </GalleryDetailModal>
-
-      <GalleryDetailModal
-        isOpen={Boolean(selectedTeam)}
-        onClose={() => setSelectedTeamId(null)}
-        icon={selectedTeam ? React.createElement(
-          AGENT_TEAM_ICON_MAP[(selectedTeam.icon ?? 'users') as keyof typeof AGENT_TEAM_ICON_MAP] ?? Users,
-          { size: 24, strokeWidth: 1.7 },
-        ) : <Users size={24} />}
-        iconGradient={selectedTeam ? `linear-gradient(135deg, ${getAgentTeamAccent(selectedTeam.id)}33 0%, ${getAgentTeamAccent(selectedTeam.id)}14 100%)` : undefined}
-        title={selectedTeam?.name ?? ''}
-        badges={selectedTeam ? (
-          <>
-            {EXAMPLE_TEAM_IDS.has(selectedTeam.id) ? <Badge variant="neutral">{t('teamCard.badges.example')}</Badge> : null}
-            <Badge variant="neutral">
-              {selectedTeam.strategy === 'collaborative'
-                ? t('composer.strategy.collaborative')
-                : selectedTeam.strategy === 'sequential'
-                  ? t('composer.strategy.sequential')
-                  : t('composer.strategy.free')}
-            </Badge>
-            {selectedTeam.shareContext ? (
-              <Badge variant="success">{t('teamCard.badges.sharedContext')}</Badge>
-            ) : null}
-          </>
-        ) : null}
-        description={selectedTeam?.description}
-        meta={selectedTeam ? <span>{t('home.members', { count: selectedTeam.members.length })}</span> : null}
-        actions={selectedTeam ? (
-          <Button
-            variant="primary"
-            size="small"
-            onClick={() => {
-              setSelectedTeamId(null);
-              openAgentTeamEditor(selectedTeam.id);
-            }}
-          >
-            {t('home.edit')}
-          </Button>
-        ) : null}
-      >
-        {selectedAgentTeamMembers.length > 0 ? (
-          <div className="agent-team-card__section">
-            <div className="agent-team-card__section-title">{t('teamCard.sections.members')}</div>
-            <div className="agent-team-card__member-list">
-              {selectedAgentTeamMembers.map((agent) => {
-                const member = selectedTeam?.members.find((item) => item.agentId === agent.id);
-                const roleLabel =
-                  member?.role === 'leader'
-                    ? t('composer.role.leader')
-                    : member?.role === 'reviewer'
-                      ? t('composer.role.reviewer')
-                      : t('composer.role.member');
-                const AgentIcon = AGENT_ICON_MAP[(agent.iconKey ?? 'bot') as keyof typeof AGENT_ICON_MAP] ?? Bot;
-
-                return (
-                  <span key={agent.id} className="agent-team-card__member-chip">
-                    <AgentIcon size={11} />
-                    <span className="agent-team-card__member-name">{agent.name}</span>
-                    <span className="agent-team-card__member-role">{roleLabel}</span>
-                  </span>
-                );
-              })}
-            </div>
-          </div>
-        ) : null}
-
-        {selectedTeamTopCaps.length > 0 ? (
-          <div className="agent-team-card__section">
-            <div className="agent-team-card__section-title">{t('teamCard.sections.capabilities')}</div>
-            <div className="agent-team-card__cap-chips">
-              {selectedTeamTopCaps.map((cap) => (
-                <span
-                  key={cap}
-                  className="agent-team-card__cap-chip"
-                  style={{
-                    color: CAPABILITY_ACCENT[cap],
-                    borderColor: `${CAPABILITY_ACCENT[cap]}44`,
-                  }}
-                >
-                  {cap}
-                </span>
-              ))}
-            </div>
-          </div>
         ) : null}
       </GalleryDetailModal>
     </GalleryLayout>
@@ -871,20 +1285,28 @@ const AgentsHomeView: React.FC = () => {
 };
 
 const AgentsScene: React.FC = () => {
-  const { page } = useAgentsStore();
+  const { page, openHome } = useAgentsStore();
 
-  if (page === 'editor') {
+  useEffect(() => {
+    return () => {
+      openHome();
+    };
+  }, [openHome]);
+
+  if (page === 'createAgent') {
     return (
-      <div className="bitfun-agents-scene">
-        <AgentTeamEditorView />
+      <div className="bitfun-agents-scene bitfun-agents-scene--page">
+        <CreateAgentPage />
       </div>
     );
   }
 
-  if (page === 'createAgent') {
+  if (page === 'reviewTeam') {
     return (
-      <div className="bitfun-agents-scene">
-        <CreateAgentPage />
+      <div className="bitfun-agents-scene bitfun-agents-scene--page">
+        <ReviewTeamErrorBoundary>
+          <ReviewTeamPage />
+        </ReviewTeamErrorBoundary>
       </div>
     );
   }

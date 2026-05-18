@@ -4,6 +4,7 @@ import './ConfigCollectionItem.scss';
 export interface ConfigCollectionItemProps {
   label: React.ReactNode;
   badge?: React.ReactNode;
+  badgePlacement?: 'inline' | 'below';
   control: React.ReactNode;
   details?: React.ReactNode;
   disabled?: boolean;
@@ -15,6 +16,7 @@ export interface ConfigCollectionItemProps {
 export const ConfigCollectionItem: React.FC<ConfigCollectionItemProps> = ({
   label,
   badge,
+  badgePlacement = 'inline',
   control,
   details,
   disabled = false,
@@ -45,10 +47,24 @@ export const ConfigCollectionItem: React.FC<ConfigCollectionItemProps> = ({
         onClick={handleRowClick}
       >
         <div className="bitfun-config-page-row__meta">
-          <p className="bitfun-config-page-row__label bitfun-collection-item__label">
+          <div
+            className={`bitfun-config-page-row__label bitfun-collection-item__label ${
+              badgePlacement === 'below' ? 'bitfun-collection-item__label--stacked' : ''
+            }`}
+          >
             <span className="bitfun-collection-item__name">{label}</span>
-            {badge}
-          </p>
+            {badge && (
+              <span
+                className={`bitfun-collection-item__badges ${
+                  badgePlacement === 'below'
+                    ? 'bitfun-collection-item__badges--stacked'
+                    : 'bitfun-collection-item__badges--inline'
+                }`}
+              >
+                {badge}
+              </span>
+            )}
+          </div>
         </div>
         <div
           className="bitfun-config-page-row__control"

@@ -9,7 +9,8 @@
  * - Supports different key generation strategies for normal and subagent events
  */
 
-import { createLogger } from '@/shared/utils/logger';
+import { areSensitiveDiagnosticsEnabled, createLogger } from '@/shared/utils/logger';
+import { elapsedMs, nowMs } from '@/shared/utils/timing';
 
 const log = createLogger('EventBatcher');
 
@@ -26,6 +27,70 @@ export interface BatchedEvent<T = any> {
 
 export interface EventBatcherOptions {
   onFlush: (events: Array<{ key: string; payload: any }>) => void;
+}
+
+export interface BatchedEventLogSummary {
+  rawEventCount: number;
+  mergedEventCount: number;
+  events: Array<{
+    key: string;
+    strategy: MergeStrategy;
+    sourceCount: number;
+    timestamp: number;
+    eventType?: string;
+    toolName?: string;
+    paramsLength?: number;
+  }>;
+}
+
+export interface SensitiveBatchedEventLogPayload {
+  rawEventCount: number;
+  mergedEventCount: number;
+  mergedEvents: BatchedEvent[];
+}
+
+export function summarizeBatchedEventsForLog(bufferedEvents: BatchedEvent[]): BatchedEventLogSummary {
+  return {
+    rawEventCount: bufferedEvents.reduce((count, event) => count + event.sourceCount, 0),
+    mergedEventCount: bufferedEvents.length,
+    events: bufferedEvents.map(({ key, payload, strategy, sourceCount, timestamp }) => {
+      const toolEvent = payload?.toolEvent;
+      const params = toolEvent?.params;
+
+      return {
+        key,
+        strategy,
+        sourceCount,
+        timestamp,
+        eventType: toolEvent?.event_type,
+        toolName: toolEvent?.tool_name,
+        paramsLength: typeof params === 'string' ? params.length : undefined,
+      };
+    }),
+  };
+}
+
+export function getBatchedEventsLogPayload(
+  bufferedEvents: BatchedEvent[]
+): BatchedEventLogSummary | SensitiveBatchedEventLogPayload {
+  const rawEventCount = bufferedEvents.reduce((count, event) => count + event.sourceCount, 0);
+  const mergedEventCount = bufferedEvents.length;
+
+  if (!areSensitiveDiagnosticsEnabled()) {
+    return summarizeBatchedEventsForLog(bufferedEvents);
+  }
+
+  return {
+    rawEventCount,
+    mergedEventCount,
+    mergedEvents: bufferedEvents.map(({ key, payload, strategy, sourceCount, timestamp }) => ({
+      key,
+      payload,
+      strategy,
+      sourceCount,
+      timestamp,
+    })),
+  };
 }
 
 export class EventBatcher {
@@ -60,8 +125,6 @@ export class EventBatcher {
         existing.timestamp = Date.now();
       }
       existing.sourceCount += 1;
-
-      log.trace('Merged event', { key, strategy });
     } else {
       this.buffer.set(key, {
         key,
@@ -71,8 +134,6 @@ export class EventBatcher {
         sourceCount: 1,
         timestamp: Date.now()
       });
-
-      log.trace('Added new event', { key, strategy });
     }
 
     this.scheduleFlush();
@@ -82,7 +143,7 @@ export class EventBatcher {
     if (this.scheduled) return;
     this.scheduled = true;
 
-    const now = performance.now();
+    const now = nowMs();
     const timeSinceLastUpdate = now - this.lastUpdateTime;
 
     if (timeSinceLastUpdate >= this.UPDATE_INTERVAL) {
@@ -90,7 +151,7 @@ export class EventBatcher {
         this.flush();
         this.scheduled = false;
         this.frameId = null;
-        this.lastUpdateTime = performance.now();
+        this.lastUpdateTime = nowMs();
       });
     } else {
       const delay = this.UPDATE_INTERVAL - timeSinceLastUpdate;
@@ -99,7 +160,7 @@ export class EventBatcher {
           this.flush();
           this.scheduled = false;
           this.frameId = null;
-          this.lastUpdateTime = performance.now();
+          this.lastUpdateTime = nowMs();
         });
         this.timeoutId = null;
       }, delay);
@@ -109,37 +170,27 @@ export class EventBatcher {
   private flush(): void {
     if (this.buffer.size === 0) return;
 
-    const startTime = performance.now();
+    const startTime = nowMs();
     const bufferedEvents = Array.from(this.buffer.values());
-    const mergedEventCount = bufferedEvents.length;
-    const rawEventCount = bufferedEvents.reduce((count, event) => count + event.sourceCount, 0);
+    const logPayload = getBatchedEventsLogPayload(bufferedEvents);
+    const { rawEventCount, mergedEventCount } = logPayload;
 
     const events = bufferedEvents.map(({ key, payload }) => ({
       key,
       payload
     }));
 
-    log.trace('Flushing batched events', {
-      rawEventCount,
-      mergedEventCount,
-      mergedEvents: bufferedEvents.map(({ key, payload, strategy, sourceCount, timestamp }) => ({
-        key,
-        strategy,
-        sourceCount,
-        timestamp,
-        payload
-      }))
-    });
+    log.trace('Flushing batched events', logPayload);
 
     this.buffer = new Map();
     this.onFlush(events);
 
-    const duration = performance.now() - startTime;
-    if (duration > 10) {
+    const durationMs = elapsedMs(startTime);
+    if (durationMs > 10) {
       log.warn('Event batch processing took longer than expected', {
         rawEventCount,
         mergedEventCount,
-        duration: duration.toFixed(2) 
+        durationMs,
       });
     }
   }
@@ -207,10 +258,14 @@ interface BaseToolEvent<T extends ToolEventType> {
   tool_name: string;
 }
 
-export interface EarlyDetectedToolEvent extends BaseToolEvent<'EarlyDetected'> {}
+export type EarlyDetectedToolEvent = BaseToolEvent<'EarlyDetected'>;
 
 export interface ParamsPartialToolEvent extends BaseToolEvent<'ParamsPartial'> {
   params: string;
+}
+
+export function normalizeParamsPartialFragment(params: unknown): string {
+  return typeof params === 'string' ? params : '';
 }
 
 export interface QueuedToolEvent extends BaseToolEvent<'Queued'> {
@@ -223,6 +278,7 @@ export interface WaitingToolEvent extends BaseToolEvent<'Waiting'> {
 
 export interface StartedToolEvent extends BaseToolEvent<'Started'> {
   params: unknown;
+  timeout_seconds?: number;
 }
 
 export interface ProgressToolEvent extends BaseToolEvent<'Progress'> {
@@ -242,22 +298,36 @@ export interface ConfirmationNeededToolEvent extends BaseToolEvent<'Confirmation
   params: unknown;
 }
 
-export interface ConfirmedToolEvent extends BaseToolEvent<'Confirmed'> {}
+export type ConfirmedToolEvent = BaseToolEvent<'Confirmed'>;
 
-export interface RejectedToolEvent extends BaseToolEvent<'Rejected'> {}
+export type RejectedToolEvent = BaseToolEvent<'Rejected'>;
 
 export interface CompletedToolEvent extends BaseToolEvent<'Completed'> {
   result: unknown;
   result_for_assistant?: string;
   duration_ms: number;
+  queue_wait_ms?: number;
+  preflight_ms?: number;
+  confirmation_wait_ms?: number;
+  execution_ms?: number;
 }
 
 export interface FailedToolEvent extends BaseToolEvent<'Failed'> {
   error: string;
+  duration_ms?: number;
+  queue_wait_ms?: number;
+  preflight_ms?: number;
+  confirmation_wait_ms?: number;
+  execution_ms?: number;
 }
 
 export interface CancelledToolEvent extends BaseToolEvent<'Cancelled'> {
   reason: string;
+  duration_ms?: number;
+  queue_wait_ms?: number;
+  preflight_ms?: number;
+  confirmation_wait_ms?: number;
+  execution_ms?: number;
 }
 
 export type FlowToolEvent =
@@ -336,9 +406,11 @@ export function generateToolEventKey(data: ToolEventData): { key: string; strate
     const { sessionId: parentSessionId, toolCallId: parentToolId } = subagentParentInfo;
 
     if (eventType === 'ParamsPartial') {
+      const toolName = (toolEvent as any).tool_name || '';
+      const isWriteLike = ['write', 'write_notebook', 'file_write', 'Write'].includes(toolName);
       return {
         key: `subagent:tool:params:${parentSessionId}:${parentToolId}:${toolUseId}`,
-        strategy: 'accumulate'
+        strategy: isWriteLike ? 'replace' : 'accumulate'
       };
     }
     if (eventType === 'Progress') {
@@ -349,9 +421,11 @@ export function generateToolEventKey(data: ToolEventData): { key: string; strate
     }
   } else {
     if (eventType === 'ParamsPartial') {
+      const toolName = (toolEvent as any).tool_name || '';
+      const isWriteLike = ['write', 'write_notebook', 'file_write', 'Write'].includes(toolName);
       return {
         key: `tool:params:${sessionId}:${toolUseId}`,
-        strategy: 'accumulate'
+        strategy: isWriteLike ? 'replace' : 'accumulate'
       };
     }
     if (eventType === 'Progress') {
@@ -449,4 +523,3 @@ export function parseEventKey(key: string): {
 
   return null;
 }
-

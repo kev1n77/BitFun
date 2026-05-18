@@ -36,7 +36,7 @@
   pointer-events: all;
   
   font-family: $font-family-sans;
-  font-size: $font-size-sm;
+  font-size: var(--font-size-sm);
   line-height: $line-height-base;
   
   opacity: 0;
@@ -69,7 +69,7 @@
   display: flex;
   align-items: center;
   gap: $size-gap-2;
-  font-size: $font-size-sm;
+  font-size: var(--font-size-sm);
   font-weight: $font-weight-semibold;
   color: var(--color-text-secondary);
 
@@ -80,7 +80,7 @@
 
 .references-panel__count {
   margin-left: $size-gap-2;
-  font-size: $font-size-xs;
+  font-size: var(--font-size-xs);
   font-weight: $font-weight-normal;
   color: var(--color-text-muted);
 }
@@ -123,7 +123,7 @@
 .references-panel__empty {
   padding: $size-gap-8 $size-gap-4;
   text-align: center;
-  font-size: $font-size-sm;
+  font-size: var(--font-size-sm);
   color: var(--color-text-muted);
 }
 
@@ -160,7 +160,7 @@
 .references-panel__file-path {
   flex: 1;
   min-width: 0;
-  font-size: $font-size-xs;
+  font-size: var(--font-size-xs);
   font-weight: $font-weight-medium;
   color: var(--color-text-secondary);
   white-space: nowrap;
@@ -250,7 +250,7 @@
 
 .references-panel__reference-preview {
   flex: 1;
-  font-size: $font-size-xs;
+  font-size: var(--font-size-xs);
   font-family: $font-family-mono;
   color: var(--color-text-secondary);
   line-height: $line-height-base;
@@ -270,7 +270,7 @@
 @media (max-width: 768px) {
   .references-panel {
     min-width: 280px;
-    font-size: $font-size-lg;
+    font-size: var(--font-size-lg);
   }
   
   .references-panel__reference-item {

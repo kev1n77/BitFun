@@ -7,14 +7,22 @@
 //! - This eliminates Mutex deadlock between read and write operations
 
 use crate::service::remote_ssh::manager::SSHConnectionManager;
+use crate::service::terminal::session::SessionSource;
 use anyhow::Context;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::time::{timeout, Duration};
+
+/// `pwd` can hang on some hosts (e.g. path resolution touching an unreachable `/`) while the shell still works;
+/// treat timeout the same as error and fall back to `~` for the initial `cd`.
+const REMOTE_PWD_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn shell_escape(s: &str) -> String {
-    if s.chars().all(|c| c.is_alphanumeric() || c == '/' || c == '.' || c == '-' || c == '_') {
+    if s.chars()
+        .all(|c| c.is_alphanumeric() || c == '/' || c == '.' || c == '-' || c == '_')
+    {
         s.to_string()
     } else {
         format!("'{}'", s.replace('\'', "'\\''"))
@@ -31,6 +39,7 @@ pub struct RemoteTerminalSession {
     pub status: SessionStatus,
     pub cols: u16,
     pub rows: u16,
+    pub source: SessionSource,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -79,6 +88,7 @@ impl RemoteTerminalManager {
     /// Returns a `CreateSessionResult` with a pre-subscribed output receiver.
     /// The owner task is spawned immediately — the output_rx is guaranteed to
     /// receive all data including the initial shell prompt.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_session(
         &self,
         session_id: Option<String>,
@@ -87,6 +97,7 @@ impl RemoteTerminalManager {
         cols: u16,
         rows: u16,
         initial_cwd: Option<&str>,
+        source: Option<SessionSource>,
     ) -> anyhow::Result<CreateSessionResult> {
         let ssh_guard = self.ssh_manager.read().await;
         let manager = ssh_guard.as_ref().context("SSH manager not initialized")?;
@@ -95,16 +106,51 @@ impl RemoteTerminalManager {
         let name = name.unwrap_or_else(|| format!("Remote Terminal {}", &session_id[..8]));
 
         // Open PTY via manager, then extract the raw Channel
-        let pty = manager.open_pty(connection_id, cols as u32, rows as u32).await?;
-        let mut channel = pty.into_channel().await
-            .ok_or_else(|| anyhow::anyhow!("Failed to extract channel from PTYSession — multiple references exist"))?;
+        let pty = manager
+            .open_pty(connection_id, cols as u32, rows as u32)
+            .await?;
+        let mut channel = pty.into_channel().await.ok_or_else(|| {
+            anyhow::anyhow!("Failed to extract channel from PTYSession — multiple references exist")
+        })?;
 
         let cwd = if let Some(dir) = initial_cwd {
             dir.to_string()
         } else {
-            match manager.execute_command(connection_id, "pwd").await {
-                Ok((output, _, _)) => output.trim().to_string(),
-                Err(_) => "/".to_string(),
+            match timeout(
+                REMOTE_PWD_PROBE_TIMEOUT,
+                manager.execute_command(connection_id, "pwd"),
+            )
+            .await
+            {
+                Ok(Ok((output, _, status))) => {
+                    let out = output.trim();
+                    if status == 0 && !out.is_empty() {
+                        out.to_string()
+                    } else {
+                        log::debug!(
+                            "remote_terminal: pwd empty or non-zero exit (status={}); using ~, connection_id={}",
+                            status,
+                            connection_id
+                        );
+                        "~".to_string()
+                    }
+                }
+                Ok(Err(e)) => {
+                    log::debug!(
+                        "remote_terminal: pwd error: {}; using ~, connection_id={}",
+                        e,
+                        connection_id
+                    );
+                    "~".to_string()
+                }
+                Err(_elapsed) => {
+                    log::debug!(
+                        "remote_terminal: pwd timed out after {:?}; using ~, connection_id={}",
+                        REMOTE_PWD_PROBE_TIMEOUT,
+                        connection_id
+                    );
+                    "~".to_string()
+                }
             }
         };
 
@@ -123,6 +169,7 @@ impl RemoteTerminalManager {
             status: SessionStatus::Active,
             cols,
             rows,
+            source: source.unwrap_or_default(),
         };
 
         {
@@ -131,10 +178,13 @@ impl RemoteTerminalManager {
         }
         {
             let mut handles = self.handles.write().await;
-            handles.insert(session_id.clone(), ActiveHandle {
-                output_tx: output_tx.clone(),
-                cmd_tx,
-            });
+            handles.insert(
+                session_id.clone(),
+                ActiveHandle {
+                    output_tx: output_tx.clone(),
+                    cmd_tx,
+                },
+            );
         }
 
         let mut writer = channel.make_writer();
@@ -144,11 +194,19 @@ impl RemoteTerminalManager {
         let task_sessions = self.sessions.clone();
 
         tokio::spawn(async move {
-            log::info!("Remote PTY owner task started: session_id={}", task_session_id);
+            log::info!(
+                "Remote PTY owner task started: session_id={}",
+                task_session_id
+            );
 
-            // cd to workspace directory silently
-            if initial_cd != "/" {
-                let cd_cmd = format!("cd {} && clear\n", shell_escape(&initial_cd));
+            // cd to workspace directory silently (avoid `/` default — some hosts block listing `/`)
+            if initial_cd != "/" && !initial_cd.is_empty() {
+                let cd_arg = if initial_cd == "~" || initial_cd.starts_with("~/") {
+                    initial_cd.clone()
+                } else {
+                    shell_escape(&initial_cd)
+                };
+                let cd_cmd = format!("cd {} && clear\n", cd_arg);
                 if let Err(e) = writer.write_all(cd_cmd.as_bytes()).await {
                     log::warn!("Failed to cd to initial directory: {}", e);
                 }
@@ -217,7 +275,10 @@ impl RemoteTerminalManager {
                     s.status = SessionStatus::Closed;
                 }
             }
-            log::info!("Remote PTY owner task exited: session_id={}", task_session_id);
+            log::info!(
+                "Remote PTY owner task exited: session_id={}",
+                task_session_id
+            );
         });
 
         Ok(CreateSessionResult { session, output_rx })
@@ -228,7 +289,10 @@ impl RemoteTerminalManager {
     }
 
     pub async fn list_sessions(&self) -> Vec<RemoteTerminalSession> {
-        self.sessions.read().await.values()
+        self.sessions
+            .read()
+            .await
+            .values()
             .filter(|s| s.status != SessionStatus::Closed)
             .cloned()
             .collect()
@@ -236,8 +300,13 @@ impl RemoteTerminalManager {
 
     pub async fn write(&self, session_id: &str, data: &[u8]) -> anyhow::Result<()> {
         let handles = self.handles.read().await;
-        let handle = handles.get(session_id).context("Session not found or PTY not active")?;
-        handle.cmd_tx.send(PtyCommand::Write(data.to_vec())).await
+        let handle = handles
+            .get(session_id)
+            .context("Session not found or PTY not active")?;
+        handle
+            .cmd_tx
+            .send(PtyCommand::Write(data.to_vec()))
+            .await
             .map_err(|_| anyhow::anyhow!("PTY task has exited"))
     }
 
@@ -251,7 +320,10 @@ impl RemoteTerminalManager {
         }
         let handles = self.handles.read().await;
         if let Some(handle) = handles.get(session_id) {
-            handle.cmd_tx.send(PtyCommand::Resize(cols as u32, rows as u32)).await
+            handle
+                .cmd_tx
+                .send(PtyCommand::Resize(cols as u32, rows as u32))
+                .await
                 .map_err(|_| anyhow::anyhow!("PTY task has exited"))?;
         }
         Ok(())
@@ -277,9 +349,14 @@ impl RemoteTerminalManager {
         self.handles.read().await.contains_key(session_id)
     }
 
-    pub async fn subscribe_output(&self, session_id: &str) -> anyhow::Result<broadcast::Receiver<Vec<u8>>> {
+    pub async fn subscribe_output(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<broadcast::Receiver<Vec<u8>>> {
         let handles = self.handles.read().await;
-        let handle = handles.get(session_id).context("Session not found or PTY not active")?;
+        let handle = handles
+            .get(session_id)
+            .context("Session not found or PTY not active")?;
         Ok(handle.output_tx.subscribe())
     }
 }

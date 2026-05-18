@@ -21,7 +21,7 @@
     border-radius: $size-radius-full;
     background: var(--element-bg-medium);
     border: 1px solid var(--border-subtle);
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-secondary);
   }
 }

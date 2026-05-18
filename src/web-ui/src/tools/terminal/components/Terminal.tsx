@@ -4,18 +4,37 @@
  */
 
 import React, { useEffect, useRef, useCallback, useState, forwardRef, useImperativeHandle } from 'react';
+import type { ITheme } from '@xterm/xterm';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
-import { TerminalResizeDebouncer } from '../utils';
+import {
+  TerminalResizeDebouncer,
+  buildXtermTheme,
+  getXtermFontWeights,
+  DEFAULT_XTERM_MINIMUM_CONTRAST_RATIO,
+} from '../utils';
 import { systemAPI } from '@/infrastructure/api/service-api/SystemAPI';
 import { themeService } from '@/infrastructure/theme/core/ThemeService';
 import { createLogger } from '@/shared/utils/logger';
+import { sendDebugProbe } from '@/shared/utils/debugProbe';
+import { nowMs } from '@/shared/utils/timing';
 import '@xterm/xterm/css/xterm.css';
 import './Terminal.scss';
 
 const log = createLogger('Terminal');
+
+type TerminalCoreWithMeasurement = XTerm & {
+  _core?: {
+    _charSizeService?: {
+      measure?: () => void;
+    };
+    _renderService?: {
+      handleDevicePixelRatioChange?: () => void;
+    };
+  };
+};
 
 /**
  * Clear xterm texture atlas when supported.
@@ -29,6 +48,12 @@ function clearTextureAtlas(terminal: XTerm): void {
   } catch {
     // Ignore if unsupported.
   }
+}
+
+function remeasureTerminal(terminal: XTerm): void {
+  const rawTerminal = terminal as TerminalCoreWithMeasurement;
+  rawTerminal._core?._charSizeService?.measure?.();
+  rawTerminal._core?._renderService?.handleDevicePixelRatioChange?.();
 }
 
 /**
@@ -45,6 +70,7 @@ export interface TerminalOptions {
   fontSize?: number;
   fontFamily?: string;
   lineHeight?: number;
+  minimumContrastRatio?: number;
   cursorStyle?: 'block' | 'underline' | 'bar';
   cursorBlink?: boolean;
   scrollback?: number;
@@ -126,60 +152,15 @@ export interface TerminalRef {
  * Calling this at XTerm construction time prevents the initial black-background flash
  * that occurs when the theme is applied asynchronously via useEffect.
  */
-function buildXtermTheme(): TerminalOptions['theme'] {
-  const theme = themeService.getCurrentTheme();
-  const isDark = theme.type === 'dark';
-
-  const ansiColors = isDark ? {
-    black:         '#000000',
-    red:           '#cd3131',
-    green:         '#0dbc79',
-    yellow:        '#e5e510',
-    blue:          '#2472c8',
-    magenta:       '#bc3fbc',
-    cyan:          '#11a8cd',
-    white:         '#e5e5e5',
-    brightBlack:   '#666666',
-    brightRed:     '#f14c4c',
-    brightGreen:   '#23d18b',
-    brightYellow:  '#f5f543',
-    brightBlue:    '#3b8eea',
-    brightMagenta: '#d670d6',
-    brightCyan:    '#29b8db',
-    brightWhite:   '#ffffff',
-  } : {
-    black:         '#000000',
-    red:           '#c91b00',
-    green:         '#007a3d',
-    yellow:        '#b58900',
-    blue:          '#0037da',
-    magenta:       '#881798',
-    cyan:          '#0e7490',
-    white:         '#586e75',
-    brightBlack:   '#555555',
-    brightRed:     '#e74856',
-    brightGreen:   '#16a34a',
-    brightYellow:  '#a16207',
-    brightBlue:    '#0078d4',
-    brightMagenta: '#b4009e',
-    brightCyan:    '#0891b2',
-    brightWhite:   '#1e293b',
-  };
-
-  return {
-    background: theme.colors.background.scene,
-    foreground: theme.colors.text.primary,
-    cursor: theme.colors.text.primary,
-    cursorAccent: theme.colors.background.secondary,
-    selectionBackground: isDark ? 'rgba(255, 255, 255, 0.3)' : 'rgba(59, 130, 246, 0.3)',
-    ...ansiColors,
-  };
+function getInitialXtermTheme(overrides: TerminalOptions['theme'] = {}): ITheme {
+  return buildXtermTheme(themeService.getCurrentTheme(), overrides);
 }
 
 const DEFAULT_OPTIONS: TerminalOptions = {
   fontSize: 14,
   fontFamily: "'Fira Code', 'Noto Sans SC', Consolas, 'Courier New', monospace",
   lineHeight: 1.2,
+  minimumContrastRatio: DEFAULT_XTERM_MINIMUM_CONTRAST_RATIO,
   cursorStyle: 'block',
   cursorBlink: true,
   scrollback: 10000,
@@ -209,7 +190,18 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
   const isVisibleRef = useRef(true);
   const wasVisibleRef = useRef(false);
   const lastBackendSizeRef = useRef<{ cols: number; rows: number } | null>(null);
+  const autoFocusRef = useRef(autoFocus);
+  const terminalIdRef = useRef(terminalId);
+  const sessionIdRef = useRef(sessionId);
+  const onDataRef = useRef(onData);
+  const onBinaryRef = useRef(onBinary);
+  const onTitleChangeRef = useRef(onTitleChange);
+  const onResizeRef = useRef(onResize);
+  const onReadyRef = useRef(onReady);
+  const onPasteRef = useRef(onPaste);
   const [isReady, setIsReady] = useState(false);
+  const currentTheme = themeService.getCurrentTheme();
+  const initialFontWeights = getXtermFontWeights(currentTheme.type);
 
   // Merge options. Theme is resolved from ThemeService at render time so that the
   // initial XTerm instance is created with the correct background color and avoids
@@ -218,10 +210,24 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
     ...DEFAULT_OPTIONS,
     ...options,
     theme: {
-      ...buildXtermTheme(),
+      ...getInitialXtermTheme(),
       ...options.theme,
     },
   };
+  const mergedOptionsRef = useRef(mergedOptions);
+  const initialFontWeightsRef = useRef(initialFontWeights);
+
+  autoFocusRef.current = autoFocus;
+  terminalIdRef.current = terminalId;
+  sessionIdRef.current = sessionId;
+  onDataRef.current = onData;
+  onBinaryRef.current = onBinary;
+  onTitleChangeRef.current = onTitleChange;
+  onResizeRef.current = onResize;
+  onReadyRef.current = onReady;
+  onPasteRef.current = onPaste;
+  mergedOptionsRef.current = mergedOptions;
+  initialFontWeightsRef.current = initialFontWeights;
 
   // Force refresh for rendering consistency.
   const forceRefresh = useCallback((terminal: XTerm) => {
@@ -263,8 +269,8 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
     
     lastBackendSizeRef.current = { cols, rows };
     
-    onResize?.(cols, rows);
-  }, [onResize]);
+    onResizeRef.current?.(cols, rows);
+  }, []);
 
   // Post-resize fixups (refresh and cursor visibility).
   const handleResizeComplete = useCallback(() => {
@@ -327,6 +333,17 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
       forceRefresh(terminal);
     }
   }, [forceRefresh]);
+  const doXtermResizeRef = useRef(doXtermResize);
+  const doBackendResizeRef = useRef(doBackendResize);
+  const handleResizeCompleteRef = useRef(handleResizeComplete);
+  const fitRef = useRef(fit);
+  const forceRefreshRef = useRef(forceRefresh);
+
+  doXtermResizeRef.current = doXtermResize;
+  doBackendResizeRef.current = doBackendResize;
+  handleResizeCompleteRef.current = handleResizeComplete;
+  fitRef.current = fit;
+  forceRefreshRef.current = forceRefresh;
 
   useImperativeHandle(ref, () => ({
     write: (data: string) => {
@@ -361,17 +378,24 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
 
   useEffect(() => {
     if (!containerRef.current) return;
+    const container = containerRef.current;
 
     // Let fit() determine size; backend starts at 80x24 and syncs via resize.
     const terminal = new XTerm({
-      fontSize: mergedOptions.fontSize,
-      fontFamily: mergedOptions.fontFamily,
-      lineHeight: mergedOptions.lineHeight,
-      cursorStyle: mergedOptions.cursorStyle,
-      cursorBlink: mergedOptions.cursorBlink,
-      scrollback: mergedOptions.scrollback,
-      theme: mergedOptions.theme,
-      allowTransparency: true,
+      fontSize: mergedOptionsRef.current.fontSize,
+      fontFamily: mergedOptionsRef.current.fontFamily,
+      fontWeight: initialFontWeightsRef.current.fontWeight,
+      fontWeightBold: initialFontWeightsRef.current.fontWeightBold,
+      lineHeight: mergedOptionsRef.current.lineHeight,
+      minimumContrastRatio: mergedOptionsRef.current.minimumContrastRatio,
+      cursorStyle: mergedOptionsRef.current.cursorStyle,
+      cursorBlink: mergedOptionsRef.current.cursorBlink,
+      scrollback: mergedOptionsRef.current.scrollback,
+      theme: mergedOptionsRef.current.theme,
+      // Keep the interactive terminal on the opaque WebGL path. Transparent
+      // glyph atlases use a different blending/clearing strategy and are much
+      // more prone to artifacts on colored cell backgrounds.
+      allowTransparency: false,
       // TUI apps usually handle line wrapping.
       convertEol: false,
     });
@@ -414,7 +438,7 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(webLinksAddon);
 
-    terminal.open(containerRef.current);
+    terminal.open(container);
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
@@ -438,38 +462,63 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
     const resizeDebouncer = new TerminalResizeDebouncer({
       getTerminal: () => terminalRef.current,
       isVisible: () => isVisibleRef.current,
-      onXtermResize: doXtermResize,
-      onBackendResize: doBackendResize,
+      onXtermResize: (cols, rows) => doXtermResizeRef.current(cols, rows),
+      onBackendResize: (cols, rows) => doBackendResizeRef.current(cols, rows),
       onFlush: () => {
         if (terminalRef.current) {
-          forceRefresh(terminalRef.current);
+          forceRefreshRef.current(terminalRef.current);
         }
       },
-      onResizeComplete: handleResizeComplete,
+      onResizeComplete: () => handleResizeCompleteRef.current(),
     });
     resizeDebouncerRef.current = resizeDebouncer;
 
     requestAnimationFrame(() => {
-      fit(true);
+      fitRef.current(true);
 
       setIsReady(true);
-      onReady?.(terminal);
+      onReadyRef.current?.(terminal);
 
-      if (autoFocus) {
+      if (autoFocusRef.current) {
         terminal.focus();
       }
     });
 
+    let fontLoadCancelled = false;
+    if (typeof document !== 'undefined' && 'fonts' in document) {
+      const fontSet = document.fonts as FontFaceSet;
+      if (fontSet.status !== 'loaded') {
+        void fontSet.ready.then(() => {
+          if (fontLoadCancelled || !terminalRef.current) {
+            return;
+          }
+
+          requestAnimationFrame(() => {
+            if (!terminalRef.current) return;
+
+            remeasureTerminal(terminalRef.current);
+            fitRef.current(true);
+
+            requestAnimationFrame(() => {
+              if (!terminalRef.current) return;
+              forceRefreshRef.current(terminalRef.current);
+              scrollToBottomIfNeeded(terminalRef.current);
+            });
+          });
+        });
+      }
+    }
+
     const dataDisposable = terminal.onData((data) => {
-      onData?.(data);
+      onDataRef.current?.(data);
     });
 
     const binaryDisposable = terminal.onBinary((data) => {
-      onBinary?.(data);
+      onBinaryRef.current?.(data);
     });
 
     const titleDisposable = terminal.onTitleChange((title) => {
-      onTitleChange?.(title);
+      onTitleChangeRef.current?.(title);
     });
 
     // Intercept paste (Ctrl+V / Ctrl+Shift+V).
@@ -482,14 +531,14 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
             const text = await navigator.clipboard.readText();
             if (!text) return;
 
-            if (onPaste) {
-              const allowed = await onPaste(text);
+            if (onPasteRef.current) {
+              const allowed = await onPasteRef.current(text);
               if (!allowed) {
                 return;
               }
             }
 
-            onData?.(text);
+            onDataRef.current?.(text);
           } catch (err) {
             log.error('Paste failed', err);
           }
@@ -503,10 +552,10 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
 
     const resizeObserver = new ResizeObserver(() => {
       requestAnimationFrame(() => {
-        fit(false);
+        fitRef.current(false);
       });
     });
-    resizeObserver.observe(containerRef.current);
+    resizeObserver.observe(container);
     resizeObserverRef.current = resizeObserver;
 
     // On visibility change, flush pending resize and refresh.
@@ -517,10 +566,11 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
       isVisibleRef.current = isVisible;
 
       if (isVisible && !wasVisibleRef.current) {
+        const startedAt = nowMs();
         requestAnimationFrame(() => {
           resizeDebouncerRef.current?.flush();
           
-          fit(true);
+          fitRef.current(true);
           
           requestAnimationFrame(() => {
             const term = terminalRef.current;
@@ -528,10 +578,22 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
               term.refresh(0, term.rows - 1);
               clearTextureAtlas(term);
               scrollToBottomIfNeeded(term);
-              if (autoFocus) {
+              if (autoFocusRef.current) {
                 term.focus();
               }
             }
+            sendDebugProbe(
+              'Terminal.tsx:intersectionObserver',
+              'Terminal visibility restore completed',
+              {
+                terminalId: terminalIdRef.current,
+                sessionId: sessionIdRef.current,
+                autoFocus: autoFocusRef.current,
+                cols: term?.cols ?? null,
+                rows: term?.rows ?? null,
+              },
+              { startedAt }
+            );
           });
         });
       }
@@ -539,7 +601,7 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
     }, {
       threshold: 0.1
     });
-    intersectionObserver.observe(containerRef.current);
+    intersectionObserver.observe(container);
     intersectionObserverRef.current = intersectionObserver;
 
     return () => {
@@ -548,6 +610,7 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
       titleDisposable.dispose();
       resizeObserver.disconnect();
       intersectionObserver.disconnect();
+      fontLoadCancelled = true;
       resizeDebouncer.dispose();
       webglAddonRef.current?.dispose();
       terminal.dispose();
@@ -568,6 +631,7 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
     terminal.options.fontSize = mergedOptions.fontSize;
     terminal.options.fontFamily = mergedOptions.fontFamily;
     terminal.options.lineHeight = mergedOptions.lineHeight;
+    terminal.options.minimumContrastRatio = mergedOptions.minimumContrastRatio;
     terminal.options.cursorStyle = mergedOptions.cursorStyle;
     terminal.options.cursorBlink = mergedOptions.cursorBlink;
     terminal.options.scrollback = mergedOptions.scrollback;
@@ -578,9 +642,11 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
     mergedOptions.fontSize,
     mergedOptions.fontFamily,
     mergedOptions.lineHeight,
+    mergedOptions.minimumContrastRatio,
     mergedOptions.cursorStyle,
     mergedOptions.cursorBlink,
     mergedOptions.scrollback,
+    mergedOptions.theme,
     isReady,
     fit,
   ]);
@@ -592,68 +658,14 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
     const updateXtermTheme = () => {
       (() => {
         const theme = themeService.getCurrentTheme();
-        const isDark = theme.type === 'dark';
-
-        // Dark-theme ANSI palette: bright, saturated colors for dark backgrounds.
-        // Light-theme ANSI palette: deeper, higher-contrast colors for white backgrounds.
-        // Without separate palettes, colors like yellow (#e5e510) and white (#ffffff)
-        // become nearly invisible on light backgrounds due to insufficient contrast.
-        const ansiColors = isDark ? {
-          black:         '#000000',
-          red:           '#cd3131',
-          green:         '#0dbc79',
-          yellow:        '#e5e510',
-          blue:          '#2472c8',
-          magenta:       '#bc3fbc',
-          cyan:          '#11a8cd',
-          white:         '#e5e5e5',
-          brightBlack:   '#666666',
-          brightRed:     '#f14c4c',
-          brightGreen:   '#23d18b',
-          brightYellow:  '#f5f543',
-          brightBlue:    '#3b8eea',
-          brightMagenta: '#d670d6',
-          brightCyan:    '#29b8db',
-          brightWhite:   '#ffffff',
-        } : {
-          black:         '#000000',
-          red:           '#c91b00',
-          green:         '#007a3d',
-          yellow:        '#b58900',
-          blue:          '#0037da',
-          magenta:       '#881798',
-          cyan:          '#0e7490',
-          white:         '#586e75',  // Visible gray on light bg (not #fff!)
-          brightBlack:   '#555555',
-          brightRed:     '#e74856',
-          brightGreen:   '#16a34a',
-          brightYellow:  '#a16207',
-          brightBlue:    '#0078d4',
-          brightMagenta: '#b4009e',
-          brightCyan:    '#0891b2',
-          brightWhite:   '#1e293b',  // Near-black for maximum contrast
-        };
-
-        const xtermTheme = {
-          background: theme.colors.background.scene,
-          foreground: theme.colors.text.primary,
-          cursor: theme.colors.text.primary,
-          cursorAccent: theme.colors.background.secondary,
-          // Selection must be clearly visible against the background.
-          // Dark: semi-transparent white; Light: tinted blue highlight (matches
-          // typical OS text selection color) with enough opacity to stand out.
-          // NOTE: xterm.js ITheme uses "selectionBackground", NOT "selection".
-          selectionBackground: isDark ? 'rgba(255, 255, 255, 0.3)' : 'rgba(59, 130, 246, 0.3)',
-          ...ansiColors,
-        };
-
-        terminal.options.theme = xtermTheme;
+        terminal.options.theme = buildXtermTheme(theme, options.theme);
 
         // Light-on-dark text appears bolder due to irradiation (optical illusion);
         // dark-on-light text looks thinner in comparison. Bump fontWeight in light
         // mode to compensate.
-        terminal.options.fontWeight = isDark ? 'normal' : '500';
-        terminal.options.fontWeightBold = isDark ? 'bold' : '700';
+        const fontWeights = getXtermFontWeights(theme.type);
+        terminal.options.fontWeight = fontWeights.fontWeight;
+        terminal.options.fontWeightBold = fontWeights.fontWeightBold;
 
         forceRefresh(terminal);
       })();
@@ -665,7 +677,7 @@ const Terminal = forwardRef<TerminalRef, TerminalProps>(({
     return () => {
       unsubscribe?.();
     };
-  }, [isReady, forceRefresh]);
+  }, [isReady, forceRefresh, options.theme]);
 
   return (
     <div 

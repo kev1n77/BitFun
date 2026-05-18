@@ -46,11 +46,6 @@ export const AnchorZone: React.FC<AnchorZoneProps> = ({
   const startPosRef = useRef(0);
   const startSizeRef = useRef(size);
 
-  // Do not render when hidden
-  if (position === 'hidden') {
-    return null;
-  }
-
   const isBottom = position === 'bottom';
 
   // Handle resize start
@@ -96,6 +91,10 @@ export const AnchorZone: React.FC<AnchorZoneProps> = ({
   }, [isCollapsed]);
 
   // Toggle position
+  if (position === 'hidden') {
+    return null;
+  }
+
   return (
     <div
       ref={containerRef}

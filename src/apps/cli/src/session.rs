@@ -167,20 +167,13 @@ impl Session {
     /// Add or update text flow of the last message
     pub fn update_last_message_text_flow(&mut self, content: String, is_streaming: bool) {
         if let Some(last_message) = self.messages.last_mut() {
-            if let Some(last_item) = last_message.flow_items.last_mut() {
-                if let FlowItem::Text {
-                    content: ref mut c,
-                    is_streaming: ref mut s,
-                } = last_item
-                {
-                    *c = content.clone();
-                    *s = is_streaming;
-                } else {
-                    last_message.flow_items.push(FlowItem::Text {
-                        content: content.clone(),
-                        is_streaming,
-                    });
-                }
+            if let Some(FlowItem::Text {
+                content: ref mut c,
+                is_streaming: ref mut s,
+            }) = last_message.flow_items.last_mut()
+            {
+                *c = content.clone();
+                *s = is_streaming;
             } else {
                 last_message.flow_items.push(FlowItem::Text {
                     content: content.clone(),

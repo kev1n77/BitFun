@@ -1,8 +1,8 @@
 /**
- * Confirm Dialog Styles
+ * SSH remote confirmation modal (scoped block — avoid clashing with component-library .confirm-dialog)
  */
 
-.confirm-dialog {
+.ssh-remote-confirm-dialog {
   padding: 8px 0;
 
   &__warning {
@@ -36,6 +36,13 @@
   &__actions {
     display: flex;
     justify-content: flex-end;
-    gap: 12px;
+    gap: 8px;
+
+    .btn.btn-sm {
+      height: 28px;
+      min-height: 28px;
+      padding: 0 10px;
+      font-size: 11px;
+    }
   }
 }

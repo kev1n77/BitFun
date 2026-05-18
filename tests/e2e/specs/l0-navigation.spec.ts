@@ -6,6 +6,25 @@
 import { browser, expect, $ } from '@wdio/globals';
 import { openWorkspace } from '../helpers/workspace-helper';
 
+const NAV_ENTRY_SELECTORS = [
+  '.bitfun-nav-panel__item',
+  '.bitfun-nav-panel__workspace-item-name-btn',
+  '.bitfun-nav-panel__inline-item',
+  '.bitfun-nav-panel__workspace-create-main',
+  '.bitfun-nav-panel__miniapp-entry',
+];
+
+async function getNavigationEntries() {
+  const entries = [];
+
+  for (const selector of NAV_ENTRY_SELECTORS) {
+    const matched = await browser.$$(selector);
+    entries.push(...matched);
+  }
+
+  return entries;
+}
+
 describe('L0 Navigation Panel', () => {
   let hasWorkspace = false;
 
@@ -47,8 +66,7 @@ describe('L0 Navigation Panel', () => {
 
       await browser.pause(500);
 
-      // Use correct selectors from NavPanel components
-      const navItems = await $$('.bitfun-nav-panel__item-slot');
+      const navItems = await getNavigationEntries();
       const itemCount = navItems.length;
 
       console.log(`[L0] Found ${itemCount} navigation items`);
@@ -71,12 +89,27 @@ describe('L0 Navigation Panel', () => {
     it('navigation items should be clickable', async function () {
       expect(hasWorkspace).toBe(true);
 
-      // Get navigation items
-      const navItems = await $$('.bitfun-nav-panel__item-slot');
+      const navItems = await getNavigationEntries();
 
       expect(navItems.length).toBeGreaterThan(0);
 
-      const firstItem = navItems[0];
+      let firstItem = null;
+      for (const item of navItems) {
+        try {
+          if (await item.isClickable()) {
+            firstItem = item;
+            break;
+          }
+        } catch {
+          // Continue to the next navigation entry.
+        }
+      }
+
+      expect(firstItem).not.toBeNull();
+      if (!firstItem) {
+        return;
+      }
+
       const isClickable = await firstItem.isClickable();
       console.log('[L0] First nav item clickable:', isClickable);
 

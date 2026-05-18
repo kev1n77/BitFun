@@ -24,39 +24,45 @@ export function UninstallPage({
 
   return (
     <div className="uninstall-page">
-      <div className="uninstall-card">
-        <div className="uninstall-title">
-          {t('uninstall.title')}
-        </div>
-        <div className="uninstall-subtitle">
-          {t('uninstall.subtitle')}
-        </div>
+      <div className="page-scroll">
+        <div className="page-container page-container--center">
+          <div className="uninstall-card">
+            <div className="uninstall-title">
+              {t('uninstall.title')}
+            </div>
+            <div className="uninstall-subtitle">
+              {t('uninstall.subtitle')}
+            </div>
 
-        <div className="uninstall-inline-meta" title={installPath || t('uninstall.pathUnknown')}>
-          <span className="uninstall-inline-label">{t('uninstall.installPath')}:</span>
-          <span className="uninstall-inline-path">{installPath || t('uninstall.pathUnknown')}</span>
-        </div>
+            <div className="uninstall-inline-meta" title={installPath || t('uninstall.pathUnknown')}>
+              <span className="uninstall-inline-label">{t('uninstall.installPath')}:</span>
+              <span className="uninstall-inline-path">{installPath || t('uninstall.pathUnknown')}</span>
+            </div>
 
-        {uninstallError && (
-          <div className="uninstall-error">
-            {uninstallError}
+            {uninstallError && (
+              <div className="uninstall-error">
+                {uninstallError}
+              </div>
+            )}
+
+            {uninstallCompleted && (
+              <div className="uninstall-success">
+                {t('uninstall.completed')}
+              </div>
+            )}
+
+            {(isUninstalling || uninstallCompleted) && (
+              <div className="uninstall-progress-wrap">
+                <ProgressBar percent={uninstallProgress} completed={uninstallCompleted} />
+                <span className="uninstall-progress-text">{uninstallProgress}%</span>
+              </div>
+            )}
           </div>
-        )}
+        </div>
+      </div>
 
-        {uninstallCompleted && (
-          <div className="uninstall-success">
-            {t('uninstall.completed')}
-          </div>
-        )}
-
-        {(isUninstalling || uninstallCompleted) && (
-          <div className="uninstall-progress-wrap">
-            <ProgressBar percent={uninstallProgress} completed={uninstallCompleted} />
-            <span className="uninstall-progress-text">{uninstallProgress}%</span>
-          </div>
-        )}
-
-        <div className="uninstall-actions">
+      <div className="page-footer">
+        <div className="uninstall-actions" style={{ width: '100%' }}>
           <button className="btn btn-ghost" onClick={onClose}>
             {t(uninstallCompleted ? 'uninstall.close' : 'uninstall.cancel')}
           </button>

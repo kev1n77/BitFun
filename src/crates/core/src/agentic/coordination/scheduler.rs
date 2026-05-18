@@ -14,14 +14,17 @@ use super::coordinator::{ConversationCoordinator, DialogTriggerSource};
 use super::turn_outcome::{TurnOutcome, TurnOutcomeQueueAction, TurnOutcomeStatus};
 use crate::agentic::core::{PromptEnvelope, SessionState};
 use crate::agentic::image_analysis::ImageContextData;
-use crate::agentic::round_preempt::{DialogRoundPreemptSource, SessionRoundYieldFlags};
+use crate::agentic::round_preempt::{
+    DialogRoundPreemptSource, DialogRoundSteeringSource, SessionRoundYieldFlags,
+    SessionSteeringBuffer, SteeringMessage,
+};
 use crate::agentic::session::SessionManager;
 use dashmap::DashMap;
 use log::{debug, info, warn};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -31,14 +34,8 @@ const MAX_QUEUE_DEPTH: usize = 20;
 /// or was placed in the per-session queue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DialogSubmitOutcome {
-    Started {
-        session_id: String,
-        turn_id: String,
-    },
-    Queued {
-        session_id: String,
-        turn_id: String,
-    },
+    Started { session_id: String, turn_id: String },
+    Queued { session_id: String, turn_id: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -101,14 +98,16 @@ pub struct AgentSessionReplyRoute {
 
 #[derive(Debug, Clone)]
 struct ActiveTurn {
+    turn_id: String,
     workspace_path: Option<String>,
     policy: DialogSubmissionPolicy,
     reply_route: Option<AgentSessionReplyRoute>,
 }
 
 impl ActiveTurn {
-    fn from_queued_turn(turn: &QueuedTurn) -> Self {
+    fn from_queued_turn(turn: &QueuedTurn, turn_id: String) -> Self {
         Self {
+            turn_id,
             workspace_path: turn.workspace_path.clone(),
             policy: turn.policy,
             reply_route: turn.reply_route.clone(),
@@ -118,6 +117,14 @@ impl ActiveTurn {
     fn is_agent_session_request(&self) -> bool {
         self.policy.trigger_source == DialogTriggerSource::AgentSession
             && self.reply_route.is_some()
+    }
+
+    fn should_suppress_cancelled_reply_for_requester(&self, requester_session_id: &str) -> bool {
+        self.is_agent_session_request()
+            && self
+                .reply_route
+                .as_ref()
+                .is_some_and(|reply_route| reply_route.source_session_id == requester_session_id)
     }
 }
 
@@ -131,6 +138,7 @@ pub struct QueuedTurn {
     pub workspace_path: Option<String>,
     pub policy: DialogSubmissionPolicy,
     pub reply_route: Option<AgentSessionReplyRoute>,
+    pub user_message_metadata: Option<serde_json::Value>,
     pub image_contexts: Option<Vec<ImageContextData>>,
     #[allow(dead_code)]
     pub enqueued_at: SystemTime,
@@ -148,10 +156,28 @@ pub struct DialogScheduler {
     queues: Arc<DashMap<String, VecDeque<QueuedTurn>>>,
     /// Currently active turn metadata keyed by target session ID
     active_turns: Arc<DashMap<String, ActiveTurn>>,
+    /// Turns whose cancelled auto-reply should be suppressed because the source
+    /// agent explicitly cancelled its own outstanding SessionMessage request.
+    suppressed_cancelled_replies: Arc<DashMap<(String, String), ()>>,
     /// Cloneable sender given to ConversationCoordinator for turn outcome notifications
     outcome_tx: mpsc::Sender<(String, TurnOutcome)>,
     /// When a user submits while `Processing`, engine yields after the current model round.
     round_yield_flags: Arc<SessionRoundYieldFlags>,
+    /// Per-session FIFO buffer of user "steering" messages drained at round boundaries
+    /// by the engine and injected into the running dialog turn.
+    steering_buffer: Arc<SessionSteeringBuffer>,
+}
+
+/// Outcome of [`DialogScheduler::submit_steering`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DialogSteerOutcome {
+    /// Steering message was buffered for the running turn. The engine will pick it up
+    /// at the next model-round boundary.
+    Buffered {
+        session_id: String,
+        turn_id: String,
+        steering_id: String,
+    },
 }
 
 impl DialogScheduler {
@@ -171,8 +197,10 @@ impl DialogScheduler {
             session_manager,
             queues: Arc::new(DashMap::new()),
             active_turns: Arc::new(DashMap::new()),
+            suppressed_cancelled_replies: Arc::new(DashMap::new()),
             outcome_tx,
             round_yield_flags: Arc::new(SessionRoundYieldFlags::default()),
+            steering_buffer: Arc::new(SessionSteeringBuffer::default()),
         });
 
         let scheduler_for_handler = Arc::clone(&scheduler);
@@ -191,6 +219,74 @@ impl DialogScheduler {
     /// Pass to [`ConversationCoordinator::set_round_preempt_source`](super::coordinator::ConversationCoordinator::set_round_preempt_source).
     pub fn preempt_monitor(&self) -> Arc<dyn DialogRoundPreemptSource> {
         self.round_yield_flags.clone()
+    }
+
+    /// Pass to [`ConversationCoordinator::set_round_steering_source`](super::coordinator::ConversationCoordinator::set_round_steering_source).
+    pub fn steering_monitor(&self) -> Arc<dyn DialogRoundSteeringSource> {
+        self.steering_buffer.clone()
+    }
+
+    /// Submit a user "steering" message into the currently running dialog turn.
+    ///
+    /// Unlike [`Self::submit`], this never starts or queues a new turn — it only buffers
+    /// the message so the [`ExecutionEngine`](super::super::execution::ExecutionEngine)
+    /// can inject it at the next model-round boundary. Errors:
+    ///
+    /// - Session is not currently `Processing` the requested `turn_id` (the targeted turn
+    ///   already finished or never existed). Caller should fall back to `submit`.
+    pub async fn submit_steering(
+        &self,
+        session_id: String,
+        turn_id: String,
+        content: String,
+        display_content: Option<String>,
+    ) -> Result<DialogSteerOutcome, String> {
+        let active_matches_turn = match self
+            .session_manager
+            .get_session(&session_id)
+            .map(|s| s.state.clone())
+        {
+            Some(SessionState::Processing {
+                current_turn_id, ..
+            }) => current_turn_id == turn_id,
+            _ => false,
+        };
+
+        if !active_matches_turn {
+            warn!(
+                "submit_steering rejected: target turn is not running: session_id={}, turn_id={}",
+                session_id, turn_id
+            );
+            return Err(format!(
+                "Dialog turn is no longer running and cannot be steered: session_id={}, turn_id={}",
+                session_id, turn_id
+            ));
+        }
+
+        let steering_id = Uuid::new_v4().to_string();
+        let display = display_content.unwrap_or_else(|| content.clone());
+        let message = SteeringMessage {
+            id: steering_id.clone(),
+            turn_id: turn_id.clone(),
+            content,
+            display_content: display,
+            created_at: SystemTime::now(),
+        };
+
+        self.steering_buffer.push(&session_id, message);
+        info!(
+            "Steering message buffered: session_id={}, turn_id={}, steering_id={}, pending={}",
+            session_id,
+            turn_id,
+            steering_id,
+            self.steering_buffer.pending_count(&session_id)
+        );
+
+        Ok(DialogSteerOutcome::Buffered {
+            session_id,
+            turn_id,
+            steering_id,
+        })
     }
 
     fn user_message_may_preempt(policy: &DialogSubmissionPolicy) -> bool {
@@ -214,6 +310,7 @@ impl DialogScheduler {
     /// - Session error → queue cleared, dispatched immediately.
     ///
     /// Returns `Err(String)` if the queue is full or the coordinator returns an error.
+    #[allow(clippy::too_many_arguments)]
     pub async fn submit(
         &self,
         session_id: String,
@@ -224,6 +321,7 @@ impl DialogScheduler {
         workspace_path: Option<String>,
         policy: DialogSubmissionPolicy,
         reply_route: Option<AgentSessionReplyRoute>,
+        user_message_metadata: Option<serde_json::Value>,
         image_contexts: Option<Vec<ImageContextData>>,
     ) -> Result<DialogSubmitOutcome, String> {
         let resolved_turn_id = turn_id.unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -235,6 +333,7 @@ impl DialogScheduler {
             workspace_path,
             policy,
             reply_route,
+            user_message_metadata,
             image_contexts,
             enqueued_at: SystemTime::now(),
         };
@@ -308,6 +407,59 @@ impl DialogScheduler {
     /// Number of messages currently queued for a session.
     pub fn queue_depth(&self, session_id: &str) -> usize {
         self.queues.get(session_id).map(|q| q.len()).unwrap_or(0)
+    }
+
+    /// Cancel the target session's active turn on behalf of a requester session.
+    ///
+    /// If the requester is the same source session that originally sent the
+    /// in-flight SessionMessage request, the scheduler suppresses the automatic
+    /// cancelled-reply bounce-back for that specific turn.
+    pub async fn cancel_active_turn_for_session_from_requester(
+        &self,
+        target_session_id: &str,
+        requester_session_id: &str,
+        wait_timeout: Duration,
+    ) -> crate::util::errors::BitFunResult<Option<String>> {
+        let suppression_key = self
+            .active_turns
+            .get(target_session_id)
+            .and_then(|active_turn| {
+                active_turn
+                    .should_suppress_cancelled_reply_for_requester(requester_session_id)
+                    .then(|| (target_session_id.to_string(), active_turn.turn_id.clone()))
+            });
+
+        if let Some((session_id, turn_id)) = suppression_key.as_ref() {
+            debug!(
+                "Suppressing cancelled auto-reply for agent-session turn: target_session_id={}, turn_id={}, requester_session_id={}",
+                session_id, turn_id, requester_session_id
+            );
+            self.suppressed_cancelled_replies
+                .insert((session_id.clone(), turn_id.clone()), ());
+        }
+
+        match self
+            .coordinator
+            .cancel_active_turn_for_session(target_session_id, wait_timeout)
+            .await
+        {
+            Ok(cancelled_turn_id) => {
+                if cancelled_turn_id.is_none() {
+                    if let Some((session_id, turn_id)) = suppression_key {
+                        self.suppressed_cancelled_replies
+                            .remove(&(session_id, turn_id));
+                    }
+                }
+                Ok(cancelled_turn_id)
+            }
+            Err(error) => {
+                if let Some((session_id, turn_id)) = suppression_key {
+                    self.suppressed_cancelled_replies
+                        .remove(&(session_id, turn_id));
+                }
+                Err(error)
+            }
+        }
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────
@@ -405,7 +557,11 @@ impl DialogScheduler {
         }
     }
 
-    async fn start_turn(&self, session_id: &str, queued_turn: &QueuedTurn) -> Result<String, String> {
+    async fn start_turn(
+        &self,
+        session_id: &str,
+        queued_turn: &QueuedTurn,
+    ) -> Result<String, String> {
         let res = match queued_turn
             .image_contexts
             .as_ref()
@@ -422,6 +578,7 @@ impl DialogScheduler {
                         queued_turn.agent_type.clone(),
                         queued_turn.workspace_path.clone(),
                         queued_turn.policy,
+                        queued_turn.user_message_metadata.clone(),
                     )
                     .await
             }
@@ -435,17 +592,13 @@ impl DialogScheduler {
                         queued_turn.agent_type.clone(),
                         queued_turn.workspace_path.clone(),
                         queued_turn.policy,
+                        queued_turn.user_message_metadata.clone(),
                     )
                     .await
             }
         };
 
         res.map_err(|e| e.to_string())?;
-
-        self.active_turns.insert(
-            session_id.to_string(),
-            ActiveTurn::from_queued_turn(queued_turn),
-        );
 
         let resolved = self
             .session_manager
@@ -462,6 +615,11 @@ impl DialogScheduler {
                     session_id
                 )
             })?;
+
+        self.active_turns.insert(
+            session_id.to_string(),
+            ActiveTurn::from_queued_turn(queued_turn, resolved.clone()),
+        );
 
         Ok(resolved)
     }
@@ -499,6 +657,7 @@ impl DialogScheduler {
                 DialogSubmissionPolicy::for_source(DialogTriggerSource::AgentSession),
                 None,
                 None,
+                None,
             )
             .await
         {
@@ -507,6 +666,19 @@ impl DialogScheduler {
                 responder_session_id, reply_route.source_session_id, error
             );
         }
+    }
+
+    fn take_suppressed_cancelled_reply(&self, session_id: &str, turn_id: &str) -> bool {
+        self.suppressed_cancelled_replies
+            .remove(&(session_id.to_string(), turn_id.to_string()))
+            .is_some()
+    }
+
+    fn should_skip_agent_session_reply(
+        outcome: &TurnOutcome,
+        suppressed_cancelled_reply: bool,
+    ) -> bool {
+        matches!(outcome, TurnOutcome::Cancelled { .. }) && suppressed_cancelled_reply
     }
 
     fn format_agent_session_reply(
@@ -536,11 +708,30 @@ Status: {status}"
     async fn run_outcome_handler(&self, mut outcome_rx: mpsc::Receiver<(String, TurnOutcome)>) {
         while let Some((session_id, outcome)) = outcome_rx.recv().await {
             self.round_yield_flags.clear(&session_id);
+            // Only drop steering messages targeted at the *finished* turn. We
+            // must NOT clear the entire session buffer here: a user might have
+            // legitimately submitted steering against a brand-new follow-up
+            // turn that the dispatcher will pick up immediately after this
+            // outcome is processed (race window between turn finalize and the
+            // next turn starting). Targeting by turn_id keeps those alive.
+            let _drained = self
+                .steering_buffer
+                .drain_for_turn(&session_id, outcome.turn_id());
+            let suppressed_cancelled_reply =
+                self.take_suppressed_cancelled_reply(&session_id, outcome.turn_id());
 
             let active_turn = self.active_turns.remove(&session_id).map(|(_, turn)| turn);
             if let Some(active_turn) = active_turn.as_ref() {
-                self.forward_agent_session_reply(&session_id, active_turn, &outcome)
-                    .await;
+                if Self::should_skip_agent_session_reply(&outcome, suppressed_cancelled_reply) {
+                    debug!(
+                        "Skipping cancelled auto-reply because the source session explicitly cancelled its own SessionMessage request: session_id={}, turn_id={}",
+                        session_id,
+                        outcome.turn_id()
+                    );
+                } else {
+                    self.forward_agent_session_reply(&session_id, active_turn, &outcome)
+                        .await;
+                }
             }
 
             let status = outcome.status();
@@ -556,9 +747,7 @@ Status: {status}"
                     if let Err(e) = self.dispatch_next_if_idle(&session_id).await {
                         warn!(
                             "Failed to dispatch next queued message after {}: session_id={}, error={}",
-                            status,
-                            session_id,
-                            e
+                            status, session_id, e
                         );
                     }
                 }
@@ -581,4 +770,67 @@ pub fn get_global_scheduler() -> Option<Arc<DialogScheduler>> {
 
 pub fn set_global_scheduler(scheduler: Arc<DialogScheduler>) {
     let _ = GLOBAL_SCHEDULER.set(scheduler);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn agent_session_active_turn(source_session_id: &str) -> ActiveTurn {
+        ActiveTurn {
+            turn_id: "turn_1".to_string(),
+            workspace_path: Some("/workspace".to_string()),
+            policy: DialogSubmissionPolicy::for_source(DialogTriggerSource::AgentSession),
+            reply_route: Some(AgentSessionReplyRoute {
+                source_session_id: source_session_id.to_string(),
+                source_workspace_path: "/source".to_string(),
+            }),
+        }
+    }
+
+    #[test]
+    fn requester_matching_reply_route_suppresses_cancelled_reply() {
+        let active_turn = agent_session_active_turn("session_a");
+        assert!(active_turn.should_suppress_cancelled_reply_for_requester("session_a"));
+        assert!(!active_turn.should_suppress_cancelled_reply_for_requester("session_c"));
+    }
+
+    #[test]
+    fn cancelled_reply_is_skipped_only_when_suppressed() {
+        let cancelled = TurnOutcome::Cancelled {
+            turn_id: "turn_1".to_string(),
+        };
+        let completed = TurnOutcome::Completed {
+            turn_id: "turn_1".to_string(),
+            final_response: "done".to_string(),
+        };
+
+        assert!(DialogScheduler::should_skip_agent_session_reply(
+            &cancelled, true
+        ));
+        assert!(!DialogScheduler::should_skip_agent_session_reply(
+            &cancelled, false
+        ));
+        assert!(!DialogScheduler::should_skip_agent_session_reply(
+            &completed, true
+        ));
+    }
+
+    #[test]
+    fn remote_queue_policy_preserves_interactive_preempt_and_confirmation_boundary() {
+        let remote = DialogSubmissionPolicy::for_source(DialogTriggerSource::RemoteRelay);
+        assert_eq!(remote.queue_priority, DialogQueuePriority::Normal);
+        assert!(remote.skip_tool_confirmation);
+        assert!(DialogScheduler::user_message_may_preempt(&remote));
+
+        let bot = DialogSubmissionPolicy::for_source(DialogTriggerSource::Bot);
+        assert_eq!(bot.queue_priority, DialogQueuePriority::Normal);
+        assert!(bot.skip_tool_confirmation);
+        assert!(DialogScheduler::user_message_may_preempt(&bot));
+
+        let agent_session = DialogSubmissionPolicy::for_source(DialogTriggerSource::AgentSession);
+        assert_eq!(agent_session.queue_priority, DialogQueuePriority::Low);
+        assert!(agent_session.skip_tool_confirmation);
+        assert!(!DialogScheduler::user_message_may_preempt(&agent_session));
+    }
 }

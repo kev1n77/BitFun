@@ -55,18 +55,16 @@ export class ContextResolver {
     };
 
     
-    let context: MenuContext | null = null;
-    if (context = this.resolveSelection(baseContext)) {
-    } else if (context = this.resolveTerminal(baseContext)) {
-    } else if (context = this.resolveFileNode(baseContext)) {
-    } else if (context = this.resolveEditor(baseContext)) {
-    } else if (context = this.resolveFlowChat(baseContext)) {
-    } else if (context = this.resolveTab(baseContext)) {
-    } else if (context = this.resolvePanelHeader(baseContext)) {
-    } else if (context = this.resolveCustom(baseContext)) {
-    } else {
-      context = this.resolveEmptySpace(baseContext);
-    }
+    const context =
+      this.resolveSelection(baseContext) ??
+      this.resolveTerminal(baseContext) ??
+      this.resolveFileNode(baseContext) ??
+      this.resolveEditor(baseContext) ??
+      this.resolveFlowChat(baseContext) ??
+      this.resolveTab(baseContext) ??
+      this.resolvePanelHeader(baseContext) ??
+      this.resolveCustom(baseContext) ??
+      this.resolveEmptySpace(baseContext);
 
     return context;
   }
@@ -245,6 +243,7 @@ export class ContextResolver {
 
     
     let cursorPosition: { line: number; column: number } | undefined;
+    let selectionRange: EditorContext['selectionRange'];
     
     try {
       const monacoGlobal = (window as any).monaco;
@@ -296,7 +295,7 @@ export class ContextResolver {
                 };
               }
             }
-          } catch (e) {
+          } catch (_error) {
             
           }
           
@@ -310,13 +309,30 @@ export class ContextResolver {
               };
             } else {
               
-              const selection = targetEditor.getSelection?.();
-              if (selection) {
+              const monacoSelection = targetEditor.getSelection?.();
+              if (monacoSelection) {
                 cursorPosition = {
-                  line: selection.startLineNumber,
-                  column: selection.startColumn
+                  line: monacoSelection.startLineNumber,
+                  column: monacoSelection.startColumn
                 };
               }
+            }
+          }
+
+          const monacoSelection = targetEditor.getSelection?.();
+          if (monacoSelection) {
+            const isEmpty =
+              typeof monacoSelection.isEmpty === 'function'
+                ? monacoSelection.isEmpty()
+                : monacoSelection.startLineNumber === monacoSelection.endLineNumber &&
+                  monacoSelection.startColumn === monacoSelection.endColumn;
+            if (!isEmpty) {
+              selectionRange = {
+                startLine: monacoSelection.startLineNumber,
+                endLine: monacoSelection.endLineNumber,
+                startColumn: monacoSelection.startColumn,
+                endColumn: monacoSelection.endColumn
+              };
             }
           }
         }
@@ -344,6 +360,7 @@ export class ContextResolver {
       filePath,
       cursorPosition,
       selectedText,
+      selectionRange,
       isReadOnly
     };
   }
@@ -372,6 +389,12 @@ export class ContextResolver {
       'text-block'
     ]);
 
+    const dialogTurn = this.findClosestByClass(base.targetElement, [
+      'flow-chat-dialog-turn',
+      'dialog-turn',
+      'virtual-item-wrapper'
+    ]);
+
     const selection = window.getSelection();
     const selectedText = selection?.toString().trim() || undefined;
 
@@ -387,7 +410,8 @@ export class ContextResolver {
       type: contextType,
       selectedText,
       toolCard: toolCard ? this.extractElementData(toolCard) : undefined,
-      textBlock: textBlock ? this.extractElementData(textBlock) : undefined
+      textBlock: textBlock ? this.extractElementData(textBlock) : undefined,
+      dialogTurn: dialogTurn || undefined
     };
   }
 

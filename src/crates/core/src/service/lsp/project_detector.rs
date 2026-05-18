@@ -17,6 +17,7 @@ use tokio::fs;
 /// Project information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub struct ProjectInfo {
     /// Detected languages.
     pub languages: Vec<String>,
@@ -28,18 +29,6 @@ pub struct ProjectInfo {
     pub project_types: Vec<String>,
     /// Total file count.
     pub total_files: usize,
-}
-
-impl Default for ProjectInfo {
-    fn default() -> Self {
-        Self {
-            languages: Vec::new(),
-            primary_language: None,
-            file_counts: HashMap::new(),
-            project_types: Vec::new(),
-            total_files: 0,
-        }
-    }
 }
 
 /// Project type detector.

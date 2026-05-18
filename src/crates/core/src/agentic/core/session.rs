@@ -1,4 +1,5 @@
 use super::state::SessionState;
+pub use bitfun_core_types::SessionKind;
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use uuid::Uuid;
@@ -18,6 +19,8 @@ pub struct Session {
         alias = "createdBy"
     )]
     pub created_by: Option<String>,
+    #[serde(default, alias = "session_kind", alias = "sessionKind")]
+    pub kind: SessionKind,
 
     /// Associated resources
     #[serde(
@@ -46,21 +49,12 @@ pub struct Session {
 }
 
 /// Context compression state
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CompressionState {
     /// Time of last compression
     pub last_compression_at: Option<SystemTime>,
     /// Compression trigger count
     pub compression_count: usize,
-}
-
-impl Default for CompressionState {
-    fn default() -> Self {
-        Self {
-            last_compression_at: None,
-            compression_count: 0,
-        }
-    }
 }
 
 impl CompressionState {
@@ -78,6 +72,7 @@ impl Session {
             session_name,
             agent_type,
             created_by: None,
+            kind: SessionKind::Standard,
             snapshot_session_id: None,
             dialog_turn_ids: vec![],
             state: SessionState::Idle,
@@ -101,6 +96,7 @@ impl Session {
             session_name,
             agent_type,
             created_by: None,
+            kind: SessionKind::Standard,
             snapshot_session_id: None,
             dialog_turn_ids: vec![],
             state: SessionState::Idle,
@@ -128,6 +124,15 @@ pub struct SessionConfig {
     /// without changing the desktop's foreground workspace.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_path: Option<String>,
+    /// SSH workspace: required for remote tool I/O (file/shell). When set, `workspace_path` is
+    /// interpreted as the path on that host; when unset, the workspace is always local regardless
+    /// of string shape (avoids inferring remote from path alone). Also disambiguates the same
+    /// `workspace_path` on different hosts (e.g. two `/` roots).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_connection_id: Option<String>,
+    /// SSH config `host` for locating `~/.bitfun/remote_ssh/{host}/.../sessions` when disconnected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_ssh_host: Option<String>,
     /// Model config ID used by this session (for token usage tracking)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
@@ -144,6 +149,8 @@ impl Default for SessionConfig {
             enable_context_compression: true,
             compression_threshold: 0.8, // 80%
             workspace_path: None,
+            remote_connection_id: None,
+            remote_ssh_host: None,
             model_id: None,
         }
     }
@@ -162,6 +169,8 @@ pub struct SessionSummary {
         alias = "createdBy"
     )]
     pub created_by: Option<String>,
+    #[serde(default, alias = "session_kind", alias = "sessionKind")]
+    pub kind: SessionKind,
     pub turn_count: usize,
     pub created_at: SystemTime,
     pub last_activity_at: SystemTime,

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-use-before-define */
 /**
  * LSP plugin list UI.
  */
@@ -233,4 +234,3 @@ const PluginItem: React.FC<PluginItemProps> = ({ plugin, isExpanded, onToggle, o
     </Card>
   );
 };
-

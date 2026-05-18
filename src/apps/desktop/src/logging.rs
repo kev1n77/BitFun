@@ -9,10 +9,12 @@ use std::sync::{
     OnceLock,
 };
 use std::thread;
-use tauri_plugin_log::{fern, Target, TargetKind};
+use tauri::{plugin::TauriPlugin, Runtime};
+use tauri_plugin_log::{fern, RotationStrategy, Target, TargetKind, TimezoneStrategy};
 
 const SESSION_DIR_PATTERN: &str = r"^\d{8}T\d{6}$";
-const MAX_LOG_SESSIONS: usize = 50;
+const MAX_LOG_SESSIONS: usize = 10;
+const FLASHGREP_LOG_TARGET_PREFIX: &str = "flashgrep";
 static SESSION_LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 // Default to Debug in early development for easier diagnostics
 static CURRENT_LOG_LEVEL: AtomicU8 = AtomicU8::new(level_filter_to_u8(log::LevelFilter::Debug));
@@ -32,6 +34,26 @@ pub struct LogConfig {
     pub level: log::LevelFilter,
     pub is_debug: bool,
     pub session_log_dir: PathBuf,
+}
+
+fn is_embedded_webdriver_mode() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("BITFUN_WEBDRIVER_PORT").is_some()
+}
+
+fn resolve_logs_root() -> PathBuf {
+    if let Some(path) = std::env::var_os("BITFUN_LOG_DIR").map(PathBuf::from) {
+        return path;
+    }
+
+    if let Some(path) = std::env::var_os("BITFUN_E2E_LOG_DIR").map(PathBuf::from) {
+        return path;
+    }
+
+    if is_embedded_webdriver_mode() {
+        return std::env::temp_dir().join("bitfun-e2e-logs");
+    }
+
+    get_path_manager_arc().logs_dir()
 }
 
 impl LogConfig {
@@ -136,11 +158,12 @@ pub struct RuntimeLoggingInfo {
     pub session_log_dir: String,
     pub app_log_path: String,
     pub ai_log_path: String,
+    pub flashgrep_log_path: String,
     pub webview_log_path: String,
 }
 
 pub fn get_runtime_logging_info() -> RuntimeLoggingInfo {
-    let fallback_dir = get_path_manager_arc().logs_dir();
+    let fallback_dir = resolve_logs_root();
     let session_dir = session_log_dir().unwrap_or(fallback_dir);
 
     RuntimeLoggingInfo {
@@ -148,6 +171,10 @@ pub fn get_runtime_logging_info() -> RuntimeLoggingInfo {
         session_log_dir: session_dir.to_string_lossy().to_string(),
         app_log_path: session_dir.join("app.log").to_string_lossy().to_string(),
         ai_log_path: session_dir.join("ai.log").to_string_lossy().to_string(),
+        flashgrep_log_path: session_dir
+            .join("flashgrep.log")
+            .to_string_lossy()
+            .to_string(),
         webview_log_path: session_dir
             .join("webview.log")
             .to_string_lossy()
@@ -155,12 +182,20 @@ pub fn get_runtime_logging_info() -> RuntimeLoggingInfo {
     }
 }
 
+fn is_flashgrep_target(target: &str) -> bool {
+    target.starts_with(FLASHGREP_LOG_TARGET_PREFIX)
+}
+
 pub fn create_session_log_dir() -> PathBuf {
-    let pm = get_path_manager_arc();
-    let logs_root = pm.logs_dir();
+    let logs_root = resolve_logs_root();
 
     let timestamp = Local::now().format("%Y%m%dT%H%M%S").to_string();
     let session_dir = logs_root.join(&timestamp);
+
+    if let Err(e) = std::fs::create_dir_all(&logs_root) {
+        eprintln!("Warning: Failed to create logs root directory: {}", e);
+        return logs_root;
+    }
 
     if let Err(e) = std::fs::create_dir_all(&session_dir) {
         eprintln!("Warning: Failed to create log session directory: {}", e);
@@ -173,13 +208,16 @@ pub fn create_session_log_dir() -> PathBuf {
 pub fn build_log_targets(config: &LogConfig) -> Vec<Target> {
     let mut targets = Vec::new();
     let session_dir = config.session_log_dir.clone();
+    let use_stdout_only = is_embedded_webdriver_mode();
 
-    if config.is_debug {
+    if config.is_debug || use_stdout_only {
         targets.push(
             Target::new(TargetKind::Stdout)
                 .filter(|metadata| {
                     let target = metadata.target();
-                    !target.starts_with("ai") && !target.starts_with("webview")
+                    !target.starts_with("ai")
+                        && !target.starts_with("webview")
+                        && !is_flashgrep_target(target)
                 })
                 .format(|out, message, record| {
                     let target = record.target();
@@ -211,40 +249,88 @@ pub fn build_log_targets(config: &LogConfig) -> Vec<Target> {
         );
     }
 
-    let app_log_dir = session_dir.clone();
-    targets.push(
-        Target::new(TargetKind::Folder {
-            path: app_log_dir,
-            file_name: Some("app".into()),
-        })
-        .filter(|metadata| {
-            let target = metadata.target();
-            !target.starts_with("ai") && !target.starts_with("webview")
-        })
-        .format(format_log_plain),
-    );
+    if !use_stdout_only {
+        let app_log_dir = session_dir.clone();
+        targets.push(
+            Target::new(TargetKind::Folder {
+                path: app_log_dir,
+                file_name: Some("app".into()),
+            })
+            .filter(|metadata| {
+                let target = metadata.target();
+                !target.starts_with("ai")
+                    && !target.starts_with("webview")
+                    && !is_flashgrep_target(target)
+            })
+            .format(format_log_plain),
+        );
 
-    let ai_log_dir = session_dir.clone();
-    targets.push(
-        Target::new(TargetKind::Folder {
-            path: ai_log_dir,
-            file_name: Some("ai".into()),
-        })
-        .filter(|metadata| metadata.target().starts_with("ai"))
-        .format(format_log_plain),
-    );
+        let ai_log_dir = session_dir.clone();
+        targets.push(
+            Target::new(TargetKind::Folder {
+                path: ai_log_dir,
+                file_name: Some("ai".into()),
+            })
+            .filter(|metadata| metadata.target().starts_with("ai"))
+            .format(format_log_plain),
+        );
 
-    let webview_log_dir = session_dir;
-    targets.push(
-        Target::new(TargetKind::Folder {
-            path: webview_log_dir,
-            file_name: Some("webview".into()),
-        })
-        .filter(|metadata| metadata.target().starts_with("webview"))
-        .format(format_log_plain),
-    );
+        let flashgrep_log_dir = session_dir.clone();
+        targets.push(
+            Target::new(TargetKind::Folder {
+                path: flashgrep_log_dir,
+                file_name: Some("flashgrep".into()),
+            })
+            .filter(|metadata| is_flashgrep_target(metadata.target()))
+            .format(format_log_plain),
+        );
+
+        let webview_log_dir = session_dir;
+        targets.push(
+            Target::new(TargetKind::Folder {
+                path: webview_log_dir,
+                file_name: Some("webview".into()),
+            })
+            .filter(|metadata| metadata.target().starts_with("webview"))
+            .format(format_log_plain),
+        );
+    }
 
     targets
+}
+
+pub fn build_log_plugin<R: Runtime>(log_targets: Vec<Target>) -> TauriPlugin<R> {
+    tauri_plugin_log::Builder::new()
+        .level(log::LevelFilter::Trace)
+        .level_for("ignore", log::LevelFilter::Off)
+        .level_for("ignore::walk", log::LevelFilter::Off)
+        .level_for("globset", log::LevelFilter::Off)
+        .level_for("tracing", log::LevelFilter::Off)
+        .level_for("opentelemetry_sdk", log::LevelFilter::Off)
+        .level_for("opentelemetry-otlp", log::LevelFilter::Off)
+        .level_for("notify", log::LevelFilter::Off)
+        // These targets can emit hot-path trace diagnostics during event
+        // routing. Keep debug diagnostics, warnings, and errors, but avoid
+        // drowning useful app traces in mechanical noise.
+        .level_for(
+            "bitfun_core::agentic::events::queue",
+            log::LevelFilter::Debug,
+        )
+        .level_for(
+            "bitfun_core::agentic::events::router",
+            log::LevelFilter::Debug,
+        )
+        .level_for("hyper_util", log::LevelFilter::Info)
+        .level_for("h2", log::LevelFilter::Info)
+        .level_for("portable_pty", log::LevelFilter::Info)
+        .level_for("russh", log::LevelFilter::Info)
+        .level_for("grep_searcher", log::LevelFilter::Warn)
+        .targets(log_targets)
+        .rotation_strategy(RotationStrategy::KeepSome(2)) // 1 active + 2 backups
+        .max_file_size(10 * 1024 * 1024)
+        .timezone_strategy(TimezoneStrategy::UseLocal)
+        .clear_format()
+        .build()
 }
 
 fn format_log_plain(
@@ -272,8 +358,7 @@ fn format_log_plain(
 pub async fn cleanup_old_log_sessions() {
     tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
 
-    let pm = get_path_manager_arc();
-    let logs_root = pm.logs_dir();
+    let logs_root = resolve_logs_root();
 
     if let Err(e) = do_cleanup_log_sessions(&logs_root, MAX_LOG_SESSIONS).await {
         log::warn!("Failed to cleanup old log sessions: {}", e);

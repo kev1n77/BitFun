@@ -60,6 +60,8 @@ export const InlineAiPreviewBlock: React.FC<InlineAiPreviewBlockProps> = ({
   return (
     <div
       className={`m-editor-inline-ai-preview m-editor-inline-ai-preview--inline ${previewStateClass}`}
+      data-testid="md-inline-ai-preview"
+      data-status={status}
       onPointerDownCapture={handlePointerDown}
       onMouseDownCapture={handleMouseDown}
     >
@@ -71,9 +73,9 @@ export const InlineAiPreviewBlock: React.FC<InlineAiPreviewBlockProps> = ({
         {response ? (
           <InlineMarkdownPreview value={response} basePath={basePath} />
         ) : (
-          <div className="m-editor-inline-ai-preview__placeholder">{labels.streaming}</div>
+          <div className="m-editor-inline-ai-preview__placeholder" data-testid="md-inline-ai-preview-placeholder">{labels.streaming}</div>
         )}
-        {error && <div className="m-editor-inline-ai__error">{error}</div>}
+        {error && <div className="m-editor-inline-ai__error" data-testid="md-inline-ai-preview-error">{error}</div>}
       </div>
       <div className="m-editor-inline-ai-preview__actions">
         {canAccept && (
@@ -82,6 +84,7 @@ export const InlineAiPreviewBlock: React.FC<InlineAiPreviewBlockProps> = ({
             variant="primary"
             size="small"
             disabled={!canAccept}
+            data-testid="md-inline-ai-accept"
             onClick={onAccept}
           >
             <Check size={14} strokeWidth={2} />
@@ -92,6 +95,7 @@ export const InlineAiPreviewBlock: React.FC<InlineAiPreviewBlockProps> = ({
           type="button"
           variant="ghost"
           size="small"
+          data-testid="md-inline-ai-reject"
           onClick={onReject}
         >
           <X size={14} strokeWidth={2} />
@@ -102,6 +106,7 @@ export const InlineAiPreviewBlock: React.FC<InlineAiPreviewBlockProps> = ({
             type="button"
             variant="ghost"
             size="small"
+            data-testid="md-inline-ai-retry"
             onClick={onRetry}
           >
             <RotateCcw size={14} strokeWidth={2} />

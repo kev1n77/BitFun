@@ -7,6 +7,8 @@
  */
 
 @use '../../../component-library/styles/tokens.scss' as *;
+@use '../../../component-library/styles/nav-panel-font-scope.scss' as nav-font;
+@use '../../../component-library/styles/btn-primary-tokens.scss' as btn-primary;
 
 $_nav-width: 240px;
 // Scene-inner fade: used when switching between different SceneNav components
@@ -24,25 +26,35 @@ $_section-header-height: 24px;
 // ──────────────────────────────────────────────
 
 .bitfun-nav-panel {
+  @include nav-font.nav-panel-font-token-scope;
+
   width: 100%;
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   background: var(--color-bg-primary);
-  overflow: hidden;
+  overflow: visible;
   user-select: none;
+  --bitfun-nav-row-action-size: 20px;
+  --bitfun-nav-row-action-icon-size: 13px;
+  --bitfun-nav-row-action-offset: 4px;
+  --bitfun-nav-row-action-gap: 4px;
 
   // ── Container ──────────────────────────────
   &__content {
     flex: 1 1 auto;
     min-height: 0;
+    min-width: 0;
+    max-width: 100%;
     display: flex;
     flex-direction: column;
     // Dynamic clip-path origin — set via JS from anchor element measurement.
     // Fallback: ~20% from top (roughly the "Files" item in a typical layout).
     position: relative;
-    overflow: hidden;
+    overflow: visible;
 
     --clip-origin-top: 20%;
     --clip-origin-bottom: 80%;
@@ -58,6 +70,8 @@ $_section-header-height: 24px;
     // ── MainNav layer ──
     &--main {
       flex: 1 1 auto;
+      min-width: 0;
+      max-width: 100%;
       transition: opacity 0.2s $easing-standard;
 
       // Non-split scenes: hide MainNav instantly when scene nav opens
@@ -109,6 +123,8 @@ $_section-header-height: 24px;
   &__scene-inner {
     flex: 1 1 auto;
     min-height: 0;
+    min-width: 0;
+    max-width: 100%;
     display: flex;
     flex-direction: column;
   }
@@ -123,30 +139,55 @@ $_section-header-height: 24px;
     overflow: visible;
   }
 
-  &__mode-switch {
+  &__mode-pill-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  &__mode-pill-caption {
+    margin: 0;
+    padding: 0 4px;
+    font-size: var(--font-size-xxs);
+    line-height: 1.35;
+    color: var(--color-text-muted);
+    opacity: 0.78;
+    overflow-wrap: break-word;
+  }
+
+  &__mode-pill {
+    --bitfun-mode-pill-liquid-pro-bg: color-mix(in srgb, var(--color-primary) 22%, var(--element-bg-medium));
+    --bitfun-mode-pill-liquid-assistant-bg: color-mix(in srgb, var(--color-accent-500) 28%, var(--element-bg-medium));
+    --bitfun-mode-pill-liquid-mid-bg: color-mix(
+      in srgb,
+      var(--color-accent-500) 16%,
+      color-mix(in srgb, var(--color-primary) 14%, var(--element-bg-medium))
+    );
+
+    position: relative;
     width: 100%;
     min-width: 0;
-    min-height: 56px;
-    padding: 10px 12px;
-    border: 1px solid color-mix(in srgb, var(--color-primary) 16%, transparent);
-    border-radius: 12px;
-    display: inline-flex;
-    align-items: center;
-    gap: 10px;
-    background: color-mix(in srgb, var(--element-bg-soft) 88%, transparent);
+    padding: 5px;
+    border: 1px solid color-mix(in srgb, var(--color-primary) 14%, transparent);
+    border-radius: 999px;
+    display: flex;
+    align-items: stretch;
+    background: color-mix(in srgb, var(--element-bg-soft) 90%, transparent);
     color: var(--color-text-primary);
-    text-align: left;
     cursor: pointer;
+    text-align: center;
+    box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 4%, transparent);
     transition: transform $motion-fast $easing-standard,
                 box-shadow $motion-fast $easing-standard,
-                background $motion-fast $easing-standard,
-                border-color $motion-fast $easing-standard;
+                border-color $motion-fast $easing-standard,
+                background $motion-fast $easing-standard;
 
     &:hover {
       transform: translateY(-1px);
-      background: color-mix(in srgb, var(--element-bg-medium) 88%, transparent);
-      border-color: color-mix(in srgb, var(--color-primary) 34%, transparent);
-      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.16);
+      border-color: color-mix(in srgb, var(--color-primary) 28%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 5%, transparent),
+                  0 10px 22px rgba(0, 0, 0, 0.12);
     }
 
     &:focus-visible {
@@ -155,148 +196,154 @@ $_section-header-height: 24px;
     }
 
     &.is-assistant {
-      border-color: color-mix(in srgb, var(--color-accent-500) 30%, transparent);
-      background: color-mix(in srgb, var(--color-accent-500) 10%, var(--element-bg-soft));
+      border-color: color-mix(in srgb, var(--color-accent-500) 26%, transparent);
+      background: color-mix(in srgb, var(--color-accent-500) 8%, var(--element-bg-soft));
     }
 
-    &.is-switching {
-      // 整体 clip-path 涟漪收缩 → 展开，linear 因为各段 easing 写在关键帧内部
-      animation: bitfun-nav-mode-switch 0.48s linear;
-
-      .bitfun-nav-panel__mode-switch-logo {
-        animation: bitfun-nav-mode-switch-logo 0.48s linear;
-      }
-
-      .bitfun-nav-panel__mode-switch-copy {
-        animation: bitfun-nav-mode-switch-copy 0.48s linear;
-      }
+    &.is-switching:hover {
+      transform: none;
     }
   }
 
-  &__mode-switch-logo {
+  &__mode-pill-inner {
     position: relative;
-    width: 48px;
-    height: 48px;
-    flex-shrink: 0;
-    border-radius: 50%;
+    flex: 1;
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    min-height: 44px;
+    border-radius: 999px;
     overflow: hidden;
-    background: color-mix(in srgb, var(--element-bg-medium) 92%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border-subtle) 75%, transparent);
+  }
 
-    .bitfun-nav-panel__mode-switch:not(.is-assistant) & {
-      border-radius: 0;
-      background: transparent;
-      box-shadow: none;
-      overflow: visible;
+  &__mode-pill-liquid {
+    position: absolute;
+    z-index: 0;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 50%;
+    border-radius: 999px;
+    background: var(--bitfun-mode-pill-liquid-pro-bg);
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, #fff 12%, transparent),
+      0 2px 10px color-mix(in srgb, var(--color-primary) 12%, transparent);
+    transform: translate3d(0, 0, 0) scale(1, 1);
+    transform-origin: 50% 50%;
+    will-change: transform;
+    transition:
+      transform 0.42s cubic-bezier(0.33, 1.18, 0.52, 1),
+      background 0.38s ease,
+      box-shadow 0.38s ease,
+      border-radius 0.38s ease;
+
+    .bitfun-nav-panel__mode-pill.is-assistant:not(.is-switching) & {
+      transform: translate3d(100%, 0, 0) scale(1, 1);
+      background: var(--bitfun-mode-pill-liquid-assistant-bg);
+      box-shadow:
+        inset 0 1px 0 color-mix(in srgb, #fff 12%, transparent),
+        0 2px 12px color-mix(in srgb, var(--color-accent-500) 18%, transparent);
+    }
+
+    &.is-morph-to-assistant {
+      animation: bitfun-nav-mode-pill-morph-to-assistant 0.48s linear forwards;
+    }
+
+    &.is-morph-to-pro {
+      animation: bitfun-nav-mode-pill-morph-to-pro 0.48s linear forwards;
+    }
+
+    .bitfun-nav-panel__mode-pill.is-switching & {
+      transition: none;
     }
   }
 
-  &__mode-switch-logo-image {
+  &__mode-pill-segment {
+    position: relative;
+    z-index: 1;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    min-width: 0;
+    padding: 6px 4px;
+    font-size: var(--font-size-xxs);
+    font-weight: 600;
+    line-height: 1.15;
+    color: var(--color-text-muted);
+    transition: color $motion-fast $easing-standard;
+
+    &-text {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 4px;
+      max-width: 100%;
+    }
+
+    &--pro .bitfun-nav-panel__mode-pill-segment-icon {
+      width: 22px;
+      height: 22px;
+    }
+
+    &--assistant .bitfun-nav-panel__mode-pill-segment-icon {
+      width: 24px;
+      height: 24px;
+    }
+  }
+
+  &__mode-pill:not(.is-assistant) &__mode-pill-segment--pro,
+  &__mode-pill.is-assistant &__mode-pill-segment--assistant {
+    color: var(--color-text-primary);
+  }
+
+  &__mode-pill-segment-icon {
+    position: relative;
+    flex-shrink: 0;
+    border-radius: 8px;
+    overflow: hidden;
+
+    img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    &--dual {
+      background: color-mix(in srgb, var(--element-bg-medium) 88%, transparent);
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border-subtle) 70%, transparent);
+    }
+  }
+
+  &__mode-pill-segment-icon-img {
     position: absolute;
     inset: 0;
-    width: 100%;
-    height: 100%;
-    padding: 5px;
-    object-fit: contain;
-    display: block;
+    padding: 2px;
     transition: opacity $motion-fast $easing-standard,
                 transform $motion-fast $easing-standard;
 
     &--hover {
       opacity: 0;
-      transform: scale(0.92);
+      transform: scale(0.9);
     }
 
-    &--static {
-      opacity: 1;
-      transform: none;
-    }
-
-    .bitfun-nav-panel__mode-switch:hover &--default {
-      opacity: 0;
-      transform: scale(1.06);
-    }
-
-    .bitfun-nav-panel__mode-switch:hover &--hover {
+    &--default {
       opacity: 1;
       transform: scale(1);
     }
-  }
 
-  &__mode-switch-copy {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    flex: 1;
-  }
-
-  &__mode-switch-label {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    max-width: 100%;
-    font-size: 11px;
-    font-weight: 600;
-    line-height: 1.15;
-    color: var(--color-text-primary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  &__mode-switch-sub {
-    display: grid;
-    grid-template-areas: 'sub';
-    align-items: start;
-    min-width: 0;
-    max-width: 100%;
-  }
-
-  &__mode-switch-desc {
-    grid-area: sub;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-    max-width: 100%;
-    opacity: 1;
-    transition: opacity $motion-fast $easing-standard;
-
-    .bitfun-nav-panel__mode-switch:hover & {
+    .bitfun-nav-panel__mode-pill:hover .bitfun-nav-panel__mode-pill-segment-icon--dual &--default {
       opacity: 0;
+      transform: scale(1.05);
     }
-  }
 
-  &__mode-switch-desc-main {
-    min-width: 0;
-    max-width: 100%;
-    font-size: 10px;
-    line-height: 1.35;
-    color: var(--color-text-muted);
-    opacity: 0.78;
-    overflow-wrap: break-word;
-  }
-
-  &__mode-switch-hint {
-    grid-area: sub;
-    align-self: center;
-    justify-self: start;
-    min-width: 0;
-    max-width: 100%;
-    font-size: 10px;
-    line-height: 1.2;
-    color: var(--color-text-muted);
-    opacity: 0;
-    font-weight: 400;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    transition: opacity $motion-fast $easing-standard;
-
-    .bitfun-nav-panel__mode-switch:hover & {
-      opacity: 0.7;
+    .bitfun-nav-panel__mode-pill:hover .bitfun-nav-panel__mode-pill-segment-icon--dual &--hover {
+      opacity: 1;
+      transform: scale(1);
     }
   }
 
@@ -322,8 +369,8 @@ $_section-header-height: 24px;
     border: none;
     border-radius: $size-radius-base 0 0 $size-radius-base;
     background: var(--element-bg-soft);
-    color: var(--color-primary);
-    font-size: 12px;
+    color: var(--color-text-primary);
+    font-size: var(--font-size-xs);
     font-weight: 600;
     cursor: pointer;
     transition: background $motion-fast $easing-standard,
@@ -386,7 +433,7 @@ $_section-header-height: 24px;
     border: none;
     border-radius: 0 $size-radius-base $size-radius-base 0;
     background: var(--element-bg-soft);
-    color: var(--color-text-muted);
+    color: var(--color-text-primary);
     cursor: pointer;
     transition: background $motion-fast $easing-standard,
                 color $motion-fast $easing-standard,
@@ -399,7 +446,7 @@ $_section-header-height: 24px;
 
     &.is-active {
       background: var(--element-bg-medium);
-      color: var(--color-primary);
+      color: var(--color-text-primary);
     }
 
     &:active { transform: translateY(1px); }
@@ -441,7 +488,7 @@ $_section-header-height: 24px;
     background: transparent;
     color: var(--color-text-secondary);
     cursor: pointer;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     text-align: left;
     transition: color $motion-fast $easing-standard,
                 background $motion-fast $easing-standard;
@@ -459,12 +506,9 @@ $_section-header-height: 24px;
   &__mode-dropdown-item-icon {
     flex-shrink: 0;
 
-    &.is-code {
-      color: color-mix(in srgb, var(--color-primary) 75%, var(--color-text-muted));
-    }
-
+    &.is-code,
     &.is-cowork {
-      color: color-mix(in srgb, var(--color-accent-500) 75%, var(--color-text-muted));
+      color: color-mix(in srgb, var(--color-text-secondary) 82%, var(--color-text-muted));
     }
   }
 
@@ -477,7 +521,7 @@ $_section-header-height: 24px;
 
   &__mode-dropdown-item-check {
     flex-shrink: 0;
-    color: var(--color-primary);
+    color: var(--color-text-primary);
     margin-left: auto;
   }
 
@@ -487,9 +531,13 @@ $_section-header-height: 24px;
 
   &__sections {
     flex: 1 1 auto;
+    min-width: 0;
+    max-width: 100%;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: $size-gap-3 0 $size-gap-2 0;
+    // No padding-top: separation from top-actions is only .bitfun-nav-panel__top-actions padding-bottom.
+    // Top padding here stacked with that and read as “extra” gap above the first section header.
+    padding: 0 0 $size-gap-3 0;
 
     &::-webkit-scrollbar { width: 3px; }
     &::-webkit-scrollbar-track { background: transparent; }
@@ -498,7 +546,7 @@ $_section-header-height: 24px;
       border-radius: 2px;
     }
 
-    // 与按钮涟漪同步：列表内容淡出后换组，再淡入
+    // Synced with button ripple: fade list out, swap group, fade in
     &.is-mode-switching {
       animation: bitfun-nav-sections-mode-switch 0.48s linear;
     }
@@ -514,9 +562,9 @@ $_section-header-height: 24px;
     gap: $size-gap-1;
     height: $_section-header-height;
     padding: 0 $size-gap-2;
-    margin: 0 $size-gap-2;
+    margin: 0 $size-gap-1;
     border-radius: 4px;
-    opacity: 0.72;
+    opacity: 0.92;
     transition: background $motion-fast $easing-standard,
                 opacity $motion-fast $easing-standard;
 
@@ -528,7 +576,7 @@ $_section-header-height: 24px;
         background: var(--element-bg-soft);
 
         .bitfun-nav-panel__section-label {
-          color: var(--color-text-secondary);
+          color: var(--color-text-primary);
         }
       }
 
@@ -545,11 +593,11 @@ $_section-header-height: 24px;
   }
 
   &__section-label {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
+    font-size: var(--font-size-2xs);
+    font-weight: 600;
+    letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: var(--color-text-secondary);
+    color: var(--color-text-muted);
     flex: 1;
     white-space: nowrap;
     overflow: hidden;
@@ -558,16 +606,25 @@ $_section-header-height: 24px;
   }
 
   &__section-header--scene-entry &__section-label {
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     font-weight: 600;
     letter-spacing: normal;
     text-transform: none;
     color: var(--color-text-primary);
   }
 
-  &__miniapp-footer {
+  &__bottom-bar {
     flex-shrink: 0;
-    padding: $size-gap-1 $size-gap-2 $size-gap-2;
+    display: flex;
+    align-items: stretch;
+    gap: $size-gap-1;
+    padding: $size-gap-1 $size-gap-2 $size-gap-1;
+  }
+
+  &__miniapp-footer {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
   }
 
   &__assistant-footer {
@@ -619,16 +676,9 @@ $_section-header-height: 24px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     font-weight: 500;
     line-height: 1.1;
-    opacity: 0.72;
-    transition: opacity $motion-fast $easing-standard;
-
-    .bitfun-nav-panel__assistant-entry:hover &,
-    .bitfun-nav-panel__assistant-entry.is-active & {
-      opacity: 1;
-    }
   }
 
   &__miniapp-entry-wrap {
@@ -636,13 +686,14 @@ $_section-header-height: 24px;
   }
 
   &__miniapp-entry {
+    position: relative;
     width: 100%;
     min-height: 42px;
     display: flex;
     align-items: center;
     gap: $size-gap-2;
     padding: 8px 10px 8px 12px;
-    border: none;
+    border: 1px solid transparent;
     border-radius: 10px;
     background: transparent;
     color: var(--color-text-secondary);
@@ -675,6 +726,25 @@ $_section-header-height: 24px;
       border: 1px solid var(--border-subtle);
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
     }
+
+    &.has-customizing-apps {
+      color: var(--color-text-primary);
+
+      &::after {
+        content: "";
+        position: absolute;
+        top: 6px;
+        left: 7px;
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: #60a5fa;
+        box-shadow:
+          0 0 0 2px var(--color-bg-primary),
+          0 0 8px rgba(96, 165, 250, 0.75);
+        pointer-events: none;
+      }
+    }
   }
 
   &__miniapp-entry-main {
@@ -695,7 +765,7 @@ $_section-header-height: 24px;
     position: absolute;
     top: 0;
     right: -36px;
-    font-size: 9px;
+    font-size: var(--font-size-xxs);
     padding: 1px 5px;
     border-radius: 4px;
   }
@@ -705,16 +775,9 @@ $_section-header-height: 24px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     font-weight: 500;
     line-height: 1.1;
-    opacity: 0.72;
-    transition: opacity $motion-fast $easing-standard;
-
-    .bitfun-nav-panel__miniapp-entry:hover &,
-    .bitfun-nav-panel__miniapp-entry.is-active & {
-      opacity: 1;
-    }
   }
 
   &__miniapp-entry-apps {
@@ -726,6 +789,7 @@ $_section-header-height: 24px;
   }
 
   &__miniapp-bubble {
+    position: relative;
     width: 26px;
     height: 26px;
     border-radius: 999px;
@@ -738,28 +802,67 @@ $_section-header-height: 24px;
     box-shadow: none;
     overflow: hidden;
     transition: transform $motion-fast $easing-standard,
-                box-shadow $motion-fast $easing-standard;
+                box-shadow $motion-fast $easing-standard,
+                filter $motion-fast $easing-standard,
+                opacity $motion-fast $easing-standard;
 
     & + & {
       margin-left: -8px;
     }
 
+    &:not(.is-active):not(.bitfun-nav-panel__miniapp-bubble--more) {
+      filter: saturate(0.72);
+      opacity: 0.9;
+    }
+
     &:hover {
       transform: translateY(-2px) scale(1.06);
       box-shadow: 0 10px 20px rgba(0, 0, 0, 0.24);
+      filter: saturate(1);
+      opacity: 1;
     }
 
     &.is-active {
+      filter: saturate(1);
+      opacity: 1;
       box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22),
                   0 0 0 3px color-mix(in srgb, var(--color-primary) 28%, transparent);
+    }
+
+    &.is-customizing {
+      box-shadow: 0 0 0 2px color-mix(in srgb, #60a5fa 42%, transparent),
+                  0 8px 18px rgba(0, 0, 0, 0.2);
+    }
+
+    &.is-active.is-customizing {
+      box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22),
+                  0 0 0 3px color-mix(in srgb, var(--color-primary) 28%, transparent),
+                  0 0 0 5px color-mix(in srgb, #60a5fa 28%, transparent);
+    }
+
+    &-customize-dot {
+      position: absolute;
+      right: 2px;
+      bottom: 2px;
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: #60a5fa;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.28), 0 0 7px rgba(96, 165, 250, 0.72);
     }
 
     &--more {
       background: color-mix(in srgb, var(--element-bg-medium) 92%, transparent);
       color: var(--color-text-secondary);
-      font-size: 10px;
+      font-size: var(--font-size-xxs);
       font-weight: 700;
       letter-spacing: 0.01em;
+      filter: none;
+      opacity: 1;
+
+      &:hover {
+        color: var(--color-text-primary);
+      }
     }
   }
 
@@ -792,13 +895,13 @@ $_section-header-height: 24px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 20px;
-    height: 20px;
+    width: var(--bitfun-nav-row-action-size);
+    height: var(--bitfun-nav-row-action-size);
     padding: 0;
     border: none;
     border-radius: 4px;
     background: transparent;
-    color: var(--color-text-muted);
+    color: var(--color-text-primary);
     cursor: pointer;
     transition: color $motion-fast $easing-standard,
                 background $motion-fast $easing-standard;
@@ -828,8 +931,18 @@ $_section-header-height: 24px;
   }
 
   &__workspace-menu {
+    @include nav-font.nav-panel-font-token-scope;
+
     position: fixed;
-    min-width: 156px;
+    /* Shrink-wrap to widest row; cap width for long paths + viewport on small screens */
+    display: inline-block;
+    width: fit-content;
+    max-width: min(440px, calc(100vw - 32px));
+    max-height: min(560px, calc(100vh - 16px));
+    overflow-x: hidden;
+    overflow-y: auto;
+    vertical-align: top;
+    box-sizing: border-box;
     padding: $size-gap-1 0;
     background: var(--color-bg-elevated, #1e1e22);
     border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
@@ -854,7 +967,7 @@ $_section-header-height: 24px;
     background: transparent;
     color: var(--color-text-secondary);
     cursor: pointer;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     text-align: left;
     transition: color $motion-fast $easing-standard,
                 background $motion-fast $easing-standard;
@@ -875,8 +988,10 @@ $_section-header-height: 24px;
       flex-shrink: 0;
     }
 
-    span {
+    /* Only the label row grows; nested spans inside --main must NOT get flex:1 or text splits across columns */
+    > span {
       flex: 1;
+      min-width: 0;
     }
 
     &--workspace {
@@ -891,6 +1006,37 @@ $_section-header-height: 24px;
     white-space: nowrap;
   }
 
+  &__workspace-menu-item--workspace &__workspace-menu-item-main {
+    display: flex;
+    align-items: baseline;
+    gap: 0.3em;
+    white-space: nowrap;
+  }
+
+  &__workspace-menu-item-host {
+    /* flex-shrink 0: host is not squeezed; max-width ~26ch fits 255.255.255.255 + margin in typical UI fonts */
+    flex: 0 0 auto;
+    max-width: min(26ch, 52%);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--color-text-muted);
+    font-size: 0.92em;
+  }
+
+  &__workspace-menu-item-host-sep {
+    flex: 0 0 auto;
+    color: var(--color-text-muted);
+    opacity: 0.55;
+    font-size: 0.92em;
+  }
+
+  &__workspace-menu-item-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   &__workspace-menu-divider {
     height: 1px;
     margin: $size-gap-1 0;
@@ -903,7 +1049,7 @@ $_section-header-height: 24px;
     gap: $size-gap-1;
     padding: $size-gap-1 $size-gap-3;
     color: var(--color-text-muted);
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
@@ -911,7 +1057,7 @@ $_section-header-height: 24px;
   &__workspace-menu-empty {
     padding: $size-gap-2 $size-gap-3;
     color: var(--color-text-muted);
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
   }
 
   &__workspace-menu-workspaces {
@@ -927,6 +1073,8 @@ $_section-header-height: 24px;
   &__collapsible {
     display: grid;
     grid-template-rows: 1fr;
+    min-width: 0;
+    max-width: 100%;
     transition: grid-template-rows $motion-base $easing-standard,
                 transform $motion-base $easing-decelerate,
                 opacity $motion-base $easing-decelerate;
@@ -941,8 +1089,10 @@ $_section-header-height: 24px;
   }
 
   &__collapsible-inner {
-    overflow: hidden;
+    overflow: visible;
     min-height: 0;
+    min-width: 0;
+    max-width: 100%;
   }
 
   // ──────────────────────────────────────────────
@@ -952,8 +1102,21 @@ $_section-header-height: 24px;
   &__items {
     display: flex;
     flex-direction: column;
-    padding: 2px $size-gap-2;
+    min-width: 0;
+    max-width: 100%;
+    padding: 2px $size-gap-1;
     gap: 2px;
+
+    // Multiple SessionsSection siblings: match vertical rhythm of __workspace-list (gap 0 + 2px row padding).
+    &--session-blocks {
+      gap: 0;
+    }
+  }
+
+  button.bitfun-nav-panel__inline-item {
+    font: inherit;
+    appearance: none;
+    -webkit-appearance: none;
   }
 
   // ──────────────────────────────────────────────
@@ -974,9 +1137,13 @@ $_section-header-height: 24px;
   // Item slots depart with the split-open animation used by scene navs.
 
   &__section {
-    margin-bottom: $size-gap-2;
+    margin-bottom: $size-gap-5 * 0.75;
     transition: transform $_depart-duration $_depart-easing,
                 opacity $_depart-duration $_depart-easing;
+
+    &:last-child {
+      margin-bottom: $size-gap-5;
+    }
 
     &.is-departing-up {
       transform: translateY(-$_depart-distance);
@@ -1030,21 +1197,21 @@ $_section-header-height: 24px;
     border: none;
     border-radius: 4px;
     background: transparent;
-    color: var(--color-text-muted);
+    color: var(--color-text-secondary);
     cursor: pointer;
     text-align: left;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     font-weight: 400;
     width: 100%;
     position: relative;
-    opacity: 0.4;
+    opacity: 1;
     transition: color $motion-fast $easing-standard,
                 background $motion-fast $easing-standard,
                 opacity $motion-fast $easing-standard;
 
     &:hover {
       opacity: 1;
-      color: var(--color-text-secondary);
+      color: var(--color-text-primary);
       background: var(--element-bg-soft);
     }
 
@@ -1067,12 +1234,12 @@ $_section-header-height: 24px;
         transform: translateY(-50%);
         width: 2px;
         height: 16px;
-        background: var(--color-primary);
+        background: var(--btn-primary-bg, var(--color-text-primary));
         border-radius: 0 2px 2px 0;
       }
 
       .bitfun-nav-panel__item-icon {
-        color: var(--color-primary);
+        color: var(--color-text-primary);
         opacity: 1;
       }
     }
@@ -1096,12 +1263,12 @@ $_section-header-height: 24px;
     display: flex;
     align-items: center;
     flex-shrink: 0;
-    opacity: 0.5;
+    opacity: 0.78;
     transition: opacity $motion-fast $easing-standard,
                 color $motion-fast $easing-standard;
 
     .bitfun-nav-panel__item:hover & {
-      opacity: 0.75;
+      opacity: 1;
     }
   }
 
@@ -1119,7 +1286,7 @@ $_section-header-height: 24px;
 
   &__item-badge {
     flex-shrink: 0;
-    font-size: 10px;
+    font-size: var(--font-size-xxs);
     color: var(--color-text-muted);
     margin-left: auto;
     max-width: 80px;
@@ -1159,17 +1326,17 @@ $_section-header-height: 24px;
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 22px;
-    height: 22px;
+    width: var(--bitfun-nav-row-action-size);
+    height: var(--bitfun-nav-row-action-size);
     margin-left: auto;
     border-radius: $size-radius-sm;
-    color: var(--color-text-muted);
+    color: var(--color-text-primary);
     cursor: pointer;
     transition: color $motion-fast $easing-standard,
                 background $motion-fast $easing-standard;
 
     &:hover {
-      color: var(--color-primary);
+      color: var(--color-text-secondary);
       background: var(--element-bg-soft);
     }
 
@@ -1180,75 +1347,68 @@ $_section-header-height: 24px;
 
 }
 
-// ── 形变涟漪：按钮 clip-path 收缩成圆点，再弹开回矩形 ──────────────────────
-// 各关键帧内用 animation-timing-function 分段控制 easing：
-//   收缩段用 ease-in（快速压缩）；展开段用 spring curve（弹性回弹）
-@keyframes bitfun-nav-mode-switch {
+// Liquid thumb: slide with horizontal stretch + corner morph (pro <-> assistant)
+@keyframes bitfun-nav-mode-pill-morph-to-assistant {
   0% {
-    clip-path: circle(120% at 50% 50%);
-    animation-timing-function: cubic-bezier(0.55, 0, 0.75, 0.2);
+    transform: translate3d(0, 0, 0) scale(1, 1);
+    border-radius: 999px;
+    background: var(--bitfun-mode-pill-liquid-pro-bg);
+    animation-timing-function: cubic-bezier(0.42, 0, 0.64, 0.12);
   }
-  42% {
-    clip-path: circle(26px at 50% 50%);
-    animation-timing-function: linear;
+  24% {
+    transform: translate3d(19%, 0, 0) scale(1.11, 0.9);
+    border-radius: 15px;
+    background: var(--bitfun-mode-pill-liquid-mid-bg);
+    animation-timing-function: cubic-bezier(0.36, 0.02, 0.22, 1);
   }
-  // 内容在此帧附近（200ms）悄然替换，圆点完全遮住跳变
-  58% {
-    clip-path: circle(26px at 50% 50%);
+  48% {
+    transform: translate3d(50%, 0, 0) scale(1.22, 0.82);
+    border-radius: 10px;
+    background: var(--bitfun-mode-pill-liquid-mid-bg);
+    animation-timing-function: cubic-bezier(0.24, 0.72, 0.32, 1);
+  }
+  72% {
+    transform: translate3d(84%, 0, 0) scale(1.05, 0.96);
+    border-radius: 17px;
+    background: color-mix(in srgb, var(--color-accent-500) 24%, var(--element-bg-medium));
     animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
   }
   100% {
-    clip-path: circle(120% at 50% 50%);
+    transform: translate3d(100%, 0, 0) scale(1, 1);
+    border-radius: 999px;
+    background: var(--bitfun-mode-pill-liquid-assistant-bg);
   }
 }
 
-// Logo：缩小旋转消失，旋转反向放大出现
-@keyframes bitfun-nav-mode-switch-logo {
+@keyframes bitfun-nav-mode-pill-morph-to-pro {
   0% {
-    transform: scale(1) rotate(0deg);
-    opacity: 1;
-    animation-timing-function: cubic-bezier(0.55, 0, 0.75, 0.2);
+    transform: translate3d(100%, 0, 0) scale(1, 1);
+    border-radius: 999px;
+    background: var(--bitfun-mode-pill-liquid-assistant-bg);
+    animation-timing-function: cubic-bezier(0.42, 0, 0.64, 0.12);
   }
-  40% {
-    transform: scale(0.1) rotate(-160deg);
-    opacity: 0;
-    animation-timing-function: linear;
+  24% {
+    transform: translate3d(81%, 0, 0) scale(1.11, 0.9);
+    border-radius: 15px;
+    background: var(--bitfun-mode-pill-liquid-mid-bg);
+    animation-timing-function: cubic-bezier(0.36, 0.02, 0.22, 1);
   }
-  60% {
-    transform: scale(0.1) rotate(160deg);
-    opacity: 0;
+  48% {
+    transform: translate3d(50%, 0, 0) scale(1.22, 0.82);
+    border-radius: 10px;
+    background: var(--bitfun-mode-pill-liquid-mid-bg);
+    animation-timing-function: cubic-bezier(0.24, 0.72, 0.32, 1);
+  }
+  72% {
+    transform: translate3d(16%, 0, 0) scale(1.05, 0.96);
+    border-radius: 17px;
+    background: color-mix(in srgb, var(--color-primary) 20%, var(--element-bg-medium));
     animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
   }
   100% {
-    transform: scale(1) rotate(0deg);
-    opacity: 1;
-  }
-}
-
-// 文字区：向下淡出，从上淡入
-@keyframes bitfun-nav-mode-switch-copy {
-  0% {
-    opacity: 1;
-    transform: translateY(0);
-    filter: blur(0px);
-    animation-timing-function: cubic-bezier(0.55, 0, 0.75, 0.2);
-  }
-  36% {
-    opacity: 0;
-    transform: translateY(5px);
-    filter: blur(3px);
-    animation-timing-function: linear;
-  }
-  64% {
-    opacity: 0;
-    transform: translateY(-5px);
-    filter: blur(3px);
-    animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
-  }
-  100% {
-    opacity: 1;
-    transform: translateY(0);
-    filter: blur(0px);
+    transform: translate3d(0, 0, 0) scale(1, 1);
+    border-radius: 999px;
+    background: var(--bitfun-mode-pill-liquid-pro-bg);
   }
 }
 
@@ -1256,7 +1416,7 @@ $_section-header-height: 24px;
 // Footer: Notification + More-options menu
 // ──────────────────────────────────────────────
 
-// sections 与按钮涟漪联动：内容淡出后从对侧滑入
+// Sections tied to button ripple: fade out then slide in from the opposite side
 @keyframes bitfun-nav-sections-mode-switch {
   0% {
     opacity: 1;
@@ -1306,7 +1466,7 @@ $_section-header-height: 24px;
   align-items: center;
   justify-content: space-between;
   flex-shrink: 0;
-  padding: $size-gap-2 $size-gap-2 0;
+  padding: $size-gap-1 $size-gap-2 0;
   gap: $size-gap-1;
 }
 
@@ -1324,6 +1484,18 @@ $_section-header-height: 24px;
 
 .bitfun-nav-panel__footer-btn {
   flex-shrink: 0;
+}
+
+// Footer notification: yellow only when there are unread messages (BellDot)
+.bitfun-nav-panel__footer .bitfun-notification-btn .bitfun-notification-btn__icon--has-message {
+  color: #ca8a04;
+}
+
+.bitfun-nav-panel__footer .bitfun-notification-btn.bitfun-notification-btn--nav-hover-icon:not(.bitfun-notification-btn--has-progress) {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  justify-content: center;
 }
 
 .bitfun-nav-panel__footer-btn--icon {
@@ -1354,6 +1526,48 @@ $_section-header-height: 24px;
   &:focus-visible {
     outline: 2px solid var(--color-accent-500);
     outline-offset: -1px;
+  }
+}
+
+// Footer icon buttons: default icon fades to alternate on hover / focus-visible
+.bitfun-nav-panel__footer-btn-icon-swap {
+  position: relative;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  > svg {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    transition: opacity $motion-fast $easing-standard;
+  }
+}
+
+.bitfun-nav-panel__footer-btn-icon-swap-default {
+  opacity: 1;
+}
+
+.bitfun-nav-panel__footer-btn-icon-swap-hover {
+  opacity: 0;
+}
+
+// is-hover-open: multimodal submenu is open but pointer may be over the menu, not the button — keep “hover” icon
+.bitfun-nav-panel__footer-btn--icon:hover .bitfun-nav-panel__footer-btn-icon-swap,
+.bitfun-nav-panel__footer-btn--icon:focus-visible .bitfun-nav-panel__footer-btn-icon-swap,
+.bitfun-nav-panel__footer-btn--icon.is-hover-open .bitfun-nav-panel__footer-btn-icon-swap,
+.bitfun-nav-panel__footer .bitfun-notification-btn--nav-hover-icon:hover .bitfun-nav-panel__footer-btn-icon-swap,
+.bitfun-nav-panel__footer .bitfun-notification-btn--nav-hover-icon:focus-visible .bitfun-nav-panel__footer-btn-icon-swap {
+  .bitfun-nav-panel__footer-btn-icon-swap-default {
+    opacity: 0;
+  }
+
+  .bitfun-nav-panel__footer-btn-icon-swap-hover {
+    opacity: 1;
   }
 }
 
@@ -1418,7 +1632,7 @@ $_section-header-height: 24px;
   background: transparent;
   color: var(--color-text-secondary);
   cursor: pointer;
-  font-size: $font-size-sm;
+  font-size: var(--font-size-sm);
   font-weight: 400;
   text-align: left;
   white-space: nowrap;
@@ -1448,7 +1662,7 @@ $_section-header-height: 24px;
     background: var(--element-bg-soft);
 
     .bitfun-nav-panel__footer-multimodal-item-icon {
-      color: var(--color-primary);
+      color: var(--color-text-primary);
       opacity: 1;
     }
   }
@@ -1517,7 +1731,7 @@ $_section-header-height: 24px;
   background: transparent;
   color: var(--color-text-secondary);
   cursor: pointer;
-  font-size: $font-size-sm;
+  font-size: var(--font-size-sm);
   font-weight: 400;
   text-align: left;
   white-space: nowrap;
@@ -1575,7 +1789,7 @@ $_section-header-height: 24px;
 
 .bitfun-nav-panel__remote-disclaimer-text {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--font-size-xs);
   line-height: 1.2;
   color: var(--color-text-muted);
 }
@@ -1588,7 +1802,7 @@ $_section-header-height: 24px;
   gap: 0;
 
   li {
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     line-height: 1.2;
     color: var(--color-text-secondary);
     padding-right: 0;
@@ -1609,7 +1823,7 @@ $_section-header-height: 24px;
   border: 1px solid transparent;
   min-width: 112px;
   padding: 7px 16px;
-  font-size: 12px;
+  font-size: var(--font-size-xs);
   cursor: pointer;
   transition: all $motion-fast $easing-standard;
 }
@@ -1648,14 +1862,219 @@ $_section-header-height: 24px;
     &__section-label,
     &__layer--scene,
     &__collapsible,
-    &__mode-switch,
-    &__mode-switch-logo,
-    &__mode-switch-copy,
+    &__mode-pill,
+    &__mode-pill-liquid,
+    &__mode-pill-segment,
+    &__mode-pill-segment-icon-img,
     &__sections {
       transition: none;
       animation: none;
       clip-path: none;
       filter: none;
     }
+  }
+
+  .bitfun-nav-panel__top-action-icon-circle {
+    transition: none;
+  }
+
+  .bitfun-nav-panel__top-action-btn:hover .bitfun-nav-panel__top-action-icon-circle,
+  .bitfun-nav-panel__top-action-btn:active .bitfun-nav-panel__top-action-icon-circle {
+    transform: scale(1);
+  }
+
+  .bitfun-nav-panel__top-action-btn:not(.bitfun-nav-panel__top-action-btn--sub) .bitfun-nav-panel__top-action-icon-slot {
+    transition: none;
+  }
+
+  .bitfun-nav-panel__top-action-btn:not(.bitfun-nav-panel__top-action-btn--sub):hover .bitfun-nav-panel__top-action-icon-slot {
+    transform: scale(1);
+  }
+}
+
+// ── Nav workspace search ─────────────────────────
+
+.bitfun-nav-panel__brand-header {
+  display: flex;
+  flex-direction: column;
+  padding: 0 $size-gap-2 $size-gap-1;
+  flex-shrink: 0;
+}
+
+.bitfun-nav-panel__brand-search {
+  width: 100%;
+  min-width: 0;
+}
+
+// ── Top action strip ─────────────────────────────
+
+.bitfun-nav-panel__top-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: $size-gap-2 $size-gap-2 $size-gap-4 * 0.75;
+  flex-shrink: 0;
+}
+
+.bitfun-nav-panel__top-action-expand {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  // Divider below 扩展 (main row + optional Agents / Skills sublist) → scrollable sections
+  padding-bottom: $size-gap-2;
+  margin-bottom: $size-gap-1;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.bitfun-nav-panel__top-action-sublist {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow: hidden;
+  max-height: 0;
+  opacity: 0;
+  transition: max-height 0.22s $easing-standard,
+              opacity 0.15s $easing-standard;
+
+  &.is-open {
+    max-height: 72px;
+    opacity: 1;
+  }
+}
+
+// Align with section headers: __section-header margin-x 8 + padding-x 8 → label starts 16px from panel; __top-actions pad-x 8 + button pl 8 → icon column starts at 16px.
+.bitfun-nav-panel__top-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0 $size-gap-2 0 $size-gap-2;
+  height: 32px;
+  border: none;
+  border-radius: $size-radius-base;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: background $motion-fast $easing-standard,
+              color $motion-fast $easing-standard;
+
+  // Only the label span should grow; icon / chevron wrappers must NOT get flex: 1
+  > span:not(.bitfun-nav-panel__top-action-icon-circle):not(.bitfun-nav-panel__top-action-icon-slot):not(.bitfun-nav-panel__top-action-expand-icons) {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  svg { flex-shrink: 0; }
+
+  .bitfun-nav-panel__top-action-icon-slot {
+    width: 22px;
+    min-width: 22px;
+    height: 22px;
+    flex: 0 0 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  // 助理行：前导 icon 悬停微微放大（与 __top-action-icon-circle 一致；排除 --sub 的 Agents / Skills）
+  &:not(.bitfun-nav-panel__top-action-btn--sub) .bitfun-nav-panel__top-action-icon-slot {
+    transform: scale(1);
+    transform-origin: center;
+    transition: transform $motion-fast $easing-standard;
+  }
+
+  &:not(.bitfun-nav-panel__top-action-btn--sub):hover .bitfun-nav-panel__top-action-icon-slot {
+    transform: scale(1.07);
+  }
+
+  &:hover {
+    background: var(--element-bg-soft);
+    color: var(--color-text-primary);
+  }
+
+  &:focus-visible {
+    outline: 1px solid var(--color-accent-500);
+    outline-offset: 1px;
+  }
+
+  &.is-active {
+    background: var(--element-bg-soft);
+    color: var(--color-text-primary);
+  }
+
+  &--sub {
+    padding-left: 18px;
+  }
+}
+
+// 扩展：默认 Blocks，悬停时图标位切换为 Chevron；展开时箭头朝上
+.bitfun-nav-panel__top-action-expand-icons {
+  position: relative;
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  flex-shrink: 0;
+
+  > svg {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    transition: opacity $motion-fast $easing-standard,
+                transform $motion-fast $easing-standard;
+  }
+
+  .bitfun-nav-panel__top-action-expand-icon-default {
+    opacity: 1;
+  }
+
+  .bitfun-nav-panel__top-action-expand-icon-chevron {
+    opacity: 0;
+
+    &.is-open {
+      transform: translate(-50%, -50%) rotate(180deg);
+    }
+  }
+}
+
+.bitfun-nav-panel__top-action-btn--expand:hover .bitfun-nav-panel__top-action-expand-icons {
+  .bitfun-nav-panel__top-action-expand-icon-default {
+    opacity: 0;
+  }
+
+  .bitfun-nav-panel__top-action-expand-icon-chevron {
+    opacity: 1;
+  }
+}
+
+.bitfun-nav-panel__top-action-icon-circle {
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  @include btn-primary.btn-primary-surface-default;
+  transform: scale(1);
+  transform-origin: center;
+
+  .bitfun-nav-panel__top-action-btn:hover & {
+    @include btn-primary.btn-primary-surface-hover;
+    transform: scale(1.07);
+  }
+
+  .bitfun-nav-panel__top-action-btn:active & {
+    @include btn-primary.btn-primary-surface-active;
+    transform: scale(0.86);
   }
 }

@@ -2,12 +2,13 @@ import { FileSystemNode, FileSystemOptions, IFileSystemService, FileSystemChange
 import { workspaceAPI } from '@/infrastructure/api';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { createLogger } from '@/shared/utils/logger';
+import { normalizePath } from '@/shared/utils/pathUtils';
 
 const log = createLogger('FileSystemService');
 
 interface FileWatchEvent {
   path: string;
-  kind: 'create' | 'modify' | 'remove' | 'rename';
+  kind: string;
   timestamp: number;
   from?: string;
   to?: string;
@@ -26,7 +27,17 @@ class FileSystemService implements IFileSystemService {
   }
 
   async searchFiles(_rootPath: string, _query: string): Promise<FileSystemNode[]> {
-    return [];
+    try {
+      const results = await workspaceAPI.searchFilenamesOnly(_rootPath, _query);
+      return results.map((result) => ({
+        path: result.path,
+        name: result.name,
+        isDirectory: result.isDirectory,
+      }));
+    } catch (error) {
+      log.error('Failed to search files', { rootPath: _rootPath, query: _query, error });
+      throw new Error(`Failed to search files: ${error}`);
+    }
   }
 
   async getDirectoryChildren(dirPath: string): Promise<FileSystemNode[]> {
@@ -72,33 +83,66 @@ class FileSystemService implements IFileSystemService {
     let unlisten: UnlistenFn | null = null;
     let isActive = true;
 
-    // Normalize separators and trailing slash for robust cross-platform comparison.
-    // Case is preserved intentionally: paths are case-sensitive.
     const normalizeForCompare = (p: string) =>
-      p.replace(/\\/g, '/').replace(/\/+$/, '');
+      normalizePath(p).replace(/\\/g, '/').replace(/\/+$/, '');
 
-    const normalizedRoot = normalizeForCompare(rootPath);
+    const logicalRoot = normalizeForCompare(rootPath);
 
     const initWatcher = async () => {
       try {
+        let resolvedRoot = logicalRoot;
+        try {
+          const metadata = await workspaceAPI.getFileMetadata(rootPath);
+          if (!isActive) return;
+          if (typeof metadata.resolvedPath === 'string' && metadata.resolvedPath.trim()) {
+            resolvedRoot = normalizeForCompare(metadata.resolvedPath);
+          }
+        } catch (error) {
+          log.debug('Falling back to watch root without metadata resolution', {
+            rootPath,
+            error,
+          });
+        }
+
+        const toLogicalPath = (path: string | undefined) => {
+          if (!path) return path;
+          const normalizedPath = normalizeForCompare(path);
+          if (normalizedPath === resolvedRoot) {
+            return logicalRoot;
+          }
+          if (normalizedPath.startsWith(`${resolvedRoot}/`)) {
+            const suffix = normalizedPath.slice(resolvedRoot.length).replace(/^\/+/, '');
+            return suffix ? `${logicalRoot}/${suffix}` : logicalRoot;
+          }
+          return normalizePath(path);
+        };
+
         unlisten = await listen<FileWatchEvent[]>('file-system-changed', (event) => {
           if (!isActive) return;
 
           const events = event.payload;
 
+          const isUnderRoot = (absPath: string) =>
+            absPath === resolvedRoot || absPath.startsWith(`${resolvedRoot}/`);
+
           events.forEach((fileEvent) => {
             const normalizedEventPath = normalizeForCompare(fileEvent.path);
-            const underRoot =
-              normalizedEventPath === normalizedRoot ||
-              normalizedEventPath.startsWith(`${normalizedRoot}/`);
-            if (!underRoot) {
+            const normalizedFrom = fileEvent.from
+              ? normalizeForCompare(fileEvent.from)
+              : '';
+
+            const relevant =
+              isUnderRoot(normalizedEventPath) ||
+              (fileEvent.kind === 'rename' && normalizedFrom !== '' && isUnderRoot(normalizedFrom));
+
+            if (!relevant) {
               return;
             }
 
             const fsEvent: FileSystemChangeEvent = {
               type: this.mapEventKind(fileEvent.kind),
-              path: fileEvent.path,
-              oldPath: fileEvent.from,
+              path: toLogicalPath(fileEvent.path) ?? fileEvent.path,
+              oldPath: toLogicalPath(fileEvent.from),
               timestamp: new Date(fileEvent.timestamp * 1000)
             };
 
@@ -187,19 +231,22 @@ class FileSystemService implements IFileSystemService {
         case 'name':
           comparison = a.name.localeCompare(b.name, 'zh-CN', { numeric: true });
           break;
-        case 'size':
+        case 'size': {
           comparison = (a.size || 0) - (b.size || 0);
           break;
-        case 'lastModified':
+        }
+        case 'lastModified': {
           const aTime = a.lastModified?.getTime() || 0;
           const bTime = b.lastModified?.getTime() || 0;
           comparison = aTime - bTime;
           break;
-        case 'type':
+        }
+        case 'type': {
           const aExt = a.extension || '';
           const bExt = b.extension || '';
           comparison = aExt.localeCompare(bExt);
           break;
+        }
         default:
           comparison = a.name.localeCompare(b.name, 'zh-CN', { numeric: true });
       }

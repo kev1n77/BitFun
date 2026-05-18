@@ -9,6 +9,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import type { AgentWithCapabilities } from '../agentsStore';
 import { AGENT_ICON_MAP } from '../agentsIcons';
+import { getAgentDescription } from '../utils';
 import './CoreAgentCard.scss';
 
 export interface CoreAgentMeta {
@@ -21,7 +22,9 @@ interface CoreAgentCardProps {
   agent: AgentWithCapabilities;
   index?: number;
   meta: CoreAgentMeta;
+  toolCount?: number;
   skillCount?: number;
+  subagentCount?: number;
   onOpenDetails: (agent: AgentWithCapabilities) => void;
 }
 
@@ -29,20 +32,19 @@ const CoreAgentCard: React.FC<CoreAgentCardProps> = ({
   agent,
   index = 0,
   meta,
+  toolCount,
   skillCount = 0,
+  subagentCount = 0,
   onOpenDetails,
 }) => {
   const { t } = useTranslation('scenes/agents');
   const Icon = AGENT_ICON_MAP[(agent.iconKey ?? 'bot') as keyof typeof AGENT_ICON_MAP] ?? Bot;
-  const totalTools = agent.toolCount ?? agent.defaultTools?.length ?? 0;
+  const totalTools = toolCount ?? agent.toolCount ?? agent.defaultTools?.length ?? 0;
   const openDetails = () => onOpenDetails(agent);
 
   return (
     <div
-      className={[
-        'core-agent-card',
-        !agent.enabled && 'core-agent-card--disabled',
-      ].filter(Boolean).join(' ')}
+      className="core-agent-card"
       style={{
         '--card-index': index,
         '--core-accent': meta.accentColor,
@@ -70,7 +72,7 @@ const CoreAgentCard: React.FC<CoreAgentCardProps> = ({
 
       <div className="core-agent-card__body">
         <p className="core-agent-card__desc">
-          {agent.description?.trim() || '—'}
+          {getAgentDescription(t, agent)}
         </p>
       </div>
 
@@ -88,6 +90,12 @@ const CoreAgentCard: React.FC<CoreAgentCardProps> = ({
             <span className="core-agent-card__meta-item">
               <Puzzle size={11} />
               {skillCount}
+            </span>
+          ) : null}
+          {agent.agentKind === 'mode' && subagentCount > 0 ? (
+            <span className="core-agent-card__meta-item">
+              <Bot size={11} />
+              {subagentCount}
             </span>
           ) : null}
           <span className="core-agent-card__meta-item">

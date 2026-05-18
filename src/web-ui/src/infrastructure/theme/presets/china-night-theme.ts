@@ -185,8 +185,8 @@ export const bitfunChinaNightTheme: ThemeConfig = {
   
   typography: {
     font: {
-      sans: "'Noto Sans SC', 'Source Han Sans CN', 'Microsoft YaHei', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      mono: "'Source Han Mono CN', 'Noto Sans Mono CJK SC', 'FiraCode', 'JetBrains Mono', 'Consolas', monospace",
+      sans: "'Noto Sans SC', 'Source Han Sans CN', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif",
+      mono: "'Source Han Mono CN', 'Noto Sans Mono CJK SC', 'JetBrains Mono', 'FiraCode', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, 'Cascadia Mono', 'Cascadia Code', Consolas, 'Liberation Mono', 'Courier New', monospace",
     },
     
     weight: {
@@ -198,14 +198,14 @@ export const bitfunChinaNightTheme: ThemeConfig = {
     
     size: {
       xs: '12px',
-      sm: '14px',
-      base: '15px',
-      lg: '16px',
-      xl: '18px',
-      '2xl': '20px',
-      '3xl': '24px',
-      '4xl': '30px',
-      '5xl': '36px',
+      sm: '13px',
+      base: '14px',
+      lg: '15px',
+      xl: '16px',
+      '2xl': '18px',
+      '3xl': '22px',
+      '4xl': '26px',
+      '5xl': '32px',
     },
     
     lineHeight: {

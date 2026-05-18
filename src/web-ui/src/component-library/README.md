@@ -1,3 +1,5 @@
+[中文](README.zh-CN.md) | **English**
+
 # BitFun Component Library
 
 ## Overview

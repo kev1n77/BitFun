@@ -83,14 +83,14 @@
 
 .snapshot-card__action {
   color: tokens.$color-text-secondary;
-  font-size: tokens.$font-size-xs;
+  font-size: var(--font-size-xs);
   font-weight: tokens.$font-weight-medium;
   flex-shrink: 0;
 }
 
 .snapshot-card__filename {
   color: tokens.$color-text-primary;
-  font-size: tokens.$font-size-xs;
+  font-size: var(--font-size-xs);
   font-weight: tokens.$font-weight-medium;
   flex-shrink: 1;
   min-width: 0;
@@ -241,7 +241,7 @@
   display: flex;
   align-items: center;
   gap: tokens.$size-gap-2;
-  font-size: tokens.$font-size-sm;
+  font-size: var(--font-size-sm);
 }
 
 .snapshot-card__label {
@@ -275,13 +275,13 @@
 }
 
 .snapshot-card__stat-value {
-  font-size: tokens.$font-size-lg;
+  font-size: var(--font-size-lg);
   font-weight: tokens.$font-weight-bold;
   font-family: tokens.$font-family-mono;
 }
 
 .snapshot-card__stat-label {
-  font-size: tokens.$font-size-xs;
+  font-size: var(--font-size-xs);
   color: tokens.$color-text-muted;
 }
 
@@ -334,7 +334,7 @@
   border: 1px solid rgba(59, 130, 246, 0.3);
   border-radius: tokens.$size-radius-base;
   color: tokens.$color-info;
-  font-size: tokens.$font-size-sm;
+  font-size: var(--font-size-sm);
 }
 
 .snapshot-card__processing-icon {
@@ -350,7 +350,7 @@
   border: 1px solid rgba(239, 68, 68, 0.3);
   border-radius: tokens.$size-radius-base;
   color: tokens.$color-error;
-  font-size: tokens.$font-size-sm;
+  font-size: var(--font-size-sm);
 }
 
 

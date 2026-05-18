@@ -56,7 +56,7 @@ $_editor-padding-desktop: 32px;
   
   &__loading-text {
     margin: 0;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     color: var(--color-text-muted);
     font-family: $font-family-mono;
     animation: code-editor-pulse $motion-slow ease-in-out infinite;
@@ -85,7 +85,7 @@ $_editor-padding-desktop: 32px;
   
   &__error-message {
     margin: 0 0 $size-gap-3 0;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     color: var(--color-text-muted);
     font-family: $font-family-mono;
   }
@@ -96,7 +96,7 @@ $_editor-padding-desktop: 32px;
     border: 1px dashed var(--color-text-muted);
     border-radius: $size-radius-sm;
     color: var(--color-text-muted);
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-family: $font-family-mono;
     cursor: pointer;
     transition: all $motion-base $easing-standard;
@@ -163,7 +163,7 @@ $_editor-padding-desktop: 32px;
     color: var(--color-bg-primary);
     padding: $size-gap-2 $size-gap-4;
     border-radius: $size-radius-base;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-weight: $font-weight-semibold;
     font-family: $font-family-mono;
     box-shadow: $glow-shadow-blue;
@@ -277,7 +277,7 @@ $_editor-padding-desktop: 32px;
     
     &__loading-text,
     &__error-message {
-      font-size: $font-size-xs;
+      font-size: var(--font-size-xs);
       max-width: 300px;
     }
     

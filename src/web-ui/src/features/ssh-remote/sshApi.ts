@@ -11,6 +11,7 @@ import type {
   RemoteWorkspace,
   SSHConfigLookupResult,
   SSHConfigEntry,
+  ServerInfo,
 } from './types';
 
 // API adapter for Tauri/Server Mode compatibility
@@ -41,6 +42,13 @@ export const sshApi = {
   },
 
   /**
+   * Whether a password is stored in the local vault for this saved connection (password auth auto-reconnect).
+   */
+  async hasStoredPassword(connectionId: string): Promise<boolean> {
+    return api.invoke<boolean>('ssh_has_stored_password', { connectionId });
+  },
+
+  /**
    * Connect to remote SSH server
    */
   async connect(config: SSHConnectionConfig): Promise<SSHConnectionResult> {
@@ -66,6 +74,13 @@ export const sshApi = {
    */
   async isConnected(connectionId: string): Promise<boolean> {
     return api.invoke<boolean>('ssh_is_connected', { connectionId });
+  },
+
+  /**
+   * Server info for an active connection; may probe `echo ~` / `$HOME` if `homeDir` was missing.
+   */
+  async getServerInfo(connectionId: string): Promise<ServerInfo | null> {
+    return api.invoke<ServerInfo | null>('ssh_get_server_info', { connectionId });
   },
 
   /**
@@ -210,6 +225,13 @@ export const sshApi = {
    */
   async closeWorkspace(): Promise<void> {
     return api.invoke('remote_close_workspace', {});
+  },
+
+  /**
+   * Remove one persisted remote workspace restore entry without requiring it to be active.
+   */
+  async removeWorkspace(connectionId: string, remotePath: string): Promise<void> {
+    return api.invoke('remote_remove_workspace', { connectionId, remotePath });
   },
 
   /**

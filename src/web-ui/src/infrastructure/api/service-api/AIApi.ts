@@ -3,6 +3,7 @@
 import { api } from './ApiClient';
 import { createTauriCommandError } from '../errors/TauriCommandError';
 import type { SendMessageRequest } from './tauri-commands';
+import type { ConnectionTestMessageCode } from '@/shared/utils/aiConnectionTestMessages';
 
 export interface CreateAISessionRequest {
   session_id?: string;
@@ -19,12 +20,28 @@ export interface ConnectionTestResult {
   success: boolean;
   response_time_ms: number;
   model_response?: string;
+  message_code?: ConnectionTestMessageCode;
   error_details?: string;
 }
 
 export interface RemoteModelInfo {
   id: string;
   display_name?: string;
+}
+
+export type CliCredentialKind = 'codex' | 'gemini';
+export type CliCredentialMode = 'api_key' | 'chat_gpt' | 'oauth_personal';
+
+export interface DiscoveredCliCredential {
+  kind: CliCredentialKind;
+  mode: CliCredentialMode;
+  display_label: string;
+  account?: string | null;
+  expires_at?: number | null;
+  source_path: string;
+  suggested_format: string;
+  suggested_base_url: string;
+  suggested_model: string;
 }
 
 export class AIApi {
@@ -140,16 +157,23 @@ export class AIApi {
   }
 
    
-  async fixMermaidCode(request: { sourceCode: string; errorMessage: string }): Promise<string> {
+  async discoverCliCredentials(): Promise<DiscoveredCliCredential[]> {
     try {
-      return await api.invoke('fix_mermaid_code', { 
-        request 
+      return await api.invoke<DiscoveredCliCredential[]>('discover_cli_credentials', {});
+    } catch (error) {
+      throw createTauriCommandError('discover_cli_credentials', error);
+    }
+  }
+
+  async refreshCliCredential(kind: CliCredentialKind): Promise<DiscoveredCliCredential> {
+    try {
+      return await api.invoke<DiscoveredCliCredential>('refresh_cli_credential', {
+        request: { kind }
       });
     } catch (error) {
-      throw createTauriCommandError('fix_mermaid_code', error, request);
+      throw createTauriCommandError('refresh_cli_credential', error, { kind });
     }
   }
 }
-
 
 export const aiApi = new AIApi();

@@ -1,3 +1,5 @@
+[中文](README.zh-CN.md) | **English**
+
 # Design Tokens
 
 This directory defines BitFun component design tokens to unify colors, typography, spacing, shadows, motion, and layering.

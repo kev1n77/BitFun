@@ -3,6 +3,8 @@
  */
 @use '../../styles/tokens.scss' as tokens;
 
+$modal-edge-gutter: 8px;
+$modal-edge-gutter-sm: 10px;
 
 .modal-overlay {
   position: fixed;
@@ -98,13 +100,22 @@
   }
 
 
+  &__header-shell {
+    position: relative;
+    flex-shrink: 0;
+
+    &--close-only {
+      min-height: 34px;
+    }
+  }
+
   &__header {
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-start;
     gap: 6px;
-    padding: 6px 10px;
+    padding: 6px $modal-edge-gutter;
     border-bottom: 1px solid var(--border-subtle);
     background: transparent;
 
@@ -117,6 +128,14 @@
         background: var(--element-bg-subtle);
       }
     }
+
+    &--empty {
+      min-height: 34px;
+    }
+  }
+
+  &.modal--with-close .modal__header:has(.modal__title-group) {
+    padding-inline-end: calc(#{$modal-edge-gutter} + 22px + 8px);
   }
 
   &__title-group {
@@ -124,7 +143,7 @@
     align-items: center;
     gap: 6px;
     min-width: 0;
-    flex: 1;
+    flex: 0 1 auto;
   }
 
   &__title {
@@ -140,18 +159,22 @@
     display: flex;
     align-items: center;
     flex-shrink: 0;
-    margin-left: auto;
   }
 
 
   &__close {
+    position: absolute;
+    top: 0;
+    right: $modal-edge-gutter;
+    bottom: 0;
+    z-index: 2;
     display: flex;
     align-items: center;
     justify-content: center;
     width: 22px;
     height: 22px;
     padding: 0;
-    margin-left: auto;
+    margin: auto 0;
     background: transparent;
     border: 1px solid transparent;
     border-radius: 6px;
@@ -159,7 +182,6 @@
     cursor: pointer;
     transition: all 0.2s ease;
     outline: none;
-    flex-shrink: 0;
 
     svg {
       display: block;
@@ -300,7 +322,15 @@
     }
 
     &__header {
-      padding: 12px 14px;
+      padding: 12px $modal-edge-gutter-sm;
+    }
+
+    &.modal--with-close .modal__header:has(.modal__title-group) {
+      padding-inline-end: calc(#{$modal-edge-gutter-sm} + 22px + 10px);
+    }
+
+    &__close {
+      right: $modal-edge-gutter-sm;
     }
 
     &__title {

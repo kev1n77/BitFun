@@ -26,7 +26,7 @@ $_diff-padding-desktop: 32px;
     border-radius: 0;
     border-bottom: 1px solid rgba(239, 68, 68, 0.5);
     color: var(--color-error);
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     font-weight: $font-weight-medium;
     font-family: $font-family-mono;
     animation: git-diff-editor-error-slide-in 0.3s ease-out;
@@ -220,7 +220,7 @@ $_diff-padding-desktop: 32px;
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: $size-radius-base;
     color: var(--color-text-secondary);
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     font-family: $font-family-mono;
     z-index: $z-overlay;
     animation: git-diff-editor-fade-in 0.2s ease-out;
@@ -245,7 +245,7 @@ $_diff-padding-desktop: 32px;
     animation: git-diff-editor-fade-in 0.2s ease-out;
 
     p {
-      font-size: $font-size-base;
+      font-size: var(--font-size-base);
       font-weight: $font-weight-medium;
       font-family: $font-family-mono;
       color: var(--color-text-primary);
@@ -315,7 +315,7 @@ $_diff-padding-desktop: 32px;
   }
 
   &__completed-title {
-    font-size: $font-size-2xl;
+    font-size: var(--font-size-2xl);
     font-weight: $font-weight-semibold;
     font-family: $font-family-mono;
     color: var(--color-text-primary);
@@ -330,14 +330,14 @@ $_diff-padding-desktop: 32px;
     animation: git-diff-editor-slide-up 0.4s ease-out 0.2s both;
 
     .git-diff-editor__file-path {
-      font-size: $font-size-base;
+      font-size: var(--font-size-base);
       font-family: $font-family-mono;
       color: var(--color-text-muted);
     }
   }
 
   &__result-text {
-    font-size: $font-size-base;
+    font-size: var(--font-size-base);
     font-weight: $font-weight-medium;
     font-family: $font-family-mono;
     margin-top: $size-gap-3;
@@ -438,7 +438,7 @@ $_diff-padding-desktop: 32px;
     }
 
     &__completed-title {
-      font-size: $font-size-xl;
+      font-size: var(--font-size-xl);
     }
 
     &__spinner {

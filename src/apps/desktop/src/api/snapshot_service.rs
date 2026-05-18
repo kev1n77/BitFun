@@ -133,6 +133,14 @@ pub struct GetOperationDiffRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSessionFileDiffStatsRequest {
+    pub sessionId: String,
+    pub filePath: String,
+    #[serde(alias = "workspacePath")]
+    pub workspace_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetOperationSummaryRequest {
     pub sessionId: String,
     pub operationId: String,
@@ -277,7 +285,7 @@ pub async fn record_file_change(
             return Err(format!(
                 "Unknown operation type: {}",
                 request.operation_type
-            ))
+            ));
         }
     };
 
@@ -416,7 +424,10 @@ pub async fn rollback_to_turn(
                             deleted_turns_count = count;
                         }
                         Err(e) => {
-                            warn!("Failed to delete conversation turns: session_id={}, turn_index={}, error={}", request.session_id, request.turn_index, e);
+                            warn!(
+                                "Failed to delete conversation turns: session_id={}, turn_index={}, error={}",
+                                request.session_id, request.turn_index, e
+                            );
                         }
                     }
                 }
@@ -538,6 +549,10 @@ pub async fn reject_file(
 
 #[tauri::command]
 pub async fn get_session_files(request: GetSessionFilesRequest) -> Result<Vec<String>, String> {
+    if is_remote_path(&request.workspace_path).await {
+        return Ok(vec![]);
+    }
+
     let manager = ensure_snapshot_manager_ready(&request.workspace_path).await?;
 
     let files = manager
@@ -572,7 +587,10 @@ pub async fn get_session_turns(
                     }
                     Ok(None) => {}
                     Err(e) => {
-                        warn!("Failed to load conversation metadata: session_id={}, error={}, falling back to snapshot", request.session_id, e);
+                        warn!(
+                            "Failed to load conversation metadata: session_id={}, error={}, falling back to snapshot",
+                            request.session_id, e
+                        );
                     }
                 }
             }
@@ -641,12 +659,45 @@ pub async fn get_operation_diff(
         .await
         .map_err(|e| format!("Failed to get file diff: {}", e))?;
 
+    let original = diff
+        .get("original_content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let modified = diff
+        .get("modified_content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    log::debug!(
+        "get_operation_diff: session_id={} file_path={} operation_id={:?} original_len={} modified_len={} identical={}",
+        request.sessionId,
+        request.filePath,
+        request.operationId,
+        original.len(),
+        modified.len(),
+        original == modified
+    );
+
     Ok(serde_json::json!({
         "filePath": diff.get("file_path").and_then(|v| v.as_str()).unwrap_or(&request.filePath),
-        "originalContent": diff.get("original_content").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        "modifiedContent": diff.get("modified_content").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        "originalContent": original.to_string(),
+        "modifiedContent": modified.to_string(),
         "anchorLine": diff.get("anchor_line").and_then(|v| v.as_u64()),
     }))
+}
+
+#[tauri::command]
+pub async fn get_session_file_diff_stats(
+    request: GetSessionFileDiffStatsRequest,
+) -> Result<serde_json::Value, String> {
+    let manager = ensure_snapshot_manager_ready(&request.workspace_path).await?;
+
+    let stats = manager
+        .get_session_file_diff_stats(&request.sessionId, &request.filePath)
+        .await
+        .map_err(|e| format!("Failed to get session file diff stats: {}", e))?;
+
+    serde_json::to_value(&stats).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -799,6 +850,15 @@ pub async fn reject_operation(
 pub async fn get_session_stats(
     request: GetSessionStatsRequest,
 ) -> Result<serde_json::Value, String> {
+    if is_remote_path(&request.workspace_path).await {
+        return Ok(serde_json::json!({
+            "session_id": request.session_id,
+            "total_files": 0,
+            "total_turns": 0,
+            "total_changes": 0
+        }));
+    }
+
     let manager = ensure_snapshot_manager_ready(&request.workspace_path).await?;
 
     let stats = manager
@@ -823,14 +883,6 @@ pub async fn get_snapshot_system_stats(
     Ok(stats)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CleanupSnapshotDataRequest {
-    #[serde(rename = "maxAgeDays")]
-    pub max_age_days: u64,
-    #[serde(alias = "workspacePath")]
-    pub workspace_path: String,
-}
-
 #[tauri::command]
 pub async fn get_snapshot_sessions(
     request: SnapshotWorkspaceRequest,
@@ -841,24 +893,6 @@ pub async fn get_snapshot_sessions(
         .list_sessions()
         .await
         .map_err(|e| format!("Failed to list snapshot sessions: {}", e))
-}
-
-#[tauri::command]
-pub async fn cleanup_snapshot_data(
-    request: CleanupSnapshotDataRequest,
-) -> Result<serde_json::Value, String> {
-    let manager = ensure_snapshot_manager_ready(&request.workspace_path).await?;
-
-    manager
-        .cleanup_snapshot_data(request.max_age_days)
-        .await
-        .map_err(|e| format!("Failed to cleanup snapshot data: {}", e))?;
-
-    Ok(serde_json::json!({
-        "success": true,
-        "message": "Snapshot data cleanup completed",
-        "keep_recent_days": request.max_age_days,
-    }))
 }
 
 #[tauri::command]
@@ -890,7 +924,7 @@ pub async fn get_file_change_history(
         .await
         .map_err(|e| format!("Failed to get file change history: {}", e))?;
 
-    Ok(serde_json::to_value(changes).map_err(|e| format!("Serialization failed: {}", e))?)
+    serde_json::to_value(changes).map_err(|e| format!("Serialization failed: {}", e))
 }
 
 #[tauri::command]

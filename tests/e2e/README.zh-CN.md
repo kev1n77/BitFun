@@ -2,7 +2,7 @@
 
 # BitFun E2E 测试
 
-使用 WebDriverIO + tauri-driver 的 E2E 测试框架。
+使用 WebDriverIO + BitFun 内置 WebDriver 的 E2E 测试框架。
 
 > 完整文档请参阅 [E2E-TESTING-GUIDE.zh-CN.md](E2E-TESTING-GUIDE.zh-CN.md)
 
@@ -11,30 +11,25 @@
 ### 1. 安装依赖
 
 ```bash
-# 安装 tauri-driver
-cargo install tauri-driver --locked
-
-# 构建应用
-pnpm run desktop:build
+# 构建 debug 应用
+cargo build -p bitfun-desktop
 
 # 安装测试依赖
-cd tests/e2e && pnpm install
+pnpm --dir tests/e2e install
 ```
 
 ### 2. 运行测试
 
 ```bash
-cd tests/e2e
-
 # L0 冒烟测试 (最快)
-pnpm run test:l0
-pnpm run test:l0:all
+pnpm --dir tests/e2e run test:l0
+pnpm --dir tests/e2e run test:l0:all
 
 # L1 功能测试
-pnpm run test:l1
+pnpm --dir tests/e2e run test:l1
 
 # 运行所有测试
-pnpm test
+pnpm --dir tests/e2e test
 ```
 
 ## 测试级别
@@ -43,7 +38,7 @@ pnpm test
 |------|------|----------|--------|
 | L0 | 冒烟测试 - 验证基本功能 | < 1分钟 | 不需要 |
 | L1 | 功能测试 - 验证功能特性 | 5-15分钟 | 不需要(mock) |
-| L2 | 集成测试 - 完整系统验证 | 15-60分钟 | 需要 |
+| L2 | 规划中，暂未实现 | N/A | N/A |
 
 ## 目录结构
 
@@ -58,16 +53,14 @@ tests/e2e/
 
 ## 常见问题
 
-### tauri-driver 找不到
+### 内置 WebDriver 未就绪
 
-```bash
-cargo install tauri-driver --locked
-```
+测试启动器会直接拉起 BitFun，并等待 `127.0.0.1:4445` 上的内置 WebDriver 服务就绪。
 
 ### 应用未构建
 
 ```bash
-pnpm run desktop:build
+cargo build -p bitfun-desktop
 ```
 
 ### 测试超时

@@ -1,14 +1,14 @@
 use crate::agentic::core::{Message, MessageContent, MessageRole, ToolCall, ToolResult};
+use crate::agentic::insights::session_paths::collect_effective_session_storage_roots;
 use crate::agentic::insights::types::*;
 use crate::agentic::persistence::PersistenceManager;
 use crate::infrastructure::get_path_manager_arc;
 use crate::service::session::{DialogTurnData, TurnStatus};
-use crate::service::workspace::get_global_workspace_service;
 use crate::util::errors::BitFunResult;
 use chrono::{DateTime, Utc};
 use log::{debug, warn};
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MAX_TRANSCRIPT_CHARS: usize = 16000;
@@ -27,7 +27,7 @@ impl InsightsCollector {
         let pm = PersistenceManager::new(path_manager)?;
         let cutoff = SystemTime::now() - Duration::from_secs(days as u64 * 86400);
 
-        let workspace_paths = Self::collect_workspace_paths().await;
+        let workspace_paths = collect_effective_session_storage_roots().await;
 
         let mut transcripts = Vec::new();
         let mut base_stats = BaseStats::default();
@@ -67,30 +67,36 @@ impl InsightsCollector {
                     .await
                     .unwrap_or_default();
 
-                let messages =
-                    match Self::load_session_messages_with_turns(
-                        &pm, ws_path, &summary.session_id, &turns,
-                    ).await {
-                        Ok(m) if !m.is_empty() => m,
-                        Ok(_) => {
-                            debug!(
-                                "Skipping session {}: no messages found",
-                                summary.session_id
-                            );
-                            continue;
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Skipping session {}: load messages failed: {}",
-                                summary.session_id, e
-                            );
-                            continue;
-                        }
-                    };
+                let messages = match Self::load_session_messages_with_turns(
+                    &pm,
+                    ws_path,
+                    &summary.session_id,
+                    &turns,
+                )
+                .await
+                {
+                    Ok(m) if !m.is_empty() => m,
+                    Ok(_) => {
+                        debug!("Skipping session {}: no messages found", summary.session_id);
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Skipping session {}: load messages failed: {}",
+                            summary.session_id, e
+                        );
+                        continue;
+                    }
+                };
 
                 let mut transcript =
                     Self::build_transcript(&summary.session_id, &session, &messages);
                 transcript.workspace_path = Some(ws_path.to_string_lossy().to_string());
+                transcript.last_activity_unix_secs = summary
+                    .last_activity_at
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
                 Self::accumulate_stats(&mut base_stats, &session, &messages);
                 accumulate_code_stats_from_turns(&mut base_stats, &turns);
                 transcripts.push(transcript);
@@ -110,8 +116,7 @@ impl InsightsCollector {
         if !base_stats.response_times_raw.is_empty() {
             base_stats.response_time_buckets =
                 bucket_response_times(&base_stats.response_times_raw);
-            let (median, avg) =
-                compute_response_time_stats(&base_stats.response_times_raw);
+            let (median, avg) = compute_response_time_stats(&base_stats.response_times_raw);
             base_stats.median_response_time_secs = Some(median);
             base_stats.avg_response_time_secs = Some(avg);
         }
@@ -125,22 +130,6 @@ impl InsightsCollector {
         Ok((base_stats, transcripts))
     }
 
-    /// Collect all known workspace paths that have session data
-    async fn collect_workspace_paths() -> Vec<PathBuf> {
-        let mut paths = Vec::new();
-
-        if let Some(ws_service) = get_global_workspace_service() {
-            let workspaces = ws_service.list_workspaces().await;
-            for ws in workspaces {
-                if ws.root_path.join(".bitfun").join("sessions").exists() {
-                    paths.push(ws.root_path);
-                }
-            }
-        }
-
-        paths
-    }
-
     /// Load messages for a session, trying sources in priority order:
     /// 1. Latest context snapshot (most complete, includes compression)
     /// 2. Rebuild from pre-loaded turn data
@@ -150,9 +139,9 @@ impl InsightsCollector {
         session_id: &str,
         turns: &[DialogTurnData],
     ) -> BitFunResult<Vec<Message>> {
-        if let Ok(Some((_turn_index, messages))) =
-            pm.load_latest_turn_context_snapshot(workspace_path, session_id)
-                .await
+        if let Ok(Some((_turn_index, messages))) = pm
+            .load_latest_turn_context_snapshot(workspace_path, session_id)
+            .await
         {
             if !messages.is_empty() {
                 return Ok(messages);
@@ -231,6 +220,7 @@ impl InsightsCollector {
             agent_type: session.agent_type.clone(),
             session_name: session.session_name.clone(),
             workspace_path: None,
+            last_activity_unix_secs: 0,
             duration_minutes,
             message_count: messages.len() as u32,
             turn_count: session.dialog_turn_ids.len() as u32,
@@ -282,10 +272,7 @@ impl InsightsCollector {
                     ..
                 } => {
                     if *is_error {
-                        *base_stats
-                            .tool_errors
-                            .entry(tool_name.clone())
-                            .or_insert(0) += 1;
+                        *base_stats.tool_errors.entry(tool_name.clone()).or_insert(0) += 1;
                     }
                 }
                 _ => {}
@@ -299,7 +286,7 @@ impl InsightsCollector {
                     if let Some(prev) = last_assistant_time {
                         if let Ok(duration) = msg.timestamp.duration_since(prev) {
                             let secs = duration.as_secs();
-                            if secs >= 2 && secs <= ACTIVITY_GAP_THRESHOLD_SECS {
+                            if (2..=ACTIVITY_GAP_THRESHOLD_SECS).contains(&secs) {
                                 base_stats.response_times_raw.push(secs as f64);
                             }
                         }
@@ -335,7 +322,6 @@ impl InsightsCollector {
         let mut satisfaction: HashMap<String, u32> = HashMap::new();
         let mut friction: HashMap<String, u32> = HashMap::new();
         let mut success: HashMap<String, u32> = HashMap::new();
-        let mut languages: HashMap<String, u32> = HashMap::new();
         let mut session_types: HashMap<String, u32> = HashMap::new();
         let mut session_summaries = Vec::new();
         let mut friction_details = Vec::new();
@@ -353,16 +339,9 @@ impl InsightsCollector {
                 *friction.entry(k.clone()).or_insert(0) += v;
             }
             if !facet.primary_success.is_empty() && facet.primary_success != "none" {
-                *success
-                    .entry(facet.primary_success.clone())
-                    .or_insert(0) += 1;
+                *success.entry(facet.primary_success.clone()).or_insert(0) += 1;
             }
-            for lang in &facet.languages_used {
-                *languages.entry(lang.clone()).or_insert(0) += 1;
-            }
-            *session_types
-                .entry(facet.session_type.clone())
-                .or_insert(0) += 1;
+            *session_types.entry(facet.session_type.clone()).or_insert(0) += 1;
 
             if !facet.brief_summary.is_empty() {
                 session_summaries.push(facet.brief_summary.clone());
@@ -377,24 +356,23 @@ impl InsightsCollector {
             }
         }
 
-        let mut top_tools: Vec<(String, u32)> = base_stats.tool_usage.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let mut top_tools: Vec<(String, u32)> = base_stats
+            .tool_usage
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
         top_tools.sort_by(|a, b| b.1.cmp(&a.1));
         top_tools.truncate(15);
 
-        let mut top_goals: Vec<(String, u32)> = goals.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let mut top_goals: Vec<(String, u32)> =
+            goals.iter().map(|(k, v)| (k.clone(), *v)).collect();
         top_goals.sort_by(|a, b| b.1.cmp(&a.1));
         top_goals.truncate(10);
 
         let hours = base_stats.total_duration_minutes as f32 / 60.0;
         let date_range = DateRange {
-            start: base_stats
-                .first_session_at
-                .clone()
-                .unwrap_or_default(),
-            end: base_stats
-                .last_session_at
-                .clone()
-                .unwrap_or_default(),
+            start: base_stats.first_session_at.clone().unwrap_or_default(),
+            end: base_stats.last_session_at.clone().unwrap_or_default(),
         };
 
         let days_covered = compute_days_covered(&date_range);
@@ -403,6 +381,8 @@ impl InsightsCollector {
         } else {
             base_stats.total_messages as f32
         };
+
+        let languages = base_stats.languages_by_files.clone();
 
         InsightsAggregate {
             sessions: base_stats.total_sessions,
@@ -442,6 +422,10 @@ fn rebuild_messages_from_turns(turns: &[DialogTurnData]) -> Vec<Message> {
     let mut messages = Vec::new();
 
     for turn in turns {
+        if !turn.kind.is_model_visible() {
+            continue;
+        }
+
         let user_ts = UNIX_EPOCH + Duration::from_millis(turn.start_time);
         let mut user_msg = Message::user(turn.user_message.content.clone());
         user_msg.timestamp = user_ts;
@@ -463,7 +447,9 @@ fn rebuild_messages_from_turns(turns: &[DialogTurnData]) -> Vec<Message> {
                     tool_id: ti.tool_call.id.clone(),
                     tool_name: ti.tool_name.clone(),
                     arguments: ti.tool_call.input.clone(),
+                    raw_arguments: None,
                     is_error: false,
+                    recovered_from_truncation: false,
                 })
                 .collect();
 
@@ -477,8 +463,7 @@ fn rebuild_messages_from_turns(turns: &[DialogTurnData]) -> Vec<Message> {
             };
 
             if !tool_calls.is_empty() {
-                let mut msg =
-                    Message::assistant_with_tools(assistant_text.clone(), tool_calls);
+                let mut msg = Message::assistant_with_tools(assistant_text.clone(), tool_calls);
                 msg.timestamp = round_ts;
                 messages.push(msg);
             } else if !assistant_text.trim().is_empty() {
@@ -496,6 +481,7 @@ fn rebuild_messages_from_turns(turns: &[DialogTurnData]) -> Vec<Message> {
                         result_for_assistant: None,
                         is_error: !result_data.success,
                         duration_ms: result_data.duration_ms,
+                        image_attachments: None,
                     });
                     msg.timestamp = round_ts;
                     messages.push(msg);
@@ -559,11 +545,7 @@ fn smart_truncate_parts(parts: &[String], max_chars: usize, tail_reserve: usize)
     }
     tail_parts.reverse();
 
-    let omitted = if tail_start_idx > head_end_idx {
-        tail_start_idx - head_end_idx
-    } else {
-        0
-    };
+    let omitted = tail_start_idx.saturating_sub(head_end_idx);
 
     let mut result = head_parts.join("\n");
     if omitted > 0 {
@@ -628,7 +610,7 @@ fn compute_response_time_stats(raw: &[f64]) -> (f64, f64) {
 
     let mut sorted = raw.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let median = if sorted.len() % 2 == 0 {
+    let median = if sorted.len().is_multiple_of(2) {
         let mid = sorted.len() / 2;
         (sorted[mid - 1] + sorted[mid]) / 2.0
     } else {
@@ -640,7 +622,9 @@ fn compute_response_time_stats(raw: &[f64]) -> (f64, f64) {
 
 fn compute_days_covered(range: &DateRange) -> u32 {
     let parse = |s: &str| -> Option<DateTime<Utc>> {
-        DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&Utc))
+        DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|d| d.with_timezone(&Utc))
     };
 
     match (parse(&range.start), parse(&range.end)) {
@@ -660,6 +644,9 @@ fn compute_days_covered(range: &DateRange) -> u32 {
 /// newlines in `old_string`/`new_string`.
 ///
 /// For Write tool: counts newlines in the written content as lines added.
+///
+/// Per session, each distinct file path touched by Edit/Write contributes once to `languages_by_files`
+/// according to [`language_name_for_path`].
 fn accumulate_code_stats_from_turns(base_stats: &mut BaseStats, turns: &[DialogTurnData]) {
     let mut modified_files: HashSet<String> = HashSet::new();
 
@@ -725,5 +712,58 @@ fn accumulate_code_stats_from_turns(base_stats: &mut BaseStats, turns: &[DialogT
         }
     }
 
+    for path in &modified_files {
+        if let Some(lang) = language_name_for_path(path) {
+            *base_stats
+                .languages_by_files
+                .entry(lang.to_string())
+                .or_insert(0) += 1;
+        }
+    }
+
     base_stats.total_files_modified += modified_files.len();
+}
+
+/// Infer a language label from a file path (extension or well-known filename).
+fn language_name_for_path(path: &str) -> Option<&'static str> {
+    let p = Path::new(path);
+    if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+        match name.to_ascii_lowercase().as_str() {
+            "dockerfile" | "containerfile" => return Some("Dockerfile"),
+            "makefile" | "gnumakefile" => return Some("Makefile"),
+            "cargo.toml" | "cargo.lock" => return Some("Rust"),
+            _ => {}
+        }
+    }
+    let ext = p.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "ts" | "tsx" => "TypeScript",
+        "js" | "jsx" | "mjs" | "cjs" => "JavaScript",
+        "py" | "pyi" | "pyw" => "Python",
+        "rs" => "Rust",
+        "go" => "Go",
+        "java" => "Java",
+        "kt" | "kts" => "Kotlin",
+        "swift" => "Swift",
+        "cs" => "C#",
+        "cpp" | "cc" | "cxx" | "hpp" => "C/C++",
+        "c" | "h" => "C/C++",
+        "rb" => "Ruby",
+        "php" => "PHP",
+        "vue" => "Vue",
+        "svelte" => "Svelte",
+        "md" | "mdx" => "Markdown",
+        "json" | "jsonc" => "JSON",
+        "yaml" | "yml" => "YAML",
+        "toml" => "TOML",
+        "xml" => "XML",
+        "html" | "htm" => "HTML",
+        "css" | "scss" | "sass" | "less" => "CSS",
+        "sh" | "bash" | "zsh" | "fish" => "Shell",
+        "ps1" => "PowerShell",
+        "sql" => "SQL",
+        "gradle" => "Gradle",
+        "properties" => "Properties",
+        _ => return None,
+    })
 }

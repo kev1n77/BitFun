@@ -5,7 +5,7 @@
 use anyhow::{anyhow, Result};
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -512,7 +512,7 @@ impl LspServerProcess {
                             let response_message = super::types::JsonRpcMessage::Response(response);
                             let mut stdin_lock = stdin.write().await;
                             if let Err(e) =
-                                super::protocol::write_message(&mut *stdin_lock, &response_message)
+                                super::protocol::write_message(&mut stdin_lock, &response_message)
                                     .await
                             {
                                 error!(
@@ -532,7 +532,7 @@ impl LspServerProcess {
                             let response_message = super::types::JsonRpcMessage::Response(response);
                             let mut stdin_lock = stdin.write().await;
                             if let Err(e) =
-                                super::protocol::write_message(&mut *stdin_lock, &response_message)
+                                super::protocol::write_message(&mut stdin_lock, &response_message)
                                     .await
                             {
                                 error!(
@@ -552,7 +552,7 @@ impl LspServerProcess {
                             let response_message = super::types::JsonRpcMessage::Response(response);
                             let mut stdin_lock = stdin.write().await;
                             if let Err(e) =
-                                super::protocol::write_message(&mut *stdin_lock, &response_message)
+                                super::protocol::write_message(&mut stdin_lock, &response_message)
                                     .await
                             {
                                 error!("[{}] Failed to send configuration response: {}", id, e);
@@ -575,7 +575,7 @@ impl LspServerProcess {
                             let response_message = super::types::JsonRpcMessage::Response(response);
                             let mut stdin_lock = stdin.write().await;
                             if let Err(e) =
-                                super::protocol::write_message(&mut *stdin_lock, &response_message)
+                                super::protocol::write_message(&mut stdin_lock, &response_message)
                                     .await
                             {
                                 error!("[{}] Failed to send error response: {}", id, e);
@@ -610,7 +610,7 @@ impl LspServerProcess {
 
         {
             let mut stdin = self.stdin.write().await;
-            write_message(&mut *stdin, &message).await?;
+            write_message(&mut stdin, &message).await?;
         }
 
         let response = timeout(Duration::from_secs(60), rx).await.map_err(|_| {
@@ -634,7 +634,7 @@ impl LspServerProcess {
         let message = create_notification(method_str, params);
 
         let mut stdin = self.stdin.write().await;
-        write_message(&mut *stdin, &message).await?;
+        write_message(&mut stdin, &message).await?;
 
         Ok(())
     }
@@ -855,7 +855,7 @@ impl LspServerProcess {
     }
 
     /// Detects the runtime type.
-    fn detect_runtime_type(config: &ServerConfig, server_bin: &PathBuf) -> RuntimeType {
+    fn detect_runtime_type(config: &ServerConfig, server_bin: &Path) -> RuntimeType {
         if let Some(runtime) = &config.runtime {
             debug!("Runtime explicitly specified: {}", runtime);
             return match runtime.to_lowercase().as_str() {

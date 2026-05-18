@@ -4,44 +4,51 @@ import {
   ArrowLeft,
   ChevronDown,
   Cpu,
+  Info,
   Plug2,
-  Puzzle,
   RefreshCw,
-  Star,
   Wrench,
-  Zap,
+  X,
 } from 'lucide-react';
+import { GalleryZone } from '@/app/components';
+import '@/app/components/GalleryLayout/GalleryLayout.scss';
 import { Select, Switch, type SelectOption } from '@/component-library';
 import { configAPI } from '@/infrastructure/api/service-api/ConfigAPI';
 import { configManager } from '@/infrastructure/config/services/ConfigManager';
-import type { AIModelConfig, ModeConfigItem, SkillInfo } from '@/infrastructure/config/types';
+import type { AIModelConfig, ModeConfigItem, ModeSkillInfo } from '@/infrastructure/config/types';
 import { MCPAPI, type MCPServerInfo } from '@/infrastructure/api/service-api/MCPAPI';
 import { notificationService } from '@/shared/notification-system';
+import type { DynamicToolInfo } from '@/shared/types/agent-api';
 import { createLogger } from '@/shared/utils/logger';
 import { useNurseryStore } from '../nurseryStore';
 import { formatTokenCount } from './useTokenEstimate';
 
 const log = createLogger('TemplateConfigPage');
 
-interface ToolInfo { name: string; description: string; is_readonly: boolean; }
-
-const MODEL_SLOTS = ['primary', 'fast'] as const;
-type ModelSlot = typeof MODEL_SLOTS[number];
-
-// MCP tools are registered as "mcp_{server_id}_{tool_name}" (single underscores)
-function isMcpTool(name: string): boolean {
-  return name.startsWith('mcp_');
+interface ToolInfo {
+  name: string;
+  description: string;
+  is_readonly: boolean;
+  dynamic_info?: DynamicToolInfo;
 }
 
-// Extract server id: "mcp_github_create_issue" → "github"
-function getMcpServerName(toolName: string): string {
-  return toolName.split('_')[1] ?? toolName;
+type TemplateDetail =
+  | { type: 'tool'; tool: ToolInfo; isMcp: boolean }
+  | { type: 'mcpServer'; serverId: string }
+  | { type: 'skill'; skill: ModeSkillInfo };
+
+type ModelSlot = 'primary' | 'fast';
+
+function isMcpTool(tool: ToolInfo): boolean {
+  return tool.dynamic_info?.providerKind === 'mcp' && Boolean(tool.dynamic_info.mcp);
 }
 
-// Short display name: "mcp_github_create_issue" → "create_issue"
-function getMcpShortName(toolName: string): string {
-  const parts = toolName.split('_');
-  return parts.slice(2).join('_') || toolName;
+function getMcpServerName(tool: ToolInfo): string {
+  return tool.dynamic_info?.mcp?.serverId ?? tool.name;
+}
+
+function getMcpShortName(tool: ToolInfo): string {
+  return tool.dynamic_info?.mcp?.toolName ?? tool.name;
 }
 
 type CtxSegKey = 'systemPrompt' | 'toolInjection' | 'rules' | 'memories';
@@ -83,6 +90,29 @@ interface MockBreakdown {
   total: number;
 }
 
+function buildDuplicateSkillNameSet(skills: ModeSkillInfo[]): Set<string> {
+  const counts = new Map<string, number>();
+  for (const skill of skills) {
+    counts.set(skill.name, (counts.get(skill.name) ?? 0) + 1);
+  }
+  return new Set(
+    [...counts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([name]) => name),
+  );
+}
+
+function formatSkillOrigin(skill: ModeSkillInfo): string {
+  return `${skill.level}/${skill.sourceSlot}`;
+}
+
+function formatSkillDisplayName(skill: ModeSkillInfo, duplicateNames: Set<string>): string {
+  if (!duplicateNames.has(skill.name)) {
+    return skill.name;
+  }
+  return `${skill.name} [${formatSkillOrigin(skill)}]`;
+}
+
 function buildMockBreakdown(
   toolCount: number,
   rulesCount: number,
@@ -104,33 +134,30 @@ const TemplateConfigPage: React.FC = () => {
   const [agenticConfig, setAgenticConfig] = useState<ModeConfigItem | null>(null);
   const [availableTools, setAvailableTools] = useState<ToolInfo[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServerInfo[]>([]);
-  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [modeSkills, setModeSkills] = useState<ModeSkillInfo[]>([]);
   const [toolsLoading, setToolsLoading] = useState<Record<string, boolean>>({});
   const [skillsLoading, setSkillsLoading] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [detail, setDetail] = useState<TemplateDetail | null>(null);
 
   const enabledToolCount = useMemo(
-    () => agenticConfig?.available_tools?.length ?? 0,
+    () => agenticConfig?.enabled_tools?.length ?? 0,
     [agenticConfig],
   );
 
-  // Whether a skill is enabled in this template:
-  // - If available_skills is undefined, fall back to the skill's global enabled state
-  // - Otherwise check if the skill name appears in the list
-  const isSkillEnabled = useCallback(
-    (skillName: string): boolean => {
-      if (agenticConfig?.available_skills == null) {
-        return skills.find((s) => s.name === skillName)?.enabled ?? true;
-      }
-      return agenticConfig.available_skills.includes(skillName);
-    },
-    [agenticConfig, skills],
+  const skillsEnabled = useMemo(
+    () => modeSkills.filter((skill) => skill.effectiveEnabled),
+    [modeSkills],
   );
 
-  const enabledSkillCount = useMemo(
-    () => skills.filter((s) => isSkillEnabled(s.name)).length,
-    [skills, isSkillEnabled],
+  const skillsDisabled = useMemo(
+    () => modeSkills.filter((skill) => !skill.effectiveEnabled),
+    [modeSkills],
+  );
+  const duplicateSkillNames = useMemo(
+    () => buildDuplicateSkillNameSet(modeSkills),
+    [modeSkills],
   );
 
   const tokenBreakdown = useMemo(
@@ -149,16 +176,26 @@ const TemplateConfigPage: React.FC = () => {
 
   // Split tools into built-in vs MCP
   const builtinTools = useMemo(
-    () => availableTools.filter((t) => !isMcpTool(t.name)),
+    () => availableTools.filter((tool) => !isMcpTool(tool)),
     [availableTools],
+  );
+
+  const builtinToolsEnabled = useMemo(
+    () => builtinTools.filter((tool) => agenticConfig?.enabled_tools?.includes(tool.name)),
+    [builtinTools, agenticConfig],
+  );
+
+  const builtinToolsDisabled = useMemo(
+    () => builtinTools.filter((tool) => !agenticConfig?.enabled_tools?.includes(tool.name)),
+    [builtinTools, agenticConfig],
   );
 
   // MCP tools grouped by server id
   const mcpToolsByServer = useMemo(() => {
     const map = new Map<string, ToolInfo[]>();
     for (const tool of availableTools) {
-      if (!isMcpTool(tool.name)) continue;
-      const server = getMcpServerName(tool.name);
+      if (!isMcpTool(tool)) continue;
+      const server = getMcpServerName(tool);
       if (!map.has(server)) map.set(server, []);
       map.get(server)!.push(tool);
     }
@@ -182,14 +219,14 @@ const TemplateConfigPage: React.FC = () => {
           configManager.getConfig<Record<string, string>>('ai.func_agent_models').catch(() => ({} as Record<string, string>)),
           configAPI.getModeConfig('agentic').catch(() => null as ModeConfigItem | null),
           invoke<ToolInfo[]>('get_all_tools_info').catch(() => [] as ToolInfo[]),
-          configAPI.getSkillConfigs({}).catch(() => [] as SkillInfo[]),
+          configAPI.getModeSkillConfigs({ modeId: 'agentic' }).catch(() => [] as ModeSkillInfo[]),
           MCPAPI.getServers().catch(() => [] as MCPServerInfo[]),
         ]);
         setModels(allModels ?? []);
         setFuncAgentModels(funcModels ?? {});
         setAgenticConfig(modeConf);
         setAvailableTools(tools);
-        setSkills(skillList ?? []);
+        setModeSkills(skillList ?? []);
         setMcpServers(servers ?? []);
       } catch (e) {
         log.error('Failed to load template config', e);
@@ -198,6 +235,15 @@ const TemplateConfigPage: React.FC = () => {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (!detail) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setDetail(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [detail]);
 
   const buildModelOptions = useCallback((slot: ModelSlot): SelectOption[] => {
     const presets: SelectOption[] = [
@@ -216,14 +262,6 @@ const TemplateConfigPage: React.FC = () => {
     if (!id) return '';
     return ['primary', 'fast'].includes(id) ? `preset:${id}` : `model:${id}`;
   }, [funcAgentModels]);
-
-  const getSelectedLabel = useCallback((slot: ModelSlot): string => {
-    const val = getSelectedValue(slot);
-    if (!val) return slot === 'primary' ? t('slotDefault.primary') : t('slotDefault.fast');
-    const opts = buildModelOptions(slot);
-    return opts.find((o) => o.value === val)?.label
-      ?? (slot === 'primary' ? t('slotDefault.primary') : t('slotDefault.fast'));
-  }, [getSelectedValue, buildModelOptions, t]);
 
   const handleModelChange = useCallback(async (
     slot: ModelSlot,
@@ -246,10 +284,10 @@ const TemplateConfigPage: React.FC = () => {
   const handleToolToggle = useCallback(async (toolName: string) => {
     if (!agenticConfig) return;
     setToolsLoading((prev) => ({ ...prev, [toolName]: true }));
-    const current = agenticConfig.available_tools ?? [];
+    const current = agenticConfig.enabled_tools ?? [];
     const isEnabled = current.includes(toolName);
     const newTools = isEnabled ? current.filter((n) => n !== toolName) : [...current, toolName];
-    const newConfig = { ...agenticConfig, available_tools: newTools };
+    const newConfig = { ...agenticConfig, enabled_tools: newTools };
     setAgenticConfig(newConfig);
     try {
       await configAPI.setModeConfig('agentic', newConfig);
@@ -267,8 +305,12 @@ const TemplateConfigPage: React.FC = () => {
   const handleResetTools = useCallback(async () => {
     try {
       await configAPI.resetModeConfig('agentic');
-      const modeConf = await configAPI.getModeConfig('agentic');
+      const [modeConf, skills] = await Promise.all([
+        configAPI.getModeConfig('agentic'),
+        configAPI.getModeSkillConfigs({ modeId: 'agentic' }),
+      ]);
       setAgenticConfig(modeConf);
+      setModeSkills(skills);
       const { globalEventBus } = await import('@/infrastructure/event-bus');
       globalEventBus.emit('mode:config:updated');
       notificationService.success(t('notifications.resetSuccess'));
@@ -280,12 +322,12 @@ const TemplateConfigPage: React.FC = () => {
 
   const handleGroupToggleAll = useCallback(async (toolNames: string[]) => {
     if (!agenticConfig) return;
-    const current = agenticConfig.available_tools ?? [];
+    const current = agenticConfig.enabled_tools ?? [];
     const allEnabled = toolNames.every((n) => current.includes(n));
     const newTools = allEnabled
       ? current.filter((n) => !toolNames.includes(n))
       : [...new Set([...current, ...toolNames])];
-    const newConfig = { ...agenticConfig, available_tools: newTools };
+    const newConfig = { ...agenticConfig, enabled_tools: newTools };
     setAgenticConfig(newConfig);
     try {
       await configAPI.setModeConfig('agentic', newConfig);
@@ -298,36 +340,36 @@ const TemplateConfigPage: React.FC = () => {
     }
   }, [agenticConfig, t]);
 
-  const handleSkillToggle = useCallback(async (skillName: string) => {
-    if (!agenticConfig) return;
-    setSkillsLoading((prev) => ({ ...prev, [skillName]: true }));
-    // Initialise from global state when available_skills is not yet set
-    const current =
-      agenticConfig.available_skills ??
-      skills.filter((s) => s.enabled).map((s) => s.name);
-    const isEnabled = current.includes(skillName);
-    const next = isEnabled
-      ? current.filter((n) => n !== skillName)
-      : [...current, skillName];
-    const newConfig = { ...agenticConfig, available_skills: next };
-    setAgenticConfig(newConfig);
+  const handleSkillToggle = useCallback(async (skill: ModeSkillInfo) => {
+    const loadingKey = skill.key;
+    setSkillsLoading((prev) => ({ ...prev, [loadingKey]: true }));
+    const nextDisabled = skill.effectiveEnabled;
     try {
-      await configAPI.setModeConfig('agentic', newConfig);
+      await configAPI.setModeSkillDisabled({
+        modeId: 'agentic',
+        skillKey: skill.key,
+        disabled: nextDisabled,
+      });
+      const updatedSkills = await configAPI.getModeSkillConfigs({ modeId: 'agentic' });
+      setModeSkills(updatedSkills);
       const { globalEventBus } = await import('@/infrastructure/event-bus');
       globalEventBus.emit('mode:config:updated');
     } catch (e) {
       log.error('Failed to toggle skill', e);
       notificationService.error(t('notifications.toggleFailed'));
-      setAgenticConfig(agenticConfig);
     } finally {
-      setSkillsLoading((prev) => ({ ...prev, [skillName]: false }));
+      setSkillsLoading((prev) => ({ ...prev, [loadingKey]: false }));
     }
-  }, [agenticConfig, skills, t]);
+  }, [t]);
 
   const toggleCollapse = useCallback((id: string) => {
     setCollapsedGroups((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return next;
     });
   }, []);
@@ -343,28 +385,58 @@ const TemplateConfigPage: React.FC = () => {
     });
   }, [tokenBreakdown, ctxTotal]);
 
-  const primaryLabel = getSelectedLabel('primary');
-  const fastLabel = getSelectedLabel('fast');
+  const contextZoneSubtitle = useMemo(
+    () => (
+      <>
+        <strong>{formatTokenCount(ctxTotal)}</strong>
+        {' tok · '}
+        <span>
+          {fmtPct(ctxTotal, CTX_WINDOW)} of {formatTokenCount(CTX_WINDOW)}
+        </span>
+      </>
+    ),
+    [ctxTotal],
+  );
+
+  const openToolDetail = useCallback((tool: ToolInfo, isMcp: boolean) => {
+    setDetail((prev) => (
+      prev?.type === 'tool' && prev.tool.name === tool.name
+        ? null
+        : { type: 'tool', tool, isMcp }
+    ));
+  }, []);
+
+  const openSkillDetail = useCallback((skill: ModeSkillInfo) => {
+    setDetail((prev) => (
+      prev?.type === 'skill' && prev.skill.key === skill.key
+        ? null
+        : { type: 'skill', skill }
+    ));
+  }, []);
 
   // ── Render helpers ───────────────────────────────────────────────────────
 
-  const renderToolGrid = (tools: ToolInfo[], isMcp: boolean) => (
-    <div className="tc-tool-grid">
+  const renderToolList = (tools: ToolInfo[], isMcp: boolean) => (
+    <div className="tc-tool-list">
       {tools.map((tool) => {
-        const enabled = agenticConfig?.available_tools?.includes(tool.name) ?? false;
-        const displayName = isMcp ? getMcpShortName(tool.name) : tool.name;
+        const enabled = agenticConfig?.enabled_tools?.includes(tool.name) ?? false;
+        const displayName = isMcp ? getMcpShortName(tool) : tool.name;
+        const selected = detail?.type === 'tool' && detail.tool.name === tool.name;
         return (
           <div
             key={tool.name}
-            className={`tc-tool-card ${!enabled ? 'tc-tool-card--off' : ''}`}
+            className={`tc-tool-row${!enabled ? ' tc-tool-row--off' : ''}${selected ? ' tc-tool-row--selected' : ''}`}
           >
-            <div className={`tc-tool-card__icon-wrap ${isMcp ? 'tc-tool-card__icon-wrap--mcp' : ''}`}>
-              {isMcp ? <Plug2 size={12} /> : <Wrench size={12} />}
-            </div>
-            <div className="tc-tool-card__meta">
-              <span className="tc-tool-card__name" title={displayName}>{displayName}</span>
-              <span className="tc-tool-card__desc" title={tool.description}>{tool.description}</span>
-            </div>
+            <button
+              type="button"
+              className="tc-tool-row__hit"
+              onClick={() => openToolDetail(tool, isMcp)}
+            >
+              <span className={`tc-tool-row__icon${isMcp ? ' tc-tool-row__icon--mcp' : ''}`}>
+                {isMcp ? <Plug2 size={12} /> : <Wrench size={12} />}
+              </span>
+              <span className="tc-tool-row__name" title={tool.name}>{displayName}</span>
+            </button>
             <Switch
               size="small"
               checked={enabled}
@@ -378,15 +450,93 @@ const TemplateConfigPage: React.FC = () => {
     </div>
   );
 
+  const renderToolEnabledDisabledSplit = (
+    enabledList: ToolInfo[],
+    disabledList: ToolInfo[],
+    isMcp: boolean,
+  ) => (
+    <div className="tc-enabled-disabled-split">
+      <div className="tc-enabled-disabled-split__col">
+        <p className="tc-enabled-disabled-split__title">{t('nursery.template.colEnabled')}</p>
+        {enabledList.length > 0 ? (
+          renderToolList(enabledList, isMcp)
+        ) : (
+          <p className="tc-enabled-disabled-split__empty">{t('nursery.template.colEmpty')}</p>
+        )}
+      </div>
+      <div className="tc-enabled-disabled-split__col">
+        <p className="tc-enabled-disabled-split__title">{t('nursery.template.colDisabled')}</p>
+        {disabledList.length > 0 ? (
+          renderToolList(disabledList, isMcp)
+        ) : (
+          <p className="tc-enabled-disabled-split__empty">{t('nursery.template.colEmpty')}</p>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderSkillList = (list: ModeSkillInfo[]) => (
+    <div className="tc-skill-list">
+      {list.map((skill) => {
+        const on = skill.effectiveEnabled;
+        const selected = detail?.type === 'skill' && detail.skill.key === skill.key;
+        const displayName = formatSkillDisplayName(skill, duplicateSkillNames);
+        return (
+          <div
+            key={skill.key}
+            className={`tc-skill-row${!on ? ' tc-skill-row--off' : ''}${selected ? ' tc-skill-row--selected' : ''}`}
+          >
+            <button
+              type="button"
+              className="tc-skill-row__hit"
+              onClick={() => openSkillDetail(skill)}
+            >
+              <span className="tc-skill-row__name">{displayName}</span>
+              <span className="tc-skill-row__level">{formatSkillOrigin(skill)}</span>
+            </button>
+            <Switch
+              checked={on}
+              onChange={() => handleSkillToggle(skill)}
+              disabled={skillsLoading[skill.key]}
+              size="small"
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  const renderSkillEnabledDisabledSplit = () => (
+    <div className="tc-enabled-disabled-split">
+      <div className="tc-enabled-disabled-split__col">
+        <p className="tc-enabled-disabled-split__title">{t('nursery.template.colEnabled')}</p>
+        {skillsEnabled.length > 0 ? (
+          renderSkillList(skillsEnabled)
+        ) : (
+          <p className="tc-enabled-disabled-split__empty">{t('nursery.template.colEmpty')}</p>
+        )}
+      </div>
+      <div className="tc-enabled-disabled-split__col">
+        <p className="tc-enabled-disabled-split__title">{t('nursery.template.colDisabled')}</p>
+        {skillsDisabled.length > 0 ? (
+          renderSkillList(skillsDisabled)
+        ) : (
+          <p className="tc-enabled-disabled-split__empty">{t('nursery.template.colEmpty')}</p>
+        )}
+      </div>
+    </div>
+  );
+
   const renderGroupHeader = (
     id: string,
     label: string,
     toolNames: string[],
     isMcp: boolean,
     serverStatus?: string,
+    mcpServerId?: string,
   ) => {
-    const groupEnabled = toolNames.filter(
-      (n) => agenticConfig?.available_tools?.includes(n),
+      const groupEnabled = toolNames.filter(
+      (n) => agenticConfig?.enabled_tools?.includes(n),
     ).length;
     const isCollapsed = collapsedGroups.has(id);
     const allOn = toolNames.length > 0 && groupEnabled === toolNames.length;
@@ -418,6 +568,24 @@ const TemplateConfigPage: React.FC = () => {
         <span className="tc-group-header__count">
           {toolNames.length > 0 ? `${groupEnabled}/${toolNames.length}` : t('nursery.template.groupCountEmpty')}
         </span>
+        {isMcp && mcpServerId && (
+          <button
+            type="button"
+            className="tc-group-header__detail-btn"
+            title={t('nursery.template.openServerDetail')}
+            aria-label={t('nursery.template.openServerDetail')}
+            onClick={(e) => {
+              e.stopPropagation();
+              setDetail((prev) => (
+                prev?.type === 'mcpServer' && prev.serverId === mcpServerId
+                  ? null
+                  : { type: 'mcpServer', serverId: mcpServerId }
+              ));
+            }}
+          >
+            <Info size={14} />
+          </button>
+        )}
         {toolNames.length > 0 && (
           <Switch
             size="small"
@@ -430,14 +598,148 @@ const TemplateConfigPage: React.FC = () => {
     );
   };
 
+  const renderDetailPanel = () => {
+    if (!detail) return null;
+
+    if (detail.type === 'tool') {
+      const { tool, isMcp } = detail;
+      const displayName = isMcp ? getMcpShortName(tool) : tool.name;
+      const enabled = agenticConfig?.enabled_tools?.includes(tool.name) ?? false;
+      return (
+        <aside className="tc-template-detail" aria-label={t('nursery.template.detailPanel')}>
+          <div className="tc-template-detail__head tc-template-detail__head--center-line">
+            <span className="tc-template-detail__head-spacer" aria-hidden />
+            <div className="tc-template-detail__head-text">
+              <div className="tc-template-detail__head-line">
+                <span className="tc-template-detail__kind">
+                  {isMcp ? t('nursery.template.toolTypeMcp') : t('nursery.template.toolTypeBuiltin')}
+                </span>
+                <h3 className="tc-template-detail__title">{displayName}</h3>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="tc-template-detail__close"
+              onClick={() => setDetail(null)}
+              aria-label={t('nursery.template.closeDetail')}
+            >
+              <X size={14} strokeWidth={2} />
+            </button>
+          </div>
+          <div className="tc-template-detail__body">
+            {tool.is_readonly && (
+              <span className="tc-template-detail__badge">{t('nursery.template.readonlyTool')}</span>
+            )}
+            <p className="tc-template-detail__desc">
+              {tool.description?.trim() ? tool.description : '—'}
+            </p>
+            <div className="tc-template-detail__actions">
+              <Switch
+                size="small"
+                checked={enabled}
+                loading={toolsLoading[tool.name]}
+                onChange={() => handleToolToggle(tool.name)}
+                aria-label={tool.name}
+              />
+            </div>
+          </div>
+        </aside>
+      );
+    }
+
+    if (detail.type === 'mcpServer') {
+      const { serverId } = detail;
+      const serverInfo = mcpServers.find((s) => s.id === serverId);
+      const serverTools = mcpToolsByServer.get(serverId) ?? [];
+      const status = serverInfo?.status ?? (serverTools.length > 0 ? 'Connected' : 'Unknown');
+      return (
+        <aside className="tc-template-detail" aria-label={t('nursery.template.detailPanel')}>
+          <div className="tc-template-detail__head tc-template-detail__head--center-line">
+            <span className="tc-template-detail__head-spacer" aria-hidden />
+            <div className="tc-template-detail__head-text">
+              <div className="tc-template-detail__head-line">
+                <span className="tc-template-detail__kind">MCP</span>
+                <h3 className="tc-template-detail__title">{serverInfo?.name ?? serverId}</h3>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="tc-template-detail__close"
+              onClick={() => setDetail(null)}
+              aria-label={t('nursery.template.closeDetail')}
+            >
+              <X size={14} strokeWidth={2} />
+            </button>
+          </div>
+          <div className="tc-template-detail__body">
+            <span className={`tc-template-detail__status tc-group-header__status tc-group-header__status--${status.toLowerCase()}`}>
+              {status}
+            </span>
+            <p className="tc-template-detail__subhead">{t('nursery.template.serverToolsHeading')}</p>
+            {serverTools.length === 0 ? (
+              <p className="nursery-empty">{t('nursery.template.mcpServerNoTools')}</p>
+            ) : (
+              <ul className="tc-template-detail__tool-names">
+                {serverTools.map((tool) => (
+                  <li key={tool.name}>{getMcpShortName(tool)}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </aside>
+      );
+    }
+
+    const { skill } = detail;
+    const on = skill.effectiveEnabled;
+    return (
+      <aside className="tc-template-detail" aria-label={t('nursery.template.detailPanel')}>
+        <div className="tc-template-detail__head tc-template-detail__head--center-line">
+          <span className="tc-template-detail__head-spacer" aria-hidden />
+          <div className="tc-template-detail__head-text">
+            <div className="tc-template-detail__head-line">
+              <span className="tc-template-detail__kind">{t('cards.skills')}</span>
+              <h3 className="tc-template-detail__title">{formatSkillDisplayName(skill, duplicateSkillNames)}</h3>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="tc-template-detail__close"
+            onClick={() => setDetail(null)}
+            aria-label={t('nursery.template.closeDetail')}
+          >
+            <X size={14} strokeWidth={2} />
+          </button>
+        </div>
+        <div className="tc-template-detail__body">
+          <p className="tc-template-detail__meta">{t('nursery.template.skillLevel', { level: formatSkillOrigin(skill) })}</p>
+          <p className="tc-template-detail__desc">
+            {skill.description?.trim() ? skill.description : '—'}
+          </p>
+          <div className="tc-template-detail__actions">
+            <Switch
+              checked={on}
+              onChange={() => handleSkillToggle(skill)}
+              disabled={skillsLoading[skill.key]}
+              size="small"
+            />
+          </div>
+        </div>
+      </aside>
+    );
+  };
+
   return (
     <div className="nursery-page">
       <div className="nursery-page__bar">
-        <button type="button" className="nursery-page__back" onClick={openGallery}>
-          <ArrowLeft size={14} />
-          <span>{t('nursery.backToGallery')}</span>
+        <button
+          type="button"
+          className="nursery-page__back"
+          onClick={openGallery}
+          aria-label={t('nursery.backToGallery')}
+        >
+          <ArrowLeft size={13} />
         </button>
-        <h2 className="nursery-page__title">{t('nursery.template.title')}</h2>
       </div>
 
       <div className="nursery-page__content">
@@ -446,47 +748,25 @@ const TemplateConfigPage: React.FC = () => {
             <RefreshCw size={16} className="nursery-spinning" />
           </div>
         ) : (
-          <>
-            {/* ── Hero panel ──────────────────────────────────────── */}
-            <div className="tc-hero">
-              {/* Left: identity + stat chips */}
-              <div className="tc-hero__left">
-                <div className="tc-hero__identity">
-                  <span className="tc-hero__tag">{t('nursery.template.tag')}</span>
-                  <h3 className="tc-hero__name">{t('nursery.template.title')}</h3>
-                  <p className="tc-hero__desc">{t('nursery.template.subtitle')}</p>
-                </div>
-                <div className="tc-hero__chips">
-                  <span className="tc-hero__chip">
-                    <Star size={10} />
-                    {primaryLabel}
-                  </span>
-                  <span className="tc-hero__chip tc-hero__chip--fast">
-                    <Zap size={10} />
-                    {fastLabel}
-                  </span>
-                  <span className="tc-hero__chip tc-hero__chip--tools">
-                    <Wrench size={10} />
-                    {t('nursery.template.stats.tools', { count: enabledToolCount })}
-                  </span>
-                  {enabledSkillCount > 0 && (
-                    <span className="tc-hero__chip tc-hero__chip--skills">
-                      <Puzzle size={10} />
-                      {t('nursery.template.stats.skills', { count: enabledSkillCount })}
-                    </span>
-                  )}
-                </div>
+          <div className={`tc-template-shell${detail ? ' tc-template-shell--has-detail' : ''}`}>
+            <div className="tc-template-shell__main">
+            <div className="tc-template-main-column">
+            <div className="gallery-page-header tc-template-page-header">
+              <div className="gallery-page-header__identity">
+                <h2 className="gallery-page-header__title">{t('nursery.template.title')}</h2>
+                <div className="gallery-page-header__subtitle">{t('nursery.template.subtitle')}</div>
               </div>
+            </div>
 
-              {/* Divider */}
-              <div className="tc-hero__divider" />
-
-              {/* Right: model config (one row) + context visualization */}
-              <div className="tc-hero__right">
-                {/* Model row: primary + fast selectors (horizontal) */}
+            <div className="gallery-zones tc-template-shell__zones">
+            <div className="tc-template-model-context-row">
+            <GalleryZone
+              title={t('cards.model')}
+              subtitle={t('nursery.template.sectionModelsSubtitle')}
+            >
+              <div className="tc-template-model-panel">
                 <div className="tc-hero__models">
                   <div className="tc-model-slot">
-                    <Star size={11} className="tc-model-slot__icon tc-model-slot__icon--primary" />
                     <span className="tc-model-slot__label">{t('modelSlots.primary.label')}</span>
                     <div className="tc-model-slot__select">
                       <Select
@@ -499,7 +779,6 @@ const TemplateConfigPage: React.FC = () => {
                     </div>
                   </div>
                   <div className="tc-model-slot">
-                    <Zap size={11} className="tc-model-slot__icon tc-model-slot__icon--fast" />
                     <span className="tc-model-slot__label">{t('modelSlots.fast.label')}</span>
                     <div className="tc-model-slot__select">
                       <Select
@@ -512,19 +791,14 @@ const TemplateConfigPage: React.FC = () => {
                     </div>
                   </div>
                 </div>
+              </div>
+            </GalleryZone>
 
-                {/* Context visualization — total + each part's share of total */}
-                <div className="tc-ctx__header">
-                  <span className="tc-ctx__title">{t('nursery.template.tokenTitle')}</span>
-                  <span className="tc-ctx__summary">
-                    <strong>{formatTokenCount(ctxTotal)}</strong>
-                    &nbsp;tok&ensp;
-                    <span className="tc-ctx__pct">
-                      {fmtPct(ctxTotal, CTX_WINDOW)}&nbsp;of&nbsp;{formatTokenCount(CTX_WINDOW)}
-                    </span>
-                  </span>
-                </div>
-
+            <GalleryZone
+              title={t('nursery.template.tokenTitle')}
+              subtitle={contextZoneSubtitle}
+            >
+              <div className="tc-template-context-panel">
                 <div className="tc-ctx__bar">
                   {ctxTotal === 0 ? (
                     <div className="tc-ctx__segment tc-ctx__segment--empty" />
@@ -540,7 +814,7 @@ const TemplateConfigPage: React.FC = () => {
                   ))}
                 </div>
 
-                <div className="tc-ctx__legend">
+                <div className="tc-ctx__legend tc-ctx__legend--template-split">
                   {ctxSegments.map(({ key, color, label }) => {
                     const val = tokenBreakdown[key as keyof typeof tokenBreakdown];
                     const num = typeof val === 'number' ? val : 0;
@@ -555,49 +829,43 @@ const TemplateConfigPage: React.FC = () => {
                   })}
                 </div>
               </div>
+            </GalleryZone>
             </div>
 
-            {/* ── Built-in tools ───────────────────────────────────── */}
-            <section className="nursery-section">
-              <div className="nursery-section__head">
-                <Cpu size={14} />
-                <span className="nursery-section__title">{t('nursery.template.builtinToolsSection')}</span>
-                <span className="nursery-section__count">
-                  {builtinTools.filter((t) => agenticConfig?.available_tools?.includes(t.name)).length}
-                  /{builtinTools.length}
-                </span>
+            <GalleryZone
+              title={t('cards.skills')}
+            >
+              {modeSkills.length === 0 ? (
+                <p className="nursery-empty">{t('empty.skills')}</p>
+              ) : (
+                renderSkillEnabledDisabledSplit()
+              )}
+            </GalleryZone>
+
+            <GalleryZone
+              title={t('nursery.template.builtinToolsSection')}
+              tools={(
                 <button
                   type="button"
-                  className="nursery-section__action"
+                  className="gallery-plain-icon-btn"
                   onClick={handleResetTools}
                   title={t('actions.reset')}
+                  aria-label={t('actions.reset')}
                 >
-                  <RefreshCw size={12} />
+                  <RefreshCw size={14} />
                 </button>
-              </div>
-
+              )}
+            >
               {builtinTools.length === 0 ? (
                 <p className="nursery-empty">{t('empty.tools')}</p>
               ) : (
-                <div className="tc-tool-block">
-                  {renderGroupHeader('__builtin__', t('nursery.template.builtinToolsSection'), builtinTools.map((tool) => tool.name), false)}
-                  {!collapsedGroups.has('__builtin__') && renderToolGrid(builtinTools, false)}
-                </div>
+                renderToolEnabledDisabledSplit(builtinToolsEnabled, builtinToolsDisabled, false)
               )}
-            </section>
+            </GalleryZone>
 
-            {/* ── MCP tools ────────────────────────────────────────── */}
-            <section className="nursery-section">
-              <div className="nursery-section__head">
-                <Plug2 size={14} />
-                <span className="nursery-section__title">{t('nursery.template.mcpToolsSection')}</span>
-                <span className="nursery-section__count">
-                  {[...mcpToolsByServer.values()].flat()
-                    .filter((t) => agenticConfig?.available_tools?.includes(t.name)).length}
-                  /{[...mcpToolsByServer.values()].flat().length}
-                </span>
-              </div>
-
+            <GalleryZone
+              title={t('nursery.template.mcpToolsSection')}
+            >
               {mcpServerIds.size === 0 ? (
                 <div className="tc-mcp-empty">
                   <Plug2 size={20} className="tc-mcp-empty__icon" />
@@ -611,18 +879,21 @@ const TemplateConfigPage: React.FC = () => {
                     const serverInfo = mcpServers.find((s) => s.id === serverId);
                     const status = serverInfo?.status ?? (serverTools.length > 0 ? 'Connected' : 'Unknown');
                     const groupId = `mcp_${serverId}`;
+                    const mcpEnabled = serverTools.filter((tool) => agenticConfig?.enabled_tools?.includes(tool.name));
+                    const mcpDisabled = serverTools.filter((tool) => !agenticConfig?.enabled_tools?.includes(tool.name));
 
                     return (
                       <div key={serverId} className="tc-tool-block">
                         {renderGroupHeader(
                           groupId,
                           serverInfo?.name ?? serverId,
-                          serverTools.map((t) => t.name),
+                          serverTools.map((tool) => tool.name),
                           true,
                           status,
+                          serverId,
                         )}
                         {!collapsedGroups.has(groupId) && serverTools.length > 0
-                          && renderToolGrid(serverTools, true)}
+                          && renderToolEnabledDisabledSplit(mcpEnabled, mcpDisabled, true)}
                         {!collapsedGroups.has(groupId) && serverTools.length === 0 && (
                           <p className="tc-tool-block__empty">{t('nursery.template.mcpServerNoTools')}</p>
                         )}
@@ -631,49 +902,12 @@ const TemplateConfigPage: React.FC = () => {
                   })}
                 </div>
               )}
-            </section>
-
-            {/* ── Skills ───────────────────────────────────────────── */}
-            <section className="nursery-section">
-              <div className="nursery-section__head">
-                <Puzzle size={14} />
-                <span className="nursery-section__title">{t('cards.skills')}</span>
-                <span className="nursery-section__count">
-                  {enabledSkillCount}/{skills.length}
-                </span>
-              </div>
-
-              {skills.length === 0 ? (
-                <p className="nursery-empty">{t('empty.skills')}</p>
-              ) : (
-                <div className="tc-skill-grid">
-                  {skills.map((skill) => {
-                    const on = isSkillEnabled(skill.name);
-                    return (
-                      <div
-                        key={skill.name}
-                        className={`tc-skill-card ${!on ? 'tc-skill-card--off' : ''}`}
-                      >
-                        <div className="tc-skill-card__meta">
-                          <div className="tc-skill-card__title-row">
-                            <span className="tc-skill-card__name">{skill.name}</span>
-                            <span className="tc-skill-card__level">{skill.level}</span>
-                          </div>
-                          <span className="tc-skill-card__desc">{skill.description}</span>
-                        </div>
-                        <Switch
-                          checked={on}
-                          onChange={() => handleSkillToggle(skill.name)}
-                          disabled={skillsLoading[skill.name]}
-                          size="small"
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </section>
-          </>
+            </GalleryZone>
+            </div>
+            </div>
+            </div>
+            {renderDetailPanel()}
+          </div>
         )}
       </div>
     </div>

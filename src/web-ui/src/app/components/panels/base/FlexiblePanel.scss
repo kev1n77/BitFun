@@ -85,14 +85,14 @@
 
 .bitfun-flexible-panel__content-title {
   @include mixins.text-ellipsis;
-  font-size: $font-size-base;
+  font-size: var(--font-size-base);
   font-weight: $font-weight-semibold;
   color: var(--color-text-primary);
 }
 
 .bitfun-flexible-panel__content-type {
   @include mixins.text-ellipsis;
-  font-size: $font-size-sm;
+  font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
 }
 
@@ -138,7 +138,7 @@
 
   p {
     margin: 0;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     color: var(--color-text-secondary);
   }
 }
@@ -163,14 +163,14 @@
 
   h3 {
     margin: 0 0 $size-gap-2 0;
-    font-size: $font-size-xl;
+    font-size: var(--font-size-xl);
     font-weight: $font-weight-semibold;
     color: var(--color-text-primary);
   }
 
   p {
     margin: 0;
-    font-size: $font-size-base;
+    font-size: var(--font-size-base);
     color: var(--color-text-secondary);
   }
 }
@@ -196,7 +196,7 @@
     border: none;
     border-radius: 0;
     font-family: $font-family-mono;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     line-height: $line-height-relaxed;
     overflow: auto;
   }
@@ -267,7 +267,7 @@
   background: var(--color-bg-secondary);
   color: var(--color-text-primary);
   font-family: $font-family-mono;
-  font-size: $font-size-base;
+  font-size: var(--font-size-base);
   line-height: $line-height-relaxed;
   resize: vertical;
   outline: none;
@@ -295,7 +295,7 @@
     border: 1px solid var(--border-base);
     border-radius: $size-radius-base;
     font-family: $font-family-mono;
-    font-size: $font-size-base;
+    font-size: var(--font-size-base);
     line-height: $line-height-relaxed;
     white-space: pre-wrap;
     word-break: break-word;
@@ -323,14 +323,14 @@
 
   h3 {
     margin: 0;
-    font-size: $font-size-xl;
+    font-size: var(--font-size-xl);
     font-weight: $font-weight-semibold;
     color: var(--color-text-primary);
   }
 
   p {
     margin: 0;
-    font-size: $font-size-base;
+    font-size: var(--font-size-base);
     color: var(--color-text-secondary);
     max-width: 400px;
   }
@@ -344,7 +344,7 @@
     font-family: $font-family-mono;
 
     code {
-      font-size: $font-size-sm;
+      font-size: var(--font-size-sm);
       color: var(--color-text-primary);
       background: transparent;
       padding: 0;
@@ -371,7 +371,7 @@
 
   p {
     margin: 0;
-    font-size: $font-size-base;
+    font-size: var(--font-size-base);
     color: var(--color-error);
   }
 }
@@ -387,7 +387,7 @@
 
   p {
     margin: 0;
-    font-size: $font-size-base;
+    font-size: var(--font-size-base);
     color: var(--color-text-muted);
     font-style: italic;
   }
@@ -401,7 +401,7 @@
 
   p {
     margin: 0;
-    font-size: $font-size-base;
+    font-size: var(--font-size-base);
     color: var(--color-text-secondary);
   }
 
@@ -412,7 +412,7 @@
     border: 1px solid var(--border-base);
     border-radius: $size-radius-base;
     font-family: $font-family-mono;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     line-height: $line-height-relaxed;
     overflow: auto;
     max-width: 100%;
@@ -434,7 +434,7 @@
 
   h4 {
     margin: 0 0 4px 0;
-    font-size: $font-size-base;
+    font-size: var(--font-size-base);
     font-weight: $font-weight-semibold;
     color: var(--color-text-primary);
   }
@@ -442,7 +442,7 @@
 
 .bitfun-flexible-panel__file-path {
   margin: 0;
-  font-size: $font-size-xs;
+  font-size: var(--font-size-xs);
   color: var(--color-text-secondary);
   font-family: $font-family-mono;
 }
@@ -455,7 +455,7 @@
   pre {
     margin: 0;
     font-family: $font-family-mono;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     line-height: $line-height-relaxed;
     color: var(--color-text-primary);
     white-space: pre-wrap;
@@ -568,34 +568,17 @@
   }
   
   .bitfun-flexible-panel__content-title {
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
   }
   
   .bitfun-flexible-panel__content-type {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
   }
   
   .bitfun-flexible-panel__code-content,
   .bitfun-flexible-panel__markdown-content,
   .bitfun-flexible-panel__text-content {
     padding: $size-gap-3;
-  }
-}
-
-// ==================== Mermaid Panel Container ====================
-
-.bitfun-flexible-panel__mermaid-container {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-
-  .mermaid-panel,
-  .mermaid-editor {
-    flex: 1 1 0;
-    min-height: 0;
-    height: auto;
   }
 }
 

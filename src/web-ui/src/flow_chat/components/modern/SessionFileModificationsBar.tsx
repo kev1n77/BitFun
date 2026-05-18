@@ -11,8 +11,8 @@ import { useSnapshotState } from '../../../tools/snapshot_system/hooks/useSnapsh
 import { createDiffEditorTab } from '../../../shared/utils/tabUtils';
 import { snapshotAPI } from '../../../infrastructure/api';
 import { useCurrentWorkspace } from '../../../infrastructure/contexts/WorkspaceContext';
-import { diffService } from '../../../tools/editor/services';
 import { createLogger } from '@/shared/utils/logger';
+import { runWithConcurrencyLimit } from '@/shared/utils/runWithConcurrencyLimit';
 import './SessionFileModificationsBar.scss';
 
 const log = createLogger('SessionFileModificationsBar');
@@ -30,12 +30,20 @@ export interface SessionFileModificationsBarProps {
 
 interface FileStats {
   filePath: string;
+  sourceSessionId: string;
+  sourceKind: 'parent' | 'review' | 'deep_review';
   fileName: string;
   additions: number;
   deletions: number;
   operationType: 'write' | 'edit' | 'delete';
   loading?: boolean;
   error?: string;
+}
+
+interface SourceFile {
+  filePath: string;
+  sourceSessionId: string;
+  sourceKind: FileStats['sourceKind'];
 }
 
 interface StatsCache {
@@ -65,10 +73,50 @@ export const SessionFileModificationsBar: React.FC<SessionFileModificationsBarPr
   // Cache to avoid repeated requests for the same file.
   const statsCacheRef = useRef<StatsCache>({});
   const loadingFilesRef = useRef<Set<string>>(new Set());
+  const activeSourceKeysRef = useRef<Set<string>>(new Set());
   const previousSessionIdRef = useRef<string | undefined>(undefined);
-  const CACHE_TTL = 10000;
+  const CACHE_TTL = 60000;
+  /** Limit parallel Tauri IPC for diff stats so the webview stays responsive on large file lists. */
+  const DIFF_STATS_MAX_CONCURRENCY = 3;
 
   const initializedRef = useRef(false);
+
+  const sourceFiles = useMemo<SourceFile[]>(() => {
+    return files.map((file): SourceFile => ({
+      filePath: file.filePath,
+      sourceSessionId: sessionId ?? '',
+      sourceKind: 'parent',
+    }));
+  }, [files, sessionId]);
+
+  useEffect(() => {
+    const activeKeys = new Set(sourceFiles.map(file => `${file.sourceSessionId}:${file.filePath}`));
+    activeSourceKeysRef.current = activeKeys;
+    setFileStats(prev => {
+      let changed = false;
+      const next = new Map<string, FileStats>();
+      prev.forEach((stat, key) => {
+        if (activeKeys.has(key)) {
+          next.set(key, stat);
+        } else {
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+
+    for (const sourceKey of Object.keys(statsCacheRef.current)) {
+      if (!activeKeys.has(sourceKey)) {
+        delete statsCacheRef.current[sourceKey];
+      }
+    }
+
+    for (const sourceKey of Array.from(loadingFilesRef.current)) {
+      if (!activeKeys.has(sourceKey)) {
+        loadingFilesRef.current.delete(sourceKey);
+      }
+    }
+  }, [sourceFiles]);
 
 
   useEffect(() => {
@@ -89,7 +137,7 @@ export const SessionFileModificationsBar: React.FC<SessionFileModificationsBarPr
   /**
    * Load diff stats for files with caching.
    */
-  const loadFileStats = useCallback(async (filesToLoad: typeof files) => {
+  const loadFileStats = useCallback(async (filesToLoad: SourceFile[]) => {
     if (!sessionId || filesToLoad.length === 0) {
       return;
     }
@@ -109,10 +157,11 @@ export const SessionFileModificationsBar: React.FC<SessionFileModificationsBarPr
     const now = Date.now();
 
     const newFilesToLoad = filesToLoad.filter(file => {
-      if (loadingFilesRef.current.has(file.filePath)) {
+      const sourceKey = `${file.sourceSessionId}:${file.filePath}`;
+      if (loadingFilesRef.current.has(sourceKey)) {
         return false;
       }
-      const cached = statsCacheRef.current[file.filePath];
+      const cached = statsCacheRef.current[sourceKey];
       if (cached && now - cached.timestamp < CACHE_TTL) {
         if (!sessionChanged) {
           return false;
@@ -131,57 +180,57 @@ export const SessionFileModificationsBar: React.FC<SessionFileModificationsBarPr
 
     try {
       newFilesToLoad.forEach(file => {
-        loadingFilesRef.current.add(file.filePath);
+        loadingFilesRef.current.add(`${file.sourceSessionId}:${file.filePath}`);
       });
 
-      await Promise.all(
-        newFilesToLoad.map(async (file) => {
+      const batchResults = await runWithConcurrencyLimit(
+        newFilesToLoad,
+        DIFF_STATS_MAX_CONCURRENCY,
+        async (file) => {
+          const sourceKey = `${file.sourceSessionId}:${file.filePath}`;
           let stats: FileStats | null = null;
 
           try {
-            const diffData = await snapshotAPI.getOperationDiff(sessionId, file.filePath);
+            const statsResp = await snapshotAPI.getSessionFileDiffStats(
+              file.sourceSessionId,
+              file.filePath,
+              currentWorkspace?.rootPath,
+            );
             const fileName = file.filePath.split(/[/\\]/).pop() || file.filePath;
 
-            let additions = 0;
-            let deletions = 0;
-            let operationType: 'write' | 'edit' | 'delete' = 'edit';
-
-            if (!diffData.originalContent && diffData.modifiedContent) {
-              operationType = 'write';
-              additions = diffData.modifiedContent.split('\n').length;
-              deletions = 0;
-            } else if (diffData.originalContent && !diffData.modifiedContent) {
-              operationType = 'delete';
-              additions = 0;
-              deletions = diffData.originalContent.split('\n').length;
-            } else if (diffData.originalContent && diffData.modifiedContent) {
-              const result = await diffService.computeDiff(
-                diffData.originalContent,
-                diffData.modifiedContent,
-                { timeout: 3000 }
-              );
-              additions = result.stats.additions;
-              deletions = result.stats.deletions;
-            }
+            const additions = statsResp.linesAdded;
+            const deletions = statsResp.linesRemoved;
+            const operationType: 'write' | 'edit' | 'delete' =
+              statsResp.changeKind === 'create'
+                ? 'write'
+                : statsResp.changeKind === 'delete'
+                  ? 'delete'
+                  : 'edit';
 
             stats = {
               filePath: file.filePath,
+              sourceSessionId: file.sourceSessionId,
+              sourceKind: file.sourceKind,
               fileName,
               additions,
               deletions,
               operationType,
             };
 
-            statsCacheRef.current[file.filePath] = {
-              stats,
-              timestamp: now,
-            };
+            if (activeSourceKeysRef.current.has(sourceKey)) {
+              statsCacheRef.current[sourceKey] = {
+                stats,
+                timestamp: now,
+              };
+            }
           } catch (error) {
             log.warn('Failed to get file stats', { filePath: file.filePath, error });
 
             const fileName = file.filePath.split(/[/\\]/).pop() || file.filePath;
             stats = {
               filePath: file.filePath,
+              sourceSessionId: file.sourceSessionId,
+              sourceKind: file.sourceKind,
               fileName,
               additions: 0,
               deletions: 0,
@@ -189,30 +238,37 @@ export const SessionFileModificationsBar: React.FC<SessionFileModificationsBarPr
               error: t('sessionFilesBadge.loadFailed'),
             };
           } finally {
-            loadingFilesRef.current.delete(file.filePath);
+            loadingFilesRef.current.delete(sourceKey);
           }
 
-          // Keep only files with changes or errors (filter +0 -0).
-          if (stats && (stats.additions > 0 || stats.deletions > 0 || stats.error)) {
-            setFileStats(prev => {
-              const newMap = new Map(prev);
-              newMap.set(file.filePath, stats!);
-              return newMap;
-            });
-          }
-        })
+          return { sourceKey, stats };
+        },
       );
+
+      setFileStats((prev) => {
+        const newMap = new Map(prev);
+        for (const { sourceKey, stats } of batchResults) {
+          if (
+            activeSourceKeysRef.current.has(sourceKey) &&
+            stats &&
+            (stats.additions > 0 || stats.deletions > 0 || stats.error)
+          ) {
+            newMap.set(sourceKey, stats);
+          }
+        }
+        return newMap;
+      });
     } catch (error) {
       log.error('Failed to load file stats', error);
     } finally {
       setLoadingStats(false);
     }
-  }, [sessionId]);
+  }, [sessionId, t, currentWorkspace?.rootPath]);
 
   useEffect(() => {
     const timeoutId = setTimeout(() => {
-      if (files.length > 0) {
-        loadFileStats(files);
+      if (sourceFiles.length > 0) {
+        loadFileStats(sourceFiles);
       } else {
         setFileStats(new Map());
         statsCacheRef.current = {};
@@ -220,7 +276,7 @@ export const SessionFileModificationsBar: React.FC<SessionFileModificationsBarPr
     }, 300);
 
     return () => clearTimeout(timeoutId);
-  }, [files, loadFileStats]);
+  }, [sourceFiles, loadFileStats]);
 
   const totalStats = useMemo(() => {
     let totalAdditions = 0;
@@ -234,24 +290,34 @@ export const SessionFileModificationsBar: React.FC<SessionFileModificationsBarPr
     return { totalAdditions, totalDeletions };
   }, [fileStats]);
 
-  const handleFileClick = useCallback(async (filePath: string) => {
+  const handleFileClick = useCallback(async (stat: FileStats) => {
     if (!sessionId) return;
 
     try {
-      const diffData = await snapshotAPI.getOperationDiff(sessionId, filePath);
-      const fileName = filePath.split(/[/\\]/).pop() || filePath;
+      const diffData = await snapshotAPI.getOperationDiff(stat.sourceSessionId, stat.filePath);
+      if ((diffData.originalContent || '') === (diffData.modifiedContent || '')) {
+        log.debug('Skipping empty session diff', { filePath: stat.filePath, sessionId: stat.sourceSessionId });
+        return;
+      }
+      const fileName = stat.filePath.split(/[/\\]/).pop() || stat.filePath;
 
       window.dispatchEvent(new CustomEvent('expand-right-panel'));
 
       setTimeout(() => {
         createDiffEditorTab(
-          filePath,
+          stat.filePath,
           fileName,
           diffData.originalContent || '',
           diffData.modifiedContent || '',
           false,
           'agent',
-          currentWorkspace?.rootPath
+          currentWorkspace?.rootPath,
+          undefined,
+          false,
+          {
+            titleKind: 'diff',
+            duplicateKeyPrefix: 'diff'
+          }
         );
       }, 250);
     } catch (error) {
@@ -310,16 +376,23 @@ export const SessionFileModificationsBar: React.FC<SessionFileModificationsBarPr
       {isExpanded && (
         <div className="session-file-modifications-bar__list">
           {Array.from(fileStats.values()).map((stat) => (
-            <Tooltip key={stat.filePath} content={stat.filePath} placement="left">
+            <Tooltip key={`${stat.sourceSessionId}:${stat.filePath}`} content={stat.filePath} placement="left">
               <div
                 className={`file-row file-row--${stat.operationType} ${stat.error ? 'file-row--error' : ''}`}
-                onClick={() => !stat.error && handleFileClick(stat.filePath)}
+                onClick={() => !stat.error && handleFileClick(stat)}
               >
                 <span className="file-row__icon">
                   {getOperationIcon(stat.operationType)}
                 </span>
 
                 <span className="file-row__name">{stat.fileName}</span>
+                {stat.sourceKind !== 'parent' ? (
+                  <span className="file-row__source">
+                    {stat.sourceKind === 'deep_review'
+                      ? t('sessionFileModificationsBar.deepReviewSource', { defaultValue: 'Deep review' })
+                      : t('sessionFileModificationsBar.reviewSource', { defaultValue: 'Review' })}
+                  </span>
+                ) : null}
 
                 {stat.error ? (
                   <span className="file-row__error">{stat.error}</span>

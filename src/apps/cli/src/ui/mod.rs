@@ -1,16 +1,34 @@
 /// TUI interface module
 ///
 /// Build terminal user interface using ratatui
+pub mod agent_selector;
 pub mod chat;
+pub mod command_menu;
+pub mod command_palette;
+pub mod diff_render;
 pub mod markdown;
+pub mod mcp_add_dialog;
+pub mod mcp_selector;
+pub mod model_config_form;
+pub mod model_selector;
+pub mod permission;
+pub mod provider_selector;
+pub mod question;
+pub mod session_selector;
+pub mod skill_selector;
 pub mod startup;
 pub mod string_utils;
+pub mod subagent_selector;
+pub mod syntax_highlight;
+pub mod text_input;
 pub mod theme;
+pub mod theme_selector;
 pub mod tool_cards;
 pub mod widgets;
 
 use anyhow::Result;
 use crossterm::{
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -28,7 +46,12 @@ use std::io;
 pub fn init_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;
     Ok(terminal)
@@ -37,7 +60,12 @@ pub fn init_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
 /// Restore terminal
 pub fn restore_terminal(mut terminal: Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
     Ok(())
 }

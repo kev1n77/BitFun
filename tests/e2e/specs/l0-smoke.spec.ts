@@ -59,7 +59,7 @@ describe('L0 Smoke Tests', () => {
   describe('Core UI components', () => {
     it('Header should be visible', async () => {
       await browser.pause(2000);
-      const header = await $('[data-testid="header-container"]');
+      const header = await $('.bitfun-nav-panel, .bitfun-scene-bar, .bitfun-nav-bar, [data-testid="header-container"]');
       const exists = await header.isExisting();
 
       if (exists) {
@@ -68,6 +68,9 @@ describe('L0 Smoke Tests', () => {
       } else {
         console.log('[L0] Checking fallback selectors...');
         const selectors = [
+          '.bitfun-nav-panel',
+          '.bitfun-scene-bar',
+          '.bitfun-nav-bar',
           'header',
           '.header',
           '[class*="header"]',

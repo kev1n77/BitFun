@@ -1,7 +1,12 @@
 /* Model round item styles (BEM). */
 
 .model-round-item {
-  margin-bottom: 0.5rem;
+  /*
+   * No bottom margin — the inter-round gap is covered by the same line-height rhythm
+   * as inter-item gaps inside a round, so flow text → tool / tool → thinking / cross-
+   * round transitions all read as one continuous, evenly-spaced text column.
+   */
+  margin-bottom: 0;
   padding: 0 3rem;
   animation: fadeIn 0.4s ease;
   position: relative;
@@ -17,11 +22,6 @@
     opacity: 1;
   }
 
-  // Reduce spacing when compact tool cards are present.
-  &:has(.compact-tool-card) {
-    margin-bottom: 0.001rem;
-  }
-
   @media (max-width: 768px) {
     padding: 0 1.5rem;
   }
@@ -30,7 +30,7 @@
 .model-round-item__header {
   display: flex;
   justify-content: flex-end;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.35rem;
   padding: 0 0.5rem;
 }
 
@@ -39,17 +39,9 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 0.5rem;
-  padding: 0.5rem 0;
-  margin-top: 0.5rem;
-}
-
-.model-round-item__feedback-group {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding-left: 0.5rem;
-  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  gap: 0.4rem;
+  padding: 0.35rem 0;
+  margin-top: 0.35rem;
 }
 
 .model-round-item__action-btn {
@@ -81,6 +73,11 @@
     height: 14px;
     flex-shrink: 0;
   }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
 }
 
 // Copy button
@@ -88,6 +85,12 @@
   &.copied {
     color: #22c55e;
     background: rgba(34, 197, 94, 0.1);
+  }
+}
+
+.model-round-item__fork-btn {
+  .spinning {
+    animation: spin 1s linear infinite;
   }
 }
 
@@ -112,22 +115,6 @@
   }
 }
 
-// Feedback buttons
-.model-round-item__feedback-btn {
-  &:hover:has(svg[data-lucide="thumbs-up"]) {
-    color: #22c55e;
-  }
-
-  &:hover:has(svg[data-lucide="thumbs-down"]) {
-    color: #ef4444;
-  }
-
-  &:hover:has(svg[data-lucide="alert-triangle"]) {
-    color: #f59e0b;
-  }
-}
-
-
 @keyframes fadeIn {
   from {
     opacity: 0;
@@ -140,16 +127,6 @@
 }
 
 // ==================== Explore region adjustments ====================
-
-// Reduce spacing when only a collapsed explore region is present.
-.model-round-item:has(.explore-region--collapsed):not(:has(.explore-region--expanded)):not(:has(.base-tool-card)):not(:has(.flow-text-block)) {
-  margin-bottom: 0;
-}
-
-// Reduce spacing between consecutive collapsed explore regions.
-.model-round-item:has(.explore-region--collapsed) + .model-round-item:has(.explore-region--collapsed) {
-  margin-top: -4px;
-}
 
 /* Focus highlight for programmatic "jump to marker" navigation. */
 .flowchat-flow-item.flowchat-flow-item--focused {

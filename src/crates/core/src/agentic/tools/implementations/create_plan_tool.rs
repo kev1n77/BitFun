@@ -3,7 +3,6 @@
 //! Used to create and store plan files during the planning phase
 
 use crate::agentic::tools::framework::{Tool, ToolResult, ToolUseContext};
-use crate::infrastructure::get_path_manager_arc;
 use crate::util::errors::{BitFunError, BitFunResult};
 use async_trait::async_trait;
 use serde::Serialize;
@@ -70,7 +69,7 @@ You should provide a structured list of implementation todos:
 
 UPDATING THE PLAN:
 - This tool creates a NEW plan file each time it is called
-- The plan file URI will be returned in the tool result
+- The plan file path returned in the tool result may be an absolute runtime path (local) or a `bitfun://runtime/...` URI (remote)
 - To update an existing plan, read and edit the plan file directly using your file editing tools
 - Do NOT call CreatePlan again to update an existing plan
 
@@ -81,6 +80,10 @@ Additional guidelines:
 - Focus on high-level meaningful decisions rather than low-level implementation details
 - A good plan is glanceable, not a wall of text."###
         .to_string())
+    }
+
+    fn short_description(&self) -> String {
+        "Create and store a concise implementation plan.".to_string()
     }
 
     fn input_schema(&self) -> Value {
@@ -179,30 +182,14 @@ Additional guidelines:
 
         let plan_file_name = format!("{}_{}.plan.md", name_normalized, uuid_short);
 
-        // Get workspace path
-        let workspace_path = context
-            .workspace_root()
-            .ok_or(BitFunError::tool("Workspace path not set".to_string()))?;
-
-        // Use global PathManager to get plans directory path
-        let path_manager = get_path_manager_arc();
-        let plans_dir = path_manager.project_plans_dir(&workspace_path);
-        let plan_file_path = plans_dir.join(&plan_file_name);
-
-        // Ensure plans directory exists
-        path_manager
-            .ensure_dir(&plans_dir)
-            .await
-            .map_err(|e| BitFunError::tool(format!("Failed to create plans directory: {}", e)))?;
-
-        // Generate file content
         let file_content = generate_plan_file_content(name, overview, plan, todos);
 
-        // Write file
+        let runtime_context = context.ensure_current_workspace_runtime().await?;
+        let plans_dir = runtime_context.plans_dir.clone();
+        let plan_file_path = plans_dir.join(&plan_file_name);
         fs::write(&plan_file_path, &file_content)
             .await
             .map_err(|e| BitFunError::tool(format!("Failed to write plan file: {}", e)))?;
-
         let plan_file_path_str = plan_file_path.to_string_lossy().to_string();
 
         // Process todos for return result
@@ -224,14 +211,34 @@ Additional guidelines:
             vec![]
         };
 
+        // Prefer workspace-relative computer:// links, but fall back to an
+        // absolute computer:// path when plans live outside the workspace tree.
+        let computer_link = context
+            .workspace_root()
+            .and_then(|root| {
+                std::path::Path::new(&plan_file_path_str)
+                    .strip_prefix(root)
+                    .ok()
+                    .map(|rel| format!("computer://{}", rel.to_string_lossy().replace('\\', "/")))
+            })
+            .unwrap_or_else(|| format!("computer://{}", plan_file_path_str.replace('\\', "/")));
+
+        let plan_reference =
+            context.build_runtime_artifact_reference(&format!("plans/{}", plan_file_name))?;
+
         let result_for_assistant = format!(
-            "Plan file created at: {}\nYour next reply MUST include this exact plan file path and then end the conversation turn. Do not continue with more planning details or additional questions.",
-            plan_file_path_str
+            "Plan file created at: {}
+Clickable link for user: [{}]({})
+Your next reply MUST show the clickable link and then end the conversation turn. Do not continue with more planning details or additional questions.",
+            plan_reference,
+            plan_file_name,
+            computer_link,
         );
 
         let result = json!({
             "success": true,
-            "plan_file_path": plan_file_path_str,
+            "plan_file_path": plan_reference,
+            "computer_link": computer_link.clone(),
             "plan_file_name": plan_file_name,
             "name": name,
             "overview": overview,
@@ -241,6 +248,7 @@ Additional guidelines:
         Ok(vec![ToolResult::Result {
             data: result,
             result_for_assistant: Some(result_for_assistant),
+            image_attachments: None,
         }])
     }
 }

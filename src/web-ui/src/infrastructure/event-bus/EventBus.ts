@@ -174,10 +174,12 @@ export class EventBus {
   async waitFor<T = any>(event: string, timeout?: number): Promise<T> {
     return new Promise((resolve, reject) => {
       const timeoutMs = timeout ?? this.options.timeout;
-      let timeoutId: NodeJS.Timeout;
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
       const cleanup = this.once(event, (data: T) => {
-        clearTimeout(timeoutId);
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
         resolve(data);
       });
 

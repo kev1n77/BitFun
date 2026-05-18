@@ -5,9 +5,7 @@
 use bitfun_core::agentic::*;
 use bitfun_core::infrastructure::ai::AIClientFactory;
 use bitfun_core::infrastructure::try_get_path_manager_arc;
-use bitfun_core::service::{
-    ai_rules, config, filesystem, mcp, token_usage, workspace,
-};
+use bitfun_core::service::{config, filesystem, mcp, token_usage, workspace};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -18,7 +16,6 @@ pub struct ServerAppState {
     pub workspace_path: Arc<RwLock<Option<std::path::PathBuf>>>,
     pub config_service: Arc<config::ConfigService>,
     pub filesystem_service: Arc<filesystem::FileSystemService>,
-    pub ai_rules_service: Arc<ai_rules::AIRulesService>,
     pub agent_registry: Arc<agents::AgentRegistry>,
     pub mcp_service: Option<Arc<mcp::MCPService>>,
     pub token_usage_service: Arc<token_usage::TokenUsageService>,
@@ -40,6 +37,15 @@ pub async fn initialize(workspace: Option<String>) -> anyhow::Result<Arc<ServerA
     config::initialize_global_config().await?;
     let config_service = config::get_global_config_service().await?;
 
+    // Initialize the global I18nService so server-mode bot/remote-connect
+    // consumers observe the same runtime locale lifecycle as Desktop.
+    if let Err(e) =
+        bitfun_core::service::i18n::initialize_global_i18n_service(Some(config_service.clone()))
+            .await
+    {
+        log::warn!("Failed to initialize global I18nService in server mode: {}", e);
+    }
+
     // 2. AI client factory
     AIClientFactory::initialize_global().await?;
     let ai_client_factory = AIClientFactory::get_global().await?;
@@ -50,28 +56,13 @@ pub async fn initialize(workspace: Option<String>) -> anyhow::Result<Arc<ServerA
     let event_queue = Arc::new(events::EventQueue::new(Default::default()));
     let event_router = Arc::new(events::EventRouter::new());
 
-    let persistence_manager =
-        Arc::new(persistence::PersistenceManager::new(path_manager.clone())?);
+    let persistence_manager = Arc::new(persistence::PersistenceManager::new(path_manager.clone())?);
 
-    let history_manager = Arc::new(session::MessageHistoryManager::new(
-        persistence_manager.clone(),
-        session::HistoryConfig {
-            enable_persistence: false,
-            ..Default::default()
-        },
-    ));
-
-    let compression_manager = Arc::new(session::CompressionManager::new(
-        persistence_manager.clone(),
-        session::CompressionConfig {
-            enable_persistence: false,
-            ..Default::default()
-        },
-    ));
+    let context_store = Arc::new(session::SessionContextStore::new());
+    let context_compressor = Arc::new(session::ContextCompressor::new(Default::default()));
 
     let session_manager = Arc::new(session::SessionManager::new(
-        history_manager,
-        compression_manager,
+        context_store,
         persistence_manager,
         Default::default(),
     ));
@@ -82,7 +73,7 @@ pub async fn initialize(workspace: Option<String>) -> anyhow::Result<Arc<ServerA
     let tool_pipeline = Arc::new(tools::pipeline::ToolPipeline::new(
         tool_registry.clone(),
         tool_state_manager,
-        None, // no image context provider in server mode for now
+        None,
     ));
 
     let stream_processor = Arc::new(execution::StreamProcessor::new(event_queue.clone()));
@@ -91,11 +82,13 @@ pub async fn initialize(workspace: Option<String>) -> anyhow::Result<Arc<ServerA
         event_queue.clone(),
         tool_pipeline.clone(),
     ));
+    
     let execution_engine = Arc::new(execution::ExecutionEngine::new(
         round_executor,
         event_queue.clone(),
         session_manager.clone(),
-        Default::default(),
+        context_compressor,
+        execution::ExecutionEngineConfig::default(),
     ));
 
     let coordinator = Arc::new(coordination::ConversationCoordinator::new(
@@ -109,11 +102,11 @@ pub async fn initialize(workspace: Option<String>) -> anyhow::Result<Arc<ServerA
     coordination::ConversationCoordinator::set_global(coordinator.clone());
 
     // Token usage
-    let token_usage_service = Arc::new(
-        token_usage::TokenUsageService::new(path_manager.clone()).await?,
-    );
-    let token_usage_subscriber =
-        Arc::new(token_usage::TokenUsageSubscriber::new(token_usage_service.clone()));
+    let token_usage_service =
+        Arc::new(token_usage::TokenUsageService::new(path_manager.clone()).await?);
+    let token_usage_subscriber = Arc::new(token_usage::TokenUsageSubscriber::new(
+        token_usage_service.clone(),
+    ));
     event_router.subscribe_internal("token_usage".to_string(), token_usage_subscriber);
 
     // Dialog scheduler
@@ -121,6 +114,7 @@ pub async fn initialize(workspace: Option<String>) -> anyhow::Result<Arc<ServerA
         coordination::DialogScheduler::new(coordinator.clone(), session_manager.clone());
     coordinator.set_scheduler_notifier(scheduler.outcome_sender());
     coordinator.set_round_preempt_source(scheduler.preempt_monitor());
+    coordinator.set_round_steering_source(scheduler.steering_monitor());
     coordination::set_global_scheduler(scheduler.clone());
 
     // Cron service
@@ -146,9 +140,6 @@ pub async fn initialize(workspace: Option<String>) -> anyhow::Result<Arc<ServerA
     let workspace_service = Arc::new(workspace::WorkspaceService::new().await?);
     workspace::set_global_workspace_service(workspace_service.clone());
     let filesystem_service = Arc::new(filesystem::FileSystemServiceFactory::create_default());
-
-    ai_rules::initialize_global_ai_rules_service().await?;
-    let ai_rules_service = ai_rules::get_global_ai_rules_service().await?;
 
     let agent_registry = agents::get_agent_registry();
 
@@ -188,10 +179,6 @@ pub async fn initialize(workspace: Option<String>) -> anyhow::Result<Arc<ServerA
                     log::warn!("Failed to initialize snapshot system: {}", e);
                 }
 
-                if let Err(e) = ai_rules_service.set_workspace(info.root_path.clone()).await {
-                    log::warn!("Failed to set AI rules workspace: {}", e);
-                }
-
                 Some(info.root_path)
             }
             Err(e) => {
@@ -218,7 +205,6 @@ pub async fn initialize(workspace: Option<String>) -> anyhow::Result<Arc<ServerA
         workspace_path: Arc::new(RwLock::new(initial_workspace_path)),
         config_service,
         filesystem_service,
-        ai_rules_service,
         agent_registry,
         mcp_service,
         token_usage_service,

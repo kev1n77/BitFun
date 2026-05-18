@@ -49,14 +49,14 @@
 
 .search-card__action {
   color: tokens.$color-text-secondary;
-  font-size: tokens.$font-size-xs;
+  font-size: var(--font-size-xs);
   font-weight: tokens.$font-weight-medium;
   flex-shrink: 0;
 }
 
 .search-card__pattern {
   color: tokens.$color-text-primary;
-  font-size: tokens.$font-size-xs;
+  font-size: var(--font-size-xs);
   font-weight: tokens.$font-weight-medium;
   font-family: tokens.$font-family-mono;
   flex-shrink: 1;
@@ -122,7 +122,7 @@
   display: flex;
   align-items: center;
   gap: tokens.$size-gap-2;
-  font-size: tokens.$font-size-sm;
+  font-size: var(--font-size-sm);
 }
 
 .search-card__label {
@@ -158,14 +158,14 @@
 }
 
 .search-card__stat-value {
-  font-size: tokens.$font-size-xl;
+  font-size: var(--font-size-xl);
   font-weight: tokens.$font-weight-bold;
   font-family: tokens.$font-family-mono;
   color: tokens.$color-text-primary;
 }
 
 .search-card__stat-label {
-  font-size: tokens.$font-size-xs;
+  font-size: var(--font-size-xs);
   color: tokens.$color-text-muted;
 }
 
@@ -183,7 +183,7 @@
   border: 1px solid tokens.$border-base;
   border-radius: tokens.$size-radius-base;
   color: tokens.$color-text-secondary;
-  font-size: tokens.$font-size-sm;
+  font-size: var(--font-size-sm);
   font-weight: tokens.$font-weight-medium;
   cursor: pointer;
   transition: all tokens.$motion-base tokens.$easing-standard;
@@ -237,7 +237,7 @@
 
 .search-card__file-name {
   flex: 1;
-  font-size: tokens.$font-size-sm;
+  font-size: var(--font-size-sm);
   color: tokens.$color-text-primary;
   font-family: tokens.$font-family-mono;
   overflow: hidden;
@@ -246,7 +246,7 @@
 }
 
 .search-card__file-count {
-  font-size: tokens.$font-size-xs;
+  font-size: var(--font-size-xs);
   color: tokens.$color-text-muted;
   background: tokens.$element-bg-soft;
   padding: 2px 6px;
@@ -259,7 +259,7 @@
   padding: tokens.$size-gap-4;
   text-align: center;
   color: tokens.$color-text-muted;
-  font-size: tokens.$font-size-sm;
+  font-size: var(--font-size-sm);
   background: tokens.$element-bg-base;
   border: 1px solid tokens.$border-base;
   border-radius: tokens.$size-radius-base;

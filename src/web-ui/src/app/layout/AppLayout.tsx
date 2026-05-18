@@ -8,13 +8,17 @@
  * TitleBar removed; window controls moved to NavBar, dialogs managed here.
  */
 
-import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef, useContext } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
+import { LoaderCircle } from 'lucide-react';
 import { useWorkspaceContext } from '../../infrastructure/contexts/WorkspaceContext';
 import { useWindowControls } from '../hooks/useWindowControls';
+import { isWindowFullscreenShortcut } from '../hooks/windowFullscreenShortcut';
 import { useAssistantBootstrap } from '../hooks/useAssistantBootstrap';
 import { useApp } from '../hooks/useApp';
 import { useSceneStore } from '../stores/sceneStore';
+import { useShortcut } from '@/infrastructure/hooks/useShortcut';
+import { configManager } from '@/infrastructure/config';
 
 type TransitionDirection = 'entering' | 'returning' | null;
 import { FlowChatManager } from '../../flow_chat/services/FlowChatManager';
@@ -23,12 +27,20 @@ import { ToolbarMode, useToolbarModeContext } from '../../flow_chat';
 import { FloatingMiniChat } from './FloatingMiniChat';
 import { NewProjectDialog } from '../components/NewProjectDialog';
 import { AboutDialog } from '../components/AboutDialog';
+import { MCPInteractionDialog } from '../components/MCPInteractionDialog/MCPInteractionDialog';
 import { WorkspaceManager } from '../../tools/workspace';
 import { workspaceAPI } from '@/infrastructure/api';
+import { systemAPI } from '@/infrastructure/api/service-api/SystemAPI';
+import type { CloseBehavior } from '@/infrastructure/api/service-api/SystemAPI';
+import { confirmDialog } from '@/component-library';
 import { createLogger } from '@/shared/utils/logger';
+import { DailyAppUpdateGate } from '@/infrastructure/update';
 import { useI18n } from '@/infrastructure/i18n';
 import { WorkspaceKind } from '@/shared/types';
-import { shortcutManager } from '@/infrastructure/services/ShortcutManager';
+import { SSHContext } from '@/features/ssh-remote/SSHRemoteContext';
+import { shortcutManager, parseStoredKeybindings } from '@/infrastructure/services/ShortcutManager';
+import { useSessionModeStore } from '../stores/sessionModeStore';
+import { isMacOSDesktopRuntime } from '@/infrastructure/runtime';
 import './AppLayout.scss';
 
 const log = createLogger('AppLayout');
@@ -37,17 +49,135 @@ interface AppLayoutProps {
   className?: string;
 }
 
+interface AcpSessionCreationEventDetail {
+  phase?: 'start' | 'finish';
+  clientId?: string;
+  action?: 'create' | 'restore';
+}
+
+interface WindowModeHint {
+  id: number;
+  title: string;
+  detail: string;
+}
+
 const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
   const { t } = useI18n('components');
-  const { currentWorkspace, hasWorkspace, openWorkspace, recentWorkspaces, loading } = useWorkspaceContext();
+  const { t: tCommon } = useI18n('common');
+  const {
+    currentWorkspace,
+    hasWorkspace,
+    openWorkspace,
+    switchWorkspace,
+    recentWorkspaces,
+    loading,
+  } = useWorkspaceContext();
+  const sshContext = useContext(SSHContext);
+  /** When SSH finishes connecting, re-run FlowChat init (first run may have skipped while disconnected). */
+  const remoteSshFlowChatKey =
+    currentWorkspace?.workspaceKind === WorkspaceKind.Remote && currentWorkspace?.connectionId
+      ? sshContext?.workspaceStatuses[currentWorkspace.connectionId] ?? 'unknown'
+      : 'local';
 
   const { isToolbarMode } = useToolbarModeContext();
   const { ensureForWorkspace: ensureAssistantBootstrapForWorkspace } = useAssistantBootstrap();
+  const isMacOS = useMemo(() => {
+    return isMacOSDesktopRuntime();
+  }, []);
 
-  const { handleMinimize, handleMaximize, handleClose, isMaximized } =
+  const {
+    handleMinimize,
+    handleMaximize,
+    handleToggleFullscreen,
+    handleClose,
+    isMaximized,
+    isFullscreen,
+    canUseNativeWindowControls,
+  } =
     useWindowControls({ isToolbarMode });
 
   const { state, switchLeftPanelTab, toggleLeftPanel, toggleRightPanel } = useApp();
+  const [windowModeHint, setWindowModeHint] = useState<WindowModeHint | null>(null);
+  const windowModeHintTimerRef = useRef<number | null>(null);
+
+  const showWindowFullscreenHint = useCallback((enteredFullscreen: boolean) => {
+    if (windowModeHintTimerRef.current) {
+      window.clearTimeout(windowModeHintTimerRef.current);
+    }
+
+    const shortcut = isMacOS ? 'Control+Command+F' : 'F11';
+    setWindowModeHint({
+      id: Date.now(),
+      title: t(enteredFullscreen
+        ? 'appLayout.windowFullscreenEntered'
+        : 'appLayout.windowFullscreenExited'),
+      detail: t(enteredFullscreen
+        ? 'appLayout.windowFullscreenExitHint'
+        : 'appLayout.windowFullscreenEnterHint', { shortcut }),
+    });
+
+    windowModeHintTimerRef.current = window.setTimeout(() => {
+      setWindowModeHint(null);
+      windowModeHintTimerRef.current = null;
+    }, 2200);
+  }, [isMacOS, t]);
+
+  useEffect(() => {
+    return () => {
+      if (windowModeHintTimerRef.current) {
+        window.clearTimeout(windowModeHintTimerRef.current);
+      }
+    };
+  }, []);
+
+  // ── Load user keybinding overrides from config on startup ────────────────
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const raw = await configManager.getConfig('app.keybindings');
+        const overrides = parseStoredKeybindings(raw);
+        if (Object.keys(overrides).length > 0) {
+          shortcutManager.loadUserOverrides(overrides);
+        }
+      } catch {
+        // No overrides stored yet — that's fine
+      }
+    };
+
+    void load();
+
+    const unsubscribe = configManager.onConfigChange((path) => {
+      if (path === 'app.keybindings') void load();
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!canUseNativeWindowControls || isToolbarMode) return;
+
+    const handleSystemFullscreenShortcut = (event: KeyboardEvent) => {
+      if (!isWindowFullscreenShortcut(event)) return;
+
+      // OS fullscreen is a platform window command, not the app's maximize
+      // shortcut and not an internal panel fullscreen action. Use a raw
+      // listener because ShortcutManager intentionally maps Ctrl to Cmd on
+      // macOS for "mod" shortcuts, while system fullscreen requires the exact
+      // Control+Command+F chord.
+      event.preventDefault();
+      event.stopPropagation();
+      void handleToggleFullscreen().then((enteredFullscreen) => {
+        if (typeof enteredFullscreen === 'boolean') {
+          showWindowFullscreenHint(enteredFullscreen);
+        }
+      });
+    };
+
+    window.addEventListener('keydown', handleSystemFullscreenShortcut, { capture: true });
+    return () => {
+      window.removeEventListener('keydown', handleSystemFullscreenShortcut, { capture: true });
+    };
+  }, [canUseNativeWindowControls, handleToggleFullscreen, isToolbarMode, showWindowFullscreenHint]);
   const activeSceneId = useSceneStore(s => s.activeTabId);
   const isAgentScene = activeSceneId === 'session';
   const isWelcomeScene = activeSceneId === 'welcome';
@@ -61,18 +191,22 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
     if (autoOpenAttemptedRef.current || loading) return;
     if (!hasWorkspace && recentWorkspaces.length > 0) {
       autoOpenAttemptedRef.current = true;
-      openWorkspace(recentWorkspaces[0].rootPath).catch(err => {
+      switchWorkspace(recentWorkspaces[0]).catch(err => {
         log.warn('Auto-open recent workspace failed', err);
       });
     } else {
       autoOpenAttemptedRef.current = true;
     }
-  }, [hasWorkspace, loading, recentWorkspaces, openWorkspace]);
+  }, [hasWorkspace, loading, recentWorkspaces, switchWorkspace]);
 
   // Dialog state (previously in TitleBar)
   const [showNewProjectDialog, setShowNewProjectDialog] = useState(false);
   const [showAboutDialog, setShowAboutDialog] = useState(false);
   const [showWorkspaceStatus, setShowWorkspaceStatus] = useState(false);
+  const [pendingAcpSessionClients, setPendingAcpSessionClients] = useState<Array<{
+    clientId: string;
+    action: 'create' | 'restore';
+  }>>([]);
   const handleOpenProject = useCallback(async () => {
     try {
       const selected = await open({
@@ -116,11 +250,6 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
   }, [handleNewProject, handleOpenProject]);
 
   // macOS native menubar events (previously in TitleBar)
-  const isMacOS = useMemo(() => {
-    const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
-    return isTauri && typeof navigator?.platform === 'string' && navigator.platform.toUpperCase().includes('MAC');
-  }, []);
-
   useEffect(() => {
     if (!isMacOS) return;
     let unlistenFns: Array<() => void> = [];
@@ -146,22 +275,8 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
     const initializeFlowChat = async () => {
       if (!currentWorkspace?.rootPath) return;
 
-      // Skip initialization for remote workspaces that are not yet SSH-connected.
-      // On startup, password-auth remote workspaces cannot auto-reconnect and will
-      // be removed from the sidebar shortly by SSHRemoteProvider. Attempting to
-      // initialize FlowChat for them would fail with a misleading error notification.
-      if (currentWorkspace.workspaceKind === WorkspaceKind.Remote && currentWorkspace.connectionId) {
-        const { sshApi } = await import('@/features/ssh-remote/sshApi');
-        const connected = await sshApi.isConnected(currentWorkspace.connectionId).catch(() => false);
-        if (!connected) {
-          log.warn('Skipping FlowChat initialization: remote workspace not connected', {
-            rootPath: currentWorkspace.rootPath,
-            connectionId: currentWorkspace.connectionId,
-          });
-          return;
-        }
-      }
-
+      // Remote session index and turns live under ~/.bitfun/remote_ssh/... (local disk).
+      // Always initialize FlowChat so historical sessions list even when SSH is not connected yet.
       try {
         const explicitPreferredMode =
           sessionStorage.getItem('bitfun:flowchat:preferredMode') ||
@@ -178,12 +293,18 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
         const flowChatManager = FlowChatManager.getInstance();
         const hasHistoricalSessions = await flowChatManager.initialize(
           currentWorkspace.rootPath,
-          initializationPreferredMode
+          initializationPreferredMode,
+          currentWorkspace.workspaceKind === WorkspaceKind.Remote
+            ? currentWorkspace.connectionId
+            : undefined,
+          currentWorkspace.workspaceKind === WorkspaceKind.Remote
+            ? currentWorkspace.sshHost
+            : undefined
         );
 
         let sessionId: string | undefined;
         const { flowChatStore } = await import('@/flow_chat/store/FlowChatStore');
-        if (!hasHistoricalSessions || !flowChatStore.getState().activeSessionId) {
+        if (!hasHistoricalSessions) {
           const initialSessionMode =
             currentWorkspace.workspaceKind === WorkspaceKind.Assistant
               ? 'Claw'
@@ -246,31 +367,97 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
 
     initializeFlowChat();
   }, [
+    currentWorkspace,
     currentWorkspace?.id,
     currentWorkspace?.rootPath,
     currentWorkspace?.workspaceKind,
+    currentWorkspace?.connectionId,
+    currentWorkspace?.sshHost,
+    remoteSshFlowChatKey,
     ensureAssistantBootstrapForWorkspace,
     t,
   ]);
 
-  // Save in-progress conversations on window close
+  // When the user hides the main window (tray / macOS dock), the app keeps running.
+  // `saveAllInProgressTurns` settles in-flight dialog turns for disk persistence, which
+  // clears Agent companion desktop bubbles until the next chat update—so only run it
+  // immediately before we actually exit the process.
   React.useEffect(() => {
     let unlistenFn: (() => void) | null = null;
+    let handlingClose = false;
 
     const setupWindowCloseListener = async () => {
-      try {
-        const { getCurrentWindow } = await import('@tauri-apps/api/window');
-        const currentWindow = getCurrentWindow();
+      if (!canUseNativeWindowControls) return;
 
-        unlistenFn = await currentWindow.onCloseRequested(async (event: { preventDefault: () => void }) => {
+      try {
+        // Both macOS and Windows/Linux: Rust intercepts the native close request
+        // and emits this event. We decide hide vs quit; persist interrupted turns only on quit.
+        const [{ listen }, { invoke }] = await Promise.all([
+          import('@tauri-apps/api/event'),
+          import('@tauri-apps/api/core'),
+        ]);
+
+        const persistInterruptedTurnsForExit = async () => {
           try {
-            event.preventDefault();
-            const flowChatManager = FlowChatManager.getInstance();
-            await flowChatManager.saveAllInProgressTurns();
-            await currentWindow.close();
+            await FlowChatManager.getInstance().saveAllInProgressTurns();
           } catch (error) {
-            log.error('Failed to save conversations, closing anyway', error);
-            await currentWindow.close();
+            log.error('Failed to save conversations before quit', error);
+          }
+        };
+
+        unlistenFn = await listen('bitfun_main_window_close_requested', async () => {
+          if (handlingClose) return;
+          handlingClose = true;
+
+          if (isMacOS) {
+            // macOS always hides to keep the app alive in the dock.
+            try {
+              await invoke('hide_main_window_after_close_request');
+            } catch (error) {
+              log.error('Failed to hide main window after close request', error);
+            }
+            handlingClose = false;
+            return;
+          }
+
+          // Windows / Linux: read the user's close-button preference.
+          let behavior: CloseBehavior = 'quit';
+          try {
+            behavior = (await configManager.getConfig<CloseBehavior>('app.close_button_behavior')) ?? 'quit';
+          } catch {
+            // Fall back to quit if config cannot be read.
+          }
+
+          try {
+            if (behavior === 'minimize_to_tray') {
+              await systemAPI.minimizeToTray();
+            } else if (behavior === 'ask') {
+              const shouldQuit = await confirmDialog({
+                title: tCommon('closeDialog.title'),
+                message: tCommon('closeDialog.message'),
+                confirmText: tCommon('closeDialog.quit'),
+                cancelText: tCommon('closeDialog.minimizeToTray'),
+                showCancel: true,
+              });
+              if (shouldQuit) {
+                await persistInterruptedTurnsForExit();
+                await systemAPI.quitApp();
+              } else {
+                await systemAPI.minimizeToTray();
+              }
+            } else {
+              // quit
+              await persistInterruptedTurnsForExit();
+              await systemAPI.quitApp();
+            }
+          } catch (error) {
+            log.error('Failed to handle close request', { behavior, error });
+            try {
+              await persistInterruptedTurnsForExit();
+              await systemAPI.quitApp();
+            } catch { /* ignore */ }
+          } finally {
+            handlingClose = false;
           }
         });
       } catch (error) {
@@ -280,7 +467,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
 
     setupWindowCloseListener();
     return () => { if (unlistenFn) unlistenFn(); };
-  }, []);
+  }, [canUseNativeWindowControls, isMacOS, tCommon]);
 
   // Handle switch-to-files-panel event
   React.useEffect(() => {
@@ -314,26 +501,30 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
     return () => window.removeEventListener('toolbar-send-message', handleToolbarSendMessage);
   }, []);
 
-  // Global /btw shortcut (Ctrl/Cmd+Alt+B): fill ChatInput with "/btw ".
-  React.useEffect(() => {
-    const unregister = shortcutManager.register(
-      'btw-fill',
-      { key: 'B', ctrl: true, alt: true },
-      () => {
-        const selected = (window.getSelection?.()?.toString() ?? '').trim();
-        const message = selected ? `/btw Explain this:\n\n${selected}` : '/btw ';
-        window.dispatchEvent(new CustomEvent('fill-chat-input', { detail: { message } }));
-      },
-      {
-        description: 'Fill /btw into chat input',
-        priority: 20
-      }
-    );
+  // Toggle left panel: mod+B (VS Code convention)
+  useShortcut(
+    'panel.toggleLeft',
+    { key: 'B', ctrl: true, scope: 'app' },
+    () => toggleLeftPanel(),
+    { priority: 5, description: 'keyboard.shortcuts.panel.toggleLeft' }
+  );
 
-    return () => {
-      unregister();
-    };
-  }, []);
+  // Collapse/expand both panels: mod+Shift+B
+  useShortcut(
+    'panel.toggleBoth',
+    { key: 'B', ctrl: true, shift: true, scope: 'app' },
+    () => {
+      const bothCollapsed = state.layout.leftPanelCollapsed && state.layout.rightPanelCollapsed;
+      if (bothCollapsed) {
+        toggleLeftPanel();
+        setTimeout(() => toggleRightPanel(), 50);
+      } else {
+        if (!state.layout.leftPanelCollapsed) toggleLeftPanel();
+        if (!state.layout.rightPanelCollapsed) toggleRightPanel();
+      }
+    },
+    { priority: 5, description: 'keyboard.shortcuts.panel.toggleBoth' }
+  );
 
   // Toolbar cancel task
   React.useEffect(() => {
@@ -349,21 +540,62 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
     return () => window.removeEventListener('toolbar-cancel-task', handleToolbarCancelTask);
   }, []);
 
-  // Create FlowChat session
-  const handleCreateFlowChatSession = React.useCallback(async () => {
+  // Create FlowChat session (toolbar / floating UI). detail.mode: 'cowork' → Cowork, else code (agentic).
+  const handleCreateFlowChatSession = React.useCallback(async (mode?: 'code' | 'cowork') => {
     try {
       const flowChatManager = FlowChatManager.getInstance();
-      await flowChatManager.createChatSession({});
+      const setMode = useSessionModeStore.getState().setMode;
+      if (mode === 'cowork') {
+        setMode('cowork');
+        await flowChatManager.createChatSession({}, 'Cowork');
+      } else {
+        setMode('code');
+        await flowChatManager.createChatSession({}, 'agentic');
+      }
     } catch (error) {
       log.error('Failed to create FlowChat session', error);
     }
   }, []);
 
   React.useEffect(() => {
-    const handler = () => handleCreateFlowChatSession();
+    const handler = (e: Event) => {
+      const mode = (e as CustomEvent<{ mode?: 'code' | 'cowork' }>).detail?.mode;
+      void handleCreateFlowChatSession(mode === 'cowork' ? 'cowork' : 'code');
+    };
     window.addEventListener('toolbar-create-session', handler);
     return () => window.removeEventListener('toolbar-create-session', handler);
   }, [handleCreateFlowChatSession]);
+
+  React.useEffect(() => {
+    const handler = (e: Event) => {
+      const clientId = (e as CustomEvent<{ clientId?: string }>).detail?.clientId?.trim();
+      if (!clientId) return;
+      void FlowChatManager.getInstance()
+        .createAcpChatSession(clientId)
+        .catch(error => log.error('Failed to create ACP FlowChat session', error));
+    };
+    window.addEventListener('bitfun:create-acp-session', handler);
+    return () => window.removeEventListener('bitfun:create-acp-session', handler);
+  }, []);
+
+  React.useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<AcpSessionCreationEventDetail>).detail;
+      const clientId = detail?.clientId?.trim() || 'ACP';
+      const action = detail?.action === 'restore' ? 'restore' : 'create';
+      if (detail?.phase === 'start') {
+        setPendingAcpSessionClients(prev => [...prev, { clientId, action }]);
+      } else if (detail?.phase === 'finish') {
+        setPendingAcpSessionClients(prev => {
+          const index = prev.findIndex(item => item.clientId === clientId && item.action === action);
+          if (index === -1) return prev;
+          return prev.filter((_, currentIndex) => currentIndex !== index);
+        });
+      }
+    };
+    window.addEventListener('bitfun:acp-session-creation', handler);
+    return () => window.removeEventListener('bitfun:acp-session-creation', handler);
+  }, []);
 
   // Global drag-and-drop
   React.useEffect(() => {
@@ -394,20 +626,41 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
     'bitfun-app-layout',
     isMacOS ? 'bitfun-app-layout--macos' : '',
     className,
+    isFullscreen ? 'bitfun-app-layout--window-fullscreen' : '',
     isTransitioning ? 'bitfun-app-layout--transitioning' : '',
   ].filter(Boolean).join(' ');
 
-  if (isToolbarMode) return <ToolbarMode />;
+  if (isToolbarMode) {
+    return (
+      <>
+        <DailyAppUpdateGate />
+        <ToolbarMode />
+      </>
+    );
+  }
 
   return (
     <>
+      <DailyAppUpdateGate />
       <div className={containerClassName} data-testid="app-layout">
+        {windowModeHint && (
+          <div
+            key={windowModeHint.id}
+            className="bitfun-window-mode-hint"
+            role="status"
+            aria-live="polite"
+          >
+            <span className="bitfun-window-mode-hint__title">{windowModeHint.title}</span>
+            <span className="bitfun-window-mode-hint__detail">{windowModeHint.detail}</span>
+          </div>
+        )}
+
         {/* Main content — always render WorkspaceBody; WelcomeScene in viewport handles no-workspace state */}
         <main className="bitfun-app-main-workspace" data-testid="app-main-content">
           <WorkspaceBody
-            onMinimize={isMacOS ? undefined : handleMinimize}
-            onMaximize={handleMaximize}
-            onClose={isMacOS ? undefined : handleClose}
+            onMinimize={canUseNativeWindowControls && !isMacOS ? handleMinimize : undefined}
+            onMaximize={canUseNativeWindowControls ? handleMaximize : undefined}
+            onClose={canUseNativeWindowControls && !isMacOS ? handleClose : undefined}
             isMaximized={isMaximized}
             isEntering={transitionDir === 'entering'}
             isExiting={transitionDir === 'returning'}
@@ -416,6 +669,20 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
 
         {/* Non-agent scenes: floating mini chat button */}
         {!isWelcomeScene && !isAgentScene && <FloatingMiniChat />}
+        {pendingAcpSessionClients.length > 0 && (
+          <div className="bitfun-app-acp-session-loading" role="status" aria-live="polite">
+            <LoaderCircle size={18} className="bitfun-app-acp-session-loading__spinner" />
+            <span>
+              {pendingAcpSessionClients[pendingAcpSessionClients.length - 1].action === 'restore'
+                ? tCommon('nav.workspaces.restoringAcpSession', {
+                  agentName: pendingAcpSessionClients[pendingAcpSessionClients.length - 1].clientId,
+                })
+                : tCommon('nav.workspaces.creatingAcpSession', {
+                  agentName: pendingAcpSessionClients[pendingAcpSessionClients.length - 1].clientId,
+                })}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Dialogs (previously owned by TitleBar) */}
@@ -434,6 +701,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
         onClose={() => setShowWorkspaceStatus(false)}
         onWorkspaceSelect={() => {}}
       />
+      <MCPInteractionDialog />
     </>
   );
 };

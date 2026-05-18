@@ -44,6 +44,8 @@ export interface TabBarProps {
   onOpenMissionControl?: () => void;
   /** Close all tabs */
   onCloseAllTabs?: () => Promise<void> | void;
+  /** Pop out tab as independent scene */
+  onTabPopOut?: (tabId: string) => void;
 }
 
 /**
@@ -76,6 +78,9 @@ const estimateTabWidth = (title: string): number => {
   return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, estimated));
 };
 
+const tabTitleForWidthEstimate = (tab: CanvasTab, deletedLabel: string): string =>
+  tab.fileDeletedFromDisk ? `${tab.title} - ${deletedLabel}` : tab.title;
+
 export const TabBar: React.FC<TabBarProps> = ({
   tabs,
   groupId,
@@ -91,6 +96,7 @@ export const TabBar: React.FC<TabBarProps> = ({
   onReorderTab,
   onOpenMissionControl,
   onCloseAllTabs,
+  onTabPopOut,
 }) => {
   const { t } = useTranslation('components');
   const [visibleTabsCount, setVisibleTabsCount] = useState(tabs.length);
@@ -108,7 +114,10 @@ export const TabBar: React.FC<TabBarProps> = ({
   const visibleTabs = useMemo(() => tabs.filter(t => !t.isHidden), [tabs]);
   
   // Build cache key (id + title because title changes affect width)
-  const getTabCacheKey = useCallback((tab: CanvasTab) => `${tab.id}:${tab.title}`, []);
+  const getTabCacheKey = useCallback(
+    (tab: CanvasTab) => `${tab.id}:${tab.title}:${tab.fileDeletedFromDisk ? '1' : '0'}`,
+    []
+  );
 
   // Get tab width: use cache if available, otherwise estimate
   const getTabWidth = useCallback((tab: CanvasTab): number => {
@@ -118,8 +127,8 @@ export const TabBar: React.FC<TabBarProps> = ({
       return cached;
     }
     // Estimated width
-    return estimateTabWidth(tab.title);
-  }, [getTabCacheKey]);
+    return estimateTabWidth(tabTitleForWidthEstimate(tab, t('tabs.fileDeleted')));
+  }, [getTabCacheKey, t]);
 
   // Compute visible tab count based on DOM measurements
   const calculateVisibleTabs = useCallback(() => {
@@ -185,7 +194,7 @@ export const TabBar: React.FC<TabBarProps> = ({
     const finalCount = Math.max(1, Math.min(count, visibleTabs.length));
     setVisibleTabsCount(finalCount);
     setLayoutReady(true);
-  }, [visibleTabs, getTabWidth, getTabCacheKey, onCloseAllTabs]);
+  }, [visibleTabs, getTabWidth, getTabCacheKey, onCloseAllTabs, onOpenMissionControl]);
 
   // Reset to render all tabs when list changes (re-measure)
   useEffect(() => {
@@ -311,6 +320,7 @@ export const TabBar: React.FC<TabBarProps> = ({
               onDragStart={handleTabDragStart(tab)}
               onDragEnd={onDragEnd}
               isDragging={draggingTabId === tab.id}
+              onPopOut={onTabPopOut ? () => onTabPopOut(tab.id) : undefined}
             />
           </div>
         ))}

@@ -3,10 +3,11 @@
  */
 
 import React, { useState, useMemo, useCallback } from 'react';
-import { Loader2, Clock, Check } from 'lucide-react';
+import { Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ToolCardProps } from '../types/flow-chat';
 import { CompactToolCard, CompactToolCardHeader } from './CompactToolCard';
+import { ToolCardStatusSlot } from './ToolCardStatusSlot';
 import { useToolCardHeightContract } from './useToolCardHeightContract';
 export const GrepSearchDisplay: React.FC<ToolCardProps> = ({
   toolItem,
@@ -20,18 +21,6 @@ export const GrepSearchDisplay: React.FC<ToolCardProps> = ({
     toolId,
     toolName: toolItem.toolName,
   });
-
-  const getStatusIcon = () => {
-    switch (status) {
-      case 'running':
-      case 'streaming':
-        return <Loader2 className="animate-spin" size={12} />;
-      case 'completed':
-        return <Check size={12} className="icon-check-done" />;
-      default:
-        return <Clock size={12} />;
-    }
-  };
 
   const getSearchPattern = (): string => {
     const pattern = toolCall?.input?.pattern || 
@@ -75,10 +64,6 @@ export const GrepSearchDisplay: React.FC<ToolCardProps> = ({
   const searchPath = getSearchPath();
   const hasDetails = status === 'completed' && stats.matches > 0;
   const hasResultData = toolResult?.result !== undefined && toolResult?.result !== null;
-
-  if (status === 'error') {
-    return null;
-  }
 
   const handleClick = useCallback(() => {
     if (hasDetails) {
@@ -141,6 +126,10 @@ export const GrepSearchDisplay: React.FC<ToolCardProps> = ({
     </>
   );
 
+  if (status === 'error') {
+    return null;
+  }
+
   return (
     <div ref={cardRootRef} data-tool-card-id={toolId ?? ''}>
       <CompactToolCard
@@ -151,7 +140,7 @@ export const GrepSearchDisplay: React.FC<ToolCardProps> = ({
         clickable={hasDetails}
         header={
           <CompactToolCardHeader
-            statusIcon={getStatusIcon()}
+            icon={<ToolCardStatusSlot status={status} toolIcon={<Search size={16} className="grep-search-card-icon" />} />}
             content={renderContent()}
           />
         }

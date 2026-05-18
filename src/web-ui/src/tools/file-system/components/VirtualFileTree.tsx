@@ -1,24 +1,9 @@
 import React, { useCallback, useMemo, useRef, forwardRef } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
-import { ChevronRight, ChevronDown, Loader2 } from 'lucide-react';
 import { VirtualFileTreeProps, FlatFileNode, FileSystemNode } from '../types';
-import { getFileIcon, getFileIconClass } from '../utils/fileIcons';
-import { GitStatusIndicator } from './GitStatusIndicator';
 import { useI18n } from '@/infrastructure/i18n';
-
-function getDirectoryGitStatus(
-  childrenGitStatuses?: Set<'untracked' | 'modified' | 'added' | 'deleted' | 'renamed' | 'conflicted' | 'staged'>
-): 'untracked' | 'modified' | 'added' | 'deleted' | 'renamed' | 'conflicted' | 'staged' | undefined {
-  if (!childrenGitStatuses || childrenGitStatuses.size === 0) {
-    return undefined;
-  }
-  
-  if (childrenGitStatuses.size === 1) {
-    return Array.from(childrenGitStatuses)[0];
-  }
-  
-  return 'modified';
-}
+import { expandedFoldersContains } from '@/shared/utils/pathUtils';
+import { FileTreeItem } from './FileTreeItem';
 
 interface VirtualFileRowProps {
   node: FlatFileNode;
@@ -26,10 +11,11 @@ interface VirtualFileRowProps {
   isExpanded: boolean;
   onSelect: (node: FlatFileNode) => void;
   onToggleExpand: (path: string) => void;
-  workspacePath?: string;
   renamingPath?: string | null;
   onRename?: (oldPath: string, newName: string) => void;
   onCancelRename?: () => void;
+  renderContent?: (node: FileSystemNode, level: number) => React.ReactNode;
+  renderActions?: (node: FileSystemNode) => React.ReactNode;
 }
 
 const VirtualFileRow = React.memo<VirtualFileRowProps>(({
@@ -38,42 +24,13 @@ const VirtualFileRow = React.memo<VirtualFileRowProps>(({
   isExpanded,
   onSelect,
   onToggleExpand,
-  // These props are reserved for future use (renaming feature)
-  // workspacePath,
-  // renamingPath,
-  // onRename,
-  // onCancelRename,
+  renamingPath,
+  onRename,
+  onCancelRename,
+  renderContent,
+  renderActions,
 }) => {
   const indentPx = node.depth * 20 + 16;
-
-  const handleClick = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
-    
-    if (node.isDirectory) {
-      onToggleExpand(node.path);
-    }
-    onSelect(node);
-  }, [node, onSelect, onToggleExpand]);
-
-  const handleExpandClick = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
-    onToggleExpand(node.path);
-  }, [node.path, onToggleExpand]);
-
-  const getGitStatusClass = () => {
-    if (!node.isDirectory && node.gitStatus) {
-      return `bitfun-file-explorer__node--git-${node.gitStatus}`;
-    }
-    
-    if (node.isDirectory && !isExpanded && node.hasChildrenGitChanges) {
-      const dirStatus = getDirectoryGitStatus(node.childrenGitStatuses);
-      if (dirStatus) {
-        return `bitfun-file-explorer__node--git-${dirStatus}`;
-      }
-    }
-    
-    return '';
-  };
 
   const nodeForIcon: FileSystemNode = useMemo(() => ({
     path: node.path,
@@ -82,63 +39,26 @@ const VirtualFileRow = React.memo<VirtualFileRowProps>(({
     extension: node.extension,
     size: node.size,
     lastModified: node.lastModified,
-    gitStatus: node.gitStatus,
     isCompressed: node.isCompressed,
   }), [node]);
 
   return (
-    <div className={`bitfun-file-explorer__node ${getGitStatusClass()}`}>
-      <div 
-        className={`bitfun-file-explorer__node-content ${isSelected ? 'bitfun-file-explorer__node-content--selected' : ''} ${node.isDirectory ? 'bitfun-file-explorer__node-content--directory' : ''} ${node.isCompressed ? 'bitfun-file-explorer__node-content--compressed' : ''}`}
-        style={{ paddingLeft: `${indentPx}px` }}
-        onClick={handleClick}
-        data-file-path={node.path}
-        data-file={!node.isDirectory}
-        data-is-directory={node.isDirectory}
-        data-is-expanded={node.isDirectory ? isExpanded : undefined}
-        tabIndex={0}
-        role="treeitem"
-        aria-selected={isSelected}
-        title={node.path}
-      >
-        {node.isDirectory ? (
-          <span 
-            className={`bitfun-file-explorer__expand-icon ${isExpanded ? 'bitfun-file-explorer__expand-icon--expanded' : ''}`}
-            onClick={handleExpandClick}
-          >
-            {node.isLoading ? (
-              <Loader2 size={16} className="bitfun-file-explorer__loading-icon" />
-            ) : isExpanded ? (
-              <ChevronDown size={16} />
-            ) : (
-              <ChevronRight size={16} />
-            )}
-          </span>
-        ) : (
-          <span className={getFileIconClass(nodeForIcon, false)}>
-            {getFileIcon(nodeForIcon, false)}
-          </span>
-        )}
-        
-        <span className={`bitfun-file-explorer__node-name ${node.isCompressed ? 'bitfun-file-explorer__compressed-path' : ''}`}>
-          {node.name}
-        </span>
-        
-        {(() => {
-          if (!node.isDirectory && node.gitStatus) {
-            return <GitStatusIndicator status={node.gitStatus} compact={true} />;
-          }
-          
-          if (node.isDirectory && !isExpanded && node.hasChildrenGitChanges) {
-            const dirStatus = getDirectoryGitStatus(node.childrenGitStatuses);
-            if (dirStatus) {
-              return <GitStatusIndicator status={dirStatus} compact={true} />;
-            }
-          }
-          
-          return null;
-        })()}
-      </div>
+    <div className="bitfun-file-explorer__node">
+      <FileTreeItem
+        node={nodeForIcon}
+        level={node.depth}
+        indentPx={indentPx}
+        isSelected={isSelected}
+        isExpanded={isExpanded}
+        isLoading={node.isLoading}
+        renamingPath={renamingPath}
+        onRename={onRename}
+        onCancelRename={onCancelRename}
+        onSelect={() => onSelect(node)}
+        onToggleExpand={() => onToggleExpand(node.path)}
+        renderContent={renderContent}
+        renderActions={renderActions}
+      />
     </div>
   );
 });
@@ -153,10 +73,11 @@ export const VirtualFileTree = forwardRef<VirtuosoHandle, VirtualFileTreeProps>(
   onToggleExpand,
   height = '100%',
   className = '',
-  workspacePath,
   renamingPath,
   onRename,
   onCancelRename,
+  renderNodeContent,
+  renderNodeActions,
 }, ref) => {
   const { t } = useI18n('tools');
   const virtuosoRef = useRef<VirtuosoHandle>(null);
@@ -173,7 +94,7 @@ export const VirtualFileTree = forwardRef<VirtuosoHandle, VirtualFileTreeProps>(
 
   const itemContent = useCallback((_index: number, node: FlatFileNode) => {
     const isSelected = selectedFile === node.path;
-    const isExpanded = expandedFolders.has(node.path);
+    const isExpanded = expandedFoldersContains(expandedFolders, node.path);
 
     return (
       <VirtualFileRow
@@ -182,13 +103,14 @@ export const VirtualFileTree = forwardRef<VirtuosoHandle, VirtualFileTreeProps>(
         isExpanded={isExpanded}
         onSelect={handleNodeSelect}
         onToggleExpand={handleToggleExpand}
-        workspacePath={workspacePath}
         renamingPath={renamingPath}
         onRename={onRename}
         onCancelRename={onCancelRename}
+        renderContent={renderNodeContent}
+        renderActions={renderNodeActions}
       />
     );
-  }, [selectedFile, expandedFolders, handleNodeSelect, handleToggleExpand, workspacePath, renamingPath, onRename, onCancelRename]);
+  }, [selectedFile, expandedFolders, handleNodeSelect, handleToggleExpand, renamingPath, onRename, onCancelRename, renderNodeContent, renderNodeActions]);
 
   if (flatNodes.length === 0) {
     return (

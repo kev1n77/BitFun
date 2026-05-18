@@ -1,3 +1,5 @@
+[中文](README.zh-CN.md) | **English**
+
 # Frontend i18n
 
 ## Quick Start

@@ -39,6 +39,14 @@ impl ConfigProvider for AIConfigProvider {
         let mut warnings = Vec::new();
 
         if let Ok(ai_config) = serde_json::from_value::<AIConfig>(config.clone()) {
+            if let Some(stream_idle_timeout_secs) = ai_config.stream_idle_timeout_secs {
+                if stream_idle_timeout_secs == 0 {
+                    return Err(BitFunError::validation(
+                        "AI stream_idle_timeout_secs must be greater than 0".to_string(),
+                    ));
+                }
+            }
+
             for (index, model) in ai_config.models.iter().enumerate() {
                 if model.name.trim().is_empty() {
                     return Err(BitFunError::validation(format!(
@@ -543,8 +551,8 @@ impl ConfigProviderRegistry {
     }
 
     /// Gets a provider by name.
-    pub fn get_provider(&self, name: &str) -> Option<&Box<dyn ConfigProvider>> {
-        self.providers.get(name)
+    pub fn get_provider(&self, name: &str) -> Option<&dyn ConfigProvider> {
+        self.providers.get(name).map(Box::as_ref)
     }
 
     /// Returns all provider names.

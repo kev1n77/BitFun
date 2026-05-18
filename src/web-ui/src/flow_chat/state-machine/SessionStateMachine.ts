@@ -5,6 +5,7 @@
 import {
   SessionExecutionState,
   SessionExecutionEvent,
+  ProcessingPhase,
   SessionStateMachine,
   SessionStateMachineContext,
   StateTransition,
@@ -43,6 +44,8 @@ function createInitialContext(): SessionStateMachineContext {
 }
 
 export class SessionStateMachineImpl {
+  private static readonly MAX_HISTORY_LENGTH = 100;
+
   private sessionId: string;
   private currentState: SessionExecutionState;
   private context: SessionStateMachineContext;
@@ -56,14 +59,16 @@ export class SessionStateMachineImpl {
   }
 
   getSnapshot(): SessionStateMachine {
+    const { pendingToolConfirmations, ...rest } = this.context;
+    const clonedRest = structuredClone(rest);
     return {
       sessionId: this.sessionId,
       currentState: this.currentState,
-      context: JSON.parse(JSON.stringify({
-        ...this.context,
-        pendingToolConfirmations: Array.from(this.context.pendingToolConfirmations),
-      })),
-      transitionHistory: [...this.transitionHistory],
+      context: {
+        ...clonedRest,
+        pendingToolConfirmations: new Set(pendingToolConfirmations),
+      },
+      transitionHistory: this.transitionHistory.slice(-SessionStateMachineImpl.MAX_HISTORY_LENGTH),
     };
   }
 
@@ -110,6 +115,8 @@ export class SessionStateMachineImpl {
       SessionExecutionEvent.TOOL_REJECTED,
       SessionExecutionEvent.USER_CANCEL,
       SessionExecutionEvent.START,
+      SessionExecutionEvent.ERROR_OCCURRED,
+      SessionExecutionEvent.RESET,
     ];
     
     if (toolRelatedEvents.includes(event)) {
@@ -127,7 +134,13 @@ export class SessionStateMachineImpl {
     this.context.version += 1;
     this.context.lastUpdateTime = Date.now();
 
+    const processingPhaseBefore = this.context.processingPhase;
     this.updateContext(event, payload);
+    const processingPhaseAfter = this.context.processingPhase;
+
+    if (this.transitionHistory.length > SessionStateMachineImpl.MAX_HISTORY_LENGTH * 2) {
+      this.transitionHistory = this.transitionHistory.slice(-SessionStateMachineImpl.MAX_HISTORY_LENGTH);
+    }
 
     this.transitionHistory.push({
       from: fromState,
@@ -140,15 +153,28 @@ export class SessionStateMachineImpl {
 
     await this.runSideEffects(event, payload);
 
-    this.notifyListeners();
+    // TEXT_CHUNK_RECEIVED is high-frequency: skip notify when phase is unchanged (STREAMING→STREAMING).
+    // When phase changes (e.g. THINKING→STREAMING on first chunk), subscribers must update (pet, progress).
+    if (event !== SessionExecutionEvent.TEXT_CHUNK_RECEIVED) {
+      this.notifyListeners();
+    } else if (processingPhaseBefore !== processingPhaseAfter) {
+      this.notifyListeners();
+    }
 
     return true;
   }
 
   private updateContext(event: SessionExecutionEvent, payload?: any) {
-    if (this.currentState === SessionExecutionState.PROCESSING) {
+    if (
+      this.currentState === SessionExecutionState.PROCESSING ||
+      this.currentState === SessionExecutionState.FINISHING
+    ) {
       const newPhase = PHASE_TRANSITIONS[event];
-      if (newPhase !== null && newPhase !== undefined) {
+      const shouldUpdatePhase =
+        this.currentState === SessionExecutionState.PROCESSING ||
+        event === SessionExecutionEvent.BACKEND_STREAM_COMPLETED;
+      // Allow null (e.g. TOOL_COMPLETED clears phase so UI leaves "tool calling" before the next round).
+      if (shouldUpdatePhase && newPhase !== undefined) {
         this.context.processingPhase = newPhase;
       }
     } else {
@@ -202,8 +228,12 @@ export class SessionStateMachineImpl {
         this.context.errorRecovery.recoverable = payload?.recoverable !== false;
         break;
 
+      case SessionExecutionEvent.BACKEND_STREAM_COMPLETED:
+        this.context.processingPhase = ProcessingPhase.FINALIZING;
+        break;
+
       case SessionExecutionEvent.USER_CANCEL:
-      case SessionExecutionEvent.STREAM_COMPLETE:
+      case SessionExecutionEvent.FINISHING_SETTLED:
       case SessionExecutionEvent.RESET:
         if (this.currentState === SessionExecutionState.IDLE) {
           const queuedInput = this.context.queuedInput;
@@ -288,4 +318,3 @@ export class SessionStateMachineImpl {
     this.notifyListeners();
   }
 }
-

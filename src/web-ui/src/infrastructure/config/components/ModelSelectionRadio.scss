@@ -24,7 +24,7 @@
     
     .model-selection-radio__option {
       padding: $size-gap-1 $size-gap-2;
-      font-size: $font-size-xs;
+      font-size: var(--font-size-xs);
     }
     
     .model-selection-radio__dropdown {
@@ -37,7 +37,7 @@
     
     .model-selection-radio__option {
       padding: $size-gap-2 $size-gap-3;
-      font-size: $font-size-sm;
+      font-size: var(--font-size-sm);
     }
     
     .model-selection-radio__dropdown {
@@ -121,7 +121,7 @@
   
   
   &__hint {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     font-weight: $font-weight-normal;
     

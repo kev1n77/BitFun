@@ -3,14 +3,19 @@
  * Supports mixed streaming output.
  */
 
-import type { SessionKind } from '@/shared/types/session-history';
+import type {
+  DialogTurnKind,
+  SessionKind,
+  SessionTitleSource,
+} from '@/shared/types/session-history';
+import type { ReviewTeamRunManifest } from '@/shared/services/reviewTeamService';
 
 // Base type for streaming items.
 export interface FlowItem {
   id: string;
-  type: 'text' | 'tool' | 'image-analysis' | 'thinking';
+  type: 'text' | 'tool' | 'image-analysis' | 'thinking' | 'user-steering';
   timestamp: number;
-  status: 'pending' | 'preparing' | 'running' | 'streaming' | 'completed' | 'cancelled' | 'error' | 'analyzing' | 'pending_confirmation' | 'confirmed'; // Includes error, analyzing, and confirmation states.
+  status: 'pending' | 'preparing' | 'running' | 'streaming' | 'receiving' | 'completed' | 'cancelled' | 'error' | 'analyzing' | 'pending_confirmation' | 'confirmed'; // Includes error, analyzing, and confirmation states.
   
   // Subagent markers.
   parentTaskToolId?: string; // Parent Task tool ID.
@@ -23,6 +28,15 @@ export interface FlowTextItem extends FlowItem {
   content: string;
   isStreaming: boolean;
   isMarkdown?: boolean;
+  /**
+   * Transient runtime status rendered in the current conversation only.
+   * It is not persisted as assistant content.
+   */
+  runtimeStatus?: {
+    phase: 'waiting_model' | 'streaming' | 'waiting_tool' | 'running_tool' | 'waiting_permission' | 'saving' | 'recovering';
+    scope: 'main' | 'subagent' | 'tool';
+    messageKey?: string;
+  };
 }
 
 export interface FlowThinkingItem extends FlowItem {
@@ -35,9 +49,12 @@ export interface FlowThinkingItem extends FlowItem {
 export interface FlowToolItem extends FlowItem {
   type: 'tool';
   toolName: string;
+  terminalSessionId?: string;
+  interruptionReason?: 'app_restart';
   toolCall: {
     input: any;
     id: string;
+    timeout_seconds?: number;
   };
   toolResult?: {
     result: any;
@@ -48,9 +65,35 @@ export interface FlowToolItem extends FlowItem {
   };
   requiresConfirmation?: boolean;
   userConfirmed?: boolean;
+  acpPermission?: {
+    permissionId: string;
+    sessionId?: string;
+    toolCallId?: string;
+    requestedAt: number;
+    options?: Array<{
+      optionId: string;
+      name: string;
+      kind: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always';
+    }>;
+    toolCall?: {
+      toolCallId?: string;
+      title?: string;
+      rawInput?: unknown;
+      content?: unknown;
+    };
+  };
   aiIntent?: string; // AI rationale for calling the tool.
   startTime?: number;  // Tool start time.
   endTime?: number;    // Tool end time.
+  durationMs?: number;
+  queueWaitMs?: number;
+  preflightMs?: number;
+  confirmationWaitMs?: number;
+  executionMs?: number;
+
+  /** Resolved when a subagent model round completes (parent Task tool only). */
+  subagentModelId?: string;
+  subagentModelAlias?: string;
   
   // Streaming parameter buffering.
   isParamsStreaming?: boolean;  // Params are streaming in.
@@ -65,11 +108,25 @@ export interface FlowImageAnalysisItem extends FlowItem {
   error?: string;
 }
 
+/**
+ * A user-authored "steering" message injected mid-turn via the
+ * `steer_dialog_turn` Tauri command. Rendered inline inside the running
+ * model round so the user can see the message they steered the agent with.
+ */
+export interface FlowUserSteeringItem extends FlowItem {
+  type: 'user-steering';
+  steeringId: string;
+  content: string;
+  /** Round index reported by the backend at injection time. */
+  roundIndex: number;
+}
+
 export type AnyFlowItem =
   | FlowTextItem
   | FlowThinkingItem
   | FlowToolItem
-  | FlowImageAnalysisItem;
+  | FlowImageAnalysisItem
+  | FlowUserSteeringItem;
 
 export interface ImageAnalysisResult {
   image_id: string;
@@ -78,6 +135,14 @@ export interface ImageAnalysisResult {
   detected_elements: string[];  // Key detected elements.
   confidence: number;           // Confidence score (0-1).
   analysis_time_ms: number;     // Analysis duration.
+}
+
+export interface ModelRoundRenderHints {
+  /**
+   * Keep all round items in the normal transcript instead of merging
+   * collapsible tools and adjacent narrative into an explore group.
+   */
+  disableExploreGrouping?: boolean;
 }
 
 // Model round: output from a single model call.
@@ -90,7 +155,18 @@ export interface ModelRound {
   status: 'pending' | 'streaming' | 'completed' | 'cancelled' | 'error' | 'pending_confirmation';
   startTime: number;
   endTime?: number;
+  durationMs?: number;
+  providerId?: string;
+  modelId?: string;
+  modelAlias?: string;
+  firstChunkMs?: number;
+  firstVisibleOutputMs?: number;
+  streamDurationMs?: number;
+  attemptCount?: number;
+  failureCategory?: string;
+  tokenDetails?: unknown;
   error?: string;
+  renderHints?: ModelRoundRenderHints;
 }
 
 // Token usage stats.
@@ -105,11 +181,13 @@ export interface TokenUsage {
 export interface DialogTurn {
   id: string;
   sessionId: string; // Used for event filtering.
+  kind?: DialogTurnKind;
   userMessage: {
     id: string;
     content: string;
     timestamp: number;
     hasImages?: boolean;
+    metadata?: Record<string, any>;
     images?: Array<{
       id: string;
       name: string;
@@ -130,13 +208,17 @@ export interface DialogTurn {
   enhancedMessage?: string;
   
   modelRounds: ModelRound[];  // Model rounds in chronological order.
-  status: 'pending' | 'image_analyzing' | 'processing' | 'completed' | 'cancelling' | 'cancelled' | 'error'; // Includes image_analyzing.
+  status: 'pending' | 'image_analyzing' | 'processing' | 'finishing' | 'completed' | 'cancelling' | 'cancelled' | 'error'; // Includes image_analyzing.
   startTime: number;
   endTime?: number;
   error?: string;
   tokenUsage?: TokenUsage;
   todos?: TodoItem[];
   backendTurnIndex?: number;
+  /** Whether the turn completed successfully. */
+  success?: boolean;
+  /** Why the turn finished. */
+  finishReason?: string;
 }
 
 export interface FlowChatState {
@@ -154,6 +236,13 @@ export interface TodoItem {
 export interface Session {
   sessionId: string;
   title?: string;
+  /**
+   * Untouched default sessions keep an i18n key so locale changes can re-render
+   * their title. Once a real title is generated or renamed, we freeze it as text.
+   */
+  titleSource?: SessionTitleSource;
+  titleI18nKey?: string;
+  titleI18nParams?: Record<string, unknown>;
   titleStatus?: 'generating' | 'generated' | 'failed';
   dialogTurns: DialogTurn[];
   
@@ -186,6 +275,15 @@ export interface Session {
   // Workspace this session belongs to. Used for sidebar display filtering.
   // Sessions are always kept in store for event processing; only display is filtered.
   workspacePath?: string;
+
+  /** Stable backend id — always set for new sessions; do not infer workspace from path alone. */
+  workspaceId?: string;
+
+  /** SSH remote: same `workspacePath` on different hosts must not share coordinator/persistence. */
+  remoteConnectionId?: string;
+
+  /** SSH config host for `~/.bitfun/remote_ssh/{host}/...` session paths when disconnected. */
+  remoteSshHost?: string;
 
   /**
    * Optional parent session id for hierarchical sessions.
@@ -222,6 +320,34 @@ export interface Session {
     parentDialogTurnId?: string;
     parentTurnIndex?: number;
   };
+
+  /**
+   * Set when a session finishes (completed / error / cancelled) while not the active session.
+   * Cleared after the user switches to it and the content renders.
+   * 'completed' → green dot, 'error' → red dot, 'interrupted' → red dot (partial stream recovery).
+   */
+  hasUnreadCompletion?: 'completed' | 'error' | 'interrupted';
+
+  /**
+   * Set when a session requires user attention while not the active session.
+   * This is a high-priority alert that takes precedence over hasUnreadCompletion.
+   * 'ask_user' → session has pending AskUserQuestion waiting for answer
+   * 'tool_confirm' → session has pending tool confirmations
+   * Cleared when the user switches to the session or the pending action is resolved.
+   */
+  needsUserAttention?: 'ask_user' | 'tool_confirm';
+
+  /** Per-run reviewer manifest for Deep Review child sessions. */
+  deepReviewRunManifest?: ReviewTeamRunManifest;
+
+  /**
+   * Runtime-only session that should stay in memory but never be persisted or
+   * shown in the main session navigation.
+   */
+  isTransient?: boolean;
+
+  /** Transient UI session backed by a real agent session. */
+  agentBackedTransient?: boolean;
 }
 
 export interface SessionConfig {
@@ -229,15 +355,43 @@ export interface SessionConfig {
   agentType?: string;
   context?: Record<string, string>;
   workspacePath?: string;
+  /** Binds session to `WorkspaceInfo.id` (path alone is insufficient for remotes). */
+  workspaceId?: string;
+  /** Disambiguates sessions when multiple remote workspaces share the same `workspacePath`. */
+  remoteConnectionId?: string;
+  remoteSshHost?: string;
 }
 
+/**
+ * A user message queued by the frontend while the session's current dialog turn
+ * is still running. Items are persisted per-session and consumed in FIFO order
+ * once the session returns to IDLE; users may also "send now" to inject the item
+ * mid-turn (Codex-style steering) via the new `steer_dialog_turn` Tauri command.
+ */
 export interface QueuedMessage {
   id: string;
   sessionId: string;
+  /** Rendered content sent to the model (may equal `displayMessage`). */
   content: string;
+  /** Original user-visible text used by the queue UI and steering display. */
+  displayMessage?: string;
   timestamp: number;
-  status: 'queued' | 'processing' | 'completed' | 'failed';
+  /**
+   * Lifecycle:
+   * - `queued`: waiting in FIFO; eligible for auto-drain when session goes IDLE.
+   * - `sending`: drain in progress (becoming a new dialog turn).
+   * - `sending_now`: user explicitly steered the running turn with this item.
+   * - `failed`: auto-restored from a failed turn — auto-drain is suppressed
+   *   and the user must edit / send-now / delete to clear it (avoids reentry
+   *   into the same failure loop).
+   */
+  status: 'queued' | 'sending' | 'sending_now' | 'failed';
   retryCount: number;
+  /** Agent type / mode in effect when the user enqueued the message. */
+  agentType?: string;
+  /** Image / attachment payloads forwarded to `start_dialog_turn` when drained. */
+  imageContexts?: unknown[];
+  imageDisplayData?: unknown[];
   localDialogTurnId?: string;
 }
 
@@ -271,12 +425,14 @@ export interface ToolCardConfig {
 export interface ToolCardProps {
   toolItem: FlowToolItem;
   config: ToolCardConfig;
-  onConfirm?: (updatedInput?: any) => void;  // toolId is known within the card.
-  onReject?: () => void;
+  interruptionNote?: string | null;
+  onConfirm?: (updatedInput?: any, permissionOptionId?: string, approve?: boolean) => void;  // toolId is known within the card.
+  onReject?: (permissionOptionId?: string) => void;
   onOpenInEditor?: (filePath: string) => void;
   onOpenInPanel?: (panelType: string, data: any) => void;
   onExpand?: () => void;
   sessionId?: string;
+  turnId?: string;
   /** Callback for MCP App ui/message requests. Returns whether the message was handled successfully. */
   onMcpAppMessage?: (params: import('@/infrastructure/api/service-api/MCPAPI').McpUiMessageParams) => Promise<import('@/infrastructure/api/service-api/MCPAPI').McpUiMessageResult>;
 }

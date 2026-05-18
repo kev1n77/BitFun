@@ -21,7 +21,7 @@ Be respectful, kind, and constructive. We welcome contributors of all background
 
 The desktop app includes SSH remote support, which pulls in OpenSSL. On Windows the workspace **does not use vendored OpenSSL**; link against **pre-built** binaries (no Perl/NASM/OpenSSL source build).
 
-- **Default**: `pnpm run desktop:dev` calls `ensure-openssl-windows.mjs` on Windows. Every `desktop:build*` script runs via `scripts/desktop-tauri-build.mjs`, which does the same before `tauri build` (first run downloads FireDaemon OpenSSL 3.5.5 into `.bitfun/cache/`; later runs reuse the cache). Extra args: `pnpm run desktop:build -- <tauri-build-args>`.
+- **Default**: `pnpm run desktop:dev` calls `ensure-openssl-windows.mjs` on Windows. `pnpm run desktop:preview:debug` does the same whenever it needs to fast-rebuild `bitfun-desktop` before preview. Every `desktop:build*` script runs via `scripts/desktop-tauri-build.mjs`, which does the same before invoking Cargo.
 - **Manual / CI**: Download the [FireDaemon OpenSSL 3.5.5 LTS ZIP](https://download.firedaemon.com/FireDaemon-OpenSSL/openssl-3.5.5.zip), extract, set `OPENSSL_DIR` to the `x64` folder, `OPENSSL_STATIC=1`, or run `scripts/ci/setup-openssl-windows.ps1`.
 - **Opt out of auto-download**: `BITFUN_SKIP_OPENSSL_BOOTSTRAP=1` and configure `OPENSSL_DIR` yourself.
 - **`desktop:dev:raw`** skips the dev script (no OpenSSL bootstrap); set `OPENSSL_DIR` yourself, run `scripts/ci/setup-openssl-windows.ps1`, or `node scripts/ensure-openssl-windows.mjs` (warms `.bitfun/cache/` and prints PowerShell `OPENSSL_*` lines to paste).
@@ -35,15 +35,40 @@ pnpm install
 ### Common commands
 
 ```bash
-# Desktop
-pnpm run desktop:dev
+# Desktop (recommended for daily development)
+pnpm run desktop:dev                # full hot-reload: Vite HMR + Rust auto-rebuild & restart
+
+# Desktop (lightweight preview, no Rust auto-rebuild)
+pnpm run desktop:preview:debug      # reuse pre-built binary + Vite HMR; Rust changes require manual restart
+
+# Desktop (production build)
 pnpm run desktop:build
 
 # E2E
 pnpm run e2e:test
 ```
 
-> Note: More granular scripts are available (e.g. `dev:web`, `cli:dev`, `website:dev`). See `package.json` for details.
+> **`desktop:dev` vs `desktop:preview:debug`**: `desktop:dev` runs `tauri dev`, which provides **full hot-reload** — frontend changes apply instantly via Vite HMR, and Rust/backend changes trigger an incremental rebuild followed by an automatic app restart. This is the recommended workflow for active development. `desktop:preview:debug` launches a pre-built debug binary alongside a Vite dev server; frontend edits still get HMR, but **Rust-side changes are not auto-rebuilt** — you must stop and re-run the command (or use `--force-rebuild`). Use `desktop:preview:debug` when you only need to iterate on frontend code or want a faster cold-start without waiting for `tauri dev` initialization.
+
+> For the full script list, see [`package.json`](package.json). For agent-specific commands, verification, and architecture rules, see [`AGENTS.md`](AGENTS.md).
+
+### Desktop debugging tools
+
+When working on desktop UI/UX, the `devtools` Cargo feature provides additional debugging capabilities. It is automatically enabled in `dev` builds and `release-fast` profile builds, but never in `release` builds for end users.
+
+| Shortcut | Action |
+|---|---|
+| `Cmd/Ctrl + Shift + I` | Toggle element inspector — hover to highlight elements, click to capture metadata |
+| `Cmd/Ctrl + Shift + J` | Open native webview DevTools window |
+
+The element inspector injects a lightweight script into the main webview. When you click an element, it captures:
+- Tag, id, class, CSS selector path
+- Computed styles and CSS variables
+- Box model (margin, padding, border)
+- Color values (text, background, border)
+- Element attributes
+
+Captured data is logged as structured JSON under the `bitfun::devtools` target.
 
 ## Code Standards and Architecture Constraints
 
@@ -59,6 +84,16 @@ Do not use platform-specific dependencies in `core`:
 
 - ❌ `tauri::AppHandle`
 - ✅ `bitfun_events::EventEmitter`
+
+For `bitfun-core` decomposition or build-speed refactors, follow
+[`docs/architecture/core-decomposition.md`](docs/architecture/core-decomposition.md)
+and do not change product feature sets or release scripts as a side effect.
+
+For Deep Review / Code Review Team changes, keep
+[`docs/architecture/deep-review.md`](docs/architecture/deep-review.md),
+`src/crates/core/src/agentic/deep_review/CONTRIBUTING.md`, and
+`src/web-ui/src/flow_chat/deep-review/CONTRIBUTING.md` aligned with the
+implementation.
 
 ### Tauri command conventions
 
@@ -122,7 +157,7 @@ If your work is AI-assisted, please note it in the PR and indicate testing level
 
 ### Branch management
 
-**The `master` branch is for stable features and does not accept feature merges.** Since this repo encourages product managers and developers to use AI-generated code for rapid validation or idea submission, **please open all PRs targeting the `dev` branch**. We will periodically review and polish changes in `dev`, then merge back into `master`.
+**The `main` branch is the default collaboration branch and accepts feature PRs.** Since this repo encourages product managers and developers to use AI-generated code for rapid validation or idea submission, **please open all PRs targeting the `main` branch**.
 
 ### Scope
 
@@ -131,6 +166,8 @@ Keep PRs small and focused. Avoid bundling unrelated changes.
 ## Testing and Verification
 
 Run relevant tests for your change:
+
+For `/usage` UI copy changes, keep `en-US`, `zh-CN`, and `zh-TW` locale strings in sync.
 
 ```bash
 # Rust
@@ -141,8 +178,6 @@ pnpm run e2e:test
 ```
 
 If you cannot run tests, explain why in the PR and provide manual verification steps.
-
-
 
 ## Security and Compliance
 

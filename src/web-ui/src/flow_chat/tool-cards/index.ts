@@ -5,6 +5,7 @@
 
 import type { ToolCardConfig } from '../types/flow-chat';
 import { createLogger } from '@/shared/utils/logger';
+import { isMcpToolName, parseMcpToolName } from '@/infrastructure/mcp/toolName';
 
 const log = createLogger('ToolCardRegistry');
 // Tool display components
@@ -14,7 +15,6 @@ import { GlobSearchDisplay } from './GlobSearchDisplay';
 import { LSDisplay } from './LSDisplay';
 import { TodoWriteDisplay } from './TodoWriteDisplay';
 import { TaskToolDisplay } from './TaskToolDisplay';
-import { MermaidInteractiveDisplay } from './MermaidInteractiveDisplay';
 import { CodeReviewToolCard } from './CodeReviewToolCard';
 import { FileOperationToolCard } from './FileOperationToolCard';
 import { DefaultToolCard } from './DefaultToolCard';
@@ -29,7 +29,8 @@ import { CreatePlanDisplay } from './CreatePlanDisplay';
 import { TerminalToolCard } from './TerminalToolCard';
 import { TerminalControlDisplay } from './TerminalControlDisplay';
 import { InitMiniAppDisplay } from './MiniAppToolDisplay';
-import { BtwMarkerCard } from './BtwMarkerCard';
+import { GenerativeWidgetToolCard } from './GenerativeWidgetToolCard';
+import { ReviewSessionSummaryCard } from './ReviewSessionSummaryCard';
 import { SessionControlToolCard } from './SessionControlToolCard';
 import { SessionMessageToolCard } from './SessionMessageToolCard';
 
@@ -152,16 +153,6 @@ export const TOOL_CARD_CONFIGS: Record<string, ToolCardConfig> = {
     displayMode: 'standard',
     primaryColor: '#0d9488'
   },
-  'MermaidInteractive': {
-    toolName: 'MermaidInteractive',
-    displayName: 'Mermaid Interactive',
-    icon: 'M',
-    requiresConfirmation: false,
-    resultDisplayType: 'detailed',
-    description: 'Create interactive Mermaid diagrams',
-    displayMode: 'compact',
-    primaryColor: '#06b6d4'
-  },
   'submit_code_review': {
     toolName: 'submit_code_review',
     displayName: 'Code Review',
@@ -207,16 +198,15 @@ export const TOOL_CARD_CONFIGS: Record<string, ToolCardConfig> = {
     primaryColor: '#8b5cf6'
   },
 
-  // /btw in-stream marker (frontend-inserted tool item)
-  'BtwMarker': {
-    toolName: 'BtwMarker',
-    displayName: 'Side thread',
-    icon: 'BTW',
+  'ReviewSessionSummary': {
+    toolName: 'ReviewSessionSummary',
+    displayName: 'Review summary',
+    icon: 'REV',
     requiresConfirmation: false,
     resultDisplayType: 'hidden',
-    description: 'Side thread marker (child session link)',
-    displayMode: 'compact',
-    primaryColor: '#7aa6ff'
+    description: 'Review session summary marker',
+    displayMode: 'detailed',
+    primaryColor: '#0ea5e9'
   },
 
   // Git version control tool
@@ -312,6 +302,16 @@ export const TOOL_CARD_CONFIGS: Record<string, ToolCardConfig> = {
     displayMode: 'standard',
     primaryColor: '#7c8cef'
   },
+  'GenerativeUI': {
+    toolName: 'GenerativeUI',
+    displayName: 'Generative UI',
+    icon: 'UI',
+    requiresConfirmation: false,
+    resultDisplayType: 'detailed',
+    description: 'Render interactive widget previews inline in FlowChat',
+    displayMode: 'detailed',
+    primaryColor: '#38bdf8'
+  },
 };
 
 // Tool card component map - uses backend tool names
@@ -329,14 +329,10 @@ export const TOOL_CARD_COMPONENTS = {
   
   // Web tools
   'WebSearch': WebSearchCard,
-  'WebFetch': WebSearchCard,
   
   // Advanced tools
   'Task': TaskToolDisplay,
   'TodoWrite': TodoWriteDisplay,
-  
-  // Mermaid interactive
-  'MermaidInteractive': MermaidInteractiveDisplay,
   
   'submit_code_review': CodeReviewToolCard,
   
@@ -349,8 +345,7 @@ export const TOOL_CARD_COMPONENTS = {
   // AskUserQuestion tool
   'AskUserQuestion': AskUserQuestionCard,
 
-  // /btw marker
-  'BtwMarker': BtwMarkerCard,
+  'ReviewSessionSummary': ReviewSessionSummaryCard,
 
   // Git version control
   'Git': GitToolDisplay,
@@ -373,26 +368,27 @@ export const TOOL_CARD_COMPONENTS = {
 
   // MiniApp tool
   'InitMiniApp': InitMiniAppDisplay,
+
+  // Generative widget tool
+  'GenerativeUI': GenerativeWidgetToolCard,
 };
 
 /**
  * Get tool card config.
  */
 export function getToolCardConfig(toolName: string): ToolCardConfig {
-  // Check MCP tools (prefix: mcp_).
-  if (toolName.startsWith('mcp_')) {
-    // Parse MCP tool name: mcp_{server_id}_{tool_name}
-    const parts = toolName.split('_');
-    const actualToolName = parts.slice(2).join('_'); // Actual tool name.
-    const serverName = parts[1] || 'MCP'; // Server ID.
-    
+  // Check MCP tools (prefix: mcp__).
+  if (isMcpToolName(toolName)) {
+    const parsed = parseMcpToolName(toolName);
+    const actualToolName = parsed?.toolName ?? toolName;
+
     return {
       toolName,
       displayName: actualToolName || toolName,
       icon: 'MCP',
       requiresConfirmation: false,
       resultDisplayType: 'detailed',
-      description: `MCP tool from ${serverName}`,
+      description: 'MCP',
       displayMode: 'compact',
       primaryColor: '#8b5cf6'
     };
@@ -415,8 +411,8 @@ export function getToolCardConfig(toolName: string): ToolCardConfig {
  * Get tool card component.
  */
 export function getToolCardComponent(toolName: string) {
-  // Check MCP tools (prefix: mcp_).
-  if (toolName.startsWith('mcp_')) {
+  // Check MCP tools (prefix: mcp__).
+  if (isMcpToolName(toolName)) {
     return MCPToolDisplay;
   }
   
@@ -446,8 +442,26 @@ export function getAllToolNames(): string[] {
 }
 
 // Export components
-export { BaseToolCard, ToolCardHeader } from './BaseToolCard';
-export type { BaseToolCardProps, ToolCardHeaderProps } from './BaseToolCard';
+export {
+  BaseToolCard,
+  ToolCardHeader,
+} from './BaseToolCard';
+export {
+  ToolCardHeaderLayoutContext,
+  useToolCardHeaderLayout,
+} from './ToolCardHeaderLayoutContext';
+export type {
+  BaseToolCardProps,
+  ToolCardHeaderProps,
+} from './BaseToolCard';
+export type {
+  ToolCardHeaderLayoutContextValue,
+  ToolCardHeaderAffordanceKind,
+} from './ToolCardHeaderLayoutContext';
+export { ToolCardIconSlot } from './ToolCardIconSlot';
+export type { ToolCardIconSlotProps } from './ToolCardIconSlot';
+export { ToolCardStatusIcon } from './ToolCardStatusIcon';
+export type { ToolCardStatusIconProps } from './ToolCardStatusIcon';
 export { PlanDisplay } from './CreatePlanDisplay';
 export type { PlanDisplayProps } from './CreatePlanDisplay';
 
@@ -456,11 +470,11 @@ export type { PlanDisplayProps } from './CreatePlanDisplay';
 import type { FlowItem, FlowToolItem } from '../types/flow-chat';
 
 /**
- * Collapsible explorer tools (only these 5).
+ * Collapsible explorer tools.
  * They are auto-collapsed during streaming to reduce visual noise.
  */
 export const COLLAPSIBLE_TOOL_NAMES = new Set([
-  'Read', 'LS', 'Grep', 'Glob', 'WebSearch'
+  'Read', 'LS', 'Grep', 'Glob', 'WebSearch', 'Bash', 'Git',
 ]);
 
 /** Read tools (counted in readCount). */
@@ -468,6 +482,9 @@ export const READ_TOOL_NAMES = new Set(['Read', 'LS']);
 
 /** Search tools (counted in searchCount). */
 export const SEARCH_TOOL_NAMES = new Set(['Grep', 'Glob', 'WebSearch']);
+
+/** Command tools (counted in commandCount). */
+export const COMMAND_TOOL_NAMES = new Set(['Bash', 'Git']);
 
 /** Check whether a tool is collapsible. */
 export function isCollapsibleTool(toolName: string): boolean {
@@ -479,7 +496,7 @@ export function isCollapsibleTool(toolName: string): boolean {
  * - Subagent items are never collapsed.
  * - Text needs context (use isCollapsibleItemWithContext).
  * - Thinking can be collapsed with explorer tools.
- * - Only the 5 explorer tools are collapsible.
+ * - Only explorer tools are collapsible.
  */
 export function isCollapsibleItem(item: FlowItem): boolean {
   // Subagent items are never collapsed.
@@ -491,7 +508,7 @@ export function isCollapsibleItem(item: FlowItem): boolean {
   // Thinking can be collapsed with explorer tools.
   if (item.type === 'thinking') return true;
   
-  // Tools: only the 5 explorer tools are collapsible.
+  // Tools: only explorer tools are collapsible.
   if (item.type === 'tool') {
     return isCollapsibleTool((item as FlowToolItem).toolName);
   }
@@ -532,7 +549,7 @@ export function isCollapsibleItemWithContext(
     return false;
   }
   
-  // Tools: only the 5 explorer tools are collapsible.
+  // Tools: only explorer tools are collapsible.
   if (item.type === 'tool') {
     return isCollapsibleTool((item as FlowToolItem).toolName);
   }

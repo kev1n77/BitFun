@@ -31,7 +31,7 @@
 .branch-quick-switch__input {
   width: 100%;
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: var(--font-size-xs);
   border: 1px solid var(--border-subtle);
   border-radius: 4px;
   background: var(--color-bg-secondary);
@@ -73,7 +73,7 @@
   justify-content: center;
   gap: 8px;
   color: var(--color-text-muted);
-  font-size: 12px;
+  font-size: var(--font-size-xs);
 }
 
 // ── Item ────────────────────────────────────────────────
@@ -95,8 +95,8 @@
     background: var(--color-accent-100);
     cursor: default;
 
-    .branch-quick-switch__item-icon { color: var(--color-accent-500); }
-    .branch-quick-switch__item-name { color: var(--color-accent-600); font-weight: 500; }
+    .branch-quick-switch__item-icon { color: var(--color-text-secondary); }
+    .branch-quick-switch__item-name { color: var(--color-text-primary); font-weight: 500; }
   }
 
   &--switching {
@@ -105,9 +105,9 @@
   }
 }
 
-.branch-quick-switch__item-icon  { flex-shrink: 0; color: var(--color-text-muted); }
-.branch-quick-switch__item-name  { flex: 1; font-size: 12px; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.branch-quick-switch__item-check { flex-shrink: 0; color: var(--color-accent-500); }
+.branch-quick-switch__item-icon  { flex-shrink: 0; color: var(--color-text-primary); }
+.branch-quick-switch__item-name  { flex: 1; font-size: var(--font-size-xs); color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.branch-quick-switch__item-check { flex-shrink: 0; color: var(--color-text-primary); }
 
 .branch-quick-switch__spinner {
   animation: branch-quick-switch-spin 1s linear infinite;

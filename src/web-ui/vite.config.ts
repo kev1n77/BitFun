@@ -17,6 +17,7 @@ export default defineConfig(({ mode, command }) => {
 
     // Path resolution
     resolve: {
+      dedupe: ['react', 'react-dom'],
       alias: {
         "@": path.resolve(__dirname, "./src"),
         "@/shared": path.resolve(__dirname, "./src/shared"),
@@ -47,7 +48,9 @@ export default defineConfig(({ mode, command }) => {
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1422,
-    strictPort: false,
+    // Tauri devUrl is fixed to http://localhost:1422.
+    // If Vite silently falls back to another port, the desktop webview stays blank.
+    strictPort: true,
     host: host || "localhost",
     hmr: {
       protocol: "ws",

@@ -32,9 +32,11 @@
       {
         "label": "installer",
         "title": "Install BitFun",
-        "width": 700,
-        "height": 480,
-        "resizable": false,
+        "width": 760,
+        "height": 560,
+        "minWidth": 700,
+        "minHeight": 480,
+        "resizable": true,
         "maximizable": false,
         "decorations": false,
         "center": true

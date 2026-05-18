@@ -1,5 +1,6 @@
 //! JS Worker — single child process (Bun/Node) with stdin/stderr JSON-RPC.
 
+use crate::infrastructure::events::{emit_global_event, BackendEvent};
 use crate::miniapp::runtime_detect::DetectedRuntime;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -8,28 +9,34 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::{Child, ChildStdin};
 use tokio::sync::{oneshot, Mutex};
+
+type JsWorkerResponse = Result<Value, String>;
+type PendingResponseSender = oneshot::Sender<JsWorkerResponse>;
+type PendingResponseMap = HashMap<String, PendingResponseSender>;
 
 /// Single JS Worker process: stdin for requests, stderr for RPC responses, stdout for user logs.
 pub struct JsWorker {
     _child: Child,
     stdin: Mutex<Option<ChildStdin>>,
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>,
+    pending: Arc<Mutex<PendingResponseMap>>,
     last_activity: Arc<AtomicI64>,
 }
 
 impl JsWorker {
     /// Spawn Worker process: `runtime_path worker_host_path '<policy_json>'` with cwd = app_dir.
+    /// The `app_id` is used as the source identifier when emitting worker events.
     pub async fn spawn(
         runtime: &DetectedRuntime,
         worker_host_path: &Path,
         app_dir: &Path,
         policy_json: &str,
+        app_id: String,
     ) -> Result<Self, String> {
         let exe = runtime.path.to_string_lossy();
         let host = worker_host_path.to_string_lossy();
-        let mut child = Command::new(&*exe)
+        let mut child = crate::util::process_manager::create_tokio_command(&*exe)
             .arg(&*host)
             .arg(policy_json)
             .current_dir(app_dir)
@@ -44,10 +51,7 @@ impl JsWorker {
         let stderr = child.stderr.take().ok_or("No stderr")?;
         let _stdout = child.stdout.take();
 
-        let pending = Arc::new(Mutex::new(HashMap::<
-            String,
-            oneshot::Sender<Result<Value, String>>,
-        >::new()));
+        let pending = Arc::new(Mutex::new(PendingResponseMap::new()));
         let last_activity = Arc::new(AtomicI64::new(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -77,6 +81,8 @@ impl JsWorker {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
+
+                // Lines with an `id` are RPC responses — route to the pending map.
                 let id = msg.get("id").and_then(Value::as_str).map(String::from);
                 if let Some(id) = id {
                     let result = if let Some(err) = msg.get("error") {
@@ -94,6 +100,24 @@ impl JsWorker {
                     if let Some(tx) = guard.remove(&id) {
                         let _ = tx.send(result);
                     }
+                    continue;
+                }
+
+                // Lines with an `event` field (no `id`) are push events from the Worker.
+                // Forward them as Tauri-level events so the Bridge can relay to the iframe.
+                if let Some(event_name) = msg.get("event").and_then(Value::as_str) {
+                    let data = msg.get("data").cloned().unwrap_or(Value::Null);
+                    let payload = serde_json::json!({
+                        "appId": app_id,
+                        "event": event_name,
+                        "data": data,
+                    });
+                    let event_full_name = format!("miniapp://worker-event:{}", app_id);
+                    let _ = emit_global_event(BackendEvent::Custom {
+                        event_name: event_full_name,
+                        payload,
+                    })
+                    .await;
                 }
             }
         });

@@ -12,14 +12,14 @@ import { useSceneManager } from '../../hooks/useSceneManager';
 import { useCurrentSessionTitle } from '../../hooks/useCurrentSessionTitle';
 import { useCurrentSettingsTabTitle } from '../../hooks/useCurrentSettingsTabTitle';
 import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
-import { flowChatManager } from '@/flow_chat/services/FlowChatManager';
 import { createLogger } from '@/shared/utils/logger';
+import { supportsNativeWindowDragging } from '@/infrastructure/runtime';
 import './SceneBar.scss';
 
 const log = createLogger('SceneBar');
 
 const INTERACTIVE_SELECTOR =
-  'button, input, textarea, select, a, [role="button"], [contenteditable="true"], .window-controls, .bitfun-scene-tab__action';
+  'button, input, textarea, select, a, [role="button"], [contenteditable="true"], .window-controls';
 
 interface SceneBarProps {
   className?: string;
@@ -43,6 +43,7 @@ const SceneBar: React.FC<SceneBarProps> = ({
   const hasWindowControls = !!(onMinimize && onMaximize && onClose);
   const sceneBarClassName = `bitfun-scene-bar ${!hasWindowControls ? 'bitfun-scene-bar--no-controls' : ''} ${className}`.trim();
   const isSingleTab = openTabs.length <= 1;
+  const canDragWindow = supportsNativeWindowDragging();
   const tabCount = Math.max(openTabs.length, 1);
   const tabsStyle = {
     ['--scene-tab-count' as string]: tabCount,
@@ -50,6 +51,7 @@ const SceneBar: React.FC<SceneBarProps> = ({
   const lastMouseDownTimeRef = useRef<number>(0);
 
   const handleBarMouseDown = useCallback((e: React.MouseEvent) => {
+    if (!canDragWindow) return;
     if (!isSingleTab) return;
 
     const now = Date.now();
@@ -70,7 +72,7 @@ const SceneBar: React.FC<SceneBarProps> = ({
         log.debug('startDragging failed', error);
       }
     })();
-  }, [isSingleTab]);
+  }, [canDragWindow, isSingleTab]);
 
   const handleBarDoubleClick = useCallback((e: React.MouseEvent) => {
     if (!isSingleTab) return;
@@ -79,15 +81,6 @@ const SceneBar: React.FC<SceneBarProps> = ({
     if (target.closest(INTERACTIVE_SELECTOR)) return;
     onMaximize?.();
   }, [isSingleTab, onMaximize]);
-
-  const handleCreateSession = useCallback(async () => {
-    activateScene('session');
-    try {
-      await flowChatManager.createChatSession({});
-    } catch (err) {
-      log.error('Failed to create session', err);
-    }
-  }, [activateScene]);
 
   return (
     <div
@@ -105,7 +98,6 @@ const SceneBar: React.FC<SceneBarProps> = ({
           const subtitle =
             (tab.id === 'session' && sessionTitle ? sessionTitle : undefined)
             ?? (tab.id === 'settings' && settingsTabTitle ? settingsTabTitle : undefined);
-          const actionTitle = tab.id === 'session' ? t('nav.sessions.newCodeSession') : undefined;
           return (
             <SceneTab
               key={tab.id}
@@ -113,8 +105,6 @@ const SceneBar: React.FC<SceneBarProps> = ({
               def={{ ...def, label: translatedLabel }}
               isActive={tab.id === activeTabId}
               subtitle={subtitle}
-              onActionClick={tab.id === 'session' ? handleCreateSession : undefined}
-              actionTitle={actionTitle}
               onActivate={activateScene}
               onClose={closeScene}
             />

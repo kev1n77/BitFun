@@ -79,16 +79,16 @@ function getThemeVariables() {
     gridColor: getCSSVar('--mermaid-grid-stroke', isDark ? '#3a3e48' : 'rgba(156, 163, 175, 0.3)'),
     doneTaskBkgColor: getCSSVar('--mermaid-done-fill', isDark ? 'rgba(109, 212, 160, 0.15)' : 'rgba(34, 197, 94, 0.2)'),
     doneTaskBorderColor: getCSSVar('--mermaid-done-stroke', isDark ? '#6dd4a0' : '#16a34a'),
-    activeTaskBkgColor: getCSSVar('--mermaid-active-fill', isDark ? 'rgba(120, 168, 216, 0.15)' : 'rgba(59, 130, 246, 0.2)'),
-    activeTaskBorderColor: getCSSVar('--mermaid-active-stroke', isDark ? '#78a8d8' : '#2563eb'),
+    activeTaskBkgColor: getCSSVar('--mermaid-active-fill', isDark ? 'rgba(120, 168, 216, 0.15)' : 'rgba(15, 23, 42, 0.08)'),
+    activeTaskBorderColor: getCSSVar('--mermaid-active-stroke', isDark ? '#78a8d8' : '#334155'),
     critBkgColor: getCSSVar('--mermaid-crit-fill', isDark ? 'rgba(232, 120, 120, 0.15)' : 'rgba(239, 68, 68, 0.2)'),
     critBorderColor: getCSSVar('--mermaid-crit-stroke', isDark ? '#e87878' : '#dc2626'),
     taskTextColor: getCSSVar('--mermaid-task-text', isDark ? '#e0e2e8' : '#1f2937'),
     taskTextOutsideColor: getCSSVar('--mermaid-edge-label-text', isDark ? '#9a9ea8' : '#4b5563'),
-    taskTextClickableColor: getCSSVar('--mermaid-info', isDark ? '#78a8d8' : '#2563eb'),
+    taskTextClickableColor: getCSSVar('--mermaid-info', isDark ? '#78a8d8' : '#475569'),
     classText: getCSSVar('--mermaid-class-text', isDark ? '#e0e2e8' : '#1f2937'),
     labelColor: getCSSVar('--mermaid-node-text', isDark ? '#e0e2e8' : '#1f2937'),
-    pie1: getCSSVar('--mermaid-pie-1', isDark ? '#78a8d8' : '#3b82f6'),
+    pie1: getCSSVar('--mermaid-pie-1', isDark ? '#78a8d8' : '#475569'),
     pie2: getCSSVar('--mermaid-pie-2', isDark ? '#6dd4a0' : '#16a34a'),
     pie3: getCSSVar('--mermaid-pie-3', isDark ? '#e8b060' : '#f59e0b'),
     pie4: getCSSVar('--mermaid-pie-4', isDark ? '#e87878' : '#dc2626'),
@@ -271,20 +271,19 @@ export function getRuntimeColors() {
       strokeHover: getCSSVar('--mermaid-edge-stroke-hover', isDark ? '#8a8e9a' : '#6b7280'),
     },
     highlight: {
-      // Use blue highlights in light theme for contrast.
-      stroke: getCSSVar('--mermaid-highlight-stroke', isDark ? '#a8acb8' : '#3b82f6'),
+      stroke: getCSSVar('--mermaid-highlight-stroke', isDark ? '#a8acb8' : '#334155'),
       glow: getCSSVar('--mermaid-highlight-glow', isDark 
         ? 'drop-shadow(0 0 6px rgba(168, 172, 184, 0.4))' 
-        : 'drop-shadow(0 0 6px rgba(59, 130, 246, 0.35))'),
+        : 'drop-shadow(0 0 6px rgba(15, 23, 42, 0.18))'),
       glowStrong: isDark 
         ? 'drop-shadow(0 0 10px rgba(168, 172, 184, 0.5))'
-        : 'drop-shadow(0 0 10px rgba(59, 130, 246, 0.5))',
+        : 'drop-shadow(0 0 10px rgba(15, 23, 42, 0.22))',
     },
     status: {
       success: getCSSVar('--mermaid-success', isDark ? '#6dd4a0' : '#16a34a'),
       error: getCSSVar('--mermaid-error', isDark ? '#e87878' : '#dc2626'),
       warning: getCSSVar('--mermaid-warning', isDark ? '#e8b060' : '#f59e0b'),
-      info: getCSSVar('--mermaid-info', isDark ? '#78a8d8' : '#2563eb'),
+      info: getCSSVar('--mermaid-info', isDark ? '#78a8d8' : '#64748b'),
     },
     text: {
       primary: getCSSVar('--mermaid-node-text', isDark ? '#e0e2e8' : '#1f2937'),

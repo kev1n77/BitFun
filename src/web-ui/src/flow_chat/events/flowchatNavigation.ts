@@ -5,8 +5,8 @@
 export const FLOWCHAT_FOCUS_ITEM_EVENT = 'flowchat:focus-item';
 export const FLOWCHAT_PIN_TURN_TO_TOP_EVENT = 'flowchat:pin-turn-to-top';
 
-export type FlowChatFocusItemSource = 'btw-back';
-export type FlowChatPinTurnToTopSource = 'send-message';
+export type FlowChatFocusItemSource = 'btw-back' | 'usage-report';
+export type FlowChatPinTurnToTopSource = 'send-message' | 'usage-report';
 export type FlowChatPinTurnToTopMode = 'transient' | 'sticky-latest';
 
 export interface FlowChatFocusItemRequest {
@@ -22,4 +22,17 @@ export interface FlowChatPinTurnToTopRequest {
   behavior?: ScrollBehavior;
   source?: FlowChatPinTurnToTopSource;
   pinMode?: FlowChatPinTurnToTopMode;
+}
+
+/**
+ * Event for scrolling from the review action bar to a specific remediation
+ * item in the CodeReviewToolCard report.
+ */
+export const DEEP_REVIEW_SCROLL_TO_EVENT = 'deep-review:scroll-to';
+
+export interface DeepReviewScrollToRequest {
+  groupId: string;
+  groupIndex: number;
+  /** Index of the best-matching issue in the report's `issues` array, or -1. */
+  issueIndex: number;
 }

@@ -14,14 +14,8 @@ export interface FileSystemNode {
   isSelected?: boolean;
   isExpanded?: boolean;
   
-  // Git status
   totalAnchors?: number;
   hasFixResult?: boolean;
-  
-  gitStatus?: 'untracked' | 'modified' | 'added' | 'deleted' | 'renamed' | 'conflicted' | 'staged';
-  gitStatusText?: string;
-  hasChildrenGitChanges?: boolean;
-  childrenGitStatuses?: Set<'untracked' | 'modified' | 'added' | 'deleted' | 'renamed' | 'conflicted' | 'staged'>;
 }
 
 
@@ -35,6 +29,7 @@ export interface FileExplorerProps {
   showLastModified?: boolean;
   
   expandedFolders?: Set<string>;
+  loadingPaths?: Set<string>;
   onNodeExpand?: (path: string, expanded: boolean) => void;
   
   onFileDoubleClick?: (filePath: string) => void;
@@ -52,6 +47,16 @@ export interface FileExplorerProps {
   onNewFile?: (data: { parentPath: string }) => void;
   onNewFolder?: (data: { parentPath: string }) => void;
   onRefresh?: () => void;
+
+  /** When true, the floating toolbar is not rendered (e.g. actions live in a parent header). */
+  hideToolbar?: boolean;
+}
+
+/** Zero-arg handlers for toolbar buttons when the UI is rendered outside FileExplorer. */
+export interface FileExplorerToolbarHandlers {
+  onNewFile: () => void;
+  onNewFolder: () => void;
+  onRefresh: () => void;
 }
 
 
@@ -59,6 +64,7 @@ export interface FileTreeProps {
   nodes: FileSystemNode[];
   selectedFile?: string;
   expandedFolders?: Set<string>;
+  loadingPaths?: Set<string>;
   onNodeSelect?: (node: FileSystemNode) => void;
   onNodeExpand?: (path: string, expanded: boolean) => void;
   className?: string;
@@ -80,6 +86,7 @@ export interface FileTreeNodeProps {
   level: number;
   isSelected?: boolean;
   isExpanded?: boolean;
+  loadingPaths?: Set<string>;
   onSelect?: (node: FileSystemNode) => void;
   onToggleExpand?: (path: string) => void;
   className?: string;
@@ -110,7 +117,6 @@ export interface FileSystemState {
   selectedFile?: string;
   expandedFolders: Set<string>;
   loading: boolean;
-  silentRefreshing?: boolean;
   error?: string;
   searchQuery?: string;
   options: FileSystemOptions;
@@ -182,10 +188,6 @@ export interface FlatFileNode {
   size?: number;
   extension?: string;
   lastModified?: Date;
-  gitStatus?: FileSystemNode['gitStatus'];
-  gitStatusText?: string;
-  hasChildrenGitChanges?: boolean;
-  childrenGitStatuses?: Set<'untracked' | 'modified' | 'added' | 'deleted' | 'renamed' | 'conflicted' | 'staged'>;
   isCompressed?: boolean;
   originalNode?: FileSystemNode;
 }
@@ -203,6 +205,8 @@ export interface VirtualFileTreeProps {
   renamingPath?: string | null;
   onRename?: (oldPath: string, newName: string) => void;
   onCancelRename?: () => void;
+  renderNodeContent?: (node: FileSystemNode, level: number) => React.ReactNode;
+  renderNodeActions?: (node: FileSystemNode) => React.ReactNode;
 }
 
 

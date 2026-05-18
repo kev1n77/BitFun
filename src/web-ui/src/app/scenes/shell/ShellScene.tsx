@@ -3,10 +3,14 @@ import './ShellScene.scss';
 
 const TerminalScene = lazy(() => import('../terminal/TerminalScene'));
 
-const ShellScene: React.FC = () => (
+interface ShellSceneProps {
+  isActive?: boolean;
+}
+
+const ShellScene: React.FC<ShellSceneProps> = ({ isActive = true }) => (
   <div className="bitfun-shell-scene">
     <Suspense fallback={<div className="bitfun-shell-scene__loading" />}>
-      <TerminalScene />
+      <TerminalScene isActive={isActive} />
     </Suspense>
   </div>
 );

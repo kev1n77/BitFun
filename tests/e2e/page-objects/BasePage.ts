@@ -94,6 +94,10 @@ export class BasePage {
   async takeScreenshot(name: string): Promise<void> {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const fileName = `${name}-${timestamp}.png`;
+    if (process.platform === 'linux') {
+      console.warn(`Skipping screenshot on ${process.platform}: ${fileName}`);
+      return;
+    }
     await browser.saveScreenshot(`../reports/screenshots/${fileName}`);
     console.log(`Screenshot saved: ${fileName}`);
   }

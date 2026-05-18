@@ -6,23 +6,51 @@ use crate::service::remote_ssh::types::{RemoteDirEntry, RemoteFileEntry, RemoteT
 use anyhow::anyhow;
 use std::sync::Arc;
 
+/// Names skipped when listing workspace root for system-prompt preview (still lazy: no descent).
+fn should_skip_dir_in_prompt_preview(name: &str) -> bool {
+    matches!(
+        name,
+        "node_modules"
+            | ".git"
+            | "target"
+            | ".cargo"
+            | "__pycache__"
+            | "dist"
+            | "build"
+            | ".venv"
+            | "venv"
+            | "vendor"
+            | ".next"
+            | ".cache"
+            | ".nx"
+            | ".gradle"
+    )
+}
+
 /// Remote file service using SFTP protocol
 #[derive(Clone)]
 pub struct RemoteFileService {
-    manager: Arc<tokio::sync::RwLock<Option<crate::service::remote_ssh::manager::SSHConnectionManager>>>,
+    manager:
+        Arc<tokio::sync::RwLock<Option<crate::service::remote_ssh::manager::SSHConnectionManager>>>,
 }
 
 impl RemoteFileService {
     pub fn new(
-        manager: Arc<tokio::sync::RwLock<Option<crate::service::remote_ssh::manager::SSHConnectionManager>>>,
+        manager: Arc<
+            tokio::sync::RwLock<Option<crate::service::remote_ssh::manager::SSHConnectionManager>>,
+        >,
     ) -> Self {
         Self { manager }
     }
 
     /// Get the SSH manager
-    async fn get_manager(&self, _connection_id: &str) -> anyhow::Result<crate::service::remote_ssh::manager::SSHConnectionManager> {
+    async fn get_manager(
+        &self,
+        _connection_id: &str,
+    ) -> anyhow::Result<crate::service::remote_ssh::manager::SSHConnectionManager> {
         let guard = self.manager.read().await;
-        guard.as_ref()
+        guard
+            .as_ref()
             .cloned()
             .ok_or_else(|| anyhow!("SSH manager not initialized"))
     }
@@ -34,7 +62,12 @@ impl RemoteFileService {
     }
 
     /// Write content to a remote file via SFTP
-    pub async fn write_file(&self, connection_id: &str, path: &str, content: &[u8]) -> anyhow::Result<()> {
+    pub async fn write_file(
+        &self,
+        connection_id: &str,
+        path: &str,
+        content: &[u8],
+    ) -> anyhow::Result<()> {
         let manager = self.get_manager(connection_id).await?;
         manager.sftp_write(connection_id, path, content).await
     }
@@ -62,8 +95,13 @@ impl RemoteFileService {
     }
 
     /// Read directory contents via SFTP
-    pub async fn read_dir(&self, connection_id: &str, path: &str) -> anyhow::Result<Vec<RemoteDirEntry>> {
+    pub async fn read_dir(
+        &self,
+        connection_id: &str,
+        path: &str,
+    ) -> anyhow::Result<Vec<RemoteDirEntry>> {
         let manager = self.get_manager(connection_id).await?;
+        let path_resolved = manager.resolve_sftp_path(connection_id, path).await?;
         let mut entries = manager.sftp_read_dir(connection_id, path).await?;
 
         let mut result = Vec::new();
@@ -76,10 +114,10 @@ impl RemoteFileService {
                 continue;
             }
 
-            let full_path = if path.ends_with('/') {
-                format!("{}{}", path, name)
+            let full_path = if path_resolved.ends_with('/') {
+                format!("{}{}", path_resolved, name)
             } else {
-                format!("{}/{}", path, name)
+                format!("{}/{}", path_resolved, name)
             };
 
             let metadata = entry.metadata();
@@ -112,7 +150,7 @@ impl RemoteFileService {
         Ok(result)
     }
 
-    /// Build a tree of remote directory structure
+    /// Build a tree of remote directory structure (full walk; used by file explorer).
     pub async fn build_tree(
         &self,
         connection_id: &str,
@@ -121,6 +159,52 @@ impl RemoteFileService {
     ) -> anyhow::Result<RemoteTreeNode> {
         let max_depth = max_depth.unwrap_or(3);
         Box::pin(self.build_tree_impl(connection_id, path, 0, max_depth)).await
+    }
+
+    /// System prompt only: **one** SFTP `read_dir` at `path`, no recursion into subdirectories.
+    /// Deep structure is left to list/glob tools (lazy expansion).
+    pub async fn build_shallow_tree_for_layout_preview(
+        &self,
+        connection_id: &str,
+        path: &str,
+    ) -> anyhow::Result<RemoteTreeNode> {
+        const MAX_ENTRIES: usize = 80;
+        let name = std::path::Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string());
+
+        let mut entries = self.read_dir(connection_id, path).await?;
+        entries.retain(|e| {
+            if e.is_dir {
+                !should_skip_dir_in_prompt_preview(&e.name)
+            } else {
+                true
+            }
+        });
+        entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.cmp(&b.name),
+        });
+        entries.truncate(MAX_ENTRIES);
+
+        let children: Vec<RemoteTreeNode> = entries
+            .into_iter()
+            .map(|e| RemoteTreeNode {
+                name: e.name,
+                path: e.path,
+                is_dir: e.is_dir,
+                children: None,
+            })
+            .collect();
+
+        Ok(RemoteTreeNode {
+            name,
+            path: path.to_string(),
+            is_dir: true,
+            children: Some(children),
+        })
     }
 
     async fn build_tree_impl(
@@ -136,10 +220,7 @@ impl RemoteFileService {
             .unwrap_or_else(|| path.to_string());
 
         // Check if this is a directory
-        let is_dir = match self.exists(connection_id, path).await {
-            Ok(exists) => exists,
-            Err(_) => false,
-        };
+        let is_dir: bool = self.exists(connection_id, path).await.unwrap_or_default();
 
         // Check if it's a directory by trying to read it
         let is_dir = if is_dir {
@@ -180,7 +261,9 @@ impl RemoteFileService {
                     &entry.path,
                     current_depth + 1,
                     max_depth,
-                )).await {
+                ))
+                .await
+                {
                     Ok(child) => children.push(child),
                     Err(_) => {
                         children.push(RemoteTreeNode {
@@ -230,19 +313,16 @@ impl RemoteFileService {
     /// Remove a directory and its contents recursively via SFTP
     pub async fn remove_dir_all(&self, connection_id: &str, path: &str) -> anyhow::Result<()> {
         // First, delete all contents
-        match self.read_dir(connection_id, path).await {
-            Ok(entries) => {
-                for entry in entries {
-                    let entry_path = entry.path.clone();
-                    if entry.is_dir {
-                        Box::pin(self.remove_dir_all(connection_id, &entry_path)).await?;
-                    } else {
-                        let manager = self.get_manager(connection_id).await?;
-                        manager.sftp_remove(connection_id, &entry_path).await?;
-                    }
+        if let Ok(entries) = self.read_dir(connection_id, path).await {
+            for entry in entries {
+                let entry_path = entry.path.clone();
+                if entry.is_dir {
+                    Box::pin(self.remove_dir_all(connection_id, &entry_path)).await?;
+                } else {
+                    let manager = self.get_manager(connection_id).await?;
+                    manager.sftp_remove(connection_id, &entry_path).await?;
                 }
             }
-            Err(_) => {}
         }
 
         // Then remove the directory itself
@@ -262,7 +342,11 @@ impl RemoteFileService {
     }
 
     /// Get file metadata via SFTP
-    pub async fn stat(&self, connection_id: &str, path: &str) -> anyhow::Result<Option<RemoteFileEntry>> {
+    pub async fn stat(
+        &self,
+        connection_id: &str,
+        path: &str,
+    ) -> anyhow::Result<Option<RemoteFileEntry>> {
         let manager = self.get_manager(connection_id).await?;
 
         match manager.sftp_stat(connection_id, path).await {
@@ -304,13 +388,13 @@ fn format_permissions(mode: Option<u32>) -> String {
     };
 
     let file_type = match mode & 0o170000 {
-        0o040000 => 'd',  // directory
-        0o120000 => 'l',  // symbolic link
-        0o060000 => 'b',  // block device
-        0o020000 => 'c',  // character device
-        0o010000 => 'p',  // FIFO
-        0o140000 => 's',  // socket
-        _ => '-',          // regular file
+        0o040000 => 'd', // directory
+        0o120000 => 'l', // symbolic link
+        0o060000 => 'b', // block device
+        0o020000 => 'c', // character device
+        0o010000 => 'p', // FIFO
+        0o140000 => 's', // socket
+        _ => '-',        // regular file
     };
 
     let perms = [
@@ -325,7 +409,8 @@ fn format_permissions(mode: Option<u32>) -> String {
         (mode & 0o001 != 0, 'x'),
     ];
 
-    let perm_str: String = perms.iter()
+    let perm_str: String = perms
+        .iter()
         .map(|(set, c)| if *set { *c } else { '-' })
         .collect();
 

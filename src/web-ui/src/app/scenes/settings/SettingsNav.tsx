@@ -20,7 +20,7 @@ import React, {
 } from 'react';
 import type { i18n as I18nApi } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { Search } from '@/component-library';
+import { Search, Badge } from '@/component-library';
 import { useSettingsStore } from './settingsStore';
 import { SETTINGS_CATEGORIES } from './settingsConfig';
 import type { ConfigTab } from './settingsConfig';
@@ -90,7 +90,7 @@ function useSettingsSearch(
 ): SettingsSearchRow[] {
   const index = useMemo(
     () => buildSettingsSearchIndex(t, i18n),
-    [t, i18n, i18n.language]
+    [t, i18n]
   );
 
   return useMemo(() => {
@@ -376,7 +376,14 @@ const SettingsNav: React.FC = () => {
                       .join(' ')}
                     onClick={() => handleTabClick(tabDef.id)}
                   >
-                    {t(tabDef.labelKey, { defaultValue: tabDef.id })}
+                    <span className="bitfun-settings-nav__item-label">
+                      {t(tabDef.labelKey, { defaultValue: tabDef.id })}
+                    </span>
+                    {tabDef.beta ? (
+                      <Badge variant="warning" className="bitfun-settings-nav__item-beta">
+                        {t('configCenter.beta')}
+                      </Badge>
+                    ) : null}
                   </button>
                 ))}
               </div>

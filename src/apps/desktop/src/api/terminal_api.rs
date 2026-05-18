@@ -7,7 +7,9 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
 
+use bitfun_core::service::remote_ssh::workspace_state::get_remote_workspace_manager;
 use bitfun_core::service::runtime::RuntimeManager;
+use bitfun_core::service::terminal::TerminalEvent;
 use bitfun_core::service::terminal::{
     AcknowledgeRequest as CoreAcknowledgeRequest, CloseSessionRequest as CoreCloseSessionRequest,
     CommandCompletionReason as CoreCommandCompletionReason,
@@ -16,12 +18,10 @@ use bitfun_core::service::terminal::{
     ExecuteCommandResponse as CoreExecuteCommandResponse,
     GetHistoryRequest as CoreGetHistoryRequest, GetHistoryResponse as CoreGetHistoryResponse,
     ResizeRequest as CoreResizeRequest, SendCommandRequest as CoreSendCommandRequest,
-    SessionResponse as CoreSessionResponse, ShellInfo as CoreShellInfo, ShellType,
-    SignalRequest as CoreSignalRequest, TerminalApi, TerminalConfig,
-    WriteRequest as CoreWriteRequest,
+    SessionResponse as CoreSessionResponse, SessionSource as CoreSessionSource,
+    ShellInfo as CoreShellInfo, ShellType, SignalRequest as CoreSignalRequest, TerminalApi,
+    TerminalConfig, WriteRequest as CoreWriteRequest,
 };
-use bitfun_core::service::terminal::TerminalEvent;
-use bitfun_core::service::remote_ssh::workspace_state::get_remote_workspace_manager;
 
 pub struct TerminalState {
     api: Arc<Mutex<Option<TerminalApi>>>,
@@ -66,8 +66,7 @@ impl TerminalState {
             *initialized = true;
         }
 
-        Ok(TerminalApi::from_singleton()
-            .map_err(|e| format!("Terminal API not initialized: {}", e))?)
+        TerminalApi::from_singleton().map_err(|e| format!("Terminal API not initialized: {}", e))
     }
 
     /// Get the scripts directory path for shell integration
@@ -97,6 +96,7 @@ pub struct CreateSessionRequest {
     pub env: Option<std::collections::HashMap<String, String>>,
     pub cols: Option<u16>,
     pub rows: Option<u16>,
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +114,7 @@ pub struct SessionResponse {
     /// None/null for local terminals.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connection_id: Option<String>,
+    pub source: String,
 }
 
 impl From<CoreSessionResponse> for SessionResponse {
@@ -128,6 +129,7 @@ impl From<CoreSessionResponse> for SessionResponse {
             cols: resp.cols,
             rows: resp.rows,
             connection_id: None,
+            source: format_session_source(&resp.source),
         }
     }
 }
@@ -276,6 +278,21 @@ fn parse_shell_type(s: &str) -> Option<ShellType> {
     }
 }
 
+fn parse_session_source(source: &str) -> Option<CoreSessionSource> {
+    match source.to_lowercase().as_str() {
+        "manual" => Some(CoreSessionSource::Manual),
+        "agent" => Some(CoreSessionSource::Agent),
+        _ => None,
+    }
+}
+
+fn format_session_source(source: &CoreSessionSource) -> String {
+    match source {
+        CoreSessionSource::Manual => "manual".to_string(),
+        CoreSessionSource::Agent => "agent".to_string(),
+    }
+}
+
 #[tauri::command]
 pub async fn terminal_get_shells(
     state: State<'_, TerminalState>,
@@ -291,7 +308,7 @@ pub async fn terminal_get_shells(
 async fn lookup_remote_for_terminal(working_directory: Option<&str>) -> Option<(String, String)> {
     let wd = working_directory?;
     let manager = get_remote_workspace_manager()?;
-    let entry = manager.lookup_connection(wd).await?;
+    let entry = manager.lookup_connection(wd, None).await?;
     Some((entry.connection_id, wd.to_string()))
 }
 
@@ -311,7 +328,9 @@ pub async fn terminal_create(
     request: CreateSessionRequest,
     state: State<'_, TerminalState>,
 ) -> Result<SessionResponse, String> {
-    if let Some((connection_id, remote_cwd)) = lookup_remote_for_terminal(request.working_directory.as_deref()).await {
+    if let Some((connection_id, remote_cwd)) =
+        lookup_remote_for_terminal(request.working_directory.as_deref()).await
+    {
         if let Some(remote_manager) = get_remote_workspace_manager() {
             let terminal_manager = remote_manager
                 .get_terminal_manager()
@@ -326,6 +345,7 @@ pub async fn terminal_create(
                     request.cols.unwrap_or(80),
                     request.rows.unwrap_or(24),
                     Some(remote_cwd.as_str()),
+                    request.source.as_deref().and_then(parse_session_source),
                 )
                 .await
                 .map_err(|e| format!("Failed to create remote session: {}", e))?;
@@ -344,6 +364,7 @@ pub async fn terminal_create(
                 cols: session.cols,
                 rows: session.rows,
                 connection_id: Some(connection_id.clone()),
+                source: format_session_source(&session.source),
             };
 
             let app_handle = _app.clone();
@@ -374,7 +395,10 @@ pub async fn terminal_create(
                             }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            warn!("Remote terminal output lagged, skipped {} messages: session_id={}", n, sid);
+                            warn!(
+                                "Remote terminal output lagged, skipped {} messages: session_id={}",
+                                n, sid
+                            );
                             continue;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -408,6 +432,7 @@ pub async fn terminal_create(
         cols: request.cols,
         rows: request.rows,
         remote_connection_id: None,
+        source: request.source.as_deref().and_then(parse_session_source),
     };
 
     let session = api
@@ -437,6 +462,7 @@ pub async fn terminal_get(
                     cols: session.cols,
                     rows: session.rows,
                     connection_id: Some(session.connection_id),
+                    source: format_session_source(&session.source),
                 });
             }
         }
@@ -472,6 +498,7 @@ pub async fn terminal_list(
                 cols: s.cols,
                 rows: s.rows,
                 connection_id: Some(s.connection_id),
+                source: format_session_source(&s.source),
             }));
         }
     }
@@ -667,11 +694,18 @@ pub async fn terminal_execute(
 
             return Ok(ExecuteCommandResponse {
                 command: request.command,
-                command_id: format!("remote-cmd-{}", std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis()),
-                output: if stderr.is_empty() { stdout } else { format!("{}\n{}", stdout, stderr) },
+                command_id: format!(
+                    "remote-cmd-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis()
+                ),
+                output: if stderr.is_empty() {
+                    stdout
+                } else {
+                    format!("{}\n{}", stdout, stderr)
+                },
                 exit_code: Some(exit_code),
                 completion_reason: "completed".to_string(),
             });
@@ -708,7 +742,10 @@ pub async fn terminal_send_command(
                 .ok_or("Remote terminal manager not available")?;
 
             terminal_manager
-                .write(&request.session_id, format!("{}\n", request.command).as_bytes())
+                .write(
+                    &request.session_id,
+                    format!("{}\n", request.command).as_bytes(),
+                )
                 .await
                 .map_err(|e| format!("Failed to send command: {}", e))?;
 

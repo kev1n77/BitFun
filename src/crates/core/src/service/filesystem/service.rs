@@ -1,11 +1,17 @@
 use crate::infrastructure::{
-    FileInfo, FileOperationOptions, FileOperationService, FileReadResult, FileSearchResult,
-    FileTreeNode, FileTreeService, FileWriteResult,
+    FileContentSearchOptions, FileInfo, FileNameSearchOptions, FileOperationOptions,
+    FileOperationService, FileReadResult, FileSearchOutcome, FileSearchProgressSink,
+    FileSearchResult, FileTreeNode, FileTreeService, FileWriteResult,
 };
+use crate::util::elapsed_ms_u64;
 use crate::util::errors::*;
+use log::debug;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use super::types::{DirectoryScanResult, DirectoryStats, FileSearchOptions, FileSystemConfig};
+
+const SLOW_FILESYSTEM_OPERATION_LOG_MS: u64 = 500;
 
 /// Unified file system service
 pub struct FileSystemService {
@@ -26,16 +32,41 @@ impl FileSystemService {
     }
 
     /// Creates the default service.
+    #[allow(clippy::should_implement_trait)]
     pub fn default() -> Self {
         Self::new(FileSystemConfig::default())
     }
 
     /// Builds a file tree.
     pub async fn build_file_tree(&self, root_path: &str) -> BitFunResult<Vec<FileTreeNode>> {
-        self.file_tree_service
-            .build_tree(root_path)
+        self.build_file_tree_with_remote_hint(root_path, None).await
+    }
+
+    /// Same as [`Self::build_file_tree`], but disambiguates remote roots when `preferred_remote_connection_id` is set.
+    pub async fn build_file_tree_with_remote_hint(
+        &self,
+        root_path: &str,
+        preferred_remote_connection_id: Option<&str>,
+    ) -> BitFunResult<Vec<FileTreeNode>> {
+        let started_at = std::time::Instant::now();
+        let tree = self
+            .file_tree_service
+            .build_tree_with_remote_hint(root_path, preferred_remote_connection_id)
             .await
-            .map_err(|e| BitFunError::service(e))
+            .map_err(BitFunError::service)?;
+        let duration_ms = elapsed_ms_u64(started_at);
+
+        if duration_ms >= SLOW_FILESYSTEM_OPERATION_LOG_MS {
+            debug!(
+                "File tree built: root_path={}, preferred_remote_connection_id={}, duration_ms={}, root_entries={}",
+                root_path,
+                preferred_remote_connection_id.unwrap_or("local"),
+                duration_ms,
+                tree.len()
+            );
+        }
+
+        Ok(tree)
     }
 
     /// Scans a directory and returns a detailed result.
@@ -47,7 +78,18 @@ impl FileSystemService {
             .build_tree_with_stats(root_path)
             .await?;
 
-        let scan_time_ms = start_time.elapsed().as_millis() as u64;
+        let scan_time_ms = elapsed_ms_u64(start_time);
+
+        if scan_time_ms >= SLOW_FILESYSTEM_OPERATION_LOG_MS {
+            debug!(
+                "Directory scan completed: root_path={}, duration_ms={}, total_files={}, total_directories={}, total_size_bytes={}",
+                root_path,
+                scan_time_ms,
+                statistics.total_files,
+                statistics.total_directories,
+                statistics.total_size_bytes
+            );
+        }
 
         Ok(DirectoryScanResult {
             files,
@@ -58,10 +100,19 @@ impl FileSystemService {
 
     /// Gets directory contents (shallow).
     pub async fn get_directory_contents(&self, path: &str) -> BitFunResult<Vec<FileTreeNode>> {
-        self.file_tree_service
-            .get_directory_contents(path)
+        self.get_directory_contents_with_remote_hint(path, None)
             .await
-            .map_err(|e| BitFunError::service(e))
+    }
+
+    pub async fn get_directory_contents_with_remote_hint(
+        &self,
+        path: &str,
+        preferred_remote_connection_id: Option<&str>,
+    ) -> BitFunResult<Vec<FileTreeNode>> {
+        self.file_tree_service
+            .get_directory_contents_with_remote_hint(path, preferred_remote_connection_id)
+            .await
+            .map_err(BitFunError::service)
     }
 
     /// Searches files.
@@ -103,6 +154,118 @@ impl FileSystemService {
         }
 
         Ok(results)
+    }
+
+    pub async fn search_file_names(
+        &self,
+        root_path: &str,
+        pattern: &str,
+        options: FileSearchOptions,
+        cancel_flag: Option<Arc<AtomicBool>>,
+    ) -> BitFunResult<FileSearchOutcome> {
+        self.search_file_names_with_progress(root_path, pattern, options, cancel_flag, None)
+            .await
+    }
+
+    pub async fn search_file_names_with_progress(
+        &self,
+        root_path: &str,
+        pattern: &str,
+        options: FileSearchOptions,
+        cancel_flag: Option<Arc<AtomicBool>>,
+        progress_sink: Option<Arc<dyn FileSearchProgressSink>>,
+    ) -> BitFunResult<FileSearchOutcome> {
+        let mut outcome = self
+            .file_tree_service
+            .search_file_names_with_progress(
+                root_path,
+                pattern,
+                FileNameSearchOptions {
+                    case_sensitive: options.case_sensitive,
+                    use_regex: options.use_regex,
+                    whole_word: options.whole_word,
+                    max_results: options.max_results.unwrap_or(10_000),
+                    include_directories: options.include_directories,
+                    cancel_flag,
+                },
+                progress_sink,
+            )
+            .await?;
+
+        if let Some(extensions) = &options.file_extensions {
+            outcome.results.retain(|result| {
+                if result.is_directory {
+                    true
+                } else {
+                    let path = std::path::Path::new(&result.path);
+                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                        extensions.contains(&ext.to_lowercase())
+                    } else {
+                        false
+                    }
+                }
+            });
+        }
+
+        if let Some(max_results) = options.max_results {
+            outcome.results.truncate(max_results);
+        }
+
+        Ok(outcome)
+    }
+
+    pub async fn search_file_contents(
+        &self,
+        root_path: &str,
+        pattern: &str,
+        options: FileSearchOptions,
+        cancel_flag: Option<Arc<AtomicBool>>,
+    ) -> BitFunResult<FileSearchOutcome> {
+        self.search_file_contents_with_progress(root_path, pattern, options, cancel_flag, None)
+            .await
+    }
+
+    pub async fn search_file_contents_with_progress(
+        &self,
+        root_path: &str,
+        pattern: &str,
+        options: FileSearchOptions,
+        cancel_flag: Option<Arc<AtomicBool>>,
+        progress_sink: Option<Arc<dyn FileSearchProgressSink>>,
+    ) -> BitFunResult<FileSearchOutcome> {
+        let mut outcome = self
+            .file_tree_service
+            .search_file_contents_with_progress(
+                root_path,
+                pattern,
+                FileContentSearchOptions {
+                    case_sensitive: options.case_sensitive,
+                    use_regex: options.use_regex,
+                    whole_word: options.whole_word,
+                    max_results: options.max_results.unwrap_or(10_000),
+                    max_file_size_bytes: 10 * 1024 * 1024,
+                    cancel_flag,
+                },
+                progress_sink,
+            )
+            .await?;
+
+        if let Some(extensions) = &options.file_extensions {
+            outcome.results.retain(|result| {
+                let path = std::path::Path::new(&result.path);
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    extensions.contains(&ext.to_lowercase())
+                } else {
+                    false
+                }
+            });
+        }
+
+        if let Some(max_results) = options.max_results {
+            outcome.results.truncate(max_results);
+        }
+
+        Ok(outcome)
     }
 
     /// Reads a file.
@@ -270,5 +433,17 @@ impl FileSystemService {
             hidden_files_count: stats.hidden_files_count,
             symlinks_count: stats.symlinks_count,
         })
+    }
+
+    /// SHA-256 hex of on-disk content after editor-sync normalization (see `FileOperationService`).
+    pub async fn editor_sync_content_sha256_hex(&self, file_path: &str) -> BitFunResult<String> {
+        self.file_operation_service
+            .editor_sync_content_sha256_hex(file_path)
+            .await
+    }
+
+    pub fn editor_sync_sha256_hex_from_raw_bytes(&self, bytes: &[u8]) -> String {
+        self.file_operation_service
+            .editor_sync_sha256_hex_from_raw_bytes(bytes)
     }
 }

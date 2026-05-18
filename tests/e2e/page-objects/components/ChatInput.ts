@@ -6,17 +6,21 @@ import { browser, $ } from '@wdio/globals';
 
 export class ChatInput extends BasePage {
   private selectors = {
-    // Use actual frontend selectors with fallbacks
-    container: '[data-testid="chat-input-container"], .chat-input-container, .chat-input',
-    textarea: '[data-testid="chat-input-textarea"], .chat-input textarea, textarea[class*="chat"]',
-    sendBtn: '[data-testid="chat-input-send-btn"], .chat-input__send-btn, button[class*="send"]',
+    container: '[data-testid="chat-input-container"], .bitfun-chat-input, .chat-input-container, .chat-input',
+    textarea: '.rich-text-input[contenteditable="true"], [data-testid="chat-input-textarea"], .bitfun-chat-input [contenteditable="true"], .chat-input textarea, textarea[class*="chat"]',
+    sendBtn: '[data-testid="chat-input-send-btn"], button.bitfun-chat-input__send-button, button.chat-input__send-btn, button[class*="send"]',
     attachmentBtn: '[data-testid="chat-input-attachment-btn"], .chat-input__attachment-btn',
-    cancelBtn: '[data-testid="chat-input-cancel-btn"], .chat-input__cancel-btn, button[class*="cancel"]',
+    cancelBtn: '[data-testid="chat-input-cancel-btn"], .bitfun-chat-input__send-button--breathing, .chat-input__cancel-btn, button[class*="cancel"]',
   };
+
+  private getSelectAllModifier(): 'Meta' | 'Control' {
+    return process.platform === 'darwin' ? 'Meta' : 'Control';
+  }
 
   async isVisible(): Promise<boolean> {
     const containerSelectors = [
       '[data-testid="chat-input-container"]',
+      '.bitfun-chat-input',
       '.chat-input-container',
       '.chat-input',
     ];
@@ -38,6 +42,7 @@ export class ChatInput extends BasePage {
   async waitForLoad(): Promise<void> {
     const containerSelectors = [
       '[data-testid="chat-input-container"]',
+      '.bitfun-chat-input',
       '.chat-input-container',
       '.chat-input',
     ];
@@ -95,7 +100,7 @@ export class ChatInput extends BasePage {
         await browser.pause(200);
 
         // Clear existing content first
-        await browser.keys(['Control', 'a']);
+        await browser.keys([this.getSelectAllModifier(), 'a']);
         await browser.pause(100);
         await browser.keys(['Backspace']);
         await browser.pause(100);
@@ -155,13 +160,23 @@ export class ChatInput extends BasePage {
       const isContentEditable = await input.getAttribute('contenteditable');
 
       if (isContentEditable === 'true') {
-        // For contentEditable, select all and delete
         await input.click();
         await browser.pause(50);
-        await browser.keys(['Control', 'a']);
-        await browser.pause(50);
-        await browser.keys(['Backspace']);
-        await browser.pause(50);
+        await browser.execute((element: HTMLElement) => {
+          element.focus();
+          element.textContent = '';
+          const inputEvent = typeof InputEvent !== 'undefined'
+            ? new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward', data: null })
+            : new Event('input', { bubbles: true });
+          element.dispatchEvent(inputEvent);
+          element.dispatchEvent(new Event('change', { bubbles: true }));
+        }, input);
+
+        await browser.waitUntil(async () => (await this.getValue()) === '', {
+          timeout: 2000,
+          interval: 100,
+          timeoutMsg: 'Chat input was not cleared',
+        });
       } else {
         // Regular textarea
         await input.clearValue();
@@ -172,7 +187,8 @@ export class ChatInput extends BasePage {
   async clickSend(): Promise<void> {
     const selectors = [
       '[data-testid="chat-input-send-btn"]',
-      '.chat-input__send-btn',
+      'button.bitfun-chat-input__send-button',
+      'button.chat-input__send-btn',
       'button[class*="send"]',
       'button[aria-label*="send" i]',
       'button[aria-label*="发送" i]',
@@ -206,7 +222,8 @@ export class ChatInput extends BasePage {
   async isSendButtonEnabled(): Promise<boolean> {
     const selectors = [
       '[data-testid="chat-input-send-btn"]',
-      '.chat-input__send-btn',
+      'button.bitfun-chat-input__send-button',
+      'button.chat-input__send-btn',
       'button[class*="send"]',
       'button[aria-label*="send" i]',
       'button[aria-label*="发送" i]',
@@ -250,7 +267,7 @@ export class ChatInput extends BasePage {
 
   async sendMessageWithCtrlEnter(message: string): Promise<void> {
     await this.typeMessage(message);
-    await browser.keys(['Control', 'Enter']);
+    await browser.keys([this.getSelectAllModifier(), 'Enter']);
   }
 
   async clickAttachment(): Promise<void> {

@@ -4,14 +4,13 @@
  * Height matches side panel headers (40px).
  */
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp, CornerUpLeft, List, MessageSquarePlus } from 'lucide-react';
-import { Tooltip, IconButton } from '@/component-library';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { ChevronDown, ChevronUp, GitPullRequest, List, Search, X } from 'lucide-react';
+import { Tooltip, IconButton, Input } from '@/component-library';
 import { useTranslation } from 'react-i18next';
-import { globalEventBus } from '@/infrastructure/event-bus';
 import { SessionFilesBadge } from './SessionFilesBadge';
-import type { Session } from '../../types/flow-chat';
-import { FLOWCHAT_FOCUS_ITEM_EVENT, type FlowChatFocusItemRequest } from '../../events/flowchatNavigation';
+import { useWorkspaceContext } from '@/infrastructure/contexts/WorkspaceContext';
+import { createReviewPlatformTab } from '@/shared/utils/tabUtils';
 import './FlowChatHeader.scss';
 
 export interface FlowChatHeaderTurnSummary {
@@ -31,20 +30,32 @@ export interface FlowChatHeaderProps {
   visible: boolean;
   /** Session ID. */
   sessionId?: string;
-  /** BTW child-session origin metadata. */
-  btwOrigin?: Session['btwOrigin'] | null;
-  /** BTW parent session title. */
-  btwParentTitle?: string;
-  /** Creates a new BTW thread from the current session. */
-  onCreateBtwSession?: () => void;
   /** Ordered turn summaries used by header navigation. */
   turns?: FlowChatHeaderTurnSummary[];
   /** Jump to a specific turn. */
   onJumpToTurn?: (turnId: string) => void;
+  /** Jump to the currently displayed turn. */
+  onJumpToCurrentTurn?: () => void;
   /** Jump to the previous turn. */
   onJumpToPreviousTurn?: () => void;
   /** Jump to the next turn. */
   onJumpToNextTurn?: () => void;
+  /** Current search query string. */
+  searchQuery?: string;
+  /** Called when the user types in the search box. */
+  onSearchChange?: (query: string) => void;
+  /** Total number of search matches. */
+  searchMatchCount?: number;
+  /** 1-based index of the currently focused match. */
+  searchCurrentMatch?: number;
+  /** Navigate to the next match. */
+  onSearchNext?: () => void;
+  /** Navigate to the previous match. */
+  onSearchPrev?: () => void;
+  /** Called when the user closes the search bar. */
+  onSearchClose?: () => void;
+  /** Increments each time the parent requests to open the search bar. */
+  searchOpenRequest?: number;
 }
 export const FlowChatHeader: React.FC<FlowChatHeaderProps> = ({
   currentTurn,
@@ -52,37 +63,32 @@ export const FlowChatHeader: React.FC<FlowChatHeaderProps> = ({
   currentUserMessage,
   visible,
   sessionId,
-  btwOrigin,
-  btwParentTitle = '',
-  onCreateBtwSession,
   turns = [],
   onJumpToTurn,
+  onJumpToCurrentTurn,
   onJumpToPreviousTurn,
   onJumpToNextTurn,
+  searchQuery = '',
+  onSearchChange,
+  searchMatchCount = 0,
+  searchCurrentMatch = 0,
+  onSearchNext,
+  onSearchPrev,
+  onSearchClose,
+  searchOpenRequest = 0,
 }) => {
   const { t } = useTranslation('flow-chat');
+  const { currentWorkspace } = useWorkspaceContext();
   const [isTurnListOpen, setIsTurnListOpen] = useState(false);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
   const turnListRef = useRef<HTMLDivElement | null>(null);
   const activeTurnItemRef = useRef<HTMLButtonElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   // Truncate long messages.
   const truncatedMessage = currentUserMessage.length > 50
     ? currentUserMessage.slice(0, 50) + '...'
     : currentUserMessage;
-  const parentLabel = btwParentTitle || t('btw.parent', { defaultValue: 'parent session' });
-  const backTooltip = btwOrigin?.parentTurnIndex
-    ? t('flowChatHeader.btwBackTooltipWithTurn', {
-      title: parentLabel,
-      turn: btwOrigin.parentTurnIndex,
-      defaultValue: `Go back to the source session: ${parentLabel} (Turn ${btwOrigin.parentTurnIndex})`,
-    })
-    : t('flowChatHeader.btwBackTooltipWithoutTurn', {
-      title: parentLabel,
-      defaultValue: `Go back to the source session: ${parentLabel}`,
-    });
-  const createBtwTooltip = t('flowChatHeader.btwCreateTooltip', {
-    defaultValue: 'Start a quick side question',
-  });
   const turnListTooltip = t('flowChatHeader.turnList', {
     defaultValue: 'Turn list',
   });
@@ -102,6 +108,7 @@ export const FlowChatHeader: React.FC<FlowChatHeaderProps> = ({
       title: turn.title.trim() || untitledTurnLabel,
     }))
   ), [turns, untitledTurnLabel]);
+  const hasNoResults = searchQuery.trim().length > 0 && searchMatchCount === 0;
 
   useEffect(() => {
     if (!isTurnListOpen) return;
@@ -127,9 +134,30 @@ export const FlowChatHeader: React.FC<FlowChatHeaderProps> = ({
     };
   }, [isTurnListOpen]);
 
+  const prevSearchOpenRequestRef = useRef(0);
+  useEffect(() => {
+    if (searchOpenRequest > 0 && searchOpenRequest !== prevSearchOpenRequestRef.current) {
+      prevSearchOpenRequestRef.current = searchOpenRequest;
+      setIsSearchOpen(true);
+    }
+  }, [searchOpenRequest]);
+
   useEffect(() => {
     setIsTurnListOpen(false);
   }, [currentTurn]);
+
+  useEffect(() => {
+    if (!isSearchOpen) return;
+
+    const frameId = requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+
+    return () => {
+      cancelAnimationFrame(frameId);
+    };
+  }, [isSearchOpen]);
 
   useEffect(() => {
     if (!isTurnListOpen) return;
@@ -146,24 +174,43 @@ export const FlowChatHeader: React.FC<FlowChatHeaderProps> = ({
     };
   }, [currentTurn, displayTurns.length, isTurnListOpen]);
 
-  const handleBackToParent = () => {
-    const parentId = btwOrigin?.parentSessionId;
-    if (!parentId) return;
-    const requestId = btwOrigin?.requestId;
-    const itemId = requestId ? `btw_marker_${requestId}` : undefined;
-    const request: FlowChatFocusItemRequest = {
-      sessionId: parentId,
-      turnIndex: btwOrigin?.parentTurnIndex,
-      itemId,
-      source: 'btw-back',
-    };
-    globalEventBus.emit(FLOWCHAT_FOCUS_ITEM_EVENT, request, 'FlowChatHeader');
-  };
+  const handleOpenSearch = useCallback(() => {
+    setIsSearchOpen(true);
+  }, []);
+
+  const handleCloseSearch = useCallback(() => {
+    setIsSearchOpen(false);
+    onSearchClose?.();
+  }, [onSearchClose]);
+
+  const handleSearchKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'Escape') {
+        handleCloseSearch();
+        e.preventDefault();
+        return;
+      }
+
+      if (e.key === 'Enter') {
+        if (e.shiftKey) {
+          onSearchPrev?.();
+        } else {
+          onSearchNext?.();
+        }
+        e.preventDefault();
+      }
+    },
+    [handleCloseSearch, onSearchNext, onSearchPrev],
+  );
 
   const handleToggleTurnList = () => {
     if (!hasTurnNavigation) return;
     setIsTurnListOpen(prev => !prev);
   };
+
+  const handleOpenPullRequests = useCallback(() => {
+    createReviewPlatformTab(currentWorkspace?.rootPath);
+  }, [currentWorkspace?.rootPath]);
 
   const handleTurnSelect = (turnId: string) => {
     if (!onJumpToTurn) return;
@@ -182,7 +229,22 @@ export const FlowChatHeader: React.FC<FlowChatHeaderProps> = ({
       </div>
 
       <Tooltip content={currentUserMessage} placement="bottom">
-        <div className="flowchat-header__message">
+        <div
+          className="flowchat-header__message"
+          role="button"
+          tabIndex={0}
+          onClick={onJumpToCurrentTurn}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onJumpToCurrentTurn?.();
+            }
+          }}
+          aria-label={t('flowChatHeader.jumpToCurrentTurn', {
+            turn: currentTurn,
+            defaultValue: `Jump to Turn ${currentTurn}`,
+          })}
+        >
           <span className="flowchat-header__turn-badge" aria-label={turnBadgeLabel}>
             <span>{turnBadgeLabel}</span>
           </span>
@@ -193,6 +255,94 @@ export const FlowChatHeader: React.FC<FlowChatHeaderProps> = ({
       </Tooltip>
 
       <div className="flowchat-header__actions">
+        <IconButton
+          className="flowchat-header__review-platform-btn"
+          variant="ghost"
+          size="xs"
+          onClick={handleOpenPullRequests}
+          tooltip={t('flowChatHeader.pullRequests', { defaultValue: 'Pull requests' })}
+          aria-label={t('flowChatHeader.pullRequests', { defaultValue: 'Pull requests' })}
+          data-testid="flowchat-header-pull-requests"
+        >
+          <GitPullRequest size={14} />
+        </IconButton>
+        {isSearchOpen ? (
+          <div className="flowchat-header__search" role="search" data-testid="flowchat-header-search-bar">
+            <Input
+              ref={searchInputRef}
+              className="flowchat-header__search-field"
+              variant="filled"
+              inputSize="small"
+              prefix={<Search size={12} className="flowchat-header__search-prefix-icon" aria-hidden="true" />}
+              suffix={
+                <span className="flowchat-header__search-inline-controls">
+                  <span className="flowchat-header__search-count" aria-live="polite">
+                    {searchQuery.trim()
+                      ? hasNoResults
+                        ? t('flowChatHeader.searchNoResults', { defaultValue: 'No results' })
+                        : t('flowChatHeader.searchResult', {
+                          current: searchCurrentMatch,
+                          total: searchMatchCount,
+                          defaultValue: `${searchCurrentMatch} / ${searchMatchCount}`,
+                        })
+                      : null}
+                  </span>
+                  <span className="flowchat-header__search-nav">
+                    <button
+                      className="flowchat-header__search-nav-btn"
+                      onClick={onSearchPrev}
+                      disabled={searchMatchCount === 0}
+                      title={t('flowChatHeader.searchPrevious', { defaultValue: 'Previous match' })}
+                      aria-label={t('flowChatHeader.searchPrevious', { defaultValue: 'Previous match' })}
+                      type="button"
+                    >
+                      <ChevronUp size={10} />
+                    </button>
+                    <button
+                      className="flowchat-header__search-nav-btn"
+                      onClick={onSearchNext}
+                      disabled={searchMatchCount === 0}
+                      title={t('flowChatHeader.searchNext', { defaultValue: 'Next match' })}
+                      aria-label={t('flowChatHeader.searchNext', { defaultValue: 'Next match' })}
+                      type="button"
+                    >
+                      <ChevronDown size={10} />
+                    </button>
+                  </span>
+                </span>
+              }
+              type="text"
+              value={searchQuery}
+              onChange={e => onSearchChange?.(e.target.value)}
+              onKeyDown={handleSearchKeyDown}
+              placeholder={t('flowChatHeader.searchPlaceholder', { defaultValue: 'Search messages' })}
+              aria-label={t('flowChatHeader.searchPlaceholder', { defaultValue: 'Search messages' })}
+              error={hasNoResults}
+            />
+            <IconButton
+              className="flowchat-header__search-close"
+              variant="ghost"
+              size="xs"
+              onClick={handleCloseSearch}
+              tooltip={t('flowChatHeader.searchClose', { defaultValue: 'Close search' })}
+              aria-label={t('flowChatHeader.searchClose', { defaultValue: 'Close search' })}
+            >
+              <X size={14} />
+            </IconButton>
+          </div>
+        ) : (
+          <IconButton
+            className="flowchat-header__search-btn"
+            variant="ghost"
+            size="xs"
+            onClick={handleOpenSearch}
+            tooltip={t('flowChatHeader.searchOpen', { defaultValue: 'Search messages' })}
+            aria-label={t('flowChatHeader.searchOpen', { defaultValue: 'Search messages' })}
+            data-testid="flowchat-header-search"
+          >
+            <Search size={14} />
+          </IconButton>
+        )}
         <div className="flowchat-header__turn-nav" ref={turnListRef}>
           <IconButton
             className={`flowchat-header__turn-nav-button${isTurnListOpen ? ' flowchat-header__turn-nav-button--active' : ''}`}
@@ -261,33 +411,6 @@ export const FlowChatHeader: React.FC<FlowChatHeaderProps> = ({
             </div>
           )}
         </div>
-        {!!btwOrigin?.parentSessionId && (
-          <IconButton
-            className="flowchat-header__btw-back"
-            variant="ghost"
-            size="xs"
-            onClick={handleBackToParent}
-            tooltip={backTooltip}
-            disabled={!btwOrigin.parentSessionId}
-            aria-label={t('btw.back', { defaultValue: 'Back' })}
-            data-testid="flowchat-header-btw-back"
-          >
-            <CornerUpLeft size={12} />
-          </IconButton>
-        )}
-        {onCreateBtwSession && (
-          <IconButton
-            className="flowchat-header__btw-create"
-            variant="ghost"
-            size="xs"
-            onClick={onCreateBtwSession}
-            tooltip={createBtwTooltip}
-            aria-label={createBtwTooltip}
-            data-testid="flowchat-header-btw-create"
-          >
-            <MessageSquarePlus size={14} />
-          </IconButton>
-        )}
       </div>
     </div>
   );

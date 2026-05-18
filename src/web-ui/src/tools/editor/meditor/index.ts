@@ -8,11 +8,9 @@ export type { TiptapEditorHandle } from './components/TiptapEditor'
 
 // Hooks
 export { useEditor } from './hooks/useEditor'
-export { useMarkdown } from './hooks/useMarkdown'
 export { useEditorHistory } from './hooks/useEditorHistory'
 export type { UseEditorHistoryOptions, UseEditorHistoryReturn } from './hooks/useEditorHistory'
 
-export { MarkdownParser } from './utils/markdown'
 export * from './utils/keyboardShortcuts'
 export * from './utils/tiptapMarkdown'
 
@@ -24,6 +22,5 @@ export type {
   ToolbarButton,
   ToolbarConfig,
   Plugin,
-  UploadConfig,
-  RenderOptions
+  UploadConfig
 } from './types'

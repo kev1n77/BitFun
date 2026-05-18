@@ -11,6 +11,38 @@ Instead of relying on the generic NSIS wizard UI from Tauri's built-in bundler, 
 - **Full control** — Custom installation logic, right-click context menu, PATH integration
 - **Cross-platform potential** — Same codebase can target Windows, macOS, and Linux
 
+## Common tasks
+
+### Install dependencies
+
+```bash
+pnpm install
+```
+
+Production installer builds call workspace desktop build scripts, so root dependencies are required.
+
+### Run in dev mode
+
+```bash
+pnpm run tauri:dev
+```
+
+### Build the full installer
+
+```bash
+pnpm run installer:build
+```
+
+Use this as the release entrypoint. `pnpm run tauri:build` does not prepare validated payload assets for production.
+
+### Build installer only
+
+```bash
+pnpm run installer:build:only
+```
+
+`installer:build:only` requires an existing valid desktop executable in the expected target output path.
+
 ## Architecture
 
 ```
@@ -51,14 +83,14 @@ BitFun-Installer/
 │   ├── App.tsx
 │   └── main.tsx
 ├── scripts/
-│   └── build-installer.cjs   # End-to-end build script
+│   └── build-installer.cjs    # End-to-end build script
 ├── index.html
 ├── package.json
 ├── vite.config.ts
 └── tsconfig.json
 ```
 
-## Installation Flow
+## Installation flow
 
 ```
 Language Select → Options → Progress → Model Setup → Theme Setup
@@ -78,17 +110,8 @@ Language Select → Options → Progress → Model Setup → Theme Setup
 ### Setup
 
 ```bash
-cd ..
 pnpm install
 ```
-
-Or from repository root:
-
-```bash
-pnpm install
-```
-
-Production installer builds call workspace desktop build scripts, so root dependencies are required.
 
 ### Repository Hygiene
 
@@ -112,8 +135,7 @@ pnpm run tauri:dev
 Key behavior:
 
 - Install phase creates `uninstall.exe` in the install directory.
-- Windows uninstall registry entry points to:
-  `"<installPath>\\uninstall.exe" --uninstall "<installPath>"`.
+- Windows uninstall registry entry points to `"<installPath>\\uninstall.exe" --uninstall "<installPath>"`.
 - Launching with `--uninstall` opens the dedicated uninstall UI flow.
 - Launching `uninstall.exe` directly also enters uninstall mode automatically.
 
@@ -125,37 +147,36 @@ npx tauri dev -- -- --uninstall "D:\\tmp\\bitfun-uninstall-test"
 
 Core implementation:
 
-- Launch arg parsing + uninstall execution: `src-tauri/src/installer/commands.rs`
-- Uninstall registry command: `src-tauri/src/installer/registry.rs`
-- Uninstall UI page: `src/pages/Uninstall.tsx`
-- Frontend mode switching/state: `src/hooks/useInstaller.ts`
+- Launch arg parsing + uninstall execution: [commands.rs](src-tauri/src/installer/commands.rs)
+- Uninstall registry command: [registry.rs](src-tauri/src/installer/registry.rs)
+- Uninstall UI page: [Uninstall.tsx](src/pages/Uninstall.tsx)
+- Frontend mode switching and state: [useInstaller.ts](src/hooks/useInstaller.ts)
 
-### Build
+## Build
 
-Build the complete installer in release mode (default, optimized):
+### Full release build
 
 ```bash
 pnpm run installer:build
 ```
 
-Use this as the release entrypoint. `pnpm run tauri:build` does not prepare validated payload assets for production.
 Release artifacts embed payload files into the installer binary, so runtime installation does not depend on an external `payload` folder.
 
-Build the complete installer in fast mode (faster compile, less optimization):
+### Full fast build
 
 ```bash
 pnpm run installer:build:fast
 ```
 
-Build installer only (skip main app build):
+### Installer-only build
 
 ```bash
 pnpm run installer:build:only
 ```
 
-`installer:build:only` now requires an existing valid desktop executable in target output paths. If payload validation fails, build exits with an error.
+If payload validation fails, the build exits with an error.
 
-Build installer only with fast mode:
+### Installer-only fast build
 
 ```bash
 pnpm run installer:build:only:fast
@@ -163,37 +184,37 @@ pnpm run installer:build:only:fast
 
 ### Output
 
-The built executable will be at:
+Default release output:
 
-```
+```text
 src-tauri/target/release/bitfun-installer.exe
 ```
 
-Fast mode output path:
+Fast build output:
 
-```
+```text
 src-tauri/target/release-fast/bitfun-installer.exe
 ```
 
-## Customization Guide
+## Customization guide
 
 ### Changing the UI Theme
 
-Edit `src/styles/variables.css` — all colors, spacing, and animations are controlled by CSS custom properties.
+Edit [variables.css](src/styles/variables.css). Colors, spacing, and animations are controlled by CSS custom properties.
 
 ### Adding Install Steps
 
-1. Add a new step key to `InstallStep` type in `src/types/installer.ts`
-2. Create a new page component in `src/pages/`
-3. Add the step to the `STEPS` array in `src/hooks/useInstaller.ts`
-4. Add the page render case in `src/App.tsx`
+1. Add a new step key to `InstallStep` in [installer.ts](src/types/installer.ts)
+2. Create a new page component in [src/pages](src/pages)
+3. Add the step to the `STEPS` array in [useInstaller.ts](src/hooks/useInstaller.ts)
+4. Add the page render case in [App.tsx](src/App.tsx)
 
 ### Modifying Install Logic
 
-- **File extraction** → `src-tauri/src/installer/extract.rs`
-- **Registry operations** → `src-tauri/src/installer/registry.rs`
-- **Shortcuts** → `src-tauri/src/installer/shortcut.rs`
-- **Tauri commands** → `src-tauri/src/installer/commands.rs`
+- **File extraction** → [extract.rs](src-tauri/src/installer/extract.rs)
+- **Registry operations** → [registry.rs](src-tauri/src/installer/registry.rs)
+- **Shortcuts** → [shortcut.rs](src-tauri/src/installer/shortcut.rs)
+- **Tauri commands** → [commands.rs](src-tauri/src/installer/commands.rs)
 
 ### Adding Installer Payload
 

@@ -1,18 +1,26 @@
-use super::util::resolve_path_with_workspace;
 use crate::agentic::tools::framework::{
     Tool, ToolRenderOptions, ToolResult, ToolUseContext, ValidationResult,
 };
-use crate::service::ai_rules::get_global_ai_rules_service;
+use crate::agentic::tools::workspace_paths::is_bitfun_runtime_uri;
 use crate::util::errors::{BitFunError, BitFunResult};
+use crate::util::timing::elapsed_ms_u64;
 use async_trait::async_trait;
-use log::debug;
+use log::{debug, warn};
 use serde_json::{json, Value};
 use std::path::Path;
+use std::time::Instant;
 use tool_runtime::fs::read_file::read_file;
 
 pub struct FileReadTool {
     default_max_lines_to_read: usize,
     max_line_chars: usize,
+    max_total_chars: usize,
+}
+
+impl Default for FileReadTool {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FileReadTool {
@@ -20,57 +28,171 @@ impl FileReadTool {
         Self {
             default_max_lines_to_read: 2000,
             max_line_chars: 2000,
+            max_total_chars: 50_000,
         }
     }
 
-    pub fn with_config(default_max_lines_to_read: usize, max_line_chars: usize) -> Self {
+    pub fn with_config(
+        default_max_lines_to_read: usize,
+        max_line_chars: usize,
+        max_total_chars: usize,
+    ) -> Self {
         Self {
             default_max_lines_to_read,
             max_line_chars,
+            max_total_chars,
         }
     }
 
-    fn format_lines(&self, content: &str, start_line: usize, limit: usize) -> tool_runtime::fs::read_file::ReadFileResult {
-        let lines: Vec<&str> = content.lines().collect();
-        let total_lines = lines.len();
+    async fn read_remote_window(
+        &self,
+        resolved_path: &str,
+        start_line: usize,
+        limit: usize,
+        context: &ToolUseContext,
+    ) -> BitFunResult<tool_runtime::fs::read_file::ReadFileResult> {
+        const TOTAL_LINES_MARKER: &str = "__BITFUN_TOTAL_LINES__=";
+        const HIT_TOTAL_CHAR_LIMIT_MARKER: &str = "__BITFUN_HIT_TOTAL_CHAR_LIMIT__=";
+
+        let end_line = start_line
+            .checked_add(limit.saturating_sub(1))
+            .ok_or_else(|| BitFunError::tool("Requested line range is too large".to_string()))?;
+
+        let ws_shell = context.ws_shell().ok_or_else(|| {
+            BitFunError::tool("Remote workspace shell is unavailable".to_string())
+        })?;
+
+        let escaped_path = shell_escape(resolved_path);
+        let command = format!(
+            "if [ ! -f {path} ]; then exit 3; fi; awk -v start={start} -v end={end} -v max={max} -v budget={budget} 'BEGIN {{ total = 0; used = 0; hit = 0; }} {{ total = NR; if (!hit && NR >= start && NR <= end) {{ line = $0; if (length(line) > max) {{ line = substr(line, 1, max) \" [truncated]\"; }} rendered = sprintf(\"%6d\\t%s\", NR, line); extra = (used > 0 ? 1 : 0); next_used = used + extra + length(rendered); if (next_used > budget) {{ hit = 1; next; }} print rendered; used = next_used; }} }} END {{ printf(\"{marker}%d\\n\", total) > \"/dev/stderr\"; printf(\"{hit_marker}%d\\n\", hit) > \"/dev/stderr\"; }}' {path}",
+            path = escaped_path,
+            start = start_line,
+            end = end_line,
+            max = self.max_line_chars,
+            budget = self.max_total_chars,
+            marker = TOTAL_LINES_MARKER,
+            hit_marker = HIT_TOTAL_CHAR_LIMIT_MARKER,
+        );
+
+        let remote_read_started_at = Instant::now();
+        debug!(
+            "Remote file read started: path={}, start_line={}, limit={}, timeout_ms={:?}, session_id={:?}, dialog_turn_id={:?}",
+            resolved_path,
+            start_line,
+            limit,
+            Option::<u64>::None,
+            context.session_id,
+            context.dialog_turn_id
+        );
+        let (stdout, stderr, status) = ws_shell
+            .exec(&command, None)
+            .await
+            .map_err(|e| {
+                warn!(
+                    "Remote file read failed: path={}, start_line={}, limit={}, duration_ms={}, error={}",
+                    resolved_path,
+                    start_line,
+                    limit,
+                    elapsed_ms_u64(remote_read_started_at),
+                    e
+                );
+                BitFunError::tool(format!("Failed to read file: {}", e))
+            })?;
+        debug!(
+            "Remote file read command completed: path={}, start_line={}, limit={}, status={}, stdout_len={}, stderr_len={}, duration_ms={}",
+            resolved_path,
+            start_line,
+            limit,
+            status,
+            stdout.len(),
+            stderr.len(),
+            elapsed_ms_u64(remote_read_started_at)
+        );
+
+        let mut total_lines = None;
+        let mut hit_total_char_limit = false;
+        let mut stderr_messages = Vec::new();
+        for line in stderr.lines() {
+            if let Some(rest) = line.strip_prefix(TOTAL_LINES_MARKER) {
+                total_lines = rest.trim().parse::<usize>().ok();
+            } else if let Some(rest) = line.strip_prefix(HIT_TOTAL_CHAR_LIMIT_MARKER) {
+                hit_total_char_limit = rest.trim() == "1";
+            } else if !line.trim().is_empty() {
+                stderr_messages.push(line.to_string());
+            }
+        }
+
+        if status != 0 {
+            let message = if status == 3 {
+                format!("File not found or not a regular file: {}", resolved_path)
+            } else if !stderr_messages.is_empty() {
+                stderr_messages.join("\n")
+            } else {
+                format!(
+                    "Failed to read file: remote command exited with status {}",
+                    status
+                )
+            };
+            return Err(BitFunError::tool(message));
+        }
+
+        let total_lines = total_lines.ok_or_else(|| {
+            BitFunError::tool(
+                "Failed to read file: remote command did not return line-count markers".to_string(),
+            )
+        })?;
 
         if total_lines == 0 {
-            return tool_runtime::fs::read_file::ReadFileResult {
+            return Ok(tool_runtime::fs::read_file::ReadFileResult {
                 start_line: 0,
                 end_line: 0,
                 total_lines: 0,
                 content: String::new(),
-            };
+                hit_total_char_limit,
+            });
         }
 
-        let start_index = (start_line - 1).min(total_lines - 1);
-        let end_index = (start_index + limit).min(total_lines);
-        let selected_lines = &lines[start_index..end_index];
+        if start_line > total_lines {
+            return Err(BitFunError::tool(format!(
+                "`start_line` {} is larger than the number of lines in the file: {}",
+                start_line, total_lines
+            )));
+        }
 
-        let truncated_lines: Vec<String> = selected_lines
-            .iter()
-            .enumerate()
-            .map(|(idx, line)| {
-                let line_number = start_index + idx + 1;
-                let line_content = if line.chars().count() > self.max_line_chars {
-                    format!(
-                        "{} [truncated]",
-                        tool_runtime::util::string::truncate_string_by_chars(line, self.max_line_chars)
-                    )
-                } else {
-                    line.to_string()
-                };
-                format!("{:>6}\t{}", line_number, line_content)
-            })
-            .collect();
+        let content = stdout.trim_end_matches('\n').to_string();
+        let lines_read = if content.is_empty() {
+            0
+        } else {
+            content.lines().count()
+        };
+        let end_line = if lines_read == 0 {
+            start_line
+        } else {
+            (start_line + lines_read).saturating_sub(1)
+        };
 
-        tool_runtime::fs::read_file::ReadFileResult {
-            start_line: start_index + 1,
-            end_line: end_index,
+        debug!(
+            "Remote file read parsed successfully: path={}, start_line={}, end_line={}, total_lines={}, hit_total_char_limit={}, duration_ms={}",
+            resolved_path,
+            start_line,
+            end_line,
             total_lines,
-            content: truncated_lines.join("\n"),
-        }
+            hit_total_char_limit,
+            elapsed_ms_u64(remote_read_started_at)
+        );
+
+        Ok(tool_runtime::fs::read_file::ReadFileResult {
+            start_line,
+            end_line,
+            total_lines,
+            content,
+            hit_total_char_limit,
+        })
     }
+}
+
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 #[async_trait]
@@ -81,20 +203,26 @@ impl Tool for FileReadTool {
 
     async fn description(&self) -> BitFunResult<String> {
         Ok(format!(
-            r#"Reads a file from the local filesystem. You can access any file directly by using this tool.
-Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
+            r#"Reads a file from the current workspace filesystem. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
 Usage:
-- The file_path parameter must be an absolute path, not a relative path.
-- By default, it reads up to {} lines starting from the beginning of the file. 
-- You can optionally specify a start_line and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters.
+- The file_path parameter must be workspace-relative, an absolute path inside the current workspace, or an exact `bitfun://runtime/...` URI returned by another tool.
+- Do not read host roots or placeholder paths such as `/workspace`.
+- By default, it reads up to {} lines starting from the beginning of the file.
+- You can optionally specify a start_line and limit. For large files, prefer reading targeted ranges instead of starting over from the beginning every time.
 - Any lines longer than {} characters will be truncated.
-- Results are returned using cat -n format, with line numbers starting at 1
+- Total output is capped at {} characters. If that limit is hit, narrow the range with start_line and limit.
+- Results are returned using cat -n format, with line numbers starting at 1.
 - This tool can only read files, not directories. To read a directory, use an ls command via the Bash tool.
 - You can call multiple tools in a single response. It is always better to speculatively read multiple potentially useful files in parallel.
+- Avoid tiny repeated slices (e.g. 30-100 line chunks). If you need more context, read a larger window.
 "#,
-            self.default_max_lines_to_read, self.max_line_chars
+            self.default_max_lines_to_read, self.max_line_chars, self.max_total_chars
         ))
+    }
+
+    fn short_description(&self) -> String {
+        "Read file contents from the current workspace.".to_string()
     }
 
     fn input_schema(&self) -> Value {
@@ -103,7 +231,7 @@ Usage:
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "The absolute path to the file to read"
+                    "description": "The file to read. Use a workspace-relative path, an absolute path inside the current workspace, or an exact bitfun://runtime URI returned by another tool."
                 },
                 "start_line": {
                     "type": "number",
@@ -156,12 +284,9 @@ Usage:
             }
         };
 
-        let resolved_path = match resolve_path_with_workspace(
-            file_path,
-            context.and_then(|ctx| ctx.workspace_root()),
-        ) {
-            Ok(path) => path,
-            Err(err) => {
+        let resolved = match context.map(|ctx| ctx.resolve_tool_path(file_path)) {
+            Some(Ok(path)) => path,
+            Some(Err(err)) => {
                 return ValidationResult {
                     result: false,
                     message: Some(err.to_string()),
@@ -169,17 +294,56 @@ Usage:
                     meta: None,
                 }
             }
+            None => {
+                if is_bitfun_runtime_uri(file_path) {
+                    return ValidationResult {
+                        result: false,
+                        message: Some(
+                            "Tool context is required to resolve bitfun runtime URIs".to_string(),
+                        ),
+                        error_code: Some(400),
+                        meta: None,
+                    };
+                }
+
+                let path = Path::new(file_path);
+                if !path.is_absolute() {
+                    return ValidationResult {
+                        result: false,
+                        message: Some("file_path must be absolute".to_string()),
+                        error_code: Some(400),
+                        meta: None,
+                    };
+                }
+
+                if !path.exists() {
+                    return ValidationResult {
+                        result: false,
+                        message: Some(format!("File does not exist: {}", file_path)),
+                        error_code: Some(404),
+                        meta: None,
+                    };
+                }
+
+                if !path.is_file() {
+                    return ValidationResult {
+                        result: false,
+                        message: Some(format!("Path is not a file: {}", file_path)),
+                        error_code: Some(400),
+                        meta: None,
+                    };
+                }
+
+                return ValidationResult::default();
+            }
         };
 
-        // For remote workspaces, skip local filesystem checks — the actual
-        // read goes through WorkspaceFileSystem in call_impl.
-        let is_remote = context.map(|c| c.is_remote()).unwrap_or(false);
-        if !is_remote {
-            let path = Path::new(&resolved_path);
+        if !resolved.uses_remote_workspace_backend() {
+            let path = Path::new(&resolved.resolved_path);
             if !path.exists() {
                 return ValidationResult {
                     result: false,
-                    message: Some(format!("File does not exist: {}", resolved_path)),
+                    message: Some(format!("File does not exist: {}", resolved.logical_path)),
                     error_code: Some(404),
                     meta: None,
                 };
@@ -187,7 +351,7 @@ Usage:
             if !path.is_file() {
                 return ValidationResult {
                     result: false,
-                    message: Some(format!("Path is not a file: {}", resolved_path)),
+                    message: Some(format!("Path is not a file: {}", resolved.logical_path)),
                     error_code: Some(400),
                     meta: None,
                 };
@@ -229,62 +393,64 @@ Usage:
             .and_then(|v| v.as_u64())
             .unwrap_or(self.default_max_lines_to_read as u64) as usize;
 
-        let resolved_path = resolve_path_with_workspace(file_path, context.workspace_root())?;
+        let resolved = context.resolve_tool_path(file_path)?;
 
-        // Use the workspace file system from context — works for both local and remote.
-        let read_file_result = if let Some(ws_fs) = context.ws_fs() {
-            let content = ws_fs
-                .read_file_text(&resolved_path)
-                .await
-                .map_err(|e| BitFunError::tool(format!("Failed to read file: {}", e)))?;
-            self.format_lines(&content, start_line, limit)
+        let read_file_result = if resolved.uses_remote_workspace_backend() {
+            self.read_remote_window(&resolved.resolved_path, start_line, limit, context)
+                .await?
         } else {
-            read_file(&resolved_path, start_line, limit, self.max_line_chars)
-                .map_err(|e| BitFunError::tool(e))?
-        };
-
-        let file_rules = match get_global_ai_rules_service().await {
-            Ok(rules_service) => {
-                rules_service
-                    .get_rules_for_file_with_workspace(&resolved_path, context.workspace_root())
-                    .await
-            }
-            Err(e) => {
-                debug!("Failed to get AIRulesService: {}", e);
-                crate::service::ai_rules::FileRulesResult {
-                    matched_count: 0,
-                    formatted_content: None,
-                }
-            }
+            read_file(
+                &resolved.resolved_path,
+                start_line,
+                limit,
+                self.max_line_chars,
+                self.max_total_chars,
+            )
+            .map_err(BitFunError::tool)?
         };
 
         let mut result_for_assistant = format!(
             "Read lines {}-{} from {} ({} total lines)\n<file_content>\n{}\n</file_content>",
             read_file_result.start_line,
             read_file_result.end_line,
-            resolved_path,
+            resolved.logical_path,
             read_file_result.total_lines,
             read_file_result.content
         );
 
-        if let Some(rules_content) = &file_rules.formatted_content {
-            result_for_assistant.push_str("\n\n");
-            result_for_assistant.push_str(rules_content);
+        let has_more = read_file_result.end_line < read_file_result.total_lines;
+        if has_more {
+            let next_start = read_file_result.end_line + 1;
+            if read_file_result.hit_total_char_limit {
+                result_for_assistant.push_str(
+                    &format!("\n\n[Output truncated after reaching the Read tool size limit. Use start_line={} and limit to continue reading.]", next_start));
+            } else {
+                result_for_assistant.push_str(
+                    &format!("\n\n[Showing lines {}-{} of {} total. Use start_line={} and limit to continue reading.]",
+                        read_file_result.start_line, read_file_result.end_line, read_file_result.total_lines, next_start));
+            }
         }
 
-        let lines_read = read_file_result.end_line - read_file_result.start_line + 1;
+        let lines_read = if read_file_result.total_lines == 0
+            || read_file_result.end_line < read_file_result.start_line
+        {
+            0
+        } else {
+            read_file_result.end_line - read_file_result.start_line + 1
+        };
 
         let result = ToolResult::Result {
             data: json!({
-                "file_path": resolved_path,
+                "file_path": resolved.logical_path,
                 "content": read_file_result.content,
                 "total_lines": read_file_result.total_lines,
                 "lines_read": lines_read,
                 "start_line": read_file_result.start_line,
                 "size": read_file_result.content.len(),
-                "matched_rules_count": file_rules.matched_count
+                "hit_total_char_limit": read_file_result.hit_total_char_limit
             }),
             result_for_assistant: Some(result_for_assistant),
+            image_attachments: None,
         };
 
         Ok(vec![result])

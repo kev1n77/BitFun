@@ -39,7 +39,7 @@
     p {
       margin: 0;
       color: var(--color-text-secondary);
-      font-size: $font-size-sm;
+      font-size: var(--font-size-sm);
     }
 
     svg {
@@ -47,7 +47,7 @@
     }
 
     .hint {
-      font-size: $font-size-xs;
+      font-size: var(--font-size-xs);
       color: var(--color-text-muted);
     }
 
@@ -82,7 +82,7 @@
 
     h3 {
       margin: 0;
-      font-size: $font-size-base;
+      font-size: var(--font-size-base);
       font-weight: $font-weight-semibold;
       color: var(--color-text-primary);
     }
@@ -179,7 +179,7 @@
   }
 
   &__name {
-    font-size: $font-size-base;
+    font-size: var(--font-size-base);
     font-weight: $font-weight-semibold;
     color: var(--color-text-primary);
     white-space: nowrap;
@@ -188,7 +188,7 @@
   }
 
   &__version {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-family: $font-family-mono;
     color: var(--color-text-muted);
     flex-shrink: 0;
@@ -207,7 +207,7 @@
     background: var(--color-accent-100);
     color: var(--color-accent-500);
     border-radius: $size-radius-sm;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-family: $font-family-mono;
     font-weight: $font-weight-medium;
     white-space: nowrap;
@@ -216,7 +216,7 @@
 
   &__badge-more {
     padding: 4px $size-gap-2;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-weight: $font-weight-medium;
     color: var(--color-text-muted);
   }
@@ -238,13 +238,13 @@
 
   &__description {
     margin: 0;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     color: var(--color-text-secondary);
     line-height: $line-height-relaxed;
   }
 
   &__label {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-weight: $font-weight-medium;
     color: var(--color-text-muted);
     text-transform: uppercase;
@@ -252,7 +252,7 @@
   }
 
   &__value {
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     color: var(--color-text-primary);
   }
 
@@ -267,7 +267,7 @@
     background: $element-bg-soft;
     border: none;
     border-radius: $size-radius-sm;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-family: $font-family-mono;
     color: var(--color-text-primary);
     transition: all $motion-fast $easing-standard;
@@ -291,7 +291,7 @@
     background: var(--color-accent-100);
     border: none;
     border-radius: $size-radius-sm;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-accent-500);
 
     svg {
@@ -351,7 +351,7 @@
       }
 
       p {
-        font-size: $font-size-sm;
+        font-size: var(--font-size-sm);
       }
     }
 
@@ -360,7 +360,7 @@
       margin-bottom: $size-gap-3;
 
       h3 {
-        font-size: $font-size-sm;
+        font-size: var(--font-size-sm);
       }
     }
 
@@ -386,11 +386,11 @@
     }
 
     &__name {
-      font-size: $font-size-sm;
+      font-size: var(--font-size-sm);
     }
 
     &__version {
-      font-size: $font-size-xs;
+      font-size: var(--font-size-xs);
     }
 
     &__badges {
@@ -403,15 +403,15 @@
     }
 
     &__description {
-      font-size: $font-size-xs;
+      font-size: var(--font-size-xs);
     }
 
     &__label {
-      font-size: $font-size-xs;
+      font-size: var(--font-size-xs);
     }
 
     &__value {
-      font-size: $font-size-xs;
+      font-size: var(--font-size-xs);
     }
 
     &__tags {
@@ -420,7 +420,7 @@
 
     &__tag {
       padding: 3px 6px;
-      font-size: $font-size-xs;
+      font-size: var(--font-size-xs);
     }
 
     &__capabilities {
@@ -429,7 +429,7 @@
 
     &__capability {
       padding: 3px 6px;
-      font-size: $font-size-xs;
+      font-size: var(--font-size-xs);
     }
 
     &__actions {

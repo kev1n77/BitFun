@@ -40,7 +40,7 @@
     display: flex;
     align-items: center;
     gap: $size-gap-3;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     flex: 1;
     min-width: 0;
   }
@@ -55,7 +55,7 @@
 
   &__dimensions,
   &__filesize {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-secondary);
     white-space: nowrap;
   }
@@ -101,7 +101,7 @@
       width: auto;
       min-width: 40px;
       padding: 0 $size-gap-1;
-      font-size: $font-size-xs;
+      font-size: var(--font-size-xs);
       font-weight: $font-weight-medium;
     }
   }

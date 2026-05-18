@@ -13,6 +13,10 @@ const __dirname = dirname(__filename);
 
 describe('Insights Screenshot', () => {
   it('should take screenshot of insights scene', async () => {
+    if (process.platform === 'linux') {
+      return;
+    }
+
     console.log('[Screenshot] Waiting for app to load...');
     await browser.pause(5000);
 

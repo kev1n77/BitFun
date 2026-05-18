@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FolderOpen, Upload } from 'lucide-react';
+import { FolderOpen } from 'lucide-react';
 import {
   Alert,
   Select,
@@ -8,22 +8,12 @@ import {
   Tooltip,
   ConfigPageLoading,
   ConfigPageMessage,
-  ConfigPageRefreshButton,
-  IconButton,
 } from '@/component-library';
 import { configAPI, workspaceAPI } from '@/infrastructure/api';
 import { systemAPI } from '@/infrastructure/api/service-api/SystemAPI';
+import type { CloseBehavior } from '@/infrastructure/api/service-api/SystemAPI';
 import { getTerminalService } from '@/tools/terminal';
 import type { ShellInfo } from '@/tools/terminal/types/session';
-import {
-  useTheme,
-  useThemeManagement,
-  ThemeMetadata,
-  ThemeConfig as ThemeConfigType,
-} from '@/infrastructure/theme';
-import { themeService } from '@/infrastructure/theme/core/ThemeService';
-import { useLanguageSelector } from '@/infrastructure/i18n';
-import type { LocaleId } from '@/infrastructure/i18n/types';
 import {
   ConfigPageContent,
   ConfigPageHeader,
@@ -37,158 +27,6 @@ import type { BackendLogLevel, RuntimeLoggingInfo, TerminalConfig as TerminalSet
 import './BasicsConfig.scss';
 
 const log = createLogger('BasicsConfig');
-
-function BasicsAppearanceSection() {
-  const { t } = useTranslation('settings/basics');
-  const { themeId, themes, setTheme, loading } = useTheme();
-  const { importTheme } = useThemeManagement();
-  const { currentLanguage, supportedLocales, selectLanguage, isChanging } = useLanguageSelector();
-  const [importing, setImporting] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const handleThemeChange = async (newThemeId: string) => {
-    await setTheme(newThemeId);
-  };
-
-  const handleImportTheme = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    setImporting(true);
-    try {
-      const text = await file.text();
-      const themeData = JSON.parse(text);
-      await importTheme(themeData);
-      alert(t('appearance.importSuccess'));
-    } catch (error) {
-      log.error('Failed to import theme', error);
-      alert(t('appearance.importFailed'));
-    } finally {
-      setImporting(false);
-      event.target.value = '';
-    }
-  };
-
-  const handleImportClick = () => {
-    fileInputRef.current?.click();
-  };
-
-  const getThemeDisplayName = (theme: ThemeMetadata) => {
-    const i18nKey = `appearance.presets.${theme.id}`;
-    return theme.builtin
-      ? t(`${i18nKey}.name`, { defaultValue: theme.name })
-      : theme.name;
-  };
-
-  const getThemeDisplayDescription = (theme: ThemeMetadata) => {
-    const i18nKey = `appearance.presets.${theme.id}`;
-    return theme.builtin
-      ? t(`${i18nKey}.description`, { defaultValue: theme.description || '' })
-      : theme.description || '';
-  };
-
-  return (
-    <div className="theme-config">
-      <div className="theme-config__content">
-        <ConfigPageSection
-          title={t('appearance.title')}
-          description={t('appearance.hint')}
-          extra={
-            <>
-              <IconButton
-                variant="ghost"
-                size="small"
-                onClick={handleImportClick}
-                disabled={importing || loading}
-                isLoading={importing}
-                title={importing ? t('appearance.importing') : t('appearance.importTheme')}
-              >
-                <Upload size={16} />
-              </IconButton>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".json"
-                onChange={handleImportTheme}
-                style={{ display: 'none' }}
-              />
-            </>
-          }
-        >
-          <ConfigPageRow
-            label={t('appearance.language')}
-            description={t('appearance.languageRowHint', {
-              defaultValue: 'Choose one language pack as the active UI language.',
-            })}
-            align="center"
-          >
-            <div className="theme-config__language-select">
-              <Select
-                value={currentLanguage}
-                onChange={(value) =>
-                  selectLanguage(String(Array.isArray(value) ? value[0] ?? '' : value) as LocaleId)
-                }
-                options={supportedLocales.map((locale) => ({
-                  value: locale.id,
-                  label: locale.nativeName,
-                }))}
-                disabled={isChanging}
-                placeholder={t('appearance.language')}
-              />
-            </div>
-          </ConfigPageRow>
-          <ConfigPageRow
-            label={t('appearance.themes')}
-            description={t('appearance.themeRowHint', {
-              defaultValue: 'Pick an installed theme or manage custom themes.',
-            })}
-            align="center"
-          >
-            <div className="theme-config__theme-picker">
-              <div className="theme-config__theme-select">
-                <Select
-                  value={themeId ?? ''}
-                  onChange={(value) => handleThemeChange(value as string)}
-                  disabled={loading}
-                  options={themes.map((theme) => ({
-                    value: theme.id,
-                    label: getThemeDisplayName(theme),
-                    description: getThemeDisplayDescription(theme),
-                  }))}
-                  renderOption={(option) => {
-                    const theme = themes.find((item) => item.id === String(option.value));
-                    const fullTheme = theme ? themeService.getTheme(theme.id) : null;
-                    const optionContent = (
-                      <div className="theme-config__theme-option">
-                        <span className="theme-config__theme-option-name">{option.label}</span>
-                        {option.description && (
-                          <span className="theme-config__theme-option-desc">{option.description}</span>
-                        )}
-                      </div>
-                    );
-
-                    if (!fullTheme) return optionContent;
-
-                    return (
-                      <Tooltip
-                        content={<ThemePreviewThumbnail theme={fullTheme} />}
-                        placement="right"
-                        delay={300}
-                        className="theme-preview-tooltip"
-                      >
-                        {optionContent}
-                      </Tooltip>
-                    );
-                  }}
-                />
-              </div>
-            </div>
-          </ConfigPageRow>
-        </ConfigPageSection>
-      </div>
-    </div>
-  );
-}
 
 function BasicsLaunchAtLoginSection() {
   const { t } = useTranslation('settings/basics');
@@ -287,9 +125,107 @@ function BasicsLaunchAtLoginSection() {
   );
 }
 
+function BasicsAutoUpdateSection() {
+  const { t } = useTranslation('settings/basics');
+  const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+  const [enabled, setEnabled] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+
+  const showMessage = useCallback((type: 'success' | 'error' | 'info', text: string) => {
+    setMessage({ type, text });
+    setTimeout(() => setMessage(null), 3000);
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri) {
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        setLoading(true);
+        const v = await configManager.getConfig<boolean>('app.auto_update');
+        if (!cancelled) {
+          setEnabled(v !== false);
+        }
+      } catch (error) {
+        log.error('Failed to load app.auto_update', error);
+        if (!cancelled) {
+          showMessage('error', t('autoUpdate.messages.loadFailed'));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isTauri, showMessage, t]);
+
+  const handleToggle = useCallback(
+    async (next: boolean) => {
+      const previous = enabled;
+      setEnabled(next);
+      setSaving(true);
+      try {
+        await configManager.setConfig('app.auto_update', next);
+        configManager.clearCache();
+        showMessage('success', t('autoUpdate.messages.saved'));
+      } catch (error) {
+        setEnabled(previous);
+        log.error('Failed to set app.auto_update', { next, error });
+        showMessage('error', t('autoUpdate.messages.saveFailed'));
+      } finally {
+        setSaving(false);
+      }
+    },
+    [enabled, showMessage, t]
+  );
+
+  if (!isTauri) {
+    return null;
+  }
+
+  if (loading) {
+    return <ConfigPageLoading text={t('autoUpdate.messages.loading')} />;
+  }
+
+  return (
+    <div className="bitfun-auto-update-config">
+      <div className="bitfun-auto-update-config__content">
+        <ConfigPageMessage message={message} />
+        <ConfigPageSection
+          title={t('autoUpdate.sections.title')}
+          description={t('autoUpdate.sections.hint')}
+        >
+          <ConfigPageRow
+            label={t('autoUpdate.toggleLabel')}
+            description={t('autoUpdate.toggleDescription')}
+            align="center"
+          >
+            <Switch
+              checked={enabled}
+              onChange={(e) => {
+                void handleToggle(e.target.checked);
+              }}
+              disabled={saving}
+            />
+          </ConfigPageRow>
+        </ConfigPageSection>
+      </div>
+    </div>
+  );
+}
+
 function BasicsLoggingSection() {
   const { t } = useTranslation('settings/basics');
   const [configLevel, setConfigLevel] = useState<BackendLogLevel>('info');
+  const [includeSensitiveDiagnostics, setIncludeSensitiveDiagnostics] = useState(true);
   const [runtimeInfo, setRuntimeInfo] = useState<RuntimeLoggingInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -317,12 +253,14 @@ function BasicsLoggingSection() {
     try {
       setLoading(true);
 
-      const [savedLevel, info] = await Promise.all([
+      const [savedLevel, savedIncludeSensitiveDiagnostics, info] = await Promise.all([
         configManager.getConfig<BackendLogLevel>('app.logging.level'),
+        configManager.getConfig<boolean>('app.logging.include_sensitive_diagnostics'),
         configAPI.getRuntimeLoggingInfo(),
       ]);
 
       setConfigLevel(savedLevel || info.effectiveLevel || 'info');
+      setIncludeSensitiveDiagnostics(savedIncludeSensitiveDiagnostics ?? true);
       setRuntimeInfo(info);
     } catch (error) {
       log.error('Failed to load logging config', error);
@@ -361,10 +299,26 @@ function BasicsLoggingSection() {
     [configLevel, showMessage, t]
   );
 
-  const handleRefresh = useCallback(async () => {
-    await loadData();
-    showMessage('info', t('logging.messages.refreshed'));
-  }, [loadData, showMessage, t]);
+  const handleSensitiveDiagnosticsChange = useCallback(
+    async (checked: boolean) => {
+      const previousValue = includeSensitiveDiagnostics;
+      setIncludeSensitiveDiagnostics(checked);
+      setSaving(true);
+
+      try {
+        await configManager.setConfig('app.logging.include_sensitive_diagnostics', checked);
+        configManager.clearCache();
+        showMessage('success', t('logging.messages.sensitiveDiagnosticsUpdated'));
+      } catch (error) {
+        setIncludeSensitiveDiagnostics(previousValue);
+        log.error('Failed to update sensitive diagnostics logging preference', { checked, error });
+        showMessage('error', t('logging.messages.saveFailed'));
+      } finally {
+        setSaving(false);
+      }
+    },
+    [includeSensitiveDiagnostics, showMessage, t]
+  );
 
   const handleOpenFolder = useCallback(async () => {
     const folder = runtimeInfo?.sessionLogDir;
@@ -396,14 +350,6 @@ function BasicsLoggingSection() {
         <ConfigPageSection
           title={t('logging.sections.logging')}
           description={t('logging.sections.loggingHint')}
-          extra={
-            <ConfigPageRefreshButton
-              tooltip={t('logging.actions.refreshTooltip')}
-              onClick={handleRefresh}
-              loading={loading}
-              disabled={loading || saving}
-            />
-          }
         >
           <ConfigPageRow
             label={t('logging.sections.level')}
@@ -418,6 +364,19 @@ function BasicsLoggingSection() {
                 disabled={saving}
               />
             </div>
+          </ConfigPageRow>
+          <ConfigPageRow
+            label={t('logging.sensitiveDiagnostics.label')}
+            description={t('logging.sensitiveDiagnostics.description')}
+            align="center"
+          >
+            <Switch
+              checked={includeSensitiveDiagnostics}
+              onChange={(e) => {
+                void handleSensitiveDiagnosticsChange(e.target.checked);
+              }}
+              disabled={saving}
+            />
           </ConfigPageRow>
           <ConfigPageRow
             label={t('logging.sections.path')}
@@ -509,11 +468,6 @@ function BasicsTerminalSection() {
     [showMessage, t]
   );
 
-  const handleRefresh = useCallback(async () => {
-    await loadData();
-    showMessage('info', t('terminal.messages.refreshed'));
-  }, [loadData, showMessage, t]);
-
   const shouldShowPowerShellCoreRecommendation = useMemo(() => {
     const isWindows = platform === 'windows';
     if (!isWindows) return false;
@@ -574,14 +528,6 @@ function BasicsTerminalSection() {
         <ConfigPageSection
           title={t('terminal.sections.terminal')}
           description={terminalSectionDescription}
-          extra={
-            <ConfigPageRefreshButton
-              tooltip={t('terminal.controls.refreshTooltip')}
-              onClick={handleRefresh}
-              loading={loading}
-              disabled={loading}
-            />
-          }
         >
           <ConfigPageRow
             label={t('terminal.sections.defaultTerminal')}
@@ -619,241 +565,181 @@ function BasicsTerminalSection() {
   );
 }
 
-interface ThemePreviewThumbnailProps {
-  theme: ThemeConfigType;
-}
+function BasicsWindowBehaviorSection() {
+  const { t } = useTranslation('settings/basics');
+  const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+  const [behavior, setBehavior] = useState<CloseBehavior>('quit');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
-function ThemePreviewThumbnail({ theme }: ThemePreviewThumbnailProps) {
-  const { colors } = theme;
+  const showMessage = useCallback((type: 'success' | 'error' | 'info', text: string) => {
+    setMessage({ type, text });
+    setTimeout(() => setMessage(null), 3000);
+  }, []);
+
+  const behaviorOptions = useMemo(
+    () => [
+      { value: 'quit', label: t('windowBehavior.options.quit') },
+      { value: 'minimize_to_tray', label: t('windowBehavior.options.minimizeToTray') },
+      { value: 'ask', label: t('windowBehavior.options.ask') },
+    ],
+    [t]
+  );
+
+  useEffect(() => {
+    if (!isTauri) {
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        setLoading(true);
+        const v = await configManager.getConfig<CloseBehavior>('app.close_button_behavior');
+        if (!cancelled) setBehavior(v ?? 'quit');
+      } catch {
+        // Key absent on first launch — fall back to default silently.
+        if (!cancelled) setBehavior('quit');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isTauri, showMessage, t]);
+
+  const handleChange = useCallback(
+    async (value: string) => {
+      const previous = behavior;
+      const next = value as CloseBehavior;
+      setBehavior(next);
+      setSaving(true);
+      try {
+        await configManager.setConfig('app.close_button_behavior', next);
+        configManager.clearCache();
+        showMessage('success', t('windowBehavior.messages.saved'));
+      } catch (error) {
+        setBehavior(previous);
+        log.error('Failed to save close behavior', { next, error });
+        showMessage('error', t('windowBehavior.messages.saveFailed'));
+      } finally {
+        setSaving(false);
+      }
+    },
+    [behavior, showMessage, t]
+  );
+
+  if (!isTauri) return null;
+
+  if (loading) {
+    return <ConfigPageLoading text={t('windowBehavior.messages.loading')} />;
+  }
 
   return (
-    <div
-      className="theme-preview-thumbnail"
-      style={{
-        background: colors.background.primary,
-        borderColor: colors.border.base,
-      }}
-    >
-      <div
-        className="theme-preview-thumbnail__titlebar"
-        style={{
-          background: colors.background.secondary,
-          borderColor: colors.border.subtle,
-        }}
-      >
-        <div className="theme-preview-thumbnail__menu">
-          <span
-            className="theme-preview-thumbnail__menu-dot"
-            style={{ background: colors.accent['500'] }}
-          />
-        </div>
-
-        <div className="theme-preview-thumbnail__title" style={{ color: colors.text.muted }}>
-          BitFun
-        </div>
-
-        <div className="theme-preview-thumbnail__window-controls">
-          <span className="theme-preview-thumbnail__window-btn" style={{ color: colors.text.secondary }}>
-            <svg width="8" height="8" viewBox="0 0 14 14" fill="none">
-              <line x1="3" y1="7" x2="11" y2="7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          </span>
-
-          <span className="theme-preview-thumbnail__window-btn" style={{ color: colors.text.secondary }}>
-            <svg width="8" height="8" viewBox="0 0 12 12" fill="none">
-              <rect
-                x="2"
-                y="2"
-                width="8"
-                height="8"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </span>
-
-          <span
-            className="theme-preview-thumbnail__window-btn theme-preview-thumbnail__window-btn--close"
-            style={{ color: colors.text.secondary }}
-          >
-            <svg width="8" height="8" viewBox="0 0 14 14" fill="none">
-              <line x1="3" y1="3" x2="11" y2="11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              <line x1="11" y1="3" x2="3" y2="11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          </span>
-        </div>
-      </div>
-
-      <div className="theme-preview-thumbnail__main">
-        <div
-          className="theme-preview-thumbnail__sidebar"
-          style={{
-            background: colors.background.secondary,
-            borderColor: colors.border.subtle,
-          }}
+    <div className="bitfun-window-behavior-config">
+      <div className="bitfun-window-behavior-config__content">
+        <ConfigPageMessage message={message} />
+        <ConfigPageSection
+          title={t('windowBehavior.sections.title')}
+          description={t('windowBehavior.sections.hint')}
         >
-          <div className="theme-preview-thumbnail__tree-item">
-            <span
-              className="theme-preview-thumbnail__folder-icon"
-              style={{ background: colors.accent['500'] }}
-            />
-            <span
-              className="theme-preview-thumbnail__tree-text"
-              style={{ background: colors.text.secondary }}
-            />
-          </div>
-
-          {[1, 2, 3].map((i) => (
-            <div key={i} className="theme-preview-thumbnail__tree-item theme-preview-thumbnail__tree-item--file">
-              <span
-                className="theme-preview-thumbnail__file-icon"
-                style={{ background: colors.semantic.info }}
-              />
-              <span
-                className="theme-preview-thumbnail__tree-text theme-preview-thumbnail__tree-text--short"
-                style={{ background: colors.text.muted }}
+          <ConfigPageRow
+            label={t('windowBehavior.closeButtonLabel')}
+            description={t('windowBehavior.closeButtonDescription')}
+            align="center"
+          >
+            <div className="bitfun-window-behavior-config__select-wrapper">
+              <Select
+                value={behavior}
+                onChange={(v) => { void handleChange(v as string); }}
+                options={behaviorOptions}
+                disabled={saving}
               />
             </div>
-          ))}
-        </div>
-
-        <div className="theme-preview-thumbnail__chat" style={{ background: colors.background.scene }}>
-          <div
-            className="theme-preview-thumbnail__message theme-preview-thumbnail__message--user"
-            style={{
-              background: colors.accent['200'],
-              borderColor: colors.accent['400'],
-            }}
-          >
-            <div
-              className="theme-preview-thumbnail__message-line"
-              style={{ background: colors.text.primary }}
-            />
-          </div>
-
-          <div
-            className="theme-preview-thumbnail__message theme-preview-thumbnail__message--ai"
-            style={{
-              background: colors.element.subtle,
-              borderColor: colors.border.subtle,
-            }}
-          >
-            <div
-              className="theme-preview-thumbnail__message-line"
-              style={{ background: colors.text.secondary }}
-            />
-            <div
-              className="theme-preview-thumbnail__message-line theme-preview-thumbnail__message-line--short"
-              style={{ background: colors.text.muted }}
-            />
-          </div>
-
-          <div
-            className="theme-preview-thumbnail__code-block"
-            style={{
-              background: colors.background.tertiary,
-              borderColor: colors.border.base,
-            }}
-          >
-            <div
-              className="theme-preview-thumbnail__code-line"
-              style={{ background: colors.purple?.['500'] || colors.accent['500'] }}
-            />
-            <div
-              className="theme-preview-thumbnail__code-line theme-preview-thumbnail__code-line--long"
-              style={{ background: colors.semantic.success }}
-            />
-          </div>
-        </div>
-
-        <div
-          className="theme-preview-thumbnail__editor"
-          style={{
-            background: colors.background.workbench,
-            borderColor: colors.border.subtle,
-          }}
-        >
-          <div
-            className="theme-preview-thumbnail__tabs"
-            style={{
-              background: colors.background.secondary,
-              borderColor: colors.border.subtle,
-            }}
-          >
-            <span
-              className="theme-preview-thumbnail__tab theme-preview-thumbnail__tab--active"
-              style={{
-                background: colors.background.primary,
-                borderColor: colors.accent['500'],
-              }}
-            />
-            <span
-              className="theme-preview-thumbnail__tab"
-              style={{ background: colors.element.subtle }}
-            />
-          </div>
-
-          <div className="theme-preview-thumbnail__code-content">
-            {[1, 2, 3, 4, 5].map((i) => (
-              <div key={i} className="theme-preview-thumbnail__editor-line">
-                <span
-                  className="theme-preview-thumbnail__line-number"
-                  style={{ background: colors.text.disabled }}
-                />
-                <span
-                  className="theme-preview-thumbnail__line-code"
-                  style={{
-                    background: i % 2 === 0 ? colors.accent['500'] : colors.text.secondary,
-                    width: `${30 + (i * 8) % 40}%`,
-                  }}
-                />
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div
-        className="theme-preview-thumbnail__statusbar"
-        style={{
-          background: colors.background.secondary,
-          borderColor: colors.border.subtle,
-        }}
-      >
-        <div className="theme-preview-thumbnail__status-section">
-          <span
-            className="theme-preview-thumbnail__status-icon"
-            style={{ background: colors.accent['500'] }}
-          />
-          <span
-            className="theme-preview-thumbnail__status-text"
-            style={{ background: colors.text.muted }}
-          />
-        </div>
-
-        <div className="theme-preview-thumbnail__status-section">
-          <span className="theme-preview-thumbnail__git-icon" style={{ color: colors.git.branch }}>
-            <svg width="7" height="7" viewBox="0 0 16 16" fill="none">
-              <circle cx="4" cy="4" r="2" stroke="currentColor" strokeWidth="1.5" />
-              <circle cx="12" cy="12" r="2" stroke="currentColor" strokeWidth="1.5" />
-              <circle cx="12" cy="4" r="2" stroke="currentColor" strokeWidth="1.5" />
-              <path d="M4 6v4c0 1.1.9 2 2 2h4" stroke="currentColor" strokeWidth="1.5" />
-            </svg>
-          </span>
-          <span
-            className="theme-preview-thumbnail__status-text theme-preview-thumbnail__status-text--branch"
-            style={{ background: colors.git.branch }}
-          />
-        </div>
-
-        <span
-          className="theme-preview-thumbnail__status-icon theme-preview-thumbnail__status-icon--notification"
-          style={{ background: colors.semantic.info }}
-        />
+          </ConfigPageRow>
+        </ConfigPageSection>
       </div>
     </div>
+  );
+}
+
+function BasicsNotificationsSection() {  const { t } = useTranslation('settings/basics');
+  const [dialogNotify, setDialogNotify] = useState(true);
+  const [startupTips, setStartupTips] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const [notify, tips] = await Promise.all([
+          configManager.getConfig<boolean>('app.notifications.dialog_completion_notify'),
+          configManager.getConfig<boolean>('app.notifications.enable_startup_tips'),
+        ]);
+        setDialogNotify(notify !== false);
+        setStartupTips(tips !== false);
+      } catch {
+        setDialogNotify(true);
+        setStartupTips(true);
+      }
+    })();
+  }, []);
+
+  const handleDialogNotifyToggle = async (checked: boolean) => {
+    setSaving(true);
+    try {
+      await configAPI.setConfig('app.notifications.dialog_completion_notify', checked);
+      setDialogNotify(checked);
+      setMessage({ type: 'success', text: t('notifications.messages.saveSuccess') });
+    } catch {
+      setMessage({ type: 'error', text: t('notifications.messages.saveFailed') });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleStartupTipsToggle = async (checked: boolean) => {
+    setSaving(true);
+    try {
+      await configAPI.setConfig('app.notifications.enable_startup_tips', checked);
+      setStartupTips(checked);
+      setMessage({ type: 'success', text: t('notifications.messages.saveSuccess') });
+    } catch {
+      setMessage({ type: 'error', text: t('notifications.messages.saveFailed') });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <ConfigPageSection
+      title={t('notifications.title')}
+      description={t('notifications.hint')}
+    >
+      <ConfigPageMessage message={message} />
+      <ConfigPageRow
+        label={t('notifications.dialogCompletion.label')}
+        description={t('notifications.dialogCompletion.description')}
+        align="center"
+      >
+        <Switch
+          checked={dialogNotify}
+          onChange={(e) => { void handleDialogNotifyToggle(e.target.checked); }}
+          disabled={saving}
+        />
+      </ConfigPageRow>
+      <ConfigPageRow
+        label={t('notifications.startupTips.label')}
+        description={t('notifications.startupTips.description')}
+        align="center"
+      >
+        <Switch
+          checked={startupTips}
+          onChange={(e) => { void handleStartupTipsToggle(e.target.checked); }}
+          disabled={saving}
+        />
+      </ConfigPageRow>
+    </ConfigPageSection>
   );
 }
 
@@ -864,10 +750,12 @@ const BasicsConfig: React.FC = () => {
     <ConfigPageLayout className="bitfun-basics-config">
       <ConfigPageHeader title={t('title')} subtitle={t('subtitle')} />
       <ConfigPageContent className="bitfun-basics-config__content">
-        <BasicsAppearanceSection />
         <BasicsLaunchAtLoginSection />
+        <BasicsAutoUpdateSection />
+        <BasicsWindowBehaviorSection />
         <BasicsLoggingSection />
         <BasicsTerminalSection />
+        <BasicsNotificationsSection />
       </ConfigPageContent>
     </ConfigPageLayout>
   );

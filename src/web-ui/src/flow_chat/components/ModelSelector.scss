@@ -60,11 +60,6 @@
     }
   }
   
-  &__icon {
-    color: var(--color-text-tertiary);
-    flex-shrink: 0;
-  }
-  
   &__name {
     max-width: 100px;
     overflow: hidden;
@@ -73,7 +68,7 @@
   }
   
   &__thinking-icon {
-    color: var(--color-purple-400);
+    color: var(--color-text-tertiary);
     flex-shrink: 0;
   }
   
@@ -106,6 +101,27 @@
     text-transform: uppercase;
   }
   
+  &__ctx-usage {
+    font-size: 9px;
+    font-weight: 400;
+    color: var(--color-text-muted);
+    opacity: 0.55;
+    letter-spacing: 0.2px;
+    transition: color 0.3s ease, opacity 0.3s ease;
+    flex-shrink: 0;
+
+    &--warning {
+      color: rgba(251, 146, 60, 0.9);
+      opacity: 0.9;
+    }
+
+    &--critical {
+      color: rgba(248, 113, 113, 0.95);
+      opacity: 1;
+      animation: bitfun-ctx-critical-pulse 2s ease-in-out infinite;
+    }
+  }
+
   &__chevron {
     color: var(--color-text-tertiary);
     flex-shrink: 0;
@@ -275,7 +291,7 @@
   }
   
   &__option-thinking {
-    color: rgba(180, 160, 255, 0.8);
+    color: var(--color-text-tertiary);
     flex-shrink: 0;
   }
   
@@ -322,4 +338,9 @@
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+@keyframes bitfun-ctx-critical-pulse {
+  0%, 100% { opacity: 0.8; }
+  50%       { opacity: 1; }
 }

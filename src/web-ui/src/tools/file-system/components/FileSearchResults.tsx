@@ -1,52 +1,118 @@
 import React, { useMemo, useState, useCallback, startTransition, memo, useEffect, useRef } from 'react';
-import { File, FileText, Folder, ChevronRight, ChevronDown, MoreHorizontal } from 'lucide-react';
-import type { FileSearchResult } from '@/infrastructure/api/service-api/tauri-commands';
+import { File, FileText, Folder, ChevronRight, ChevronDown } from 'lucide-react';
+import type {
+  FileSearchResult,
+  FileSearchResultGroup,
+} from '@/infrastructure/api/service-api/tauri-commands';
 import { useI18n } from '@/infrastructure/i18n';
+import { i18nService } from '@/infrastructure/i18n';
+import { notificationService } from '@/shared/notification-system';
+import { useContextMenuStore } from '@/shared/context-menu-system';
+import { ContextType } from '@/shared/context-menu-system/types/context.types';
+import type { MenuItem } from '@/shared/context-menu-system/types/menu.types';
+import { addFileMentionToChat, type FileMentionTarget } from '@/shared/utils/chatContext';
+import { openFileInBestTarget } from '@/shared/utils/tabUtils';
 import './FileSearchResults.scss';
 
 const INITIAL_DISPLAY_COUNT = 50;
 const LOAD_MORE_COUNT = 50;
 
 interface FileSearchResultsProps {
-  results: FileSearchResult[];
+  results: FileSearchResultGroup[];
   searchQuery: string;
   onFileSelect: (filePath: string, fileName: string) => void;
+  onFolderNavigate?: (folderPath: string, folderName: string) => void;
+  workspacePath?: string;
   className?: string;
 }
 
-interface GroupedResult {
-  path: string;
-  name: string;
-  isDirectory: boolean;
-  fileNameMatch?: FileSearchResult;
-  contentMatches: FileSearchResult[];
+type SearchResultTarget = FileMentionTarget;
+
+interface MatchPreviewSegments {
+  before: string;
+  inside: string;
+  after: string;
 }
 
-function truncateLine(line: string, query: string, maxLength: number = 200): string {
-  if (!line || line.length <= maxLength) {
-    return line;
+function buildFallbackMatchPreview(
+  line: string,
+  query: string,
+  maxLength: number = 96
+): MatchPreviewSegments {
+  if (!line) {
+    return { before: '', inside: '', after: '' };
   }
-  
-  const lowerLine = line.toLowerCase();
-  const lowerQuery = query.toLowerCase();
+
+  const normalizedLine = line.replace(/\t/g, '  ');
+  const trimmedQuery = query.trim();
+
+  if (!trimmedQuery) {
+    const truncated =
+      normalizedLine.length <= maxLength
+        ? normalizedLine
+        : `${normalizedLine.slice(0, maxLength - 1)}…`;
+    return { before: '', inside: '', after: truncated };
+  }
+
+  const lowerLine = normalizedLine.toLowerCase();
+  const lowerQuery = trimmedQuery.toLowerCase();
   const matchIndex = lowerLine.indexOf(lowerQuery);
-  
+
   if (matchIndex === -1) {
-    return line.substring(0, maxLength) + '...';
+    const truncated =
+      normalizedLine.length <= maxLength
+        ? normalizedLine
+        : `${normalizedLine.slice(0, maxLength - 1)}…`;
+    return { before: '', inside: '', after: truncated };
   }
-  
-  const beforeChars = 60;
-  const afterChars = 60;
-  
-  const start = Math.max(0, matchIndex - beforeChars);
-  const end = Math.min(line.length, matchIndex + query.length + afterChars);
-  
-  let result = '';
-  if (start > 0) result += '...';
-  result += line.substring(start, end);
-  if (end < line.length) result += '...';
-  
-  return result;
+
+  const contextWindow = Math.max(12, Math.floor((maxLength - trimmedQuery.length) / 2));
+  let start = Math.max(0, matchIndex - contextWindow);
+  let end = Math.min(
+    normalizedLine.length,
+    matchIndex + trimmedQuery.length + contextWindow
+  );
+
+  const visibleLength = end - start;
+  if (visibleLength < maxLength) {
+    const remaining = maxLength - visibleLength;
+    const expandLeft = Math.min(start, Math.floor(remaining / 2));
+    const expandRight = Math.min(
+      normalizedLine.length - end,
+      remaining - expandLeft
+    );
+    start -= expandLeft;
+    end += expandRight;
+  }
+
+  const snippet = normalizedLine.slice(start, end);
+  const relativeMatchStart = matchIndex - start;
+  const relativeMatchEnd = relativeMatchStart + trimmedQuery.length;
+
+  return {
+    before: `${start > 0 ? '…' : ''}${snippet.slice(0, relativeMatchStart)}`,
+    inside: snippet.slice(relativeMatchStart, relativeMatchEnd),
+    after: `${snippet.slice(relativeMatchEnd)}${end < normalizedLine.length ? '…' : ''}`,
+  };
+}
+
+function resolveMatchPreview(
+  match: FileSearchResult,
+  searchQuery: string
+): MatchPreviewSegments {
+  if (
+    match.previewInside !== undefined
+    || match.previewBefore !== undefined
+    || match.previewAfter !== undefined
+  ) {
+    return {
+      before: match.previewBefore ?? '',
+      inside: match.previewInside ?? '',
+      after: match.previewAfter ?? '',
+    };
+  }
+
+  return buildFallbackMatchPreview(match.matchedContent || '', searchQuery);
 }
 
 interface HighlightedTextProps {
@@ -89,47 +155,58 @@ HighlightedText.displayName = 'HighlightedText';
 
 interface MatchItemProps {
   match: FileSearchResult;
-  groupPath: string;
-  groupName: string;
+  target: SearchResultTarget;
   searchQuery: string;
-  onLineClick: (path: string, name: string, lineNumber?: number) => void;
+  onLineClick: (target: SearchResultTarget, lineNumber?: number) => void;
 }
 
-const MatchItem = memo<MatchItemProps>(({ match, groupPath, groupName, searchQuery, onLineClick }) => {
-  const truncatedContent = useMemo(
-    () => truncateLine(match.matchedContent || '', searchQuery),
-    [match.matchedContent, searchQuery]
+const MatchItem = memo<MatchItemProps>(({ match, target, searchQuery, onLineClick }) => {
+  const preview = useMemo(
+    () => resolveMatchPreview(match, searchQuery),
+    [
+      match,
+      searchQuery,
+    ]
   );
 
   return (
-    <div
+    <button
+      type="button"
       className="bitfun-search-results__match"
-      onClick={() => onLineClick(groupPath, groupName, match.lineNumber)}
+      onClick={() => onLineClick(target, match.lineNumber)}
     >
-      <span className="bitfun-search-results__match-line">
-        {match.lineNumber}
-      </span>
       <span 
         className="bitfun-search-results__match-content"
         title={match.matchedContent || ''}
       >
         <code>
-          <HighlightedText text={truncatedContent} query={searchQuery} />
+          {preview.before && (
+            <span className="bitfun-search-results__match-before">{preview.before}</span>
+          )}
+          {preview.inside ? (
+            <mark className="bitfun-search-results__highlight bitfun-search-results__match-highlight">
+              {preview.inside}
+            </mark>
+          ) : null}
+          {preview.after && (
+            <span className="bitfun-search-results__match-after">{preview.after}</span>
+          )}
         </code>
       </span>
-    </div>
+    </button>
   );
 });
 
 MatchItem.displayName = 'MatchItem';
 
 interface FileGroupProps {
-  group: GroupedResult;
+  group: FileSearchResultGroup;
   isExpanded: boolean;
   searchQuery: string;
   onToggleExpand: (path: string) => void;
-  onFileClick: (path: string, name: string) => void;
-  onLineClick: (path: string, name: string, lineNumber?: number) => void;
+  onFileClick: (target: SearchResultTarget) => void;
+  onFileContextMenu: (event: React.MouseEvent<HTMLElement>, target: SearchResultTarget) => void;
+  onLineClick: (target: SearchResultTarget, lineNumber?: number) => void;
 }
 
 const FileGroup = memo<FileGroupProps>(({ 
@@ -138,19 +215,31 @@ const FileGroup = memo<FileGroupProps>(({
   searchQuery, 
   onToggleExpand, 
   onFileClick, 
+  onFileContextMenu,
   onLineClick 
 }) => {
   const { t } = useI18n('tools');
   const hasContentMatches = group.contentMatches.length > 0;
+  const target = useMemo<SearchResultTarget>(() => ({
+    path: group.path,
+    name: group.name,
+    isDirectory: group.isDirectory,
+  }), [group.isDirectory, group.name, group.path]);
 
   return (
     <div className="bitfun-search-results__group">
       <div className="bitfun-search-results__file">
-        <div 
+        <button
+          type="button"
           className="bitfun-search-results__file-main"
-          onClick={() => onFileClick(group.path, group.name)}
+          onClick={() => onFileClick(target)}
+          onContextMenu={(event) => onFileContextMenu(event, target)}
         >
-          <span className="bitfun-search-results__file-icon">
+          <span
+            className={`bitfun-search-results__file-icon${
+              group.isDirectory ? ' bitfun-search-results__file-icon--directory' : ''
+            }`}
+          >
             {group.isDirectory ? (
               <Folder size={16} />
             ) : (
@@ -165,10 +254,11 @@ const FileGroup = memo<FileGroupProps>(({
               {group.path}
             </span>
           </span>
-        </div>
+        </button>
 
         {hasContentMatches && (
-          <span 
+          <button
+            type="button"
             className="bitfun-search-results__file-toggle"
             onClick={(e) => {
               e.stopPropagation();
@@ -184,7 +274,7 @@ const FileGroup = memo<FileGroupProps>(({
             <span className="bitfun-search-results__file-toggle-count">
               {group.contentMatches.length}
             </span>
-          </span>
+          </button>
         )}
       </div>
 
@@ -194,8 +284,7 @@ const FileGroup = memo<FileGroupProps>(({
             <MatchItem
               key={`${group.path}-${matchIndex}`}
               match={match}
-              groupPath={group.path}
-              groupName={group.name}
+              target={target}
               searchQuery={searchQuery}
               onLineClick={onLineClick}
             />
@@ -212,58 +301,50 @@ export const FileSearchResults: React.FC<FileSearchResultsProps> = ({
   results,
   searchQuery,
   onFileSelect,
+  onFolderNavigate,
+  workspacePath,
   className = ''
 }) => {
   const { t } = useI18n('tools');
   const [displayCount, setDisplayCount] = useState(INITIAL_DISPLAY_COUNT);
-  
+  const listRef = useRef<HTMLDivElement>(null);
+  const pendingAutoLoadRef = useRef(false);
   const [manualExpandState, setManualExpandState] = useState<Map<string, boolean>>(new Map());
-
-  const groupedResults = useMemo(() => {
-    const groups = new Map<string, FileSearchResult[]>();
-    
-    for (const result of results) {
-      const key = result.path;
-      if (!groups.has(key)) {
-        groups.set(key, []);
-      }
-      groups.get(key)!.push(result);
-    }
-    
-    return Array.from(groups.entries()).map(([path, items]) => {
-      const fileNameMatch = items.find(item => item.matchType === 'fileName');
-      const contentMatches = items.filter(item => item.matchType === 'content');
-      
-      return {
-        path,
-        name: items[0].name,
-        isDirectory: items[0].isDirectory,
-        fileNameMatch,
-        contentMatches
-      };
-    });
-  }, [results]);
+  const showMenu = useContextMenuStore((state) => state.showMenu);
 
   const prevResultsRef = useRef(results);
+  const prevSearchQueryRef = useRef(searchQuery);
   
   useEffect(() => {
-    if (prevResultsRef.current !== results) {
+    const queryChanged = prevSearchQueryRef.current !== searchQuery;
+    const resultsRestarted = results.length < prevResultsRef.current.length;
+
+    if (queryChanged || resultsRestarted) {
       prevResultsRef.current = results;
+      prevSearchQueryRef.current = searchQuery;
       startTransition(() => {
         setDisplayCount(INITIAL_DISPLAY_COUNT);
         setManualExpandState(new Map());
       });
+      return;
     }
-  }, [results]);
+
+    prevResultsRef.current = results;
+    prevSearchQueryRef.current = searchQuery;
+  }, [results, searchQuery]);
 
   const visibleGroups = useMemo(() => {
-    return groupedResults.slice(0, displayCount);
-  }, [groupedResults, displayCount]);
+    return results.slice(0, displayCount);
+  }, [results, displayCount]);
 
-  const hasMore = displayCount < groupedResults.length;
-  const remainingCount = groupedResults.length - displayCount;
+  const hasMore = displayCount < results.length;
+  const totalMatches = useMemo(() => {
+    return results.reduce((count, group) => {
+      return count + (group.fileNameMatch ? 1 : 0) + group.contentMatches.length;
+    }, 0);
+  }, [results]);
 
-  const shouldDefaultExpand = groupedResults.length <= 100;
+  const shouldDefaultExpand = results.length <= 100;
   
   const isExpanded = useCallback((path: string): boolean => {
     if (manualExpandState.has(path)) {
@@ -282,23 +363,131 @@ export const FileSearchResults: React.FC<FileSearchResultsProps> = ({
   }, [shouldDefaultExpand]);
 
   const handleLoadMore = useCallback(() => {
+    pendingAutoLoadRef.current = true;
     startTransition(() => {
-      setDisplayCount(prev => prev + LOAD_MORE_COUNT);
+      setDisplayCount(prev => Math.min(prev + LOAD_MORE_COUNT, results.length));
     });
+  }, [results.length]);
+
+  useEffect(() => {
+    pendingAutoLoadRef.current = false;
+  }, [displayCount]);
+
+  const maybeAutoLoadMore = useCallback(() => {
+    if (!hasMore || pendingAutoLoadRef.current) {
+      return;
+    }
+
+    const listElement = listRef.current;
+    if (!listElement) {
+      return;
+    }
+
+    const distanceToBottom =
+      listElement.scrollHeight - listElement.scrollTop - listElement.clientHeight;
+    const shouldLoadMore =
+      distanceToBottom <= 32 || listElement.scrollHeight <= listElement.clientHeight + 1;
+
+    if (shouldLoadMore) {
+      handleLoadMore();
+    }
+  }, [handleLoadMore, hasMore]);
+
+  useEffect(() => {
+    maybeAutoLoadMore();
+  }, [maybeAutoLoadMore, visibleGroups.length]);
+
+  const openResultTarget = useCallback((target: SearchResultTarget, lineNumber?: number) => {
+    if (target.isDirectory) {
+      return;
+    }
+
+    openFileInBestTarget({
+      filePath: target.path,
+      fileName: target.name,
+      workspacePath,
+      ...(lineNumber ? { jumpToLine: lineNumber, jumpToColumn: 1 } : {}),
+    }, { source: 'project-nav' });
+  }, [workspacePath]);
+
+  const handleFileClick = useCallback((target: SearchResultTarget) => {
+    if (target.isDirectory) {
+      onFolderNavigate?.(target.path, target.name);
+      return;
+    }
+    onFileSelect(target.path, target.name);
+    openResultTarget(target);
+  }, [onFileSelect, openResultTarget, onFolderNavigate]);
+
+  const handleLineClick = useCallback((target: SearchResultTarget, lineNumber?: number) => {
+    onFileSelect(target.path, target.name);
+
+    if (lineNumber) {
+      openResultTarget(target, lineNumber);
+    } else {
+      openResultTarget(target);
+    }
+  }, [onFileSelect, openResultTarget]);
+
+  const handleCopyPath = useCallback(async (path: string) => {
+    try {
+      await navigator.clipboard.writeText(path);
+      notificationService.success(i18nService.t('common:contextMenu.status.copyPathSuccess'), {
+        duration: 2000,
+      });
+    } catch (error) {
+      notificationService.error(
+        error instanceof Error
+          ? error.message
+          : i18nService.t('errors:contextMenu.copyPathFailed'),
+      );
+    }
   }, []);
 
-  const handleFileClick = useCallback((path: string, name: string) => {
-    onFileSelect(path, name);
-  }, [onFileSelect]);
+  const handleAddToChat = useCallback((target: SearchResultTarget) => {
+    addFileMentionToChat(target, workspacePath);
+  }, [workspacePath]);
 
-  const handleLineClick = useCallback(async (path: string, name: string, lineNumber?: number) => {
-    if (lineNumber) {
-      const { editorJumpService } = await import('@/shared/services/EditorJumpService');
-      await editorJumpService.jumpToFile(path, lineNumber, 1);
-    } else {
-      onFileSelect(path, name);
-    }
-  }, [onFileSelect]);
+  const handleFileContextMenu = useCallback((
+    event: React.MouseEvent<HTMLElement>,
+    target: SearchResultTarget,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const items: MenuItem[] = [
+      {
+        id: `search-result-copy-path:${target.path}`,
+        label: i18nService.t('common:file.copyPath'),
+        icon: 'Copy',
+        onClick: async () => {
+          await handleCopyPath(target.path);
+        },
+      },
+      {
+        id: `search-result-add-to-chat:${target.path}`,
+        label: i18nService.t('common:editor.addToChat'),
+        icon: 'MessageSquarePlus',
+        onClick: () => {
+          handleAddToChat(target);
+        },
+      },
+    ];
+
+    showMenu(
+      { x: event.clientX, y: event.clientY },
+      items,
+      {
+        type: ContextType.CUSTOM,
+        customType: 'file-search-result',
+        data: target,
+        event,
+        targetElement: event.currentTarget,
+        position: { x: event.clientX, y: event.clientY },
+        timestamp: Date.now(),
+      },
+    );
+  }, [handleAddToChat, handleCopyPath, showMenu]);
 
   if (results.length === 0) {
     return (
@@ -320,12 +509,16 @@ export const FileSearchResults: React.FC<FileSearchResultsProps> = ({
     <div className={`bitfun-search-results ${className}`}>
       <div className="bitfun-search-results__header">
         <span className="bitfun-search-results__count">
-          {t('search.resultsSummary', { files: groupedResults.length, matches: results.length })}
+          {t('search.resultsSummary', { files: results.length, matches: totalMatches })}
           {hasMore && <span className="bitfun-search-results__showing">{t('search.resultsShowing', { count: displayCount })}</span>}
         </span>
       </div>
 
-      <div className="bitfun-search-results__list">
+      <div
+        ref={listRef}
+        className="bitfun-search-results__list"
+        onScroll={maybeAutoLoadMore}
+      >
         {visibleGroups.map((group, index) => (
           <FileGroup
             key={`${group.path}-${index}`}
@@ -334,23 +527,11 @@ export const FileSearchResults: React.FC<FileSearchResultsProps> = ({
             searchQuery={searchQuery}
             onToggleExpand={toggleExpanded}
             onFileClick={handleFileClick}
+            onFileContextMenu={handleFileContextMenu}
             onLineClick={handleLineClick}
           />
         ))}
       </div>
-
-      {hasMore && (
-        <div 
-          className="bitfun-search-results__load-more"
-          onClick={handleLoadMore}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => e.key === 'Enter' && handleLoadMore()}
-        >
-          <MoreHorizontal size={12} />
-          <span>{t('search.loadMore', { count: remainingCount })}</span>
-        </div>
-      )}
     </div>
   );
 };

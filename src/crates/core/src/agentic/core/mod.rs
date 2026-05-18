@@ -5,16 +5,18 @@
 pub mod dialog_turn;
 pub mod message;
 pub mod messages_helper;
-pub mod model_round;
 pub mod prompt_markup;
 pub mod session;
 pub mod state;
-pub use dialog_turn::{DialogTurn, DialogTurnState, TurnStats};
+pub use bitfun_core_types::SessionKind;
+pub use dialog_turn::{new_turn_id, TurnStats};
 pub use message::{
-    Message, MessageContent, MessageRole, MessageSemanticKind, ToolCall, ToolResult,
+    CompressedMessage, CompressedMessageRole, CompressedTodoItem, CompressedTodoSnapshot,
+    CompressedToolCall, CompressionContract, CompressionContractItem, CompressionEntry,
+    CompressionPayload, Message, MessageContent, MessageRole, MessageSemanticKind, ToolCall,
+    ToolResult,
 };
-pub use messages_helper::MessageHelper;
-pub use model_round::ModelRound;
+pub use messages_helper::{MessageHelper, RequestReasoningTokenPolicy};
 pub use prompt_markup::{
     has_prompt_markup, is_system_reminder_only, render_system_reminder, render_user_query,
     strip_prompt_markup, PromptBlock, PromptBlockKind, PromptEnvelope,

@@ -1,81 +1,56 @@
 /**
  * MainNav — default workspace navigation sidebar.
  *
- * Renders nav sections. When a scene-nav transition
- * is active (`isDeparting=true`), every item/section receives a positional
- * CSS class relative to the anchor item (`anchorNavSceneId`):
- *   - items above the anchor  → `.is-departing-up`   (slide up + fade)
- *   - the anchor item itself  → `.is-departing-anchor` (brief highlight)
- *   - items below the anchor  → `.is-departing-down`  (slide down + fade)
- * This creates the visual "split-open from the clicked item" effect while
- * the outer Grid accordion handles the actual height collapse.
+ * Layout (top to bottom):
+ *   1. Workspace file search
+ *   2. Top: New sessions | Assistant | Extensions (expand → Agents | Skills)
+ *   3. Assistant sessions, Workspace
+ *   4. Bottom: MiniApp
+ *
+ * When a scene-nav transition is active (`isDeparting=true`), items receive
+ * positional CSS classes for the split-open animation effect.
  */
 
 import React, { useCallback, useState, useMemo, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, FolderOpen, FolderPlus, History, Check, Clock3 } from 'lucide-react';
-import { Badge, Tooltip } from '@/component-library';
+import { Plus, FolderOpen, FolderPlus, History, Check, User, Users, Puzzle, Blocks, ChevronDown, Search } from 'lucide-react';
+import { Tooltip } from '@/component-library';
 import { useApp } from '../../hooks/useApp';
 import { useSceneManager } from '../../hooks/useSceneManager';
-import { useNavSceneStore } from '../../stores/navSceneStore';
-import { useSessionModeStore } from '../../stores/sessionModeStore';
 import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
-import { NAV_SECTIONS } from './config';
-import type { PanelType } from '../../types';
-import type { NavItem as NavItemConfig } from './types';
 import type { SceneTabId } from '../SceneBar/types';
-import NavItem from './components/NavItem';
 import SectionHeader from './components/SectionHeader';
 import MiniAppEntry from './components/MiniAppEntry';
 import WorkspaceListSection from './sections/workspaces/WorkspaceListSection';
-import ScheduledJobsDialog from '../ScheduledJobsDialog/ScheduledJobsDialog';
+import SessionsSection from './sections/sessions/SessionsSection';
 import { useSceneStore } from '../../stores/sceneStore';
 import { useMyAgentStore } from '../../scenes/my-agent/myAgentStore';
 import { useMiniAppCatalogSync } from '../../scenes/miniapps/hooks/useMiniAppCatalogSync';
 import { flowChatStore } from '@/flow_chat/store/FlowChatStore';
-import { compareSessionsForDisplay } from '@/flow_chat/utils/sessionOrdering';
 import { flowChatManager } from '@/flow_chat/services/FlowChatManager';
 import { workspaceManager } from '@/infrastructure/services/business/workspaceManager';
 import { useWorkspaceContext } from '@/infrastructure/contexts/WorkspaceContext';
 import { createLogger } from '@/shared/utils/logger';
-import { WorkspaceKind } from '@/shared/types';
+import { notificationService } from '@/shared/notification-system';
+import { WorkspaceKind, isRemoteWorkspace } from '@/shared/types';
+import {
+  findReusableEmptySessionId,
+  flowChatSessionConfigForWorkspace,
+  pickWorkspaceForProjectChatSession,
+} from '@/app/utils/projectSessionWorkspace';
+import { getRecentWorkspaceLineParts } from '@/shared/utils/recentWorkspaceDisplay';
+import { computeFixedPopoverPosition } from '@/shared/utils/fixedPopoverViewport';
 import { useSSHRemoteContext, SSHConnectionDialog, RemoteFileBrowser } from '@/features/ssh-remote';
+import { useSessionModeStore } from '../../stores/sessionModeStore';
+import NavSearchDialog from './NavSearchDialog';
+import { useShortcut } from '@/infrastructure/hooks/useShortcut';
+import { ALL_SHORTCUTS } from '@/shared/constants/shortcuts';
 
-const NAV_DISPLAY_MODE_STORAGE_KEY = 'bitfun.nav.displayMode';
 import './NavPanel.scss';
 
+const NAV_TOGGLE_SEARCH_DEF = ALL_SHORTCUTS.find((d) => d.id === 'nav.toggleSearch')!;
+
 const log = createLogger('MainNav');
-
-type DepartDir = 'up' | 'anchor' | 'down' | null;
-type NavDisplayMode = 'pro' | 'assistant';
-
-/**
- * Build a flat ordered list of (sectionId, itemTab) tuples so we can
- * determine each element's position relative to the anchor item.
- */
-function buildFlatItemOrder(): { sectionId: string; tab: PanelType; navSceneId?: SceneTabId }[] {
-  const list: { sectionId: string; tab: PanelType; navSceneId?: SceneTabId }[] = [];
-  for (const section of NAV_SECTIONS) {
-    for (const item of section.items) {
-      list.push({ sectionId: section.id, tab: item.tab, navSceneId: item.navSceneId });
-    }
-  }
-  return list;
-}
-
-const FLAT_ITEMS = buildFlatItemOrder();
-
-function getAnchorIndex(anchorId: SceneTabId | null): number {
-  if (!anchorId) return -1;
-  return FLAT_ITEMS.findIndex(i => i.navSceneId === anchorId);
-}
-
-function getInitialNavDisplayMode(): NavDisplayMode {
-  if (typeof window === 'undefined') return 'pro';
-  return window.localStorage.getItem(NAV_DISPLAY_MODE_STORAGE_KEY) === 'assistant'
-    ? 'assistant'
-    : 'pro';
-}
 
 interface MainNavProps {
   isDeparting?: boolean;
@@ -83,12 +58,11 @@ interface MainNavProps {
 }
 
 const MainNav: React.FC<MainNavProps> = ({
-  isDeparting = false,
-  anchorNavSceneId = null,
+  isDeparting: _isDeparting = false,
+  anchorNavSceneId: _anchorNavSceneId = null,
 }) => {
   useMiniAppCatalogSync();
 
-  // SSH Remote state - use context instead of hook for consistent state
   const sshRemote = useSSHRemoteContext();
   const [isSSHConnectionDialogOpen, setIsSSHConnectionDialogOpen] = useState(false);
 
@@ -98,12 +72,9 @@ const MainNav: React.FC<MainNavProps> = ({
     }
   }, [sshRemote.showFileBrowser]);
 
-  const { state, switchLeftPanelTab } = useApp();
+  const { switchLeftPanelTab } = useApp();
   const { openScene } = useSceneManager();
-  const openNavScene = useNavSceneStore(s => s.openNavScene);
   const activeTabId = useSceneStore(s => s.activeTabId);
-  const setMyAgentView = useMyAgentStore(s => s.setActiveView);
-  const selectedAssistantWorkspaceId = useMyAgentStore((s) => s.selectedAssistantWorkspaceId);
   const setSelectedAssistantWorkspaceId = useMyAgentStore((s) => s.setSelectedAssistantWorkspaceId);
   const { t } = useI18n('common');
   const {
@@ -111,75 +82,37 @@ const MainNav: React.FC<MainNavProps> = ({
     recentWorkspaces,
     openedWorkspacesList,
     assistantWorkspacesList,
+    normalWorkspacesList,
     switchWorkspace,
     setActiveWorkspace,
   } = useWorkspaceContext();
 
-  const activeTab = state.layout.leftPanelActiveTab;
   const activeMiniAppId = useMemo(
     () => (typeof activeTabId === 'string' && activeTabId.startsWith('miniapp:') ? activeTabId.slice('miniapp:'.length) : null),
     [activeTabId]
   );
 
-  const anchorIdx = useMemo(() => getAnchorIndex(anchorNavSceneId), [anchorNavSceneId]);
-
-  const getDepartDir = useCallback(
-    (flatIdx: number): DepartDir => {
-      if (!isDeparting) return null;
-      if (anchorIdx < 0) return 'up';
-      if (flatIdx < anchorIdx) return 'up';
-      if (flatIdx === anchorIdx) return 'anchor';
-      return 'down';
-    },
-    [isDeparting, anchorIdx]
+  // Section expand state
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(
+    () => new Set(['assistant-sessions', 'workspace'])
   );
 
-  const getSectionDepartDir = useCallback(
-    (sectionId: string): DepartDir => {
-      if (!isDeparting) return null;
-      if (anchorIdx < 0) return 'up';
-      const first = FLAT_ITEMS.findIndex(i => i.sectionId === sectionId);
-      const last  = FLAT_ITEMS.length - 1 - [...FLAT_ITEMS].reverse().findIndex(i => i.sectionId === sectionId);
-      if (last < anchorIdx) return 'up';
-      if (first > anchorIdx) return 'down';
-      return null;
-    },
-    [isDeparting, anchorIdx]
-  );
-
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(() => {
-    const init = new Set<string>();
-    NAV_SECTIONS.forEach(s => {
-      if (s.defaultExpanded !== false) init.add(s.id);
-    });
-    return init;
-  });
   const workspaceMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const workspaceMenuRef = useRef<HTMLDivElement | null>(null);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [workspaceMenuClosing, setWorkspaceMenuClosing] = useState(false);
   const [workspaceMenuPos, setWorkspaceMenuPos] = useState({ top: 0, left: 0 });
-
-
-  const getSectionLabel = useCallback(
-    (sectionId: string, fallbackLabel: string | null) => {
-      if (!fallbackLabel) return null;
-      const keyMap: Record<string, string> = {
-        assistants: 'nav.workspaces.groups.assistants',
-        workspace: 'nav.sections.workspace',
-        'my-agent': 'nav.sections.myAgent',
-        miniapps: 'scenes.miniApps',
-      };
-      const key = keyMap[sectionId];
-      return key ? t(key) || fallbackLabel : fallbackLabel;
-    },
-    [t]
-  );
+  const [isExtensionsOpen, setIsExtensionsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   const toggleSection = useCallback((id: string) => {
     setExpandedSections(prev => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return next;
     });
   }, []);
@@ -192,186 +125,143 @@ const MainNav: React.FC<MainNavProps> = ({
     }, 150);
   }, []);
 
+  const updateWorkspaceMenuPos = useCallback(() => {
+    const btn = workspaceMenuButtonRef.current;
+    if (!btn || !workspaceMenuOpen) return;
+    const rect = btn.getBoundingClientRect();
+    const viewportPadding = 8;
+    const gap = 6;
+    const fallbackWidth = 300;
+    const fallbackHeight = 420;
+
+    const apply = () => {
+      const menuEl = workspaceMenuRef.current;
+      const w = menuEl?.offsetWidth ?? fallbackWidth;
+      const h = menuEl?.offsetHeight ?? fallbackHeight;
+      setWorkspaceMenuPos(computeFixedPopoverPosition(rect, w, h, gap, viewportPadding));
+    };
+
+    apply();
+    requestAnimationFrame(apply);
+  }, [workspaceMenuOpen]);
+
   const openWorkspaceMenu = useCallback(async () => {
     try {
       await workspaceManager.cleanupInvalidWorkspaces();
     } catch (error) {
       log.warn('Failed to cleanup invalid workspaces before opening workspace menu', { error });
     }
-
     const rect = workspaceMenuButtonRef.current?.getBoundingClientRect();
     if (!rect) return;
-    setWorkspaceMenuPos({
-      top: rect.bottom + 6,
-      left: rect.left,
-    });
+    setWorkspaceMenuPos(computeFixedPopoverPosition(rect, 300, 420, 6, 8));
     setWorkspaceMenuOpen(true);
     setWorkspaceMenuClosing(false);
   }, []);
 
   const toggleWorkspaceMenu = useCallback(() => {
-    if (workspaceMenuOpen) {
-      closeWorkspaceMenu();
-      return;
-    }
+    if (workspaceMenuOpen) { closeWorkspaceMenu(); return; }
     void openWorkspaceMenu();
   }, [closeWorkspaceMenu, openWorkspaceMenu, workspaceMenuOpen]);
 
   const setSessionMode = useSessionModeStore(s => s.setMode);
   const isAssistantWorkspaceActive = currentWorkspace?.workspaceKind === WorkspaceKind.Assistant;
+
   const defaultAssistantWorkspace = useMemo(
-    () => assistantWorkspacesList.find(workspace => !workspace.assistantId) ?? assistantWorkspacesList[0] ?? null,
+    () => assistantWorkspacesList.find(w => !w.assistantId) ?? assistantWorkspacesList[0] ?? null,
     [assistantWorkspacesList]
   );
-  const selectedAssistantWorkspace = useMemo(() => {
-    if (!selectedAssistantWorkspaceId) {
-      return null;
-    }
-
-    return assistantWorkspacesList.find(
-      (workspace) => workspace.id === selectedAssistantWorkspaceId
-    ) ?? null;
-  }, [assistantWorkspacesList, selectedAssistantWorkspaceId]);
-  const resolvedAssistantWorkspace = useMemo(() => {
-    if (isAssistantWorkspaceActive && currentWorkspace?.workspaceKind === WorkspaceKind.Assistant) {
-      return currentWorkspace;
-    }
-
-    if (selectedAssistantWorkspace) {
-      return selectedAssistantWorkspace;
-    }
-
-    return defaultAssistantWorkspace;
-  }, [
-    currentWorkspace,
-    defaultAssistantWorkspace,
-    isAssistantWorkspaceActive,
-    selectedAssistantWorkspace,
-  ]);
-  const resolvedAssistantDisplayName = useMemo(() => {
-    if (!resolvedAssistantWorkspace) {
-      return '';
-    }
-
-    return resolvedAssistantWorkspace.identity?.name?.trim() || resolvedAssistantWorkspace.name;
-  }, [resolvedAssistantWorkspace]);
-  const resolvedAssistantSessionId = useMemo(() => {
-    const workspacePath = resolvedAssistantWorkspace?.rootPath;
-    if (!workspacePath) {
-      return undefined;
-    }
-
-    const workspaceSessions = Array.from(flowChatStore.getState().sessions.values())
-      .filter(session =>
-        (session.workspacePath || workspacePath) === workspacePath && !session.parentSessionId
-      )
-      .sort(compareSessionsForDisplay);
-
-    return workspaceSessions[0]?.sessionId;
-  }, [resolvedAssistantWorkspace]);
-
-  const [navDisplayMode, setNavDisplayMode] = useState<NavDisplayMode>(getInitialNavDisplayMode);
-  const [isModeSwitching, setIsModeSwitching] = useState(false);
-  const [modeLogoSrc, setModeLogoSrc] = useState('/panda_1.png');
-  const [modeLogoHoverSrc, setModeLogoHoverSrc] = useState('/panda_2.png');
-  const [isScheduledJobsDialogOpen, setIsScheduledJobsDialogOpen] = useState(false);
-  const modeSwitchTimerRef = useRef<number | null>(null);
-  const modeSwitchSwapTimerRef = useRef<number | null>(null);
-
-  useEffect(() => () => {
-    if (modeSwitchTimerRef.current !== null) {
-      window.clearTimeout(modeSwitchTimerRef.current);
-    }
-    if (modeSwitchSwapTimerRef.current !== null) {
-      window.clearTimeout(modeSwitchSwapTimerRef.current);
-    }
-  }, []);
 
   useEffect(() => {
     openedWorkspacesList.forEach(workspace => {
-      void flowChatStore.initializeFromDisk(workspace.rootPath);
+      if (workspace.workspaceKind === WorkspaceKind.Remote) {
+        void flowChatStore.initializeFromDisk(
+          workspace.rootPath,
+          workspace.connectionId ?? undefined,
+          workspace.sshHost ?? undefined
+        );
+      } else {
+        void flowChatStore.initializeFromDisk(workspace.rootPath);
+      }
     });
   }, [openedWorkspacesList]);
 
-
-
-
-  const handleCreateAssistantWorkspace = useCallback(async () => {
-    try {
-      await workspaceManager.createAssistantWorkspace();
-    } catch (err) {
-      log.error('Failed to create assistant workspace', err);
-    }
+  const toggleNavSearch = useCallback(() => {
+    setSearchOpen((v) => !v);
   }, []);
 
-  const handleItemClick = useCallback(
-    (tab: PanelType, item: NavItemConfig) => {
-      if (item.behavior === 'scene' && item.sceneId) {
-        openScene(item.sceneId);
-      } else {
-        if (item.navSceneId) {
-          openNavScene(item.navSceneId);
-        }
-        switchLeftPanelTab(tab);
-      }
-    },
-    [switchLeftPanelTab, openScene, openNavScene]
+  useShortcut(
+    NAV_TOGGLE_SEARCH_DEF.id,
+    NAV_TOGGLE_SEARCH_DEF.config,
+    toggleNavSearch,
+    { priority: 5, description: NAV_TOGGLE_SEARCH_DEF.descriptionKey }
   );
 
-  const handleCreateSession = useCallback(async (mode?: 'agentic' | 'Cowork' | 'Claw') => {
-    openScene('session');
-    switchLeftPanelTab('sessions');
-    try {
-      await flowChatManager.createChatSession(
-        {},
-        mode ?? (isAssistantWorkspaceActive ? 'Claw' : 'agentic')
-      );
-    } catch (err) {
-      log.error('Failed to create session', err);
-    }
-  }, [openScene, switchLeftPanelTab, isAssistantWorkspaceActive]);
+  // Secondary binding (not listed separately in keyboard settings — same action as Mod+K)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        !e.altKey ||
+        e.ctrlKey ||
+        e.metaKey ||
+        e.shiftKey ||
+        e.key.toLowerCase() !== 'f'
+      ) {
+        return;
+      }
+      e.preventDefault();
+      toggleNavSearch();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [toggleNavSearch]);
+
+  const handleCreateProjectSession = useCallback(
+    async (mode: 'agentic' | 'Cowork') => {
+      const target = pickWorkspaceForProjectChatSession(currentWorkspace, normalWorkspacesList);
+      if (!target) {
+        notificationService.warning(t('nav.sessions.needProjectWorkspaceForSession'), { duration: 4500 });
+        return;
+      }
+      openScene('session');
+      switchLeftPanelTab('sessions');
+      try {
+        if (target.id !== currentWorkspace?.id) {
+          await setActiveWorkspace(target.id);
+        }
+        const reusableId = findReusableEmptySessionId(target, mode);
+        if (reusableId) {
+          await flowChatManager.switchChatSession(reusableId);
+          return;
+        }
+        await flowChatManager.createChatSession(flowChatSessionConfigForWorkspace(target), mode);
+      } catch (err) {
+        log.error('Failed to create session', err);
+      }
+    },
+    [
+      currentWorkspace,
+      normalWorkspacesList,
+      openScene,
+      setActiveWorkspace,
+      switchLeftPanelTab,
+      t,
+    ]
+  );
 
   const handleCreateCodeSession = useCallback(() => {
     setSessionMode('code');
-    void handleCreateSession('agentic');
-  }, [handleCreateSession, setSessionMode]);
+    void handleCreateProjectSession('agentic');
+  }, [handleCreateProjectSession, setSessionMode]);
 
   const handleCreateCoworkSession = useCallback(() => {
     setSessionMode('cowork');
-    void handleCreateSession('Cowork');
-  }, [handleCreateSession, setSessionMode]);
-
-  const handleCreateAssistantSession = useCallback(async () => {
-    const targetAssistantWorkspace =
-      isAssistantWorkspaceActive && currentWorkspace?.workspaceKind === WorkspaceKind.Assistant
-        ? currentWorkspace
-        : defaultAssistantWorkspace;
-
-    if (targetAssistantWorkspace && !isAssistantWorkspaceActive) {
-      try {
-        await setActiveWorkspace(targetAssistantWorkspace.id);
-      } catch (error) {
-        log.warn('Failed to activate assistant workspace before creating session', { error });
-      }
-    }
-
-    await handleCreateSession('Claw');
-  }, [
-    currentWorkspace,
-    defaultAssistantWorkspace,
-    handleCreateSession,
-    isAssistantWorkspaceActive,
-    setActiveWorkspace,
-  ]);
+    void handleCreateProjectSession('Cowork');
+  }, [handleCreateProjectSession, setSessionMode]);
 
   const handleOpenProject = useCallback(async () => {
     try {
       const { open } = await import('@tauri-apps/plugin-dialog');
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: t('header.selectProjectDirectory'),
-      });
+      const selected = await open({ directory: true, multiple: false, title: t('header.selectProjectDirectory') });
       if (selected && typeof selected === 'string') {
         await workspaceManager.openWorkspace(selected);
       }
@@ -391,7 +281,6 @@ const MainNav: React.FC<MainNavProps> = ({
     await switchWorkspace(targetWorkspace);
   }, [closeWorkspaceMenu, recentWorkspaces, switchWorkspace]);
 
-  // SSH Remote handlers
   const handleOpenRemoteSSH = useCallback(() => {
     closeWorkspaceMenu();
     setIsSSHConnectionDialogOpen(true);
@@ -401,7 +290,6 @@ const MainNav: React.FC<MainNavProps> = ({
     try {
       await sshRemote.openWorkspace(path);
       sshRemote.setShowFileBrowser(false);
-      // Close the SSH connection dialog as well
       setIsSSHConnectionDialogOpen(false);
     } catch (err) {
       log.error('Failed to open remote workspace', err);
@@ -410,7 +298,6 @@ const MainNav: React.FC<MainNavProps> = ({
 
   useEffect(() => {
     if (!workspaceMenuOpen) return;
-
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node | null;
       if (!target) return;
@@ -418,13 +305,9 @@ const MainNav: React.FC<MainNavProps> = ({
       if (workspaceMenuRef.current?.contains(target)) return;
       closeWorkspaceMenu();
     };
-
     const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        closeWorkspaceMenu();
-      }
+      if (event.key === 'Escape') closeWorkspaceMenu();
     };
-
     document.addEventListener('mousedown', handleClickOutside);
     document.addEventListener('keydown', handleEscape);
     return () => {
@@ -433,8 +316,22 @@ const MainNav: React.FC<MainNavProps> = ({
     };
   }, [closeWorkspaceMenu, workspaceMenuOpen]);
 
+  useEffect(() => {
+    if (!workspaceMenuOpen) return;
 
-  const handleOpenProfile = useCallback(() => {
+    updateWorkspaceMenuPos();
+
+    const handleViewportChange = () => updateWorkspaceMenuPos();
+    window.addEventListener('resize', handleViewportChange);
+    window.addEventListener('scroll', handleViewportChange, true);
+
+    return () => {
+      window.removeEventListener('resize', handleViewportChange);
+      window.removeEventListener('scroll', handleViewportChange, true);
+    };
+  }, [workspaceMenuOpen, updateWorkspaceMenuPos]);
+
+  const handleOpenAssistant = useCallback(() => {
     const targetAssistantWorkspace =
       isAssistantWorkspaceActive && currentWorkspace?.workspaceKind === WorkspaceKind.Assistant
         ? currentWorkspace
@@ -443,147 +340,39 @@ const MainNav: React.FC<MainNavProps> = ({
     if (targetAssistantWorkspace?.id) {
       setSelectedAssistantWorkspaceId(targetAssistantWorkspace.id);
     }
-
     if (!isAssistantWorkspaceActive && targetAssistantWorkspace) {
       void setActiveWorkspace(targetAssistantWorkspace.id).catch(error => {
         log.warn('Failed to activate default assistant workspace', { error });
       });
     }
-    setMyAgentView('profile');
     switchLeftPanelTab('profile');
-    openScene('my-agent');
+    openScene('assistant');
   }, [
     currentWorkspace,
     defaultAssistantWorkspace,
     isAssistantWorkspaceActive,
     openScene,
     setActiveWorkspace,
-    setMyAgentView,
     setSelectedAssistantWorkspaceId,
     switchLeftPanelTab,
   ]);
 
-  const handleOpenScheduledJobsDialog = useCallback(() => {
-    if (resolvedAssistantWorkspace?.id) {
-      setSelectedAssistantWorkspaceId(resolvedAssistantWorkspace.id);
+  const handleOpenAgents = useCallback(() => {
+    openScene('agents');
+  }, [openScene]);
+
+  const handleOpenSkills = useCallback(() => {
+    openScene('skills');
+  }, [openScene]);
+
+  const isAgentsActive = activeTabId === 'agents';
+  const isSkillsActive = activeTabId === 'skills';
+
+  useEffect(() => {
+    if (isAgentsActive || isSkillsActive) {
+      setIsExtensionsOpen(true);
     }
-    setIsScheduledJobsDialogOpen(true);
-  }, [resolvedAssistantWorkspace, setSelectedAssistantWorkspaceId]);
-
-  const handleOpenProModeSession = useCallback(async () => {
-    // 找到项目工作区（非 assistant 类型）
-    const projectWorkspaces = openedWorkspacesList.filter(
-      w => w.workspaceKind !== WorkspaceKind.Assistant
-    );
-
-    const targetWorkspace =
-      currentWorkspace?.workspaceKind !== WorkspaceKind.Assistant
-        ? currentWorkspace
-        : projectWorkspaces[0] ?? null;
-
-    // 若当前激活的是 assistant workspace，先切回项目工作区
-    if (targetWorkspace && currentWorkspace?.id !== targetWorkspace.id) {
-      await setActiveWorkspace(targetWorkspace.id).catch(() => {});
-    }
-
-    const workspacePath = targetWorkspace?.rootPath;
-    const state = flowChatStore.getState();
-
-    if (workspacePath) {
-      const workspaceSessions = Array.from(state.sessions.values())
-        .filter(s =>
-          (s.workspacePath || workspacePath) === workspacePath &&
-          !s.parentSessionId
-        )
-        .sort(compareSessionsForDisplay);
-
-      if (workspaceSessions.length > 0) {
-        const firstSession = workspaceSessions[0];
-        if (firstSession.isHistorical) {
-          await flowChatStore.loadSessionHistory(firstSession.sessionId, workspacePath);
-        }
-        flowChatStore.switchSession(firstSession.sessionId);
-        openScene('session');
-        switchLeftPanelTab('sessions');
-        return;
-      }
-    }
-
-    // 没有已有会话，显式传入 workspacePath 创建 Code 会话，避免被 assistant workspace 覆盖
-    openScene('session');
-    switchLeftPanelTab('sessions');
-    await flowChatManager.createChatSession({ workspacePath: workspacePath || undefined }, 'agentic');
-  }, [currentWorkspace, openedWorkspacesList, openScene, setActiveWorkspace, switchLeftPanelTab]);
-
-  const handleOpenAssistantModeSession = useCallback(async () => {
-    const targetAssistantWorkspace =
-      isAssistantWorkspaceActive && currentWorkspace?.workspaceKind === WorkspaceKind.Assistant
-        ? currentWorkspace
-        : defaultAssistantWorkspace;
-
-    if (targetAssistantWorkspace && !isAssistantWorkspaceActive) {
-      await setActiveWorkspace(targetAssistantWorkspace.id).catch(() => {});
-    }
-
-    const workspacePath = targetAssistantWorkspace?.rootPath;
-    const state = flowChatStore.getState();
-
-    if (workspacePath) {
-      const workspaceSessions = Array.from(state.sessions.values())
-        .filter(s =>
-          (s.workspacePath || workspacePath) === workspacePath &&
-          !s.parentSessionId
-        )
-        .sort(compareSessionsForDisplay);
-
-      if (workspaceSessions.length > 0) {
-        const firstSession = workspaceSessions[0];
-        if (firstSession.isHistorical) {
-          await flowChatStore.loadSessionHistory(firstSession.sessionId, workspacePath);
-        }
-        flowChatStore.switchSession(firstSession.sessionId);
-        openScene('session');
-        switchLeftPanelTab('sessions');
-        return;
-      }
-    }
-
-    // 没有已有会话，新建 Claw 会话
-    await handleCreateSession('Claw');
-  }, [currentWorkspace, defaultAssistantWorkspace, handleCreateSession, isAssistantWorkspaceActive, openScene, setActiveWorkspace, switchLeftPanelTab]);
-
-  const handleToggleNavDisplayMode = useCallback(() => {
-    // 防止动画进行中重复触发
-    if (modeSwitchTimerRef.current !== null) return;
-
-    setIsModeSwitching(true);
-
-    // 点击时同步计算目标模式，避免 timeout 闭包中读取到过期值
-    const nextMode: NavDisplayMode = navDisplayMode === 'pro' ? 'assistant' : 'pro';
-
-    // 200ms（clip-path 收缩到最小圆点）：只切换 nav 显示状态，不触发任何场景/会话操作
-    if (modeSwitchSwapTimerRef.current !== null) {
-      window.clearTimeout(modeSwitchSwapTimerRef.current);
-    }
-    modeSwitchSwapTimerRef.current = window.setTimeout(() => {
-      setNavDisplayMode(nextMode);
-      window.localStorage.setItem(NAV_DISPLAY_MODE_STORAGE_KEY, nextMode);
-      modeSwitchSwapTimerRef.current = null;
-    }, 200);
-
-    // 480ms（动画完全结束）：再切场景和会话，避免 tab 文字在动画期间闪动
-    modeSwitchTimerRef.current = window.setTimeout(() => {
-      setIsModeSwitching(false);
-      modeSwitchTimerRef.current = null;
-      if (nextMode === 'assistant') {
-        void handleOpenAssistantModeSession();
-      } else {
-        void handleOpenProModeSession();
-      }
-    }, 480);
-  }, [navDisplayMode, handleOpenAssistantModeSession, handleOpenProModeSession]);
-
-  let flatCounter = 0;
+  }, [isAgentsActive, isSkillsActive]);
 
   const workspaceMenuPortal = workspaceMenuOpen ? createPortal(
     <div
@@ -596,10 +385,7 @@ const MainNav: React.FC<MainNavProps> = ({
         type="button"
         className="bitfun-nav-panel__workspace-menu-item"
         role="menuitem"
-        onClick={() => {
-          closeWorkspaceMenu();
-          void handleOpenProject();
-        }}
+        onClick={() => { closeWorkspaceMenu(); void handleOpenProject(); }}
       >
         <FolderOpen size={13} />
         <span>{t('header.openProject')}</span>
@@ -608,10 +394,7 @@ const MainNav: React.FC<MainNavProps> = ({
         type="button"
         className="bitfun-nav-panel__workspace-menu-item"
         role="menuitem"
-        onClick={() => {
-          closeWorkspaceMenu();
-          handleNewProject();
-        }}
+        onClick={() => { closeWorkspaceMenu(); handleNewProject(); }}
       >
         <FolderPlus size={13} />
         <span>{t('header.newProject')}</span>
@@ -638,285 +421,267 @@ const MainNav: React.FC<MainNavProps> = ({
         </div>
       ) : (
         <div className="bitfun-nav-panel__workspace-menu-workspaces">
-          {recentWorkspaces.map((workspace) => (
+          {recentWorkspaces.map((workspace) => {
+            const { hostPrefix, folderLabel, tooltip } = getRecentWorkspaceLineParts(workspace);
+            return (
             <button
               key={workspace.id}
               type="button"
               className="bitfun-nav-panel__workspace-menu-item bitfun-nav-panel__workspace-menu-item--workspace"
               role="menuitem"
-              title={workspace.rootPath}
+              title={tooltip}
               onClick={() => { void handleSwitchWorkspace(workspace.id); }}
             >
               <FolderOpen size={13} aria-hidden="true" />
-              <span className="bitfun-nav-panel__workspace-menu-item-main">{workspace.name}</span>
+              <span className="bitfun-nav-panel__workspace-menu-item-main">
+                {hostPrefix ? (
+                  <>
+                    <span className="bitfun-nav-panel__workspace-menu-item-host">{hostPrefix}</span>
+                    <span className="bitfun-nav-panel__workspace-menu-item-host-sep" aria-hidden>
+                      ·
+                    </span>
+                  </>
+                ) : null}
+                <span className="bitfun-nav-panel__workspace-menu-item-name">{folderLabel}</span>
+              </span>
               {workspace.id === currentWorkspace?.id ? <Check size={12} aria-hidden="true" /> : null}
             </button>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>,
     document.body
   ) : null;
 
-  const personaTooltip = t('nav.items.persona');
-  const createSessionTooltip = t('nav.sessions.newClawSession');
-  const createAssistantTooltip = t('nav.workspaces.actions.newAssistant');
-  const scheduledJobsTooltip = t('nav.scheduledJobs.open');
-  const openProjectTooltip = t('header.openProject');
   const createCodeTooltip = t('nav.sessions.newCodeSession');
   const createCoworkTooltip = t('nav.sessions.newCoworkSession');
-  const isAssistantNavMode = navDisplayMode === 'assistant';
-  const navModeLabel = isAssistantNavMode
-    ? t('nav.displayModes.assistant')
-    : t('nav.displayModes.pro');
-  const navModeHint = isAssistantNavMode
-    ? t('nav.displayModes.switchToPro')
-    : t('nav.displayModes.switchToAssistant');
-  const navModeDesc = isAssistantNavMode
-    ? t('nav.displayModes.assistantDesc')
-    : t('nav.displayModes.proDesc');
-  const navSections = useMemo(
-    () => NAV_SECTIONS.filter(section => isAssistantNavMode ? section.id === 'assistants' : section.id === 'workspace'),
-    [isAssistantNavMode]
-  );
-  const myAgentEntryLabel = t('nav.actions.openMyAgent');
+  const assistantTooltip = t('nav.items.persona');
+  const addWorkspaceTooltip = t('nav.tooltips.addWorkspace');
+  const isAssistantActive = activeTabId === 'assistant';
+  const agentsTooltip = t('nav.tooltips.agents');
+  const skillsTooltip = t('nav.tooltips.skills');
+  const extensionsLabel = t('nav.sections.extensions');
   return (
     <>
-      <div className="bitfun-nav-panel__workspace-toolbar">
-          <button
-            type="button"
-            className={[
-              'bitfun-nav-panel__mode-switch',
-              isAssistantNavMode && 'is-assistant',
-              isModeSwitching && 'is-switching',
-            ].filter(Boolean).join(' ')}
-            onClick={handleToggleNavDisplayMode}
-            aria-label={navModeHint}
-            aria-pressed={isAssistantNavMode}
-          >
-            <span className="bitfun-nav-panel__mode-switch-logo" aria-hidden="true">
-              {isAssistantNavMode ? (
-                <>
-                  <img
-                    className="bitfun-nav-panel__mode-switch-logo-image bitfun-nav-panel__mode-switch-logo-image--default"
-                    src={modeLogoSrc}
-                    alt=""
-                    onError={() => setModeLogoSrc('/Logo-ICON.png')}
-                  />
-                  <img
-                    className="bitfun-nav-panel__mode-switch-logo-image bitfun-nav-panel__mode-switch-logo-image--hover"
-                    src={modeLogoHoverSrc}
-                    alt=""
-                    onError={() => setModeLogoHoverSrc('/Logo-ICON.png')}
-                  />
-                </>
-              ) : (
-                <img
-                  className="bitfun-nav-panel__mode-switch-logo-image bitfun-nav-panel__mode-switch-logo-image--static"
-                  src="/Logo-ICON.png"
-                  alt=""
-                />
-              )}
-            </span>
-            <span className="bitfun-nav-panel__mode-switch-copy">
-              <span className="bitfun-nav-panel__mode-switch-label">
-                {navModeLabel}
-                {isAssistantNavMode && <Badge variant="neutral">Beta</Badge>}
-              </span>
-              <span className="bitfun-nav-panel__mode-switch-sub">
-                <span className="bitfun-nav-panel__mode-switch-desc">
-                  <span className="bitfun-nav-panel__mode-switch-desc-main">{navModeDesc}</span>
+      {/* ── Workspace search ───────────────────────── */}
+      <div className="bitfun-nav-panel__brand-header">
+        <div className="bitfun-nav-panel__brand-search">
+          <Tooltip content={t('nav.search.triggerTooltip')} placement="right" followCursor>
+            <button
+              type="button"
+              className="bitfun-nav-panel__search-trigger"
+              onClick={() => setSearchOpen(true)}
+              aria-label={t('nav.search.triggerTooltip')}
+            >
+              <span className="bitfun-nav-panel__search-trigger__icon" aria-hidden="true">
+                <span className="bitfun-nav-panel__search-trigger__icon-inner">
+                  <Search size={13} />
                 </span>
-                <span className="bitfun-nav-panel__mode-switch-hint">{navModeHint}</span>
               </span>
-            </span>
-          </button>
-        <div className="bitfun-nav-panel__workspace-create-group">
-          {isAssistantNavMode ? (
-            <>
-              <Tooltip content={createSessionTooltip} placement="right" followCursor>
-                <button
-                  type="button"
-                  className="bitfun-nav-panel__workspace-create-main bitfun-nav-panel__workspace-create-main--split-left"
-                  onClick={() => { void handleCreateAssistantSession(); }}
-                  aria-label={createSessionTooltip}
-                >
-                  <Plus size={14} />
-                  <span>{t('nav.sessions.newSession')}</span>
-                </button>
-              </Tooltip>
-              <Tooltip content={scheduledJobsTooltip} placement="right" followCursor>
-                <button
-                  type="button"
-                  className="bitfun-nav-panel__workspace-create-main bitfun-nav-panel__workspace-create-main--split-right"
-                  onClick={handleOpenScheduledJobsDialog}
-                  aria-label={scheduledJobsTooltip}
-                  disabled={!resolvedAssistantWorkspace}
-                >
-                  <Clock3 size={14} />
-                  <span>{t('nav.scheduledJobs.shortLabel')}</span>
-                </button>
-              </Tooltip>
-            </>
-          ) : (
-            <>
-              <Tooltip content={createCodeTooltip} placement="right" followCursor>
-                <button
-                  type="button"
-                  className="bitfun-nav-panel__workspace-create-main bitfun-nav-panel__workspace-create-main--split-left"
-                  onClick={handleCreateCodeSession}
-                  aria-label={createCodeTooltip}
-                >
-                  <Plus size={14} />
-                  <span>{t('nav.sessions.modeCode')}</span>
-                </button>
-              </Tooltip>
-              <Tooltip content={createCoworkTooltip} placement="right" followCursor>
-                <button
-                  type="button"
-                  className="bitfun-nav-panel__workspace-create-main bitfun-nav-panel__workspace-create-main--split-right"
-                  onClick={handleCreateCoworkSession}
-                  aria-label={createCoworkTooltip}
-                >
-                  <Plus size={14} />
-                  <span>{t('nav.sessions.modeCowork')}</span>
-                </button>
-              </Tooltip>
-            </>
-          )}
+              <span className="bitfun-nav-panel__search-trigger__label">
+                {t('nav.search.triggerPlaceholder')}
+              </span>
+            </button>
+          </Tooltip>
+          <NavSearchDialog open={searchOpen} onClose={() => setSearchOpen(false)} />
         </div>
       </div>
 
-      <div className={`bitfun-nav-panel__sections${isModeSwitching ? ' is-mode-switching' : ''}`}>
-        {navSections.map(section => {
-          const isSectionOpen = expandedSections.has(section.id);
-          const isCollapsible = !!section.collapsible;
-          const showItems     = !isCollapsible || isSectionOpen;
-          const sectionDir    = getSectionDepartDir(section.id);
-          const sectionDepartCls = sectionDir ? ` is-departing-${sectionDir}` : '';
-
-          const sectionSceneId = section.sceneId;
-
-          return (
-            <div key={section.id} className={`bitfun-nav-panel__section${sectionDepartCls}`}>
-              {section.label && (
-                <SectionHeader
-                  label={getSectionLabel(section.id, section.label) ?? section.label}
-                  collapsible={isCollapsible}
-                  isOpen={isSectionOpen}
-                  onToggle={() => toggleSection(section.id)}
-                  onSceneOpen={sectionSceneId ? () => openScene(sectionSceneId) : undefined}
-                  actions={section.id === 'assistants' ? (
-                    <div className="bitfun-nav-panel__workspace-action-wrap">
-                      <Tooltip content={createAssistantTooltip} placement="right" followCursor>
-                        <button
-                          type="button"
-                          className="bitfun-nav-panel__section-action"
-                          aria-label={createAssistantTooltip}
-                          onClick={() => { void handleCreateAssistantWorkspace(); }}
-                        >
-                          <Plus size={13} />
-                        </button>
-                      </Tooltip>
-                    </div>
-                  ) : section.id === 'workspace' ? (
-                    <div className="bitfun-nav-panel__workspace-action-wrap">
-                      <Tooltip content={openProjectTooltip} placement="right" followCursor disabled={workspaceMenuOpen}>
-                        <button
-                          ref={workspaceMenuButtonRef}
-                          type="button"
-                          className={`bitfun-nav-panel__section-action${workspaceMenuOpen ? ' is-active' : ''}`}
-                          aria-label={openProjectTooltip}
-                          aria-expanded={workspaceMenuOpen}
-                          onClick={toggleWorkspaceMenu}
-                        >
-                          <Plus size={13} />
-                        </button>
-                      </Tooltip>
-                    </div>
-                  ) : undefined}
-                />
-              )}
-
-              <div className={`bitfun-nav-panel__collapsible${showItems ? '' : ' is-collapsed'}`}>
-                <div className="bitfun-nav-panel__collapsible-inner">
-                  <div className="bitfun-nav-panel__items">
-                    {section.id === 'assistants' && <WorkspaceListSection variant="assistants" />}
-                    {section.id === 'workspace' && <WorkspaceListSection variant="projects" />}
-                    {section.items.map(item => {
-                      const currentFlatIdx = flatCounter++;
-                      const { tab } = item;
-                      const dir = getDepartDir(currentFlatIdx);
-                      const isActive = item.navSceneId
-                        ? false
-                        : item.sceneId
-                          ? item.sceneId === activeTabId
-                          : activeTabId === 'session' && tab === activeTab;
-                      const displayLabel = item.labelKey ? t(item.labelKey) : (item.label ?? '');
-                      const tooltipContent = item.tooltipKey ? t(item.tooltipKey) : undefined;
-                      const departCls = dir ? ` is-departing-${dir}` : '';
-
-                      return (
-                        <div key={tab} className={`bitfun-nav-panel__item-slot${departCls}`}>
-                          <NavItem
-                            item={item}
-                            displayLabel={displayLabel}
-                            tooltipContent={tooltipContent}
-                            isActive={isActive}
-                            onClick={() => handleItemClick(tab, item)}
-                            actionIcon={tab === 'sessions' ? Plus : undefined}
-                            actionTitle={
-                              tab === 'sessions'
-                                ? isAssistantWorkspaceActive
-                                  ? t('nav.sessions.newClawSession')
-                                  : t('nav.sessions.newCodeSession')
-                                : undefined
-                            }
-                            onActionClick={tab === 'sessions' ? handleCreateSession : undefined}
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="bitfun-nav-panel__assistant-footer">
-        <Tooltip content={personaTooltip} placement="right" followCursor>
+      {/* ── Top action strip ────────────────────────── */}
+      <div className="bitfun-nav-panel__top-actions">
+        <Tooltip content={createCodeTooltip} placement="right" followCursor>
           <button
             type="button"
-            className={`bitfun-nav-panel__assistant-entry${activeTabId === 'my-agent' ? ' is-active' : ''}`}
-            onClick={handleOpenProfile}
-            aria-label={myAgentEntryLabel}
+            className="bitfun-nav-panel__top-action-btn"
+            onClick={handleCreateCodeSession}
+            aria-label={createCodeTooltip}
           >
-            <span className="bitfun-nav-panel__assistant-entry-label">{myAgentEntryLabel}</span>
+            <span className="bitfun-nav-panel__top-action-icon-circle" aria-hidden="true">
+              <Plus size={12} />
+            </span>
+            <span>{t('nav.sessions.newCodeSessionShort')}</span>
           </button>
         </Tooltip>
+
+        <Tooltip content={createCoworkTooltip} placement="right" followCursor>
+          <button
+            type="button"
+            className="bitfun-nav-panel__top-action-btn"
+            onClick={handleCreateCoworkSession}
+            aria-label={createCoworkTooltip}
+          >
+            <span className="bitfun-nav-panel__top-action-icon-circle" aria-hidden="true">
+              <Plus size={12} />
+            </span>
+            <span>{t('nav.sessions.newCoworkSessionShort')}</span>
+          </button>
+        </Tooltip>
+
+        <Tooltip content={assistantTooltip} placement="right" followCursor>
+          <button
+            type="button"
+            className={`bitfun-nav-panel__top-action-btn${isAssistantActive ? ' is-active' : ''}`}
+            onClick={handleOpenAssistant}
+            aria-label={assistantTooltip}
+          >
+            <span className="bitfun-nav-panel__top-action-icon-slot" aria-hidden="true">
+              <User size={15} />
+            </span>
+            <span>{t('nav.items.persona')}</span>
+          </button>
+        </Tooltip>
+
+        <div className="bitfun-nav-panel__top-action-expand">
+          <Tooltip content={extensionsLabel} placement="right" followCursor>
+            <button
+              type="button"
+              className={[
+                'bitfun-nav-panel__top-action-btn',
+                'bitfun-nav-panel__top-action-btn--expand',
+                isExtensionsOpen ? 'is-open' : '',
+              ].filter(Boolean).join(' ')}
+              onClick={() => setIsExtensionsOpen(v => !v)}
+              aria-expanded={isExtensionsOpen}
+              aria-label={extensionsLabel}
+            >
+              <span className="bitfun-nav-panel__top-action-expand-icons" aria-hidden="true">
+                <Blocks size={15} className="bitfun-nav-panel__top-action-expand-icon-default" />
+                <ChevronDown
+                  size={15}
+                  className={[
+                    'bitfun-nav-panel__top-action-expand-icon-chevron',
+                    isExtensionsOpen ? 'is-open' : '',
+                  ].filter(Boolean).join(' ')}
+                />
+              </span>
+              <span>{extensionsLabel}</span>
+            </button>
+          </Tooltip>
+
+          <div className={`bitfun-nav-panel__top-action-sublist${isExtensionsOpen ? ' is-open' : ''}`}>
+            <Tooltip content={agentsTooltip} placement="right" followCursor>
+              <button
+                type="button"
+                className={[
+                  'bitfun-nav-panel__top-action-btn',
+                  'bitfun-nav-panel__top-action-btn--sub',
+                  isAgentsActive ? 'is-active' : '',
+                ].filter(Boolean).join(' ')}
+                onClick={handleOpenAgents}
+                aria-label={agentsTooltip}
+              >
+                <span className="bitfun-nav-panel__top-action-icon-slot" aria-hidden="true">
+                  <Users size={15} />
+                </span>
+                <span>{t('nav.items.agents')}</span>
+              </button>
+            </Tooltip>
+
+            <Tooltip content={skillsTooltip} placement="right" followCursor>
+              <button
+                type="button"
+                className={[
+                  'bitfun-nav-panel__top-action-btn',
+                  'bitfun-nav-panel__top-action-btn--sub',
+                  isSkillsActive ? 'is-active' : '',
+                ].filter(Boolean).join(' ')}
+                onClick={handleOpenSkills}
+                aria-label={skillsTooltip}
+              >
+                <span className="bitfun-nav-panel__top-action-icon-slot" aria-hidden="true">
+                  <Puzzle size={15} />
+                </span>
+                <span>{t('nav.items.skills')}</span>
+              </button>
+            </Tooltip>
+          </div>
+        </div>
       </div>
 
-      <div className="bitfun-nav-panel__miniapp-footer">
-        <MiniAppEntry
-          isActive={activeTabId === 'miniapps' || !!activeMiniAppId}
-          activeMiniAppId={activeMiniAppId}
-          onOpenMiniApps={() => openScene('miniapps')}
-          onOpenMiniApp={(appId) => openScene(`miniapp:${appId}`)}
-        />
+      {/* ── Sections ────────────────────────────────── */}
+      <div className="bitfun-nav-panel__sections">
+
+        {/* Assistant sessions */}
+        <div className="bitfun-nav-panel__section">
+          <SectionHeader
+            label={t('nav.sections.assistantSessions')}
+            collapsible
+            isOpen={expandedSections.has('assistant-sessions')}
+            onToggle={() => toggleSection('assistant-sessions')}
+          />
+          <div className={`bitfun-nav-panel__collapsible${expandedSections.has('assistant-sessions') ? '' : ' is-collapsed'}`}>
+            <div className="bitfun-nav-panel__collapsible-inner">
+              <div className="bitfun-nav-panel__items bitfun-nav-panel__items--session-blocks">
+                {assistantWorkspacesList.map(workspace => {
+                  const assistantDisplayName =
+                    workspace.workspaceKind === WorkspaceKind.Assistant
+                      ? workspace.identity?.name?.trim() || workspace.name
+                      : workspace.name;
+                  return (
+                    <SessionsSection
+                      key={workspace.id}
+                      workspaceId={workspace.id}
+                      workspacePath={workspace.rootPath}
+                      remoteConnectionId={isRemoteWorkspace(workspace) ? workspace.connectionId : null}
+                      isActiveWorkspace={workspace.id === currentWorkspace?.id}
+                      assistantLabel={assistantDisplayName}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Workspace */}
+        <div className="bitfun-nav-panel__section">
+          <SectionHeader
+            label={t('nav.sections.workspace')}
+            collapsible
+            isOpen={expandedSections.has('workspace')}
+            onToggle={() => toggleSection('workspace')}
+            actions={
+              <div className="bitfun-nav-panel__workspace-action-wrap">
+                <Tooltip content={addWorkspaceTooltip} placement="right" followCursor disabled={workspaceMenuOpen}>
+                  <button
+                    ref={workspaceMenuButtonRef}
+                    type="button"
+                    className={`bitfun-nav-panel__section-action${workspaceMenuOpen ? ' is-active' : ''}`}
+                    aria-label={addWorkspaceTooltip}
+                    aria-expanded={workspaceMenuOpen}
+                    onClick={toggleWorkspaceMenu}
+                  >
+                    <Plus size="var(--bitfun-nav-row-action-icon-size)" />
+                  </button>
+                </Tooltip>
+              </div>
+            }
+          />
+          <div className={`bitfun-nav-panel__collapsible${expandedSections.has('workspace') ? '' : ' is-collapsed'}`}>
+            <div className="bitfun-nav-panel__collapsible-inner">
+              <div className="bitfun-nav-panel__items">
+                <WorkspaceListSection variant="projects" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      {/* ── Bottom: MiniApp ───────────────────────── */}
+      <div className="bitfun-nav-panel__bottom-bar">
+        <div className="bitfun-nav-panel__miniapp-footer">
+          <MiniAppEntry
+            isActive={activeTabId === 'miniapps' || !!activeMiniAppId}
+            activeMiniAppId={activeMiniAppId}
+            onOpenMiniApps={() => openScene('miniapps')}
+            onOpenMiniApp={(appId) => openScene(`miniapp:${appId}`)}
+          />
+        </div>
       </div>
 
       {workspaceMenuPortal}
-      <ScheduledJobsDialog
-        isOpen={isScheduledJobsDialogOpen}
-        onClose={() => setIsScheduledJobsDialogOpen(false)}
-        targetWorkspacePath={resolvedAssistantWorkspace?.rootPath}
-        targetSessionId={resolvedAssistantSessionId}
-        assistantName={resolvedAssistantDisplayName}
-        hideTargetFields
-        listScope="workspace"
-      />
 
       {/* SSH Remote Dialogs */}
       <SSHConnectionDialog
@@ -926,10 +691,20 @@ const MainNav: React.FC<MainNavProps> = ({
       {sshRemote.showFileBrowser && sshRemote.connectionId && (
         <RemoteFileBrowser
           connectionId={sshRemote.connectionId}
+          initialPath={sshRemote.remoteFileBrowserInitialPath}
+          homePath={sshRemote.remoteFileBrowserInitialPath}
           onSelect={handleSelectRemoteWorkspace}
           onCancel={() => {
+            const hasActiveRemoteWorkspace =
+              Boolean(sshRemote.remoteWorkspace) ||
+              openedWorkspacesList.some(workspace =>
+                isRemoteWorkspace(workspace) &&
+                workspace.connectionId === sshRemote.connectionId
+              );
             sshRemote.setShowFileBrowser(false);
-            void sshRemote.disconnect();
+            if (!hasActiveRemoteWorkspace) {
+              void sshRemote.disconnect();
+            }
           }}
         />
       )}

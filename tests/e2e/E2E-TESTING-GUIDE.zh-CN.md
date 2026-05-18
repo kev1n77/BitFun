@@ -2,7 +2,7 @@
 
 # BitFun E2E 测试指南
 
-使用 WebDriverIO + tauri-driver 进行 BitFun 项目的端到端测试完整指南。
+使用 WebDriverIO + BitFun 内嵌 WebDriver 进行 BitFun 项目的端到端测试完整指南。
 
 ## 目录
 
@@ -112,23 +112,21 @@ BitFun 使用三级测试分类系统：
 安装必需的依赖：
 
 ```bash
-# 安装 tauri-driver
-cargo install tauri-driver --locked
-
-# 构建应用（从项目根目录）
-pnpm run desktop:build
-
 # 安装 E2E 测试依赖
 cd tests/e2e
 pnpm install
+
+# 构建应用（从项目根目录）
+cd ../..
+cargo build -p bitfun-desktop
 ```
 
 ### 2. 验证安装
 
 检查应用二进制文件是否存在：
 
-**Windows**: `target/release/bitfun-desktop.exe`
-**Linux/macOS**: `target/release/bitfun-desktop`
+**Windows**: `target/debug/bitfun-desktop.exe`
+**Linux/macOS**: `target/debug/bitfun-desktop`
 
 ### 3. 运行测试
 
@@ -150,14 +148,9 @@ pnpm test -- --spec ./specs/l0-smoke.spec.ts
 
 ### 4. 测试运行模式（Release vs Dev）
 
-测试框架支持两种运行模式：
+测试框架统一运行在 debug/dev 模式：
 
-#### Release 模式（默认）
-- **应用路径**: `target/release/bitfun-desktop.exe`
-- **特点**: 优化构建、快速启动、生产就绪
-- **使用场景**: CI/CD、正式测试
-
-#### Dev 模式
+#### Debug 模式（默认）
 - **应用路径**: `target/debug/bitfun-desktop.exe`
 - **特点**: 包含调试符号、需要 dev server（端口 1422）
 - **使用场景**: 本地开发、快速迭代
@@ -167,15 +160,12 @@ pnpm test -- --spec ./specs/l0-smoke.spec.ts
 运行测试时，查看输出的前几行：
 
 ```bash
-# Release 模式输出
-application: <PROJECT_ROOT>\target\release\bitfun-desktop.exe
-
-# Dev 模式输出
+# Debug 模式输出
 application: <PROJECT_ROOT>\target\debug\bitfun-desktop.exe
 Debug build detected, checking dev server...
 ```
 
-**核心原理**: 测试框架优先使用 `target/release/bitfun-desktop.exe`。如果不存在，则自动使用 `target/debug/bitfun-desktop.exe`。
+**核心原理**: E2E 只使用 `target/debug/bitfun-desktop.exe`。如果 debug 二进制不存在，应直接失败，而不是回退到 `release`。
 
 ## 测试结构
 
@@ -403,37 +393,35 @@ it('当工作区打开时应测试功能', async function () {
 
 ### 常见问题
 
-#### 1. tauri-driver 找不到
+#### 1. 内嵌 WebDriver 无法连接
 
-**症状**: `Error: spawn tauri-driver ENOENT`
+**症状**: 对 `http://127.0.0.1:4445` 的 `/status` 或创建 session 请求失败
 
 **解决方案**:
 ```bash
-# 安装或更新 tauri-driver
-cargo install tauri-driver --locked
+# 构建 debug 桌面应用
+cargo build -p bitfun-desktop
 
-# 验证安装
-tauri-driver --version
+# 用 debug 模式运行测试，BitFun 会在进程内启动 WebDriver
+BITFUN_E2E_APP_MODE=debug pnpm --dir tests/e2e run test:l0:protocol
 
-# 确保 ~/.cargo/bin 在 PATH 中
-echo $PATH  # macOS/Linux
-echo %PATH% # Windows
+# 确认应用进程可以监听 127.0.0.1:4445
 ```
 
 #### 2. 应用未构建
 
-**症状**: `Application not found at target/release/bitfun-desktop.exe`
+**症状**: `Application not found at target/debug/bitfun-desktop.exe`
 
 **解决方案**:
 ```bash
 # 构建应用（从项目根目录）
-pnpm run desktop:build
+cargo build -p bitfun-desktop
 
 # 验证二进制文件存在
 # Windows
-dir target\release\bitfun-desktop.exe
+dir target\debug\bitfun-desktop.exe
 # Linux/macOS
-ls -la target/release/bitfun-desktop
+ls -la target/debug/bitfun-desktop
 ```
 
 #### 3. 测试超时
@@ -574,14 +562,12 @@ jobs:
           cache: 'pnpm'
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-      - name: 安装 tauri-driver
-        run: cargo install tauri-driver --locked
       - name: 构建应用
-        run: pnpm run desktop:build
+        run: cargo build -p bitfun-desktop
       - name: 安装测试依赖
         run: cd tests/e2e && pnpm install
       - name: 运行 L0 测试
-        run: cd tests/e2e && pnpm run test:l0:all
+        run: cd tests/e2e && BITFUN_E2E_APP_MODE=debug pnpm run test:l0:all
         
   l1-tests:
     runs-on: windows-latest
@@ -590,9 +576,9 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: 构建应用
-        run: pnpm run desktop:build
+        run: cargo build -p bitfun-desktop
       - name: 运行 L1 测试
-        run: cd tests/e2e && pnpm run test:l1
+        run: cd tests/e2e && BITFUN_E2E_APP_MODE=debug pnpm run test:l1
 ```
 
 ### 测试执行矩阵

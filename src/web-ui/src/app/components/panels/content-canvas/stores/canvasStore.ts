@@ -68,6 +68,9 @@ interface CanvasStoreActions {
   
   /** Set tab dirty state */
   setTabDirty: (tabId: string, groupId: EditorGroupId, isDirty: boolean) => void;
+
+  /** Mark whether the tab's file is missing on disk (editor-detected) */
+  setTabFileDeletedFromDisk: (tabId: string, groupId: EditorGroupId, deleted: boolean) => void;
   
   /** Promote tab state (preview -> active) */
   promoteTab: (tabId: string, groupId: EditorGroupId) => void;
@@ -641,6 +644,16 @@ const createCanvasStoreHook = () => create<CanvasStore>()(
           }
         });
       },
+
+      setTabFileDeletedFromDisk: (tabId, groupId, deleted) => {
+        set((draft) => {
+          const group = getGroup(draft, groupId);
+          const tab = group.tabs.find(t => t.id === tabId);
+          if (tab) {
+            tab.fileDeletedFromDisk = deleted;
+          }
+        });
+      },
       
       promoteTab: (tabId, groupId) => {
         set((draft) => {
@@ -1057,7 +1070,7 @@ const createCanvasStoreHook = () => create<CanvasStore>()(
     }))
 );
 
-export type CanvasStoreMode = 'agent' | 'project' | 'git';
+export type CanvasStoreMode = 'agent' | 'project' | 'git' | 'panel-view';
 
 /**
  * Selects which canvas store instance is used by the current subtree.
@@ -1068,19 +1081,139 @@ export const CanvasStoreModeContext = createContext<CanvasStoreMode>('agent');
 export const useAgentCanvasStore = createCanvasStoreHook();
 export const useProjectCanvasStore = createCanvasStoreHook();
 export const useGitCanvasStore = createCanvasStoreHook();
+export const usePanelViewCanvasStore = createCanvasStoreHook();
 
-const pickStoreByMode = (mode: CanvasStoreMode) => {
-  if (mode === 'project') return useProjectCanvasStore;
-  if (mode === 'git') return useGitCanvasStore;
-  return useAgentCanvasStore;
-};
+// ==================== Agent canvas: per-workspace snapshots (AuxPane / Session scene) ====================
+// Switching active workspace saves the current agent canvas under the previous workspace id and restores
+// the snapshot for the next id, so remote/local tabs coexist across workspace switches.
+
+const AGENT_CANVAS_SNAPSHOT_MAX = 12;
+const agentWorkspaceSnapshots = new Map<string, CanvasStoreState>();
+const agentSnapshotLruOrder: string[] = [];
+/** Dedupes React Strict Mode double-invoke when `prev` is null (ref reset on remount). */
+let lastAgentCanvasSwitchTargetKey: string | null = null;
+
+function normalizeAgentWorkspaceKey(id: string | null | undefined): string {
+  return id ?? '__none__';
+}
+
+function extractAgentPersistableState(state: CanvasStore): CanvasStoreState {
+  return {
+    primaryGroup: state.primaryGroup,
+    secondaryGroup: state.secondaryGroup,
+    tertiaryGroup: state.tertiaryGroup,
+    activeGroupId: state.activeGroupId,
+    layout: state.layout,
+    isMissionControlOpen: state.isMissionControlOpen,
+    draggingTabId: state.draggingTabId,
+    draggingFromGroupId: state.draggingFromGroupId,
+    closedTabs: state.closedTabs,
+    maxClosedTabsHistory: state.maxClosedTabsHistory,
+  };
+}
+
+function rememberAgentSnapshot(key: string, snapshot: CanvasStoreState): void {
+  const clone = structuredClone(snapshot);
+  clone.draggingTabId = null;
+  clone.draggingFromGroupId = null;
+  agentWorkspaceSnapshots.set(key, clone);
+  const idx = agentSnapshotLruOrder.indexOf(key);
+  if (idx >= 0) agentSnapshotLruOrder.splice(idx, 1);
+  agentSnapshotLruOrder.push(key);
+  while (agentWorkspaceSnapshots.size > AGENT_CANVAS_SNAPSHOT_MAX) {
+    const evict = agentSnapshotLruOrder.shift();
+    if (!evict) break;
+    agentWorkspaceSnapshots.delete(evict);
+  }
+}
+
+function applyEmptyAgentCanvas(): void {
+  useAgentCanvasStore.setState({
+    primaryGroup: createEditorGroupState(),
+    secondaryGroup: createEditorGroupState(),
+    tertiaryGroup: createEditorGroupState(),
+    activeGroupId: 'primary',
+    layout: createLayoutState(),
+    isMissionControlOpen: false,
+    draggingTabId: null,
+    draggingFromGroupId: null,
+    closedTabs: [],
+    maxClosedTabsHistory: initialState.maxClosedTabsHistory,
+  });
+}
+
+/**
+ * Save the current agent canvas under `prevWorkspaceId` (unless first mount) and restore the snapshot
+ * for `nextWorkspaceId` (or empty canvas if none). Capture target snapshot before LRU eviction.
+ */
+export function switchAgentCanvasWorkspace(
+  prevWorkspaceId: string | null | undefined,
+  nextWorkspaceId: string | null | undefined
+): void {
+  const from =
+    prevWorkspaceId === null || prevWorkspaceId === undefined
+      ? null
+      : normalizeAgentWorkspaceKey(prevWorkspaceId);
+  const to = normalizeAgentWorkspaceKey(nextWorkspaceId);
+
+  if (from === null && lastAgentCanvasSwitchTargetKey === to) {
+    return;
+  }
+
+  const rawNext = agentWorkspaceSnapshots.get(to);
+  const nextSnapshotClone = rawNext ? structuredClone(rawNext) : null;
+
+  if (from !== null) {
+    const current = extractAgentPersistableState(useAgentCanvasStore.getState() as CanvasStore);
+    rememberAgentSnapshot(from, current);
+  }
+
+  if (nextSnapshotClone) {
+    useAgentCanvasStore.setState({
+      primaryGroup: nextSnapshotClone.primaryGroup,
+      secondaryGroup: nextSnapshotClone.secondaryGroup,
+      tertiaryGroup: nextSnapshotClone.tertiaryGroup,
+      activeGroupId: nextSnapshotClone.activeGroupId,
+      layout: nextSnapshotClone.layout,
+      isMissionControlOpen: false,
+      draggingTabId: null,
+      draggingFromGroupId: null,
+      closedTabs: nextSnapshotClone.closedTabs,
+      maxClosedTabsHistory: nextSnapshotClone.maxClosedTabsHistory,
+    });
+  } else {
+    applyEmptyAgentCanvas();
+  }
+
+  lastAgentCanvasSwitchTargetKey = to;
+}
+
+/** Drop cached canvas for a closed workspace (does not touch the live canvas unless user switches back). */
+export function removeAgentCanvasSnapshot(workspaceId: string): void {
+  const key = normalizeAgentWorkspaceKey(workspaceId);
+  agentWorkspaceSnapshots.delete(key);
+  const idx = agentSnapshotLruOrder.indexOf(key);
+  if (idx >= 0) agentSnapshotLruOrder.splice(idx, 1);
+}
+
+const selectWholeCanvasStore = (state: CanvasStore) => state;
 
 export function useCanvasStore(): CanvasStore;
 export function useCanvasStore<T>(selector: (state: CanvasStore) => T): T;
 export function useCanvasStore<T>(selector?: (state: CanvasStore) => T): T | CanvasStore {
   const mode = useContext(CanvasStoreModeContext);
-  const useScopedStore = pickStoreByMode(mode);
-  return selector ? useScopedStore(selector) : useScopedStore();
+  const resolvedSelector = (selector ?? selectWholeCanvasStore) as (state: CanvasStore) => T | CanvasStore;
+
+  // Keep hook order stable across mode switches by subscribing to each scoped store.
+  const agentValue = useAgentCanvasStore(resolvedSelector);
+  const projectValue = useProjectCanvasStore(resolvedSelector);
+  const gitValue = useGitCanvasStore(resolvedSelector);
+  const panelViewValue = usePanelViewCanvasStore(resolvedSelector);
+
+  if (mode === 'project') return projectValue;
+  if (mode === 'git') return gitValue;
+  if (mode === 'panel-view') return panelViewValue;
+  return agentValue;
 }
 
 // ==================== Selector Hooks ====================

@@ -13,6 +13,13 @@ export interface SessionTitleGeneratedEvent {
   timestamp: number;
 }
 
+export interface SessionModelAutoMigratedEvent {
+  sessionId: string;
+  previousModelId: string;
+  newModelId: string;
+  reason: string;
+}
+
  
 export interface SessionConfig {
   modelName?: string;
@@ -23,6 +30,8 @@ export interface SessionConfig {
   maxTurns?: number;
   enableContextCompression?: boolean;
   compressionThreshold?: number;
+  remoteConnectionId?: string;
+  remoteSshHost?: string;
 }
 
  
@@ -31,6 +40,9 @@ export interface CreateSessionRequest {
   sessionName: string;
   agentType: string;
   workspacePath: string;
+  remoteConnectionId?: string;
+  remoteSshHost?: string;
+  sessionKind?: 'standard' | 'subagent';
   config?: SessionConfig;
 }
 
@@ -51,6 +63,14 @@ export interface StartDialogTurnRequest {
   workspacePath?: string;
   /** Optional multimodal image contexts (snake_case fields, aligned with backend ImageContextData). */
   imageContexts?: ImageInputContextData[];
+  userMessageMetadata?: Record<string, unknown>;
+}
+
+export interface CompactSessionRequest {
+  sessionId: string;
+  workspacePath?: string;
+  remoteConnectionId?: string;
+  remoteSshHost?: string;
 }
 
  
@@ -90,13 +110,14 @@ export interface UpdateSessionModelRequest {
   modelName: string;
 }
 
- 
-export interface Message {
-  id: string;
-  role: 'user' | 'assistant' | 'tool' | 'system';
-  content: any;
-  timestamp: number;
+export interface UpdateSessionTitleRequest {
+  sessionId: string;
+  title: string;
+  workspacePath?: string;
+  remoteConnectionId?: string;
+  remoteSshHost?: string;
 }
+
  
 export interface ModeInfo {
   id: string;
@@ -105,7 +126,6 @@ export interface ModeInfo {
   isReadonly: boolean;
   toolCount: number;
   defaultTools?: string[];
-  enabled: boolean;
 }
 
 
@@ -136,12 +156,82 @@ export interface ToolEvent extends AgenticEvent {
   subagentParentInfo?: SubagentParentInfo;
 }
 
+export type DeepReviewQueueStatus =
+  | 'queued_for_capacity'
+  | 'paused_by_user'
+  | 'running'
+  | 'capacity_skipped';
+
+export type DeepReviewQueueReason =
+  | 'provider_rate_limit'
+  | 'provider_concurrency_limit'
+  | 'retry_after'
+  | 'local_concurrency_cap'
+  | 'launch_batch_blocked'
+  | 'temporary_overload';
+
+export interface DeepReviewQueueStateEventData {
+  toolId: string;
+  subagentType: string;
+  status: DeepReviewQueueStatus;
+  reason?: DeepReviewQueueReason;
+  queuedReviewerCount: number;
+  activeReviewerCount?: number;
+  effectiveParallelInstances?: number;
+  optionalReviewerCount?: number;
+  queueElapsedMs?: number;
+  runElapsedMs?: number;
+  maxQueueWaitSeconds?: number;
+  sessionConcurrencyHigh?: boolean;
+}
+
+export interface DeepReviewQueueStateChangedEvent extends AgenticEvent {
+  queueState: DeepReviewQueueStateEventData;
+}
+
+export type DeepReviewQueueControlAction =
+  | 'pause'
+  | 'continue'
+  | 'cancel'
+  | 'skip_optional';
+
+export interface DeepReviewQueueControlRequest {
+  sessionId: string;
+  dialogTurnId: string;
+  toolId: string;
+  action: DeepReviewQueueControlAction;
+}
+
  
 export interface ImageAnalysisEvent extends AgenticEvent {
   imageCount?: number;
   userInput?: string;
   success?: boolean;
   durationMs?: number;
+}
+
+export interface UserSteeringInjectedEvent extends AgenticEvent {
+  turnId: string;
+  roundIndex: number;
+  steeringId: string;
+  content: string;
+  displayContent: string;
+}
+
+export interface ModelRoundCompletedEvent extends AgenticEvent {
+  turnId: string;
+  roundId: string;
+  hasToolCalls?: boolean;
+  durationMs?: number;
+  providerId?: string;
+  modelId?: string;
+  modelAlias?: string;
+  firstChunkMs?: number;
+  firstVisibleOutputMs?: number;
+  streamDurationMs?: number;
+  attemptCount?: number;
+  failureCategory?: string;
+  tokenDetails?: unknown;
 }
 
 export interface CompressionEvent extends AgenticEvent {
@@ -157,6 +247,7 @@ export interface CompressionEvent extends AgenticEvent {
   compressionRatio?: number;       
   durationMs?: number;             
   hasSummary?: boolean;            
+  summarySource?: 'model' | 'local_fallback' | 'none';
   
   error?: string;                  
   subagentParentInfo?: SubagentParentInfo;
@@ -188,6 +279,14 @@ export class AgentAPI {
     }
   }
 
+  async compactSession(request: CompactSessionRequest): Promise<{ success: boolean; message: string }> {
+    try {
+      return await api.invoke<{ success: boolean; message: string }>('compact_session', { request });
+    } catch (error) {
+      throw createTauriCommandError('compact_session', error, request);
+    }
+  }
+
   async ensureAssistantBootstrap(
     request: EnsureAssistantBootstrapRequest
   ): Promise<EnsureAssistantBootstrapResponse> {
@@ -209,11 +308,46 @@ export class AgentAPI {
     }
   }
 
+  /**
+   * Inject a user "steering" message into the currently running dialog turn.
+   * Mirrors Codex CLI's Esc-to-steer behavior: the message is queued on the
+   * Rust side and consumed by the execution engine at the next round boundary
+   * without ending the current turn.
+   */
+  async steerDialogTurn(request: {
+    sessionId: string;
+    dialogTurnId: string;
+    content: string;
+    displayContent?: string;
+  }): Promise<{ success: boolean; steeringId: string }> {
+    try {
+      return await api.invoke<{ success: boolean; steeringId: string }>(
+        'steer_dialog_turn',
+        { request },
+      );
+    } catch (error) {
+      throw createTauriCommandError('steer_dialog_turn', error, request);
+    }
+  }
+
+  async controlDeepReviewQueue(request: DeepReviewQueueControlRequest): Promise<void> {
+    try {
+      await api.invoke<void>('control_deep_review_queue', { request });
+    } catch (error) {
+      throw createTauriCommandError('control_deep_review_queue', error, request);
+    }
+  }
+
    
-  async deleteSession(sessionId: string, workspacePath: string): Promise<void> {
+  async deleteSession(
+    sessionId: string,
+    workspacePath: string,
+    remoteConnectionId?: string,
+    remoteSshHost?: string
+  ): Promise<void> {
     try {
       await api.invoke<void>('delete_session', { 
-        request: { sessionId, workspacePath } 
+        request: { sessionId, workspacePath, remoteConnectionId, remoteSshHost } 
       });
     } catch (error) {
       throw createTauriCommandError('delete_session', error, { sessionId, workspacePath });
@@ -221,11 +355,35 @@ export class AgentAPI {
   }
 
    
-  async restoreSession(sessionId: string, workspacePath: string): Promise<SessionInfo> {
+  async restoreSession(
+    sessionId: string,
+    workspacePath: string,
+    remoteConnectionId?: string,
+    remoteSshHost?: string
+  ): Promise<SessionInfo> {
     try {
-      return await api.invoke<SessionInfo>('restore_session', { request: { sessionId, workspacePath } });
+      return await api.invoke<SessionInfo>('restore_session', {
+        request: { sessionId, workspacePath, remoteConnectionId, remoteSshHost },
+      });
     } catch (error) {
       throw createTauriCommandError('restore_session', error, { sessionId, workspacePath });
+    }
+  }
+
+  /**
+   * No-op if the session is already in the coordinator; otherwise loads it from disk
+   * using the same workspace path resolution as restore_session (required for SSH remote workspaces).
+   */
+  async ensureCoordinatorSession(request: {
+    sessionId: string;
+    workspacePath: string;
+    remoteConnectionId?: string;
+    remoteSshHost?: string;
+  }): Promise<void> {
+    try {
+      await api.invoke<void>('ensure_coordinator_session', { request });
+    } catch (error) {
+      throw createTauriCommandError('ensure_coordinator_session', error, request);
     }
   }
 
@@ -237,31 +395,30 @@ export class AgentAPI {
     }
   }
 
+  async updateSessionTitle(request: UpdateSessionTitleRequest): Promise<string> {
+    try {
+      return await api.invoke<string>('update_session_title', { request });
+    } catch (error) {
+      throw createTauriCommandError('update_session_title', error, request);
+    }
+  }
+
 
    
-  async listSessions(workspacePath: string): Promise<SessionInfo[]> {
+  async listSessions(
+    workspacePath: string,
+    remoteConnectionId?: string,
+    remoteSshHost?: string
+  ): Promise<SessionInfo[]> {
     try {
-      return await api.invoke<SessionInfo[]>('list_sessions', { request: { workspacePath } });
+      return await api.invoke<SessionInfo[]>('list_sessions', {
+        request: { workspacePath, remoteConnectionId, remoteSshHost },
+      });
     } catch (error) {
       throw createTauriCommandError('list_sessions', error, { workspacePath });
     }
   }
 
-   
-  async getSessionMessages(sessionId: string, limit?: number): Promise<Message[]> {
-    try {
-      return await api.invoke<Message[]>('get_session_messages', {
-        request: {
-          sessionId,
-          limit
-        }
-      });
-    } catch (error) {
-      throw createTauriCommandError('get_session_messages', error, { sessionId, limit });
-    }
-  }
-
-   
   async confirmToolExecution(sessionId: string, toolId: string): Promise<void> {
     try {
       await api.invoke<void>('confirm_tool_execution', {
@@ -304,6 +461,15 @@ export class AgentAPI {
     return api.listen<AgenticEvent>('agentic://session-state-changed', callback);
   }
 
+  onSessionModelAutoMigrated(
+    callback: (event: SessionModelAutoMigratedEvent) => void
+  ): () => void {
+    return api.listen<SessionModelAutoMigratedEvent>(
+      'agentic://session-model-auto-migrated',
+      callback
+    );
+  }
+
    
   onDialogTurnStarted(callback: (event: AgenticEvent) => void): () => void {
     return api.listen<AgenticEvent>('agentic://dialog-turn-started', callback);
@@ -312,6 +478,10 @@ export class AgentAPI {
    
   onModelRoundStarted(callback: (event: AgenticEvent) => void): () => void {
     return api.listen<AgenticEvent>('agentic://model-round-started', callback);
+  }
+
+  onModelRoundCompleted(callback: (event: ModelRoundCompletedEvent) => void): () => void {
+    return api.listen<ModelRoundCompletedEvent>('agentic://model-round-completed', callback);
   }
 
    
@@ -324,9 +494,24 @@ export class AgentAPI {
     return api.listen<ToolEvent>('agentic://tool-event', callback);
   }
 
+  onDeepReviewQueueStateChanged(
+    callback: (event: DeepReviewQueueStateChangedEvent) => void
+  ): () => void {
+    return api.listen<DeepReviewQueueStateChangedEvent>(
+      'agentic://deep-review-queue-state-changed',
+      callback
+    );
+  }
+
    
   onDialogTurnCompleted(callback: (event: AgenticEvent) => void): () => void {
     return api.listen<AgenticEvent>('agentic://dialog-turn-completed', callback);
+  }
+
+  onUserSteeringInjected(
+    callback: (event: UserSteeringInjectedEvent) => void,
+  ): () => void {
+    return api.listen<UserSteeringInjectedEvent>('agentic://user-steering-injected', callback);
   }
 
    
@@ -376,7 +561,14 @@ export class AgentAPI {
     }
   }
 
-   
+  async getDefaultReviewTeamDefinition(): Promise<unknown> {
+    try {
+      return await api.invoke<unknown>('get_default_review_team_definition');
+    } catch (error) {
+      throw createTauriCommandError('get_default_review_team_definition', error);
+    }
+  }
+
   async generateSessionTitle(
     sessionId: string,
     userMessage: string,
@@ -416,6 +608,24 @@ export class AgentAPI {
     }
   }
 
+  async setSubagentTimeout(
+    sessionId: string,
+    action: { type: 'disable' } | { type: 'restore' } | { type: 'extend'; seconds: number },
+  ): Promise<void> {
+    const actionPayload = action.type === 'disable'
+      ? { type: 'Disable' }
+      : action.type === 'restore'
+        ? { type: 'Restore' }
+        : { type: 'Extend', payload: { seconds: action.seconds } };
+    try {
+      await api.invoke<void>('set_subagent_timeout', {
+        request: { sessionId, action: actionPayload },
+      });
+    } catch (error) {
+      throw createTauriCommandError('set_subagent_timeout', error, { sessionId, action: action.type });
+    }
+  }
+
   async getAgentInfo(agentType: string): Promise<ModeInfo & { agent_type: string; when_to_use: string; tools: string; location: string }> {
     return {
       id: agentType,
@@ -423,7 +633,6 @@ export class AgentAPI {
       description: `${agentType} agent`,
       isReadonly: false,
       toolCount: 0,
-      enabled: true,
       agent_type: agentType,
       when_to_use: `Use ${agentType} for related tasks`,
       tools: 'all',

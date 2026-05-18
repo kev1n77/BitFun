@@ -1,6 +1,12 @@
  
 
-import { WorkspaceInfo, WorkspaceKind, globalStateAPI } from '../../../shared/types';
+import {
+  WorkspaceInfo,
+  WorkspaceKind,
+  globalStateAPI,
+  isRemoteWorkspace,
+} from '../../../shared/types';
+import { normalizeRemoteWorkspacePath } from '@/shared/utils/pathUtils';
 import { createLogger } from '@/shared/utils/logger';
 import { listen } from '@tauri-apps/api/event';
 
@@ -21,6 +27,7 @@ export type WorkspaceEvent =
   | { type: 'workspace:switched'; workspace: WorkspaceInfo }
   | { type: 'workspace:active-changed'; workspace: WorkspaceInfo | null }
   | { type: 'workspace:updated'; workspace: WorkspaceInfo }
+  | { type: 'workspace:recent-updated' }
   | { type: 'workspace:loading'; loading: boolean }
   | { type: 'workspace:error'; error: string | null };
 
@@ -408,6 +415,7 @@ class WorkspaceManager {
     connectionId: string;
     connectionName: string;
     remotePath: string;
+    sshHost?: string;
   }): Promise<WorkspaceInfo> {
     try {
       this.setLoading(true);
@@ -415,10 +423,13 @@ class WorkspaceManager {
 
       log.info('Opening remote workspace', remoteWorkspace);
 
+      const remotePath = normalizeRemoteWorkspacePath(remoteWorkspace.remotePath);
+
       const workspace = await globalStateAPI.openRemoteWorkspace(
-        remoteWorkspace.remotePath,
+        remotePath,
         remoteWorkspace.connectionId,
         remoteWorkspace.connectionName,
+        remoteWorkspace.sshHost,
       );
 
       const [recentWorkspaces, openedWorkspaces] = await Promise.all([
@@ -444,14 +455,21 @@ class WorkspaceManager {
     }
   }
 
-  public async removeRemoteWorkspace(connectionId: string): Promise<void> {
+  public async removeRemoteWorkspace(connectionId: string, remotePath?: string): Promise<void> {
     try {
-      const workspace = this.findRemoteWorkspaceByConnectionId(connectionId);
+      const workspace = this.findRemoteWorkspace(connectionId, remotePath);
       if (!workspace) {
         return;
       }
 
+      await this.cancelRunningSessionsForWorkspace(workspace);
       await globalStateAPI.closeWorkspace(workspace.id);
+      await globalStateAPI.removeWorkspaceFromRecent(workspace.id).catch(error => {
+        log.warn('Failed to remove remote workspace from recent list', {
+          workspaceId: workspace.id,
+          error,
+        });
+      });
 
       const [currentWorkspace, recentWorkspaces, openedWorkspaces] = await Promise.all([
         globalStateAPI.getCurrentWorkspace(),
@@ -470,18 +488,26 @@ class WorkspaceManager {
 
       this.emit({ type: 'workspace:active-changed', workspace: currentWorkspace });
     } catch (error) {
-      log.error('Failed to remove remote workspace', { connectionId, error });
+      log.error('Failed to remove remote workspace', { connectionId, remotePath, error });
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.updateState({ error: errorMessage }, { type: 'workspace:error', error: errorMessage });
       throw error;
     }
   }
 
-  private findRemoteWorkspaceByConnectionId(connectionId: string): WorkspaceInfo | undefined {
+  private findRemoteWorkspace(connectionId: string, remotePath?: string): WorkspaceInfo | undefined {
+    const normalizedRemotePath = remotePath ? normalizeRemoteWorkspacePath(remotePath) : null;
     for (const [, ws] of this.state.openedWorkspaces) {
-      if (ws.connectionId === connectionId && ws.workspaceKind === WorkspaceKind.Remote) {
-        return ws;
+      if (ws.workspaceKind !== WorkspaceKind.Remote) {
+        continue;
       }
+      if (ws.connectionId !== connectionId) {
+        continue;
+      }
+      if (normalizedRemotePath && normalizeRemoteWorkspacePath(ws.rootPath) !== normalizedRemotePath) {
+        continue;
+      }
+      return ws;
     }
     return undefined;
   }
@@ -531,6 +557,11 @@ class WorkspaceManager {
 
       log.info('Closing workspace', { workspaceId });
 
+      const closingWorkspace = this.state.openedWorkspaces.get(workspaceId);
+      if (closingWorkspace) {
+        await this.cancelRunningSessionsForWorkspace(closingWorkspace);
+      }
+
       await globalStateAPI.closeWorkspace(workspaceId);
 
       const [currentWorkspace, recentWorkspaces, openedWorkspaces] = await Promise.all([
@@ -557,6 +588,24 @@ class WorkspaceManager {
     }
   }
 
+  private async cancelRunningSessionsForWorkspace(workspace: WorkspaceInfo): Promise<void> {
+    try {
+      const { flowChatStore } = await import('@/flow_chat/store/FlowChatStore');
+      const cancelledSessionIds = await flowChatStore.cancelRunningSessionsForWorkspace(workspace);
+      if (cancelledSessionIds.length > 0) {
+        log.info('Cancelled running sessions before closing workspace', {
+          workspaceId: workspace.id,
+          count: cancelledSessionIds.length,
+        });
+      }
+    } catch (error) {
+      log.warn('Failed to cancel running sessions before closing workspace', {
+        workspaceId: workspace.id,
+        error,
+      });
+    }
+  }
+
   public async deleteAssistantWorkspace(workspaceId: string): Promise<void> {
     try {
       this.setLoading(true);
@@ -564,7 +613,13 @@ class WorkspaceManager {
 
       log.info('Deleting assistant workspace', { workspaceId });
 
+      const removedWorkspace = this.state.openedWorkspaces.get(workspaceId);
       await globalStateAPI.deleteAssistantWorkspace(workspaceId);
+
+      if (removedWorkspace) {
+        const { flowChatStore } = await import('@/flow_chat/store/FlowChatStore');
+        flowChatStore.removeSessionsForWorkspace(removedWorkspace);
+      }
 
       const [currentWorkspace, recentWorkspaces, openedWorkspaces] = await Promise.all([
         globalStateAPI.getCurrentWorkspace(),
@@ -744,6 +799,20 @@ class WorkspaceManager {
       return this.setActiveWorkspace(workspace.id);
     }
 
+    if (isRemoteWorkspace(workspace)) {
+      const connectionId = workspace.connectionId?.trim() ?? '';
+      const connectionName = workspace.connectionName?.trim() || connectionId;
+      if (!connectionId) {
+        throw new Error('Remote workspace is missing connectionId; reconnect via SSH first.');
+      }
+      return this.openRemoteWorkspace({
+        connectionId,
+        connectionName,
+        remotePath: workspace.rootPath,
+        sshHost: workspace.sshHost,
+      });
+    }
+
     return this.openWorkspace(workspace.rootPath);
   }
 
@@ -794,11 +863,16 @@ class WorkspaceManager {
   public async refreshRecentWorkspaces(): Promise<void> {
     try {
       const recentWorkspaces = await globalStateAPI.getRecentWorkspaces();
-      this.updateState({ recentWorkspaces });
+      this.updateState({ recentWorkspaces }, { type: 'workspace:recent-updated' });
       log.debug('Recent workspaces refreshed', { count: recentWorkspaces.length });
     } catch (error) {
       log.error('Failed to refresh recent workspaces', { error });
     }
+  }
+
+  public async removeWorkspaceFromRecent(workspaceId: string): Promise<void> {
+    await globalStateAPI.removeWorkspaceFromRecent(workspaceId);
+    await this.refreshRecentWorkspaces();
   }
 
   public async cleanupInvalidWorkspaces(): Promise<number> {
@@ -848,5 +922,3 @@ class WorkspaceManager {
 export const workspaceManager = WorkspaceManager.getInstance();
 
 export { WorkspaceManager };
-
-

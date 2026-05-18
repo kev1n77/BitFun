@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { snapshotAPI } from '@/infrastructure/api';
 import { notificationService } from '@/shared/notification-system';
+import { confirmDanger } from '@/component-library';
 import { createLogger } from '@/shared/utils/logger';
 import './TurnRollbackButton.scss';
 
@@ -19,20 +21,27 @@ export const TurnRollbackButton: React.FC<TurnRollbackButtonProps> = ({
   isCurrent,
   onRollbackComplete,
 }) => {
+  const { t } = useTranslation('flow-chat');
   const [loading, setLoading] = useState(false);
   
   const handleRollback = async () => {
     if (isCurrent || loading) return;
-    
-    // In Tauri, window.confirm is async and must be awaited.
-    const confirmed = await window.confirm(
-      `Roll back to before turn ${turnIndex + 1}?\n\n` +
-      `This will:\n` +
-      `• Restore files to the state before turn ${turnIndex + 1}\n` +
-      `• Undo all file changes from turn ${turnIndex + 1} onward\n` +
-      `• Keep the session history (you can roll forward again anytime)`
+
+    const index = turnIndex + 1;
+    const confirmed = await confirmDanger(
+      t('message.rollbackPanelDialogTitle', { index }),
+      (
+        <>
+          <p className="confirm-dialog__message-intro">{t('message.rollbackPanelDialogIntro')}</p>
+          <ul className="confirm-dialog__bullet-list">
+            <li>{t('message.rollbackPanelBulletRestore', { index })}</li>
+            <li>{t('message.rollbackPanelBulletUndo', { index })}</li>
+            <li>{t('message.rollbackPanelBulletHistory')}</li>
+          </ul>
+        </>
+      )
     );
-    
+
     if (!confirmed) return;
     
     setLoading(true);
@@ -66,7 +75,9 @@ export const TurnRollbackButton: React.FC<TurnRollbackButtonProps> = ({
       
     } catch (error) {
       log.error('Rollback failed', { sessionId, turnIndex, error });
-      notificationService.error(`Rollback failed: ${error}`);
+      notificationService.error(
+        `${t('message.rollbackFailed')}: ${error instanceof Error ? error.message : String(error)}`
+      );
     } finally {
       setLoading(false);
     }

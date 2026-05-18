@@ -39,6 +39,10 @@ function ensureDirectoryExists(dirPath: string): void {
   }
 }
 
+function screenshotsSupported(): boolean {
+  return process.platform !== 'linux';
+}
+
 export async function saveScreenshot(
   name: string,
   options: ScreenshotOptions = {}
@@ -48,6 +52,11 @@ export async function saveScreenshot(
   
   const fileName = generateScreenshotName(name, options);
   const filePath = path.join(directory, fileName);
+
+  if (!screenshotsSupported()) {
+    console.warn(`Skipping screenshot on ${process.platform}: ${filePath}`);
+    return filePath;
+  }
   
   await browser.saveScreenshot(filePath);
   console.log(`Screenshot saved: ${filePath}`);
@@ -65,6 +74,11 @@ export async function saveElementScreenshot(
   
   const fileName = generateScreenshotName(name, options);
   const filePath = path.join(directory, fileName);
+
+  if (!screenshotsSupported()) {
+    console.warn(`Skipping element screenshot on ${process.platform}: ${filePath}`);
+    return filePath;
+  }
   
   const element = await $(selector);
   await element.saveScreenshot(filePath);
@@ -132,9 +146,19 @@ export async function createBaseline(
   const filePath = path.join(baselineDir, fileName);
   
   if (selector) {
+    if (!screenshotsSupported()) {
+      console.warn(`Skipping baseline screenshot on ${process.platform}: ${filePath}`);
+      return filePath;
+    }
+
     const element = await $(selector);
     await element.saveScreenshot(filePath);
   } else {
+    if (!screenshotsSupported()) {
+      console.warn(`Skipping baseline screenshot on ${process.platform}: ${filePath}`);
+      return filePath;
+    }
+
     await browser.saveScreenshot(filePath);
   }
   

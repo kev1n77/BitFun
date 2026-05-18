@@ -13,12 +13,12 @@
   }
 
   &__path-hint {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-muted);
   }
 
   &__validating {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     font-style: italic;
   }
@@ -26,7 +26,7 @@
   &__validation {
     padding: $size-gap-2 $size-gap-3;
     border-radius: $size-radius-base;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
 
     &.is-valid {
       background: rgba($color-success, 0.08);
@@ -46,7 +46,7 @@
   }
 
   &__validation-desc {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     opacity: 0.8;
     margin-top: 2px;
   }
@@ -56,13 +56,13 @@
   }
 
   &__form-hint {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-muted);
   }
 
   &__path-value {
     font-family: $font-family-mono;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-secondary);
     word-break: break-all;
   }
@@ -91,7 +91,7 @@
       rgba(255, 255, 255, 0.02) 100%
     );
     color: var(--color-text-secondary);
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     line-height: $line-height-relaxed;
   }
 
@@ -188,7 +188,7 @@
   }
 
   &__market-item-name {
-    font-size: $font-size-lg;
+    font-size: var(--font-size-lg);
     font-weight: $font-weight-semibold;
     color: var(--color-text-primary);
     line-height: $line-height-tight;
@@ -200,7 +200,7 @@
     gap: 4px;
     padding: 2px 8px;
     border-radius: $size-radius-full;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-weight: $font-weight-medium;
     border: 1px solid var(--border-subtle);
     background: var(--element-bg-soft);
@@ -214,7 +214,7 @@
   }
 
   &__market-item-description {
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     color: var(--color-text-secondary);
     line-height: $line-height-relaxed;
     margin-bottom: $size-gap-3;
@@ -238,7 +238,7 @@
     max-width: 100%;
     padding: 2px 10px;
     border-radius: $size-radius-full;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     line-height: 1.35;
     border: 1px solid var(--border-subtle);
     background: var(--element-bg-soft);
@@ -261,7 +261,7 @@
     flex-shrink: 0;
     padding: 2px 10px;
     border-radius: $size-radius-full;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-weight: $font-weight-medium;
     color: var(--color-text-muted);
     border: 1px solid var(--border-subtle);
@@ -272,6 +272,7 @@
     display: flex;
     justify-content: flex-end;
     align-items: center;
+    gap: $size-gap-2;
     flex-shrink: 0;
 
     .btn {
@@ -355,6 +356,7 @@
 
     &__market-item-action {
       justify-content: flex-start;
+      flex-wrap: wrap;
 
       .btn {
         width: 100%;
@@ -379,7 +381,7 @@
     }
 
     &__market-item-name {
-      font-size: $font-size-base;
+      font-size: var(--font-size-base);
     }
 
     &__market-item-description {

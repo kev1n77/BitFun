@@ -31,6 +31,12 @@ pub struct IngestServerManager {
     actual_port: Arc<RwLock<u16>>,
 }
 
+impl Default for IngestServerManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IngestServerManager {
     pub fn new() -> Self {
         Self {

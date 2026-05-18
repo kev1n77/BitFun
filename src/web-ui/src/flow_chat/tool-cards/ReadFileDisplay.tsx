@@ -3,29 +3,24 @@
  */
 
 import React, { useMemo } from 'react';
-import { Loader2, Clock, Check } from 'lucide-react';
+import { Check, FileText, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { IconButton } from '../../component-library';
 import type { ToolCardProps } from '../types/flow-chat';
+import { AcpPermissionActions } from './AcpPermissionActions';
+import { hasAcpPermissionOptions } from './AcpPermissionActions.utils';
 import { CompactToolCard, CompactToolCardHeader } from './CompactToolCard';
+import { ToolCardHeaderActions } from './ToolCardHeaderActions';
+import { ToolCardStatusSlot } from './ToolCardStatusSlot';
+
 export const ReadFileDisplay: React.FC<ToolCardProps> = React.memo(({
   toolItem,
+  onConfirm,
+  onReject,
   onOpenInEditor
 }) => {
   const { t } = useTranslation('flow-chat');
-  const { toolCall, toolResult, status } = toolItem;
-
-  const getStatusIcon = () => {
-    switch (status) {
-      case 'running':
-      case 'streaming':
-        return <Loader2 className="animate-spin" size={12} />;
-      case 'completed':
-        return <Check size={12} className="icon-check-done" />;
-      case 'pending':
-      default:
-        return <Clock size={12} />;
-    }
-  };
+  const { toolCall, toolResult, status, requiresConfirmation, userConfirmed } = toolItem;
 
   const filePath = useMemo(() => {
     const path = toolCall?.input?.file_path || toolCall?.input?.target_file || toolCall?.input?.path;
@@ -42,7 +37,7 @@ export const ReadFileDisplay: React.FC<ToolCardProps> = React.memo(({
     }
     
     return path;
-  }, [toolCall?.input]);
+  }, [t, toolCall?.input]);
 
   const handleOpenInEditor = () => {
     if (filePath !== t('toolCards.readFile.noFileSpecified') && filePath !== t('toolCards.readFile.parsingParams')) {
@@ -55,7 +50,25 @@ export const ReadFileDisplay: React.FC<ToolCardProps> = React.memo(({
       return filePath || t('toolCards.readFile.noFileSpecified');
     }
     return filePath.split('/').pop() || filePath.split('\\').pop() || filePath;
-  }, [filePath]);
+  }, [filePath, t]);
+
+  const permissionTargetPath = useMemo(() => {
+    const rawInput = toolItem.acpPermission?.toolCall?.rawInput as Record<string, unknown> | undefined;
+    const acpFilePath =
+      typeof rawInput?.filepath === 'string' && rawInput.filepath.trim().length > 0
+        ? rawInput.filepath
+        : typeof rawInput?.filePath === 'string' && rawInput.filePath.trim().length > 0
+          ? rawInput.filePath
+          : typeof rawInput?.parentDir === 'string' && rawInput.parentDir.trim().length > 0
+            ? rawInput.parentDir
+            : null;
+
+    if (acpFilePath) {
+      return acpFilePath;
+    }
+
+    return filePath;
+  }, [filePath, toolItem.acpPermission?.toolCall?.rawInput]);
 
   const lineRange = useMemo(() => {
     const start_line = toolCall?.input?.start_line;
@@ -89,6 +102,13 @@ export const ReadFileDisplay: React.FC<ToolCardProps> = React.memo(({
   }, [toolResult?.result]);
 
   const canOpenFile = status === 'completed' && filePath !== t('toolCards.readFile.noFileSpecified') && filePath !== t('toolCards.readFile.parsingParams');
+  const showConfirmationActions = Boolean(
+    requiresConfirmation &&
+    !userConfirmed &&
+    status !== 'completed' &&
+    status !== 'cancelled' &&
+    status !== 'error'
+  );
 
   if (status === 'error') {
     return null;
@@ -113,6 +133,14 @@ export const ReadFileDisplay: React.FC<ToolCardProps> = React.memo(({
         </>
       );
     }
+    if (showConfirmationActions || status === 'pending_confirmation') {
+      return (
+        <>
+          {t('toolCards.readFile.permissionRequest', { defaultValue: 'Requesting read permission:' })} {permissionTargetPath}
+          {lineRange && <span className="read-file-meta"> {lineRange}</span>}
+        </>
+      );
+    }
     if (status === 'pending') {
       return (
         <>
@@ -124,6 +152,53 @@ export const ReadFileDisplay: React.FC<ToolCardProps> = React.memo(({
     return null;
   };
 
+  const renderActions = () => {
+    if (!showConfirmationActions) {
+      return undefined;
+    }
+
+    return (
+      <ToolCardHeaderActions>
+        {hasAcpPermissionOptions(toolItem) ? (
+          <AcpPermissionActions
+            toolItem={toolItem}
+            input={toolCall?.input}
+            presentation="text"
+            onConfirm={onConfirm}
+            onReject={onReject}
+          />
+        ) : (
+          <>
+            <IconButton
+              className="tool-card-header-action read-file-confirm-btn"
+              variant="success"
+              size="xs"
+              onClick={(event) => {
+                event.stopPropagation();
+                onConfirm?.(toolCall?.input);
+              }}
+              tooltip={t('toolCards.default.waitingConfirm')}
+            >
+              <Check size={12} />
+            </IconButton>
+            <IconButton
+              className="tool-card-header-action read-file-reject-btn"
+              variant="danger"
+              size="xs"
+              onClick={(event) => {
+                event.stopPropagation();
+                onReject?.();
+              }}
+              tooltip={t('toolCards.acpPermission.reject')}
+            >
+              <X size={12} />
+            </IconButton>
+          </>
+        )}
+      </ToolCardHeaderActions>
+    );
+  };
+
   return (
     <CompactToolCard
       status={status}
@@ -133,8 +208,9 @@ export const ReadFileDisplay: React.FC<ToolCardProps> = React.memo(({
       clickable={canOpenFile}
       header={
         <CompactToolCardHeader
-          statusIcon={getStatusIcon()}
+          icon={<ToolCardStatusSlot status={status} toolIcon={<FileText size={16} className="read-file-card-icon" />} />}
           content={renderContent()}
+          extra={renderActions()}
         />
       }
     />

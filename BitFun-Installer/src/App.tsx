@@ -7,6 +7,8 @@ import { ProgressPage } from './pages/Progress';
 import { ThemeSetup } from './pages/ThemeSetup';
 import { UninstallPage } from './pages/Uninstall';
 import { useInstaller } from './hooks/useInstaller';
+import { mapUiLanguageToAppLanguage, type InstallerUiLanguage } from './i18n/languages';
+import { useSyncInstallerRootTheme } from './theme/installerThemeRuntime';
 import './styles/global.css';
 
 const STEP_NUMBERS: Record<string, number> = {
@@ -18,13 +20,14 @@ const STEP_NUMBERS: Record<string, number> = {
 
 function App() {
   const installer = useInstaller();
+  useSyncInstallerRootTheme(installer.options.themePreference);
   const { t, i18n } = useTranslation();
 
-  const handleLanguageSelect = (lang: string) => {
+  const handleLanguageSelect = (lang: InstallerUiLanguage) => {
     i18n.changeLanguage(lang);
     installer.setOptions((prev) => ({
       ...prev,
-      appLanguage: lang === 'en' ? 'en-US' : 'zh-CN',
+      appLanguage: mapUiLanguageToAppLanguage(lang),
     }));
     installer.next();
   };
@@ -49,8 +52,12 @@ function App() {
             diskSpace={installer.diskSpace}
             error={installer.error}
             refreshDiskSpace={installer.refreshDiskSpace}
+            existingInstall={installer.existingInstall}
+            onLaunchRegisteredUninstaller={installer.launchRegisteredUninstaller}
             onBack={installer.back}
             onInstall={installer.install}
+            isInstalling={installer.isInstalling}
+            clearInstallError={installer.clearInstallError}
           />
         );
       case 'model':

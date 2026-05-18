@@ -4,6 +4,7 @@
  */
 
 import { browser, expect, $ } from '@wdio/globals';
+import { ensureCodeSessionOpen, getWorkspaceState, openWorkspace } from '../helpers/workspace-helper';
 
 describe('L1 Workspace Management', () => {
   let hasWorkspace = false;
@@ -11,80 +12,21 @@ describe('L1 Workspace Management', () => {
   before(async () => {
     console.log('[L1] Starting workspace management tests');
     await browser.pause(3000);
-    
-    // Check if workspace is open by looking for chat input
-    const chatInputSelectors = [
-      '[data-testid="chat-input-container"]',
-      '.chat-input-container',
-      '.chat-input',
-    ];
-    
-    for (const selector of chatInputSelectors) {
-      try {
-        const element = await $(selector);
-        const exists = await element.isExisting();
-        if (exists) {
-          hasWorkspace = true;
-          break;
-        }
-      } catch (e) {
-        // Continue
-      }
-    }
-    
+
+    hasWorkspace = await openWorkspace();
     console.log('[L1] hasWorkspace:', hasWorkspace);
   });
 
   describe('Workspace state detection', () => {
     it('should detect current workspace state', async () => {
-      // Check for welcome/startup scene
-      const welcomeSelectors = [
-        '.welcome-scene--first-time',
-        '.welcome-scene',
-        '.bitfun-scene-viewport--welcome',
-      ];
-
-      let isStartup = false;
-      for (const selector of welcomeSelectors) {
-        try {
-          const element = await $(selector);
-          isStartup = await element.isExisting();
-          if (isStartup) {
-            console.log(`[L1] Startup page detected via ${selector}`);
-            break;
-          }
-        } catch (e) {
-          // Continue
-        }
-      }
-
-      // Check for workspace UI
-      const chatInputSelectors = [
-        '[data-testid="chat-input-container"]',
-        '.chat-input-container',
-      ];
-
-      let hasChatInput = false;
-      for (const selector of chatInputSelectors) {
-        try {
-          const element = await $(selector);
-          hasChatInput = await element.isExisting();
-          if (hasChatInput) {
-            console.log(`[L1] Chat input detected via ${selector}`);
-            break;
-          }
-        } catch (e) {
-          // Continue
-        }
-      }
-
-      console.log('[L1] isStartup:', isStartup, 'hasChatInput:', hasChatInput);
-      expect(isStartup || hasChatInput).toBe(true);
+      const state = await getWorkspaceState();
+      console.log('[L1] Workspace state:', state);
+      expect(state.currentWorkspacePath).toBeTruthy();
+      expect(state.workspaceLabels.length).toBeGreaterThan(0);
     });
 
     it('header should be visible in both states', async () => {
-      // NavBar uses bitfun-nav-bar class
-      const headerSelectors = ['.bitfun-nav-bar', '[data-testid="header-container"]', '.bitfun-header', 'header'];
+      const headerSelectors = ['.bitfun-nav-panel', '.bitfun-scene-bar', '.bitfun-nav-bar', '[data-testid="header-container"]', '.bitfun-header', 'header'];
       
       let headerVisible = false;
       for (const selector of headerSelectors) {
@@ -115,7 +57,7 @@ describe('L1 Workspace Management', () => {
   describe('Startup page (no workspace)', () => {
     it('startup page elements check', async function () {
       if (hasWorkspace) {
-        console.log('[L1] Skipping: workspace already open');
+        console.log('[L1] Skipping: test run now opens a workspace by default');
         this.skip();
         return;
       }
@@ -150,8 +92,11 @@ describe('L1 Workspace Management', () => {
         return;
       }
 
+      await ensureCodeSessionOpen();
+
       const chatInputSelectors = [
         '[data-testid="chat-input-container"]',
+        '.bitfun-chat-input',
         '.chat-input-container',
         '.chat-input',
       ];

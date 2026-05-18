@@ -59,6 +59,25 @@ const SceneTab: React.FC<SceneTabProps> = ({
     }
   }, [onActivate, tab.id]);
 
+  /** Middle-click closes (browser-tab style); skip on pinned tabs and the inline + action. */
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 1) return;
+    if (pinned) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('.bitfun-scene-tab__action')) return;
+    e.preventDefault();
+  }, [pinned]);
+
+  const handleAuxClick = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 1) return;
+    if (pinned) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('.bitfun-scene-tab__action')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onClose(tab.id);
+  }, [pinned, onClose, tab.id]);
+
   return (
     <div
       role="tab"
@@ -70,6 +89,8 @@ const SceneTab: React.FC<SceneTabProps> = ({
         pinned && 'bitfun-scene-tab--pinned',
       ].filter(Boolean).join(' ')}
       onClick={handleClick}
+      onMouseDown={handleMouseDown}
+      onAuxClick={handleAuxClick}
       onKeyDown={handleKeyDown}
     >
       {/* Centered content group */}

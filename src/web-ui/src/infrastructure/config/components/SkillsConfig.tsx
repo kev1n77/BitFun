@@ -1,10 +1,12 @@
+/* eslint-disable @typescript-eslint/no-use-before-define */
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus, Trash2, RefreshCw, FolderOpen, X, Download, CheckCircle2, TrendingUp } from 'lucide-react';
-import { Switch, Select, Input, Button, Search, IconButton, ConfirmDialog, Card, CardBody, Tooltip } from '@/component-library';
+import { Select, Input, Button, Search, IconButton, ConfirmDialog, Card, CardBody, Tooltip } from '@/component-library';
 import { ConfigPageHeader, ConfigPageLayout, ConfigPageContent, ConfigPageSection, ConfigCollectionItem } from './common';
 import { useCurrentWorkspace } from '@/infrastructure/contexts/WorkspaceContext';
 import { useNotification } from '@/shared/notification-system';
+import { isRemoteWorkspace } from '@/shared/types';
 import { configAPI } from '../../api/service-api/ConfigAPI';
 import type { SkillInfo, SkillLevel, SkillMarketItem, SkillValidationResult } from '../types';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -39,7 +41,8 @@ const SkillsConfig: React.FC = () => {
   const [downloadingPackage, setDownloadingPackage] = useState<string | null>(null);
   const loadRequestIdRef = useRef(0);
 
-  const { workspacePath, hasWorkspace } = useCurrentWorkspace();
+  const { workspace, workspacePath, hasWorkspace } = useCurrentWorkspace();
+  const isRemote = isRemoteWorkspace(workspace);
   const notification = useNotification();
 
   const loadSkills = useCallback(async (forceRefresh?: boolean) => {
@@ -138,7 +141,7 @@ const SkillsConfig: React.FC = () => {
     if (!skill) return;
     try {
       await configAPI.deleteSkill({
-        skillName: skill.name,
+        skillKey: skill.key,
         workspacePath: workspacePath || undefined,
       });
       notification.success(t('messages.deleteSuccess', { name: skill.name }));
@@ -150,23 +153,9 @@ const SkillsConfig: React.FC = () => {
     }
   };
 
-  const handleToggle = async (skill: SkillInfo) => {
-    const newEnabled = !skill.enabled;
-    try {
-      await configAPI.setSkillEnabled({
-        skillName: skill.name,
-        enabled: newEnabled,
-        workspacePath: workspacePath || undefined,
-      });
-      notification.success(t('messages.toggleSuccess', { name: skill.name, status: newEnabled ? t('messages.enabled') : t('messages.disabled') }));
-      await loadSkills(true);
-    } catch (err) {
-      notification.error(t('messages.toggleFailed', { error: err instanceof Error ? err.message : String(err) }));
-    }
-  };
-
-  const handleDownload = async (skill: SkillMarketItem) => {
-    if (!hasWorkspace) {
+  const handleDownload = async (skill: SkillMarketItem, targetLevel: SkillLevel = 'project') => {
+    const resolvedLevel: SkillLevel = isRemote ? 'user' : targetLevel;
+    if (resolvedLevel === 'project' && !hasWorkspace) {
       notification.warning(t('messages.noWorkspace'));
       return;
     }
@@ -175,8 +164,8 @@ const SkillsConfig: React.FC = () => {
       setDownloadingPackage(skill.installId);
       const result = await configAPI.downloadSkillMarket({
         packageId: skill.installId,
-        level: 'project',
-        workspacePath: workspacePath || undefined,
+        level: resolvedLevel,
+        workspacePath: resolvedLevel === 'project' ? workspacePath || undefined : undefined,
       });
       const installedName = result.installedSkills[0] ?? skill.name;
       notification.success(t('messages.marketDownloadSuccess', { name: installedName }));
@@ -295,11 +284,6 @@ const SkillsConfig: React.FC = () => {
     );
     const control = (
       <>
-        <Switch
-          checked={skill.enabled}
-          onChange={(e) => { e.stopPropagation(); handleToggle(skill); }}
-          size="small"
-        />
         <button
           type="button"
           className="bitfun-collection-btn bitfun-collection-btn--danger"
@@ -321,14 +305,13 @@ const SkillsConfig: React.FC = () => {
     );
     return (
       <ConfigCollectionItem
-        key={skill.name}
+        key={skill.key}
         label={skill.name}
         badge={badge}
         control={control}
         details={details}
-        disabled={!skill.enabled}
-        expanded={expandedSkillIds.has(skill.name)}
-        onToggle={() => toggleSkillExpanded(skill.name)}
+        expanded={expandedSkillIds.has(skill.key)}
+        onToggle={() => toggleSkillExpanded(skill.key)}
       />
     );
   };
@@ -377,11 +360,11 @@ const SkillsConfig: React.FC = () => {
           const isDownloading = downloadingPackage === skill.installId;
           const isInstalled = installedSkillNames.has(skill.name);
           const sourceLabel = formatMarketSource(skill.source);
-          const tooltipText = !hasWorkspace
+          const projectTooltipText = !hasWorkspace
             ? t('messages.noWorkspace')
-            : isInstalled
-              ? t('market.item.installedTooltip')
-              : t('market.item.downloadProject');
+            : t('market.item.downloadProject');
+          const userTooltipText = t('market.item.downloadUser');
+          const installedTooltipText = t('market.item.installedTooltip');
 
           return (
             <Card
@@ -428,23 +411,47 @@ const SkillsConfig: React.FC = () => {
                 </div>
 
                 <div className="bitfun-skills-config__market-item-action">
-                  <Tooltip content={tooltipText}>
-                    <span>
-                      <Button
-                        variant="primary"
-                        size="small"
-                        onClick={() => handleDownload(skill)}
-                        disabled={isDownloading || !hasWorkspace || isInstalled}
-                      >
-                        <Download size={14} />
-                        {isDownloading
-                          ? t('market.item.downloading')
-                          : isInstalled
-                            ? t('market.item.installed')
-                            : t('market.item.downloadProject')}
-                      </Button>
-                    </span>
-                  </Tooltip>
+                  {isInstalled ? (
+                    <Tooltip content={installedTooltipText}>
+                      <span>
+                        <Button variant="primary" size="small" disabled>
+                          <CheckCircle2 size={14} />
+                          {t('market.item.installed')}
+                        </Button>
+                      </span>
+                    </Tooltip>
+                  ) : (
+                    <>
+                      {!isRemote && (
+                        <Tooltip content={projectTooltipText}>
+                          <span>
+                            <Button
+                              variant="primary"
+                              size="small"
+                              onClick={() => handleDownload(skill, 'project')}
+                              disabled={isDownloading || !hasWorkspace}
+                            >
+                              <Download size={14} />
+                              {isDownloading ? t('market.item.downloading') : t('market.item.downloadProject')}
+                            </Button>
+                          </span>
+                        </Tooltip>
+                      )}
+                      <Tooltip content={userTooltipText}>
+                        <span>
+                          <Button
+                            variant={isRemote ? 'primary' : 'secondary'}
+                            size="small"
+                            onClick={() => handleDownload(skill, 'user')}
+                            disabled={isDownloading}
+                          >
+                            <Download size={14} />
+                            {isDownloading ? t('market.item.downloading') : t('market.item.downloadUser')}
+                          </Button>
+                        </span>
+                      </Tooltip>
+                    </>
+                  )}
                 </div>
               </CardBody>
             </Card>

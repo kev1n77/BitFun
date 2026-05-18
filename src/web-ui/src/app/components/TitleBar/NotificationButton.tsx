@@ -6,7 +6,7 @@
  */
 
 import React, { useRef, useEffect, useState } from 'react';
-import { Bell, BellDot } from 'lucide-react';
+import { Bell, BellDot, BellRing } from 'lucide-react';
 import { Tooltip } from '@/component-library';
 import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
 import {
@@ -18,9 +18,13 @@ import './NotificationButton.scss';
 
 interface NotificationButtonProps {
   className?: string;
+  navFooterHoverIconSwap?: boolean;
 }
 
-const NotificationButton: React.FC<NotificationButtonProps> = ({ className = '' }) => {
+const NotificationButton: React.FC<NotificationButtonProps> = ({
+  className = '',
+  navFooterHoverIconSwap = false,
+}) => {
   const { t } = useI18n('common');
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const [tooltipOffset, setTooltipOffset] = useState(0);
@@ -51,6 +55,7 @@ const NotificationButton: React.FC<NotificationButtonProps> = ({ className = '' 
         'bitfun-notification-btn',
         activeNotification ? 'bitfun-notification-btn--has-progress' : '',
         activeNotification?.variant === 'loading' ? 'bitfun-notification-btn--loading' : '',
+        navFooterHoverIconSwap && !activeNotification ? 'bitfun-notification-btn--nav-hover-icon' : '',
         className,
       ].filter(Boolean).join(' ')}
       onClick={() => notificationService.toggleCenter()}
@@ -110,6 +115,21 @@ const NotificationButton: React.FC<NotificationButtonProps> = ({ className = '' 
             </div>
           </div>
         </>
+      ) : navFooterHoverIconSwap ? (
+        unreadCount > 0 ? (
+          <span className="bitfun-nav-panel__footer-btn-icon-swap" aria-hidden="true">
+            <BellDot
+              size={15}
+              className="bitfun-notification-btn__icon--has-message bitfun-nav-panel__footer-btn-icon-swap-default"
+            />
+            <BellRing size={15} className="bitfun-nav-panel__footer-btn-icon-swap-hover" />
+          </span>
+        ) : (
+          <span className="bitfun-nav-panel__footer-btn-icon-swap" aria-hidden="true">
+            <Bell size={15} className="bitfun-nav-panel__footer-btn-icon-swap-default" />
+            <BellRing size={15} className="bitfun-nav-panel__footer-btn-icon-swap-hover" />
+          </span>
+        )
       ) : (
         unreadCount > 0
           ? <BellDot size={14} className="bitfun-notification-btn__icon--has-message" />

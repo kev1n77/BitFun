@@ -48,7 +48,7 @@
     background: var(--element-bg-soft);
     margin: 0 $size-gap-2;
     color: var(--color-text-primary);
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     font-weight: 500;
     flex-shrink: 0;
   }
@@ -72,5 +72,6 @@
     display: flex;
     align-items: center;
     flex-shrink: 0;
+    gap: 2px;
   }
 }

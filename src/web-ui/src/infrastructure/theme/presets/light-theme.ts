@@ -7,19 +7,23 @@ export const bitfunLightTheme: ThemeConfig = {
   id: 'bitfun-light',
   name: 'Light',
   type: 'light',
-  description: 'Light theme - Elegant and refined, soft blue-gray tones',
+  description: 'Light theme - Neutral gray surfaces, black primary actions',
   author: 'BitFun Team',
-  version: '2.2.0',
+  version: '2.3.0',
+
+  layout: {
+    sceneViewportBorder: false,
+  },
   
   
   colors: {
     background: {
-      primary: '#f7f8fa',          
+      primary: '#f3f3f5',
       secondary: '#ffffff',        
-      tertiary: '#f3f5f8',         
-      quaternary: '#ebeef3',       
+      tertiary: '#e8eaee',         
+      quaternary: '#e0e3e8',       
       elevated: '#ffffff',         
-      workbench: '#f7f8fa',        
+      workbench: '#eceef1',        
       scene: '#ffffff',
       tooltip: 'rgba(255, 255, 255, 0.98)',
     },
@@ -33,15 +37,15 @@ export const bitfunLightTheme: ThemeConfig = {
     
     
     accent: {
-      50: 'rgba(71, 102, 143, 0.04)',
-      100: 'rgba(71, 102, 143, 0.08)',
-      200: 'rgba(71, 102, 143, 0.14)',
-      300: 'rgba(71, 102, 143, 0.22)',
-      400: 'rgba(71, 102, 143, 0.36)',
-      500: '#5a7bb2',              
-      600: '#4a6694',              
-      700: 'rgba(74, 102, 148, 0.8)',
-      800: 'rgba(74, 102, 148, 0.9)',
+      50: 'rgba(15, 23, 42, 0.04)',
+      100: 'rgba(15, 23, 42, 0.07)',
+      200: 'rgba(15, 23, 42, 0.10)',
+      300: 'rgba(15, 23, 42, 0.16)',
+      400: 'rgba(15, 23, 42, 0.26)',
+      500: '#64748b',
+      600: '#475569',
+      700: 'rgba(71, 85, 105, 0.88)',
+      800: 'rgba(51, 65, 85, 0.94)',
     },
     
     
@@ -71,9 +75,9 @@ export const bitfunLightTheme: ThemeConfig = {
       errorBg: 'rgba(194, 101, 101, 0.08)',
       errorBorder: 'rgba(194, 101, 101, 0.25)',
       
-      info: '#5a7bb2',             
-      infoBg: 'rgba(90, 123, 178, 0.08)',
-      infoBorder: 'rgba(90, 123, 178, 0.25)',
+      info: '#64748b',
+      infoBg: 'rgba(100, 116, 139, 0.10)',
+      infoBorder: 'rgba(100, 116, 139, 0.28)',
       
       
       highlight: '#b8863a',
@@ -91,18 +95,18 @@ export const bitfunLightTheme: ThemeConfig = {
     
     
     element: {
-      subtle: 'rgba(71, 102, 143, 0.05)',      
-      soft: 'rgba(71, 102, 143, 0.08)',        
-      base: 'rgba(71, 102, 143, 0.11)',        
-      medium: 'rgba(71, 102, 143, 0.15)',      
-      strong: 'rgba(71, 102, 143, 0.20)',      
-      elevated: 'rgba(255, 255, 255, 0.92)',   
+      subtle: 'rgba(15, 23, 42, 0.045)',
+      soft: 'rgba(15, 23, 42, 0.065)',
+      base: 'rgba(15, 23, 42, 0.09)',
+      medium: 'rgba(15, 23, 42, 0.12)',
+      strong: 'rgba(15, 23, 42, 0.16)',
+      elevated: 'rgba(255, 255, 255, 0.92)',
     },
     
     
     git: {
-      branch: 'rgb(90, 123, 178)',             
-      branchBg: 'rgba(90, 123, 178, 0.08)',
+      branch: 'rgb(71, 85, 105)',
+      branchBg: 'rgba(71, 85, 105, 0.10)',
       changes: 'rgb(192, 140, 66)',            
       changesBg: 'rgba(192, 140, 66, 0.08)',
       added: 'rgb(91, 154, 111)',              
@@ -128,9 +132,9 @@ export const bitfunLightTheme: ThemeConfig = {
     
     
     glow: {
-      blue: '0 8px 24px rgba(90, 123, 178, 0.15), 0 4px 12px rgba(90, 123, 178, 0.10), 0 2px 6px rgba(71, 85, 105, 0.05)',
-      purple: '0 8px 24px rgba(124, 107, 153, 0.15), 0 4px 12px rgba(124, 107, 153, 0.10), 0 2px 6px rgba(71, 85, 105, 0.05)',
-      mixed: '0 8px 24px rgba(90, 123, 178, 0.12), 0 4px 12px rgba(124, 107, 153, 0.08), 0 2px 6px rgba(71, 85, 105, 0.05)',
+      blue: '0 8px 24px rgba(15, 23, 42, 0.08), 0 4px 12px rgba(15, 23, 42, 0.05), 0 2px 6px rgba(71, 85, 105, 0.04)',
+      purple: '0 8px 24px rgba(15, 23, 42, 0.07), 0 4px 12px rgba(100, 116, 139, 0.06), 0 2px 6px rgba(71, 85, 105, 0.04)',
+      mixed: '0 8px 24px rgba(15, 23, 42, 0.07), 0 4px 12px rgba(15, 23, 42, 0.05), 0 2px 6px rgba(71, 85, 105, 0.04)',
     },
     
     blur: {
@@ -193,8 +197,8 @@ export const bitfunLightTheme: ThemeConfig = {
   
   typography: {
     font: {
-      sans: "'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'SF Pro Display', Roboto, sans-serif",
-      mono: "'FiraCode', 'JetBrains Mono', 'SF Mono', 'Consolas', 'Liberation Mono', monospace",
+      sans: "'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif",
+      mono: "'JetBrains Mono', 'FiraCode', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, 'Cascadia Mono', 'Cascadia Code', Consolas, 'Liberation Mono', 'Courier New', monospace",
     },
     
     weight: {
@@ -206,14 +210,14 @@ export const bitfunLightTheme: ThemeConfig = {
     
     size: {
       xs: '12px',
-      sm: '14px',
-      base: '15px',
-      lg: '16px',
-      xl: '18px',
-      '2xl': '20px',
-      '3xl': '24px',
-      '4xl': '30px',
-      '5xl': '36px',
+      sm: '13px',
+      base: '14px',
+      lg: '15px',
+      xl: '16px',
+      '2xl': '18px',
+      '3xl': '22px',
+      '4xl': '26px',
+      '5xl': '32px',
     },
     
     lineHeight: {
@@ -228,20 +232,20 @@ export const bitfunLightTheme: ThemeConfig = {
     
     windowControls: {
       minimize: {
-        dot: 'rgba(90, 123, 178, 0.55)',
-        dotShadow: '0 0 4px rgba(90, 123, 178, 0.20)',
-        hoverBg: 'rgba(90, 123, 178, 0.14)',
-        hoverColor: '#4a6694',
-        hoverBorder: 'rgba(90, 123, 178, 0.25)',
-        hoverShadow: '0 2px 8px rgba(90, 123, 178, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.6)',
+        dot: 'rgba(100, 116, 139, 0.5)',
+        dotShadow: '0 0 4px rgba(15, 23, 42, 0.12)',
+        hoverBg: 'rgba(15, 23, 42, 0.08)',
+        hoverColor: '#475569',
+        hoverBorder: 'rgba(100, 116, 139, 0.28)',
+        hoverShadow: '0 2px 8px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.6)',
       },
       maximize: {
-        dot: 'rgba(90, 123, 178, 0.55)',
-        dotShadow: '0 0 4px rgba(90, 123, 178, 0.20)',
-        hoverBg: 'rgba(90, 123, 178, 0.14)',
-        hoverColor: '#4a6694',
-        hoverBorder: 'rgba(90, 123, 178, 0.25)',
-        hoverShadow: '0 2px 8px rgba(90, 123, 178, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.6)',
+        dot: 'rgba(100, 116, 139, 0.5)',
+        dotShadow: '0 0 4px rgba(15, 23, 42, 0.12)',
+        hoverBg: 'rgba(15, 23, 42, 0.08)',
+        hoverColor: '#475569',
+        hoverBorder: 'rgba(100, 116, 139, 0.28)',
+        hoverShadow: '0 2px 8px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.6)',
       },
       close: {
         dot: 'rgba(194, 101, 101, 0.55)',
@@ -262,21 +266,21 @@ export const bitfunLightTheme: ThemeConfig = {
     button: {
       
       default: {
-        background: 'rgba(71, 102, 143, 0.10)',
+        background: 'rgba(15, 23, 42, 0.07)',
         color: '#475569',
         border: 'transparent',
         shadow: 'none',
       },
       hover: {
-        background: 'rgba(71, 102, 143, 0.16)',
-        color: '#3d4f66',
+        background: 'rgba(15, 23, 42, 0.11)',
+        color: '#334155',
         border: 'transparent',
         shadow: 'none',
         transform: 'none',
       },
       active: {
-        background: 'rgba(71, 102, 143, 0.12)',
-        color: '#3d4f66',
+        background: 'rgba(15, 23, 42, 0.09)',
+        color: '#334155',
         border: 'transparent',
         shadow: 'none',
         transform: 'none',
@@ -285,21 +289,21 @@ export const bitfunLightTheme: ThemeConfig = {
       
       primary: {
         default: {
-          background: 'rgba(90, 123, 178, 0.18)',
-          color: '#4a6694',
+          background: '#000000',
+          color: '#ffffff',
           border: 'transparent',
           shadow: 'none',
         },
         hover: {
-          background: 'rgba(90, 123, 178, 0.28)',
-          color: '#3a5478',
+          background: '#262626',
+          color: '#ffffff',
           border: 'transparent',
           shadow: 'none',
           transform: 'none',
         },
         active: {
-          background: 'rgba(90, 123, 178, 0.22)',
-          color: '#3a5478',
+          background: '#1a1a1a',
+          color: '#ffffff',
           border: 'transparent',
           shadow: 'none',
           transform: 'none',
@@ -315,15 +319,15 @@ export const bitfunLightTheme: ThemeConfig = {
           shadow: 'none',
         },
         hover: {
-          background: 'rgba(71, 102, 143, 0.12)',
-          color: '#3d4f66',
+          background: 'rgba(15, 23, 42, 0.08)',
+          color: '#334155',
           border: 'transparent',
           shadow: 'none',
           transform: 'none',
         },
         active: {
-          background: 'rgba(71, 102, 143, 0.08)',
-          color: '#3d4f66',
+          background: 'rgba(15, 23, 42, 0.055)',
+          color: '#334155',
           border: 'transparent',
           shadow: 'none',
           transform: 'none',
@@ -341,13 +345,13 @@ export const bitfunLightTheme: ThemeConfig = {
       { token: 'keyword', foreground: '6b5a89' },                           
       { token: 'string', foreground: '5b9a6f' },                            
       { token: 'number', foreground: 'b8863a' },                            
-      { token: 'type', foreground: '5a7bb2' },                              
-      { token: 'class', foreground: '5a7bb2' },                             
+      { token: 'type', foreground: '475569' },
+      { token: 'class', foreground: '475569' },
       { token: 'function', foreground: '7c6b99' },                          
       { token: 'variable', foreground: '475569' },                          
       { token: 'constant', foreground: 'c08c42' },                          
       { token: 'operator', foreground: '6b5a89' },                          
-      { token: 'tag', foreground: '5a7bb2' },                               
+      { token: 'tag', foreground: '475569' },
       { token: 'attribute.name', foreground: '7c6b99' },                    
       { token: 'attribute.value', foreground: '5b9a6f' },                   
     ],
@@ -355,19 +359,18 @@ export const bitfunLightTheme: ThemeConfig = {
       background: '#f7f8fa',                      
       foreground: '#1e293b',                      
       lineHighlight: '#f0f4f8',                   
-      selection: 'rgba(90, 123, 178, 0.30)',      
-      cursor: '#5a7bb2',                          
-      
-      
-      'editor.selectionBackground': 'rgba(90, 123, 178, 0.30)',  
-      'editor.selectionForeground': '#1e293b',     
-      'editor.inactiveSelectionBackground': 'rgba(90, 123, 178, 0.20)',  
-      'editor.selectionHighlightBackground': 'rgba(90, 123, 178, 0.22)',  
-      'editor.selectionHighlightBorder': 'rgba(90, 123, 178, 0.40)',      
-      'editorCursor.foreground': '#5a7bb2',       
-      
-      'editor.wordHighlightBackground': 'rgba(90, 123, 178, 0.15)',  
-      'editor.wordHighlightStrongBackground': 'rgba(90, 123, 178, 0.25)',  
+      selection: 'rgba(15, 23, 42, 0.14)',
+      cursor: '#1e293b',
+
+      'editor.selectionBackground': 'rgba(15, 23, 42, 0.14)',
+      'editor.selectionForeground': '#1e293b',
+      'editor.inactiveSelectionBackground': 'rgba(15, 23, 42, 0.09)',
+      'editor.selectionHighlightBackground': 'rgba(15, 23, 42, 0.10)',
+      'editor.selectionHighlightBorder': 'rgba(15, 23, 42, 0.22)',
+      'editorCursor.foreground': '#1e293b',
+
+      'editor.wordHighlightBackground': 'rgba(15, 23, 42, 0.07)',
+      'editor.wordHighlightStrongBackground': 'rgba(15, 23, 42, 0.11)',
     },
   },
 };

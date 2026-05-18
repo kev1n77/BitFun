@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "BitFun default capabilities",
-  "windows": ["main"],
+  "windows": ["main", "agent-companion-pet"],
   "permissions": [
     "log:default",
     "autostart:default",
@@ -33,6 +33,7 @@
     "core:window:allow-current-monitor",
     "core:window:allow-outer-position",
     "core:window:allow-outer-size",
+    "core:window:allow-is-fullscreen",
     "core:window:allow-is-maximized",
     "core:window:allow-center",
     "core:window:allow-close",
@@ -93,10 +94,17 @@
       ]
     },
     {
-      "identifier": "fs:allow-home-write-recursive",
+      "identifier":     "fs:allow-home-write-recursive",
       "allow": [
         { "path": "$HOME/**" }
       ]
-    }
+    },
+    "notification:default",
+    "notification:allow-notify",
+    "notification:allow-show",
+    "notification:allow-request-permission",
+    "notification:allow-check-permissions",
+    "notification:allow-permission-state",
+    "notification:allow-is-permission-granted"
   ]
 }

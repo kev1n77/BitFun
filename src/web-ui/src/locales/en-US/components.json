@@ -42,13 +42,17 @@
   },
   "markdown": {
     "copySuccess": "Copied",
-    "copyCode": "Copy code"
+    "copyCode": "Copy code",
+    "openInExplorer": "Open in Explorer",
+    "openInBrowser": "Open in browser",
+    "openInBuiltInBrowser": "Open in built-in browser",
+    "copyLink": "Copy link",
+    "copyFilePath": "Copy file path"
   },
   "mermaidBlock": {
     "renderFailed": "Diagram render failed",
     "codeIncomplete": "Code incomplete, waiting for more content...",
     "rendering": "Rendering diagram...",
-    "openInEditor": "Open in editor",
     "showCode": "Show source",
     "hideCode": "Hide source",
     "copyCode": "Copy code"
@@ -272,6 +276,14 @@
     },
     "previewApp": {
       "title": "BitFun Component Library",
+      "themeLabel": "Theme",
+      "themeTypeLight": "Light",
+      "themeTypeDark": "Dark",
+      "themeDescriptionLight": "Light theme",
+      "themeDescriptionDark": "Dark theme",
+      "sidebarTitle": "Component Navigation",
+      "expandSidebar": "Expand navigation",
+      "collapseSidebar": "Collapse navigation",
       "emptyState": "Select a category on the left to view components"
     },
     "layouts": {
@@ -330,12 +342,14 @@
   },
   "tabs": {
     "close": "Close Tab",
+    "popOut": "Pop out as scene",
     "closeOthers": "Close Other Tabs",
     "closeAll": "Close All Tabs",
     "closeRight": "Close Tabs to the Right",
     "pin": "Pin Tab",
     "unpin": "Unpin Tab",
     "unsaved": "Unsaved",
+    "fileDeleted": "Deleted",
     "missionControl": "Mission Control",
     "hiddenTabsCount": "{{count}} hidden tabs",
     "confirmCloseWithDirty": "File \"{{title}}\" has unsaved changes.\n\nDiscard changes and close?",
@@ -517,7 +531,11 @@
     "projectRequestMessage": "I want to create a new project:\n\n{{description}}\n\nPlease design the project structure and start implementing it.",
     "projectRequestSent": "Project requirements sent to Xiaofang. Collaboration started.",
     "projectRequestSendFailed": "Failed to send project description. Please enter it manually.",
-    "flowChatInitFailed": "Initialization failed. Please refresh the page."
+    "flowChatInitFailed": "Initialization failed. Please refresh the page.",
+    "windowFullscreenEntered": "Entered window fullscreen",
+    "windowFullscreenExited": "Exited window fullscreen",
+    "windowFullscreenExitHint": "Press {{shortcut}} to exit.",
+    "windowFullscreenEnterHint": "Press {{shortcut}} to enter again."
   },
   "bottomBar": {
     "sessions": "Workbench",
@@ -591,8 +609,6 @@
       "close": "Close"
     },
     "loading": {
-      "mermaidPanel": "Loading Mermaid dual-mode panel...",
-      "mermaidEditor": "Loading Mermaid editor...",
       "gitDiff": "Loading Git diff...",
       "gitGraph": "Loading Git graph...",
       "gitBranchHistory": "Loading branch commit history...",
@@ -614,9 +630,7 @@
       "fileOperations": "File Operations"
     },
     "fallback": {
-      "noCodeContent": "No code content available",
-      "mermaidChartTitle": "Mermaid Chart",
-      "mermaidDefaultCode": "flowchart TD\n    A[Start] --> B[End]"
+      "noCodeContent": "No code content available"
     }
   }
 }

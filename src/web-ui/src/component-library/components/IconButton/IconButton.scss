@@ -8,27 +8,35 @@
   border: none;
   border-radius: var(--size-radius-sm, 6px);
   cursor: pointer;
-  transition: all var(--motion-fast, 0.15s) var(--easing-standard, ease);
   position: relative;
   outline: none;
   user-select: none;
   flex-shrink: 0;
+  transform: scale(1);
+  transform-origin: center;
+  transition:
+    transform var(--motion-fast, 0.15s) var(--easing-standard, ease),
+    background var(--motion-fast, 0.15s) var(--easing-standard, ease),
+    color var(--motion-fast, 0.15s) var(--easing-standard, ease);
 
   background: transparent;
   color: var(--color-text-secondary, #a0a0a0);
 
   &:hover:not(:disabled) {
+    transform: scale(1.06);
     background: rgba(255, 255, 255, 0.08);
-    color: var(--color-text-primary, #ffffff);
+    color: var(--color-accent-500, #60a5fa);
   }
 
   &:active:not(:disabled) {
+    transform: scale(1.02);
     background: rgba(255, 255, 255, 0.06);
   }
 
   svg {
     display: block;
     flex-shrink: 0;
+    transition: color var(--motion-fast, 0.15s) var(--easing-standard, ease);
   }
 
   &--xs {

@@ -6,66 +6,72 @@ Use this guide to pair BitFun through a Feishu bot.
 
 ## Setup Steps
 
-### Step1
+### Step 1
 
-Open the Feishu Developer Platform and log in
+Open the Feishu Developer Platform and log in:
 
 <https://open.feishu.cn/app?lang=en-US>
 
-### Step2
+### Step 2
 
-Create custom app
+Create a custom app.
 
-### Step3
+### Step 3
 
-Add Features - Bot - Add
+Add the bot feature:
 
-### Step4
+Features - Bot - Add
 
-Permissions & Scopes -
+### Step 4
 
-Add permission scopes to app -
+Add permission scopes:
 
-Search "im:" - Approval required "No" - Select all - Add Scopes
+Permissions & Scopes - Add Scopes - Search for `im:` - Select all scopes that do not require approval - Add Scopes
 
-### Step5
+### Step 5
 
-Credentials & Basic Info - Copy App ID and App Secret
+Copy the app credentials:
 
-### Step6
+Credentials & Basic Info - App ID and App Secret
 
-Open BitFun - Remote Connect - IM Bot - Feishu Bot - Fill in App ID and App Secret - Connect
+### Step 6
 
-### Step7
+Open BitFun and start the Feishu bot connection:
 
-Back to Feishu Developer Platform
+Remote Connect - IM Bot - Feishu Bot - Fill in App ID and App Secret - Connect
 
-### Step8
+### Step 7
 
-Events & callbacks - Event configuration -
+Return to the Feishu Developer Platform.
 
-Subscription mode - persistent connection - Save
+### Step 8
 
-Add Events - Search "im.message" - Select all - Confirm
+Configure event subscriptions:
 
-### Step9
+Events & callbacks - Event configuration - Subscription mode - Persistent connection - Save
 
-Events & callbacks - Callback configuration -
+Then add message events:
 
-Subscription mode - persistent connection - Save
+Add Events - Search for `im.message` - Select all - Confirm
 
-Add callback - Search "card.action.trigger" - Select all - Confirm
+### Step 9
 
-### Step10
+Configure callback subscriptions:
 
-Publish the bot
+Events & callbacks - Callback configuration - Subscription mode - Persistent connection - Save
 
-### Step11
+Then add card action callbacks:
 
-Open Feishu - Search "{robot name}" -
+Add callback - Search for `card.action.trigger` - Select it - Confirm
 
-Click the robot to open the chat box - Input any message and send
+### Step 10
 
-### Step12
+Publish the bot.
 
-Enter the 6-digit pairing code from BitFun Desktop - Send - Connection successful
+### Step 11
+
+Open Feishu, search for the bot name, open the chat, enter any message, and send it.
+
+### Step 12
+
+Enter the 6-digit pairing code shown in BitFun Desktop, send it, and wait for the connection to succeed.

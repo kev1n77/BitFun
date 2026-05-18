@@ -1,100 +1,65 @@
 use crate::service::config::types::AIModelConfig;
+pub use bitfun_ai_adapters::types::resolve_request_url;
+pub use bitfun_ai_adapters::types::AIConfig;
 use log::warn;
-use serde::{Deserialize, Serialize};
 
-fn append_endpoint(base_url: &str, endpoint: &str) -> String {
-    let base = base_url.trim();
-    if base.is_empty() {
-        return endpoint.to_string();
-    }
-    if base.ends_with(endpoint) {
-        return base.to_string();
-    }
-    format!("{}/{}", base.trim_end_matches('/'), endpoint)
-}
+impl TryFrom<AIModelConfig> for AIConfig {
+    type Error = String;
 
-fn gemini_base_url(url: &str) -> &str {
-    let mut u = url;
-    if let Some(pos) = u.find("/v1beta") {
-        u = &u[..pos];
-    }
-    if let Some(pos) = u.find("/models/") {
-        u = &u[..pos];
-    }
-    u.trim_end_matches('/')
-}
+    fn try_from(other: AIModelConfig) -> Result<Self, Self::Error> {
+        let reasoning_mode = other.effective_reasoning_mode();
 
-fn resolve_gemini_request_url(base_url: &str, model_name: &str) -> String {
-    let trimmed = base_url.trim().trim_end_matches('/');
-    if trimmed.is_empty() {
-        return String::new();
+        let custom_request_body = if let Some(body_str) = &other.custom_request_body {
+            match serde_json::from_str::<serde_json::Value>(body_str) {
+                Ok(value) => Some(value),
+                Err(e) => {
+                    warn!(
+                        "Failed to parse custom_request_body: {}, config: {}",
+                        e, other.name
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let request_url = other
+            .request_url
+            .clone()
+            .filter(|url| !url.is_empty())
+            .unwrap_or_else(|| {
+                resolve_request_url(&other.base_url, &other.provider, &other.model_name)
+            });
+
+        Ok(AIConfig {
+            name: other.name.clone(),
+            base_url: other.base_url.clone(),
+            request_url,
+            api_key: other.api_key.clone(),
+            model: other.model_name.clone(),
+            format: other.provider.clone(),
+            context_window: other.context_window.unwrap_or(128128),
+            max_tokens: other.max_tokens,
+            temperature: other.temperature,
+            top_p: other.top_p,
+            reasoning_mode,
+            inline_think_in_text: other.inline_think_in_text,
+            custom_headers: other.custom_headers,
+            custom_headers_mode: other.custom_headers_mode,
+            skip_ssl_verify: other.skip_ssl_verify,
+            reasoning_effort: other.reasoning_effort,
+            thinking_budget_tokens: other.thinking_budget_tokens,
+            custom_request_body,
+            custom_request_body_mode: other.custom_request_body_mode,
+        })
     }
-
-    if let Some(stripped) = trimmed.strip_suffix('#') {
-        return stripped.trim_end_matches('/').to_string();
-    }
-
-    let model = model_name.trim();
-    if model.is_empty() {
-        return trimmed.to_string();
-    }
-
-    let base = gemini_base_url(trimmed);
-    format!(
-        "{}/v1beta/models/{}:streamGenerateContent?alt=sse",
-        base, model
-    )
-}
-
-fn resolve_request_url(base_url: &str, provider: &str, model_name: &str) -> String {
-    let trimmed = base_url.trim().trim_end_matches('/').to_string();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-
-    if let Some(stripped) = trimmed.strip_suffix('#') {
-        return stripped.trim_end_matches('/').to_string();
-    }
-
-    match provider.trim().to_ascii_lowercase().as_str() {
-        "openai" | "nvidia" | "openrouter" => append_endpoint(&trimmed, "chat/completions"),
-        "response" | "responses" => append_endpoint(&trimmed, "responses"),
-        "anthropic" => append_endpoint(&trimmed, "v1/messages"),
-        "gemini" | "google" => resolve_gemini_request_url(&trimmed, model_name),
-        _ => trimmed,
-    }
-}
-
-/// AI client configuration (for AI requests)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AIConfig {
-    pub name: String,
-    pub base_url: String,
-    /// Actual request URL
-    /// Falls back to base_url when absent
-    pub request_url: String,
-    pub api_key: String,
-    pub model: String,
-    pub format: String,
-    pub context_window: u32,
-    pub max_tokens: Option<u32>,
-    pub temperature: Option<f64>,
-    pub top_p: Option<f64>,
-    pub enable_thinking_process: bool,
-    pub support_preserved_thinking: bool,
-    pub custom_headers: Option<std::collections::HashMap<String, String>>,
-    /// "replace" (default) or "merge" (defaults first, then custom)
-    pub custom_headers_mode: Option<String>,
-    pub skip_ssl_verify: bool,
-    /// Reasoning effort for OpenAI Responses API ("low", "medium", "high", "xhigh")
-    pub reasoning_effort: Option<String>,
-    /// Custom JSON overriding default request body fields
-    pub custom_request_body: Option<serde_json::Value>,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_request_url;
+    use super::{resolve_request_url, AIConfig};
+    use crate::service::config::types::{AIModelConfig, ModelCategory, ReasoningMode};
 
     #[test]
     fn resolves_openai_request_url() {
@@ -143,11 +108,7 @@ mod tests {
     #[test]
     fn resolves_gemini_request_url_bare_host() {
         assert_eq!(
-            resolve_request_url(
-                "https://api.openbitfun.com",
-                "gemini",
-                "gemini-2.5-pro"
-            ),
+            resolve_request_url("https://api.openbitfun.com", "gemini", "gemini-2.5-pro"),
             "https://api.openbitfun.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse"
         );
     }
@@ -167,53 +128,51 @@ mod tests {
             "https://openrouter.ai/api/v1/chat/completions"
         );
     }
-}
 
-impl TryFrom<AIModelConfig> for AIConfig {
-    type Error = String;
-    fn try_from(other: AIModelConfig) -> Result<Self, <Self as TryFrom<AIModelConfig>>::Error> {
-        // Parse custom request body (convert JSON string to serde_json::Value)
-        let custom_request_body = if let Some(body_str) = &other.custom_request_body {
-            match serde_json::from_str::<serde_json::Value>(body_str) {
-                Ok(value) => Some(value),
-                Err(e) => {
-                    warn!(
-                        "Failed to parse custom_request_body: {}, config: {}",
-                        e, other.name
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        };
+    fn base_model_config() -> AIModelConfig {
+        AIModelConfig {
+            id: "model_1".to_string(),
+            name: "Provider".to_string(),
+            provider: "openai".to_string(),
+            model_name: "test-model".to_string(),
+            base_url: "https://example.com/v1".to_string(),
+            request_url: Some("https://example.com/v1/chat/completions".to_string()),
+            api_key: "key".to_string(),
+            context_window: Some(128000),
+            max_tokens: Some(4096),
+            temperature: None,
+            top_p: None,
+            enabled: true,
+            category: ModelCategory::GeneralChat,
+            capabilities: vec![],
+            recommended_for: vec![],
+            metadata: None,
+            enable_thinking_process: false,
+            reasoning_mode: None,
+            inline_think_in_text: false,
+            custom_headers: None,
+            custom_headers_mode: None,
+            skip_ssl_verify: false,
+            reasoning_effort: None,
+            thinking_budget_tokens: None,
+            custom_request_body: None,
+            custom_request_body_mode: None,
+            auth: Default::default(),
+        }
+    }
 
-        // Use stored request_url if present; otherwise derive from base_url + provider for legacy configs.
-        let request_url = other
-            .request_url
-            .filter(|u| !u.is_empty())
-            .unwrap_or_else(|| {
-                resolve_request_url(&other.base_url, &other.provider, &other.model_name)
-            });
+    #[test]
+    fn compatibility_false_thinking_maps_to_default_mode() {
+        let config = AIConfig::try_from(base_model_config()).expect("conversion should succeed");
+        assert_eq!(config.reasoning_mode, ReasoningMode::Default);
+    }
 
-        Ok(AIConfig {
-            name: other.name.clone(),
-            base_url: other.base_url.clone(),
-            request_url,
-            api_key: other.api_key.clone(),
-            model: other.model_name.clone(),
-            format: other.provider.clone(),
-            context_window: other.context_window.unwrap_or(128128),
-            max_tokens: other.max_tokens,
-            temperature: other.temperature,
-            top_p: other.top_p,
-            enable_thinking_process: other.enable_thinking_process,
-            support_preserved_thinking: other.support_preserved_thinking,
-            custom_headers: other.custom_headers,
-            custom_headers_mode: other.custom_headers_mode,
-            skip_ssl_verify: other.skip_ssl_verify,
-            reasoning_effort: other.reasoning_effort,
-            custom_request_body,
-        })
+    #[test]
+    fn compatibility_true_thinking_maps_to_enabled_mode() {
+        let mut model = base_model_config();
+        model.enable_thinking_process = true;
+
+        let config = AIConfig::try_from(model).expect("conversion should succeed");
+        assert_eq!(config.reasoning_mode, ReasoningMode::Enabled);
     }
 }

@@ -74,6 +74,13 @@ export interface WorkspaceIdentity {
   modelFast?: string;
 }
 
+export interface WorkspaceWorktreeInfo {
+  path: string;
+  branch?: string | null;
+  mainRepoPath: string;
+  isMain: boolean;
+}
+
 
 export interface WorkspaceInfo {
   id: string;
@@ -89,12 +96,26 @@ export interface WorkspaceInfo {
   tags: string[];
   statistics?: ProjectStatistics;
   identity?: WorkspaceIdentity | null;
+  worktree?: WorkspaceWorktreeInfo | null;
   connectionId?: string;
   connectionName?: string;
+  /**
+   * Logical workspace host for stable scoping: `{sshHost}:{rootPath}`.
+   * Local / assistant workspaces use `localhost` (from backend); remote uses SSH config host.
+   */
+  sshHost?: string;
 }
 
 export function isRemoteWorkspace(workspace: WorkspaceInfo | null | undefined): boolean {
   return workspace?.workspaceKind === WorkspaceKind.Remote;
+}
+
+export function isWorktreeWorkspace(workspace: WorkspaceInfo | null | undefined): boolean {
+  return Boolean(workspace?.worktree);
+}
+
+export function isLinkedWorktreeWorkspace(workspace: WorkspaceInfo | null | undefined): boolean {
+  return Boolean(workspace?.worktree && !workspace.worktree.isMain);
 }
 
 
@@ -148,7 +169,12 @@ export interface GlobalStateAPI {
 
   
   openWorkspace(path: string): Promise<WorkspaceInfo>;
-  openRemoteWorkspace(remotePath: string, connectionId: string, connectionName: string): Promise<WorkspaceInfo>;
+  openRemoteWorkspace(
+    remotePath: string,
+    connectionId: string,
+    connectionName: string,
+    sshHost?: string
+  ): Promise<WorkspaceInfo>;
   createAssistantWorkspace(): Promise<WorkspaceInfo>;
   deleteAssistantWorkspace(workspaceId: string): Promise<void>;
   resetAssistantWorkspace(workspaceId: string): Promise<WorkspaceInfo>;
@@ -158,6 +184,7 @@ export interface GlobalStateAPI {
   getCurrentWorkspace(): Promise<WorkspaceInfo | null>;
   getOpenedWorkspaces(): Promise<WorkspaceInfo[]>;
   getRecentWorkspaces(): Promise<WorkspaceInfo[]>;
+  removeWorkspaceFromRecent(workspaceId: string): Promise<void>;
   cleanupInvalidWorkspaces(): Promise<number>;
   scanWorkspaceInfo(workspacePath: string): Promise<WorkspaceInfo | null>;
   
@@ -234,6 +261,21 @@ function mapWorkspaceIdentity(
   };
 }
 
+function mapWorkspaceWorktree(
+  worktree: APIWorkspaceInfo['worktree']
+): WorkspaceWorktreeInfo | null | undefined {
+  if (!worktree) {
+    return worktree;
+  }
+
+  return {
+    path: worktree.path,
+    branch: worktree.branch ?? undefined,
+    mainRepoPath: worktree.mainRepoPath,
+    isMain: worktree.isMain,
+  };
+}
+
 function mapWorkspaceInfo(workspace: APIWorkspaceInfo): WorkspaceInfo {
   return {
     id: workspace.id,
@@ -258,8 +300,12 @@ function mapWorkspaceInfo(workspace: APIWorkspaceInfo): WorkspaceInfo {
         }
       : undefined,
     identity: mapWorkspaceIdentity(workspace.identity),
+    worktree: mapWorkspaceWorktree(workspace.worktree),
     connectionId: workspace.connectionId,
     connectionName: workspace.connectionName,
+    sshHost:
+      workspace.sshHost ??
+      (workspace.workspaceKind?.toLowerCase() !== 'remote' ? 'localhost' : undefined),
   };
 }
 
@@ -308,8 +354,15 @@ export function createGlobalStateAPI(): GlobalStateAPI {
       return mapWorkspaceInfo(await globalAPI.openWorkspace(path));
     },
 
-    async openRemoteWorkspace(remotePath: string, connectionId: string, connectionName: string): Promise<WorkspaceInfo> {
-      return mapWorkspaceInfo(await globalAPI.openRemoteWorkspace(remotePath, connectionId, connectionName));
+    async openRemoteWorkspace(
+      remotePath: string,
+      connectionId: string,
+      connectionName: string,
+      sshHost?: string
+    ): Promise<WorkspaceInfo> {
+      return mapWorkspaceInfo(
+        await globalAPI.openRemoteWorkspace(remotePath, connectionId, connectionName, sshHost)
+      );
     },
 
     async createAssistantWorkspace(): Promise<WorkspaceInfo> {
@@ -349,6 +402,10 @@ export function createGlobalStateAPI(): GlobalStateAPI {
       const workspaces = (await globalAPI.getRecentWorkspaces()).map(mapWorkspaceInfo);
       logger.debug('getRecentWorkspaces returned', workspaces);
       return workspaces;
+    },
+
+    async removeWorkspaceFromRecent(workspaceId: string): Promise<void> {
+      await globalAPI.removeRecentWorkspace(workspaceId);
     },
 
     async cleanupInvalidWorkspaces(): Promise<number> {

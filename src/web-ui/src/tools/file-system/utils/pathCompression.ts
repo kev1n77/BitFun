@@ -1,5 +1,6 @@
 import { FileSystemNode } from '../types';
 import { i18nService } from '@/infrastructure/i18n';
+import { expandedFoldersContains } from '@/shared/utils/pathUtils';
 
 export interface CompressedNode extends Omit<FileSystemNode, 'children'> {
   children?: CompressedNode[];
@@ -59,7 +60,7 @@ export function lazyCompressFileTree(fileTree: FileSystemNode[], expandedFolders
 }
 
 function lazyCompressNodePath(node: FileSystemNode, expandedFolders: Set<string>): CompressedNode {
-  if (!expandedFolders.has(node.path)) {
+  if (!expandedFoldersContains(expandedFolders, node.path)) {
     return {
       ...node,
       children: node.children?.map(child => ({

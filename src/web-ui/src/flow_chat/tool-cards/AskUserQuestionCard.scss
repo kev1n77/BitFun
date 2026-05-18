@@ -66,11 +66,21 @@
   letter-spacing: -0.01em;
 }
 
-.header-actions {
+.footer-actions {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-shrink: 0;
+}
+
+.card-footer-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border-base);
+  background: transparent;
 }
 
 /* ========== Status indicator ========== */
@@ -99,6 +109,19 @@
 
 .status-icon-waiting {
   color: var(--color-warning);
+}
+
+.params-loading-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.params-loading-text {
+  font-weight: 500;
 }
 
 /* ========== Question container ========== */
@@ -339,6 +362,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: default;
 }
 
 /* ========== Other option ========== */

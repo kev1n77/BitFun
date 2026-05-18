@@ -1,16 +1,22 @@
 use crate::agentic::tools::framework::{
     Tool, ToolRenderOptions, ToolResult, ToolUseContext, ValidationResult,
 };
+use crate::agentic::workspace::WorkspaceCommandOptions;
 use crate::infrastructure::events::event_system::get_global_event_system;
-use crate::infrastructure::events::event_system::BackendEvent::ToolExecutionProgress;
+use crate::infrastructure::events::event_system::BackendEvent::{
+    ToolExecutionProgress, ToolTerminalReady,
+};
 use crate::service::config::global::get_global_config_service;
+use crate::util::elapsed_ms_u64;
 use crate::util::errors::{BitFunError, BitFunResult};
-use crate::util::types::event::ToolExecutionProgressInfo;
+use crate::util::types::event::{ToolExecutionProgressInfo, ToolTerminalReadyInfo};
 use async_trait::async_trait;
 use futures::StreamExt;
 use log::{debug, error, info};
 use serde_json::{json, Value};
+use std::path::Path;
 use std::time::{Duration, Instant};
+use terminal_core::session::SessionSource;
 use terminal_core::shell::{ShellDetector, ShellType};
 use terminal_core::{
     CommandCompletionReason, CommandStreamEvent, ExecuteCommandRequest, SendCommandRequest,
@@ -24,27 +30,113 @@ const INTERRUPT_OUTPUT_DRAIN_MS: u64 = 500;
 
 const BANNED_COMMANDS: &[&str] = &[
     "alias",
-    "curl",
-    "curlie",
-    "wget",
-    "axel",
-    "aria2c",
-    "nc",
-    "telnet",
-    "lynx",
-    "w3m",
-    "links",
-    "httpie",
-    "xh",
-    "http-prompt",
-    "chrome",
-    "firefox",
-    "safari",
+    // "curl",
+    // "curlie",
+    // "wget",
+    // "axel",
+    // "aria2c",
+    // "nc",
+    // "telnet",
+    // "lynx",
+    // "w3m",
+    // "links",
+    // "httpie",
+    // "xh",
+    // "http-prompt",
+    // "chrome",
+    // "firefox",
+    // "safari",
 ];
 
-fn truncate_string_by_chars(s: &str, max_chars: usize) -> String {
+/// Detect a known-broken pattern: `osascript ... keystroke "<text containing
+/// non-ASCII>"`. AppleScript's `keystroke` sends raw key codes, NOT Unicode
+/// strings — typing CJK / emoji / non-Latin text via `keystroke` produces
+/// garbage like "AAA…" because the receiving app sees the wrong key codes.
+/// The correct path is `ControlHub domain:"desktop" action:"paste"` (which
+/// uses the system clipboard).
+fn detect_osascript_keystroke_non_ascii(cmd: &str) -> Option<String> {
+    if !cmd.contains("osascript") {
+        return None;
+    }
+    // Walk every `keystroke "..."` literal and check for non-ASCII inside.
+    let bytes = cmd.as_bytes();
+    let needle = b"keystroke";
+    let mut i = 0usize;
+    while i + needle.len() < bytes.len() {
+        if &bytes[i..i + needle.len()] == needle {
+            // Find the next quoted string after `keystroke`.
+            let mut j = i + needle.len();
+            while j < bytes.len() && bytes[j] != b'"' {
+                j += 1;
+            }
+            if j >= bytes.len() {
+                break;
+            }
+            let start = j + 1;
+            let mut end = start;
+            while end < bytes.len() && bytes[end] != b'"' {
+                end += 1;
+            }
+            if end > bytes.len() {
+                break;
+            }
+            let literal = &cmd[start..end.min(cmd.len())];
+            if !literal.is_ascii() {
+                return Some(literal.to_string());
+            }
+            i = end + 1;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Detect `osascript` driving a chat / IM application. The model loves to
+/// reach for AppleScript here, but `tell process "<App>" to keystroke …` is
+/// brittle (no CJK), opaque (no return value to verify), and almost always
+/// loses to `system.open_app + desktop.paste` or the `im_send_message`
+/// playbook. Returns the matched app name when detected.
+fn detect_osascript_im_app(cmd: &str) -> Option<&'static str> {
+    if !cmd.contains("osascript") {
+        return None;
+    }
+    const IM_APPS: &[&str] = &[
+        "WeChat", "微信", "iMessage", "Messages", "Slack", "Lark", "飞书", "Telegram", "DingTalk",
+        "钉钉", "QQ", "Discord", "Teams", "Whatsapp", "WhatsApp",
+    ];
+    let cmd_lc = cmd.to_lowercase();
+    for app in IM_APPS {
+        let app_lc = app.to_lowercase();
+        if cmd.contains(app) || cmd_lc.contains(&app_lc) {
+            return Some(*app);
+        }
+    }
+    None
+}
+
+fn truncate_output_preserving_tail(s: &str, max_chars: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
-    chars[..max_chars].into_iter().collect()
+    if chars.len() <= max_chars {
+        return s.to_string();
+    }
+
+    let tail_bias = max_chars.saturating_mul(4) / 5;
+    let separator = "\n... [truncated, middle omitted, tail preserved] ...\n";
+    let separator_len = separator.chars().count();
+
+    if separator_len >= max_chars {
+        return chars[chars.len() - max_chars..].iter().collect();
+    }
+
+    let content_budget = max_chars - separator_len;
+    let tail_len = tail_bias.min(content_budget);
+    let head_len = content_budget.saturating_sub(tail_len);
+
+    let head: String = chars[..head_len].iter().collect();
+    let tail: String = chars[chars.len() - tail_len..].iter().collect();
+
+    format!("{head}{separator}{tail}")
 }
 
 /// Result of shell resolution for bash tool
@@ -58,9 +150,60 @@ struct ResolvedShell {
 /// Bash tool
 pub struct BashTool;
 
+impl Default for BashTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BashTool {
     pub fn new() -> Self {
         Self
+    }
+
+    fn sh_quote(s: &str) -> String {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+
+    fn command_for_working_directory(command: &str, working_directory: Option<&str>) -> String {
+        working_directory
+            .map(str::trim)
+            .filter(|dir| !dir.is_empty())
+            .map(|dir| format!("cd {} && {}", Self::sh_quote(dir), command))
+            .unwrap_or_else(|| command.to_string())
+    }
+
+    fn resolve_working_directory(
+        input: &Value,
+        context: &ToolUseContext,
+    ) -> BitFunResult<Option<String>> {
+        let Some(raw_dir) = input.get("working_directory").and_then(|v| v.as_str()) else {
+            return Ok(None);
+        };
+        let trimmed = raw_dir.trim();
+        if trimmed.is_empty() {
+            return Ok(context.workspace.as_ref().map(|w| w.root_path_string()));
+        }
+        context.resolve_workspace_tool_path(trimmed).map(Some)
+    }
+
+    async fn is_existing_workspace_directory(
+        context: &ToolUseContext,
+        resolved_dir: &str,
+    ) -> BitFunResult<bool> {
+        if context.is_remote() {
+            let fs = context.ws_fs().ok_or_else(|| {
+                BitFunError::tool(
+                    "Remote workspace filesystem is unavailable; cannot validate working_directory"
+                        .to_string(),
+                )
+            })?;
+            fs.is_dir(resolved_dir).await.map_err(|e| {
+                BitFunError::tool(format!("Failed to validate working_directory: {e}"))
+            })
+        } else {
+            Ok(Path::new(resolved_dir).is_dir())
+        }
     }
 
     /// Build environment variables that suppress interactive behaviors
@@ -124,22 +267,30 @@ impl BashTool {
     fn render_result(
         &self,
         terminal_session_id: &str,
+        working_directory: &str,
         output_text: &str,
         interrupted: bool,
         timed_out: bool,
         exit_code: i32,
+        shell_state: Option<&str>,
     ) -> String {
         let mut result_string = String::new();
 
         // Exit code
         result_string.push_str(&format!("<exit_code>{}</exit_code>", exit_code));
+        if !working_directory.is_empty() {
+            result_string.push_str(&format!(
+                "<working_directory>{}</working_directory>",
+                working_directory
+            ));
+        }
 
         // Main output content
         if !output_text.is_empty() {
             let cleaned_output = strip_ansi(output_text);
             let output_len = cleaned_output.chars().count();
             if output_len > MAX_OUTPUT_LENGTH {
-                let truncated = truncate_string_by_chars(&cleaned_output, MAX_OUTPUT_LENGTH);
+                let truncated = truncate_output_preserving_tail(&cleaned_output, MAX_OUTPUT_LENGTH);
                 result_string.push_str(&format!(
                     "<output truncated=\"true\">{}</output>",
                     truncated
@@ -147,6 +298,14 @@ impl BashTool {
             } else {
                 result_string.push_str(&format!("<output>{}</output>", cleaned_output));
             }
+        }
+
+        // Post-command terminal state: shows what the shell displayed after the
+        // command finished (e.g., prompt, continuation prompt, or other state).
+        // This gives AI the full picture of the terminal context.
+        if let Some(state) = shell_state {
+            let cleaned_state = strip_ansi(state);
+            result_string.push_str(&format!("<shell_state>{}</shell_state>", cleaned_state));
         }
 
         // Interruption notice
@@ -167,6 +326,33 @@ impl BashTool {
         ));
 
         result_string
+    }
+
+    fn emit_terminal_ready_event(tool_use_id: &str, terminal_session_id: &str) {
+        let event = ToolTerminalReady(ToolTerminalReadyInfo {
+            tool_use_id: tool_use_id.to_string(),
+            terminal_session_id: terminal_session_id.to_string(),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        });
+
+        let event_system = get_global_event_system();
+        tokio::spawn(async move {
+            let _ = event_system.emit(event).await;
+        });
+    }
+
+    fn cancellation_requested(context: &ToolUseContext) -> bool {
+        context
+            .cancellation_token
+            .as_ref()
+            .is_some_and(|token| token.is_cancelled())
+    }
+
+    fn cancellation_error(stage: &str) -> BitFunError {
+        BitFunError::cancelled(format!("Bash tool execution cancelled {}", stage))
     }
 }
 
@@ -207,7 +393,7 @@ Usage notes:
   - DO NOT use multiline commands or HEREDOC syntax (e.g., <<EOF, heredoc with newlines). Only single-line commands are supported.
   - You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). If not specified, commands will timeout after 120000ms (2 minutes).
   - It is very helpful if you write a clear, concise description of what this command does. For simple commands, keep it brief (5-10 words). For complex commands (piped commands, obscure flags, or anything hard to understand at a glance), add enough context to clarify what it does.
-  - If the output exceeds {MAX_OUTPUT_LENGTH} characters, output will be truncated before being returned to you.
+  - If the output exceeds {MAX_OUTPUT_LENGTH} characters, output will be truncated before being returned to you, with the tail of the output preserved because the ending is usually more important.
   - You can use the `run_in_background` parameter to run the command in a new dedicated background terminal session. The tool returns the background session ID immediately without waiting for the command to finish. Only use this for long-running processes (e.g., dev servers, watchers) where you don't need the output right away. You do not need to append '&' to the command. NOTE: `timeout_ms` is ignored when `run_in_background` is true.
   - Each result includes a `<terminal_session_id>` tag identifying the terminal session. The persistent shell session ID remains constant throughout the entire conversation; background sessions each have their own unique ID.
   - The output may include the command echo and/or the shell prompt (e.g., `PS C:\path>`). Do not treat these as part of the command's actual result.
@@ -235,6 +421,31 @@ Usage notes:
         ))
     }
 
+    fn short_description(&self) -> String {
+        "Run commands in the persistent shell session.".to_string()
+    }
+
+    async fn description_with_context(
+        &self,
+        context: Option<&ToolUseContext>,
+    ) -> BitFunResult<String> {
+        let mut base = self.description().await?;
+        if context.map(|c| c.is_remote()).unwrap_or(false) {
+            base = format!(
+                r#"**Remote workspace:** Commands run on the **SSH server** in a shell whose initial working directory is the **remote workspace root** (same as running a terminal on that machine). The shell name shown below may reflect your **local** BitFun settings; the actual interpreter on the server is typically `sh`/`bash`. Use **Unix** syntax and POSIX paths — not PowerShell or Windows paths.
+
+{base}"#,
+                base = base
+            );
+        }
+        if !context.map(|c| c.is_remote()).unwrap_or(false) {
+            base.push_str(
+                "\n\n**Desktop automation:** Prefer this tool for anything achievable from the **workspace shell** (build, test, git, scripts, CLIs). On **macOS**, `open -a \"AppName\"` launches or foregrounds an app with fewer steps than GUI workflows. When desktop automation is enabled, use **`ControlHub`** with `{ domain: \"desktop\", action: \"locate\" }` for **named** on-screen controls before guessing coordinates from `action: \"screenshot\"` alone.",
+            );
+        }
+        Ok(base)
+    }
+
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -250,6 +461,10 @@ Usage notes:
                 "run_in_background": {
                     "type": "boolean",
                     "description": "If true, runs the command in a new dedicated background terminal session and returns the session ID immediately without waiting for completion. Useful for long-running processes like dev servers or file watchers. timeout_ms is ignored when this is true."
+                },
+                "working_directory": {
+                    "type": "string",
+                    "description": "Optional directory to run the command in. Use a workspace-relative path or an absolute path inside the current workspace. Omit to reuse the persistent terminal's current directory."
                 },
                 "description": {
                     "type": "string",
@@ -300,6 +515,59 @@ Usage notes:
                     };
                 }
             }
+
+            // Reject `osascript ... keystroke "<non-ASCII>"` — fundamentally
+            // broken: AppleScript's `keystroke` sends raw key codes, not
+            // Unicode, so CJK / emoji becomes garbage like "AAA…" in the
+            // target app. This is exactly the WeChat-search-box failure
+            // mode users keep hitting. Redirect to the canonical path.
+            if let Some(literal) = detect_osascript_keystroke_non_ascii(cmd) {
+                let preview: String = literal.chars().take(40).collect();
+                return ValidationResult {
+                    result: false,
+                    message: Some(format!(
+                        "Refused: `osascript ... keystroke \"{}…\"` cannot type non-ASCII text — \
+                         AppleScript's `keystroke` sends raw key codes, not Unicode, so CJK / \
+                         emoji / accented text comes out as garbage in the target app (e.g. \
+                         the WeChat search box receives `AAA…` instead of `{}`). \n\n\
+                         Use ControlHub instead:\n\
+                         1. `system.open_app {{ app_name: \"<App>\" }}` to focus the app\n\
+                         2. (optional) `desktop.key_chord {{ keys: [\"command\",\"f\"] }}` to focus search\n\
+                         3. `desktop.paste {{ text: \"<your text>\", submit: true }}` — pastes via \
+                            system clipboard, works for ANY language.\n\n\
+                         For sending an IM message specifically, run the `im_send_message` \
+                         playbook — it's the same 3-step flow pre-packaged.",
+                        preview, preview
+                    )),
+                    error_code: Some(400),
+                    meta: None,
+                };
+            }
+
+            // Soft-block `osascript` driving chat / IM apps. These flows are
+            // a constant source of frustration: no return value to verify,
+            // brittle UI scripting, no CJK support via keystroke, and the
+            // alternative (`system.open_app` + `desktop.paste` /
+            // `im_send_message` playbook) is faster AND more reliable.
+            if let Some(app) = detect_osascript_im_app(cmd) {
+                return ValidationResult {
+                    result: false,
+                    message: Some(format!(
+                        "Refused: driving {app} via `osascript` / AppleScript GUI scripting is unreliable \
+                         (no CJK support in keystroke, no return value, easy to deadlock). \n\n\
+                         Use the canonical IM-send recipe instead — same 3 deterministic calls:\n\
+                         1. `ControlHub domain:\"system\" action:\"open_app\" {{ app_name:\"{app}\" }}`\n\
+                         2. `ControlHub domain:\"desktop\" action:\"key_chord\" {{ keys:[\"command\",\"f\"] }}`\n\
+                         3. `ControlHub domain:\"desktop\" action:\"paste\" {{ text:\"<contact>\", submit:true }}`\n\
+                         4. `ControlHub domain:\"desktop\" action:\"paste\" {{ text:\"<message>\", submit:true }}`\n\n\
+                         Or run the prepackaged `im_send_message` playbook with \
+                         `{{ app_name, contact, message }}`. For Slack/Lark where Return inserts \
+                         a newline, pass `submit_keys:[\"command\",\"return\"]`."
+                    )),
+                    error_code: Some(400),
+                    meta: None,
+                };
+            }
         } else {
             return ValidationResult {
                 result: false,
@@ -334,6 +602,42 @@ Usage notes:
                 error_code: Some(400),
                 meta: None,
             };
+        }
+
+        match Self::resolve_working_directory(input, context) {
+            Ok(Some(resolved_dir)) => {
+                match Self::is_existing_workspace_directory(context, &resolved_dir).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return ValidationResult {
+                            result: false,
+                            message: Some(format!(
+                                "working_directory must be an existing directory inside the current workspace: {}",
+                                resolved_dir
+                            )),
+                            error_code: Some(400),
+                            meta: None,
+                        };
+                    }
+                    Err(err) => {
+                        return ValidationResult {
+                            result: false,
+                            message: Some(err.to_string()),
+                            error_code: Some(400),
+                            meta: None,
+                        };
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                return ValidationResult {
+                    result: false,
+                    message: Some(err.to_string()),
+                    error_code: Some(400),
+                    meta: None,
+                };
+            }
         }
 
         // Warn if timeout_ms is set alongside run_in_background
@@ -394,45 +698,92 @@ Usage notes:
             .get("command")
             .and_then(|v| v.as_str())
             .ok_or_else(|| BitFunError::tool("command is required".to_string()))?;
+        let requested_working_directory = Self::resolve_working_directory(input, context)?;
+
+        if command_needs_light_checkpoint(command_str) {
+            context
+                .record_light_checkpoint("Bash", command_str, Vec::new())
+                .await;
+        }
 
         // Remote workspace: execute via injected workspace shell
         if context.is_remote() {
-            if let Some(ws_shell) = context.ws_shell() {
-                info!("Executing command on remote workspace via SSH: {}", command_str);
+            let Some(ws_shell) = context.ws_shell() else {
+                return Err(BitFunError::tool(
+                    "Remote workspace shell is unavailable; refusing to run Bash locally for a remote session.".to_string(),
+                ));
+            };
 
-                let timeout_ms = input
-                    .get("timeout_ms")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(120_000);
+            info!(
+                "Executing command on remote workspace via SSH: {}",
+                command_str
+            );
+            let remote_command = Self::command_for_working_directory(
+                command_str,
+                requested_working_directory.as_deref(),
+            );
 
-                let (stdout, stderr, exit_code) = ws_shell
-                    .exec(command_str, Some(timeout_ms))
-                    .await
-                    .map_err(|e| BitFunError::tool(format!("Remote command execution failed: {}", e)))?;
+            let timeout_ms = input
+                .get("timeout_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(120_000);
 
-                let output = if stderr.is_empty() {
-                    stdout.clone()
+            let exec_result = ws_shell
+                .exec_with_options(
+                    &remote_command,
+                    WorkspaceCommandOptions {
+                        timeout_ms: Some(timeout_ms),
+                        cancellation_token: context.cancellation_token.clone(),
+                    },
+                )
+                .await
+                .map_err(|e| {
+                    BitFunError::tool(format!("Remote command execution failed: {}", e))
+                })?;
+
+            let output = exec_result.combined_output();
+
+            let execution_time_ms = elapsed_ms_u64(start_time);
+            let working_directory = context
+                .workspace_root()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let working_directory = requested_working_directory.unwrap_or(working_directory);
+
+            let result = ToolResult::Result {
+                data: json!({
+                    "success": exec_result.exit_code == 0,
+                    "command": command_str,
+                    "stdout": exec_result.stdout,
+                    "stderr": exec_result.stderr,
+                    "output": output,
+                    "exit_code": exec_result.exit_code,
+                    "interrupted": exec_result.interrupted,
+                    "timed_out": exec_result.timed_out,
+                    "working_directory": working_directory,
+                    "execution_time_ms": execution_time_ms,
+                    "duration_ms": execution_time_ms,
+                    "is_remote": true
+                }),
+                result_for_assistant: Some(if exec_result.timed_out {
+                    format!(
+                        "[Remote SSH] Command timed out on remote server in {}:\n{}\n\nExit code: {}",
+                        working_directory, output, exec_result.exit_code
+                    )
+                } else if exec_result.interrupted {
+                    format!(
+                        "[Remote SSH] Command was cancelled on remote server in {}:\n{}\n\nExit code: {}",
+                        working_directory, output, exec_result.exit_code
+                    )
                 } else {
-                    format!("{}\n{}", stdout, stderr)
-                };
-
-                let result = ToolResult::Result {
-                    data: json!({
-                        "command": command_str,
-                        "stdout": stdout,
-                        "stderr": stderr,
-                        "exit_code": exit_code,
-                        "duration_ms": start_time.elapsed().as_millis() as u64,
-                        "is_remote": true
-                    }),
-                    result_for_assistant: Some(format!(
-                        "[Remote SSH] Command executed on remote server:\n{}\n\nExit code: {}",
-                        output,
-                        exit_code
-                    )),
-                };
-                return Ok(vec![result]);
-            }
+                    format!(
+                        "[Remote SSH] Command executed on remote server in {}:\n{}\n\nExit code: {}",
+                        working_directory, output, exec_result.exit_code
+                    )
+                }),
+                image_attachments: None,
+            };
+            return Ok(vec![result]);
         }
 
         let run_in_background = input
@@ -469,10 +820,18 @@ Usage notes:
             .to_string();
 
         if run_in_background {
+            if Self::cancellation_requested(context) {
+                return Err(Self::cancellation_error(
+                    "before creating background session",
+                ));
+            }
+
             // For background commands, inherit CWD from an already-running primary session
             // if one exists; otherwise fall back to workspace path.  This avoids forcing a
             // primary session to be created just to read its working directory.
-            let initial_cwd = if let Some(existing_id) = binding.get(chat_session_id) {
+            let initial_cwd = if let Some(requested_dir) = requested_working_directory.as_ref() {
+                requested_dir.clone()
+            } else if let Some(existing_id) = binding.get(chat_session_id) {
                 terminal_api
                     .get_session(&existing_id)
                     .await
@@ -497,6 +856,7 @@ Usage notes:
         }
 
         // 3. Foreground: get or create the primary terminal session
+        let terminal_ready_started_at = Instant::now();
         let primary_session_id = binding
             .get_or_create(
                 chat_session_id,
@@ -509,11 +869,15 @@ Usage notes:
                     )),
                     shell_type: shell_type.clone(),
                     env: Some(Self::noninteractive_env()),
+                    source: Some(SessionSource::Agent),
                     ..Default::default()
                 },
             )
             .await
             .map_err(|e| BitFunError::tool(format!("Failed to create Terminal session: {}", e)))?;
+        let terminal_ready_ms = elapsed_ms_u64(terminal_ready_started_at);
+
+        Self::emit_terminal_ready_event(&tool_use_id, &primary_session_id);
 
         // Get actual working directory from primary session
         let primary_cwd = terminal_api
@@ -521,6 +885,14 @@ Usage notes:
             .await
             .map(|s| s.cwd)
             .unwrap_or_else(|_| workspace_path.clone());
+        let execution_working_directory = requested_working_directory
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| primary_cwd.clone());
+        let command_to_execute = Self::command_for_working_directory(
+            command_str,
+            requested_working_directory.as_deref(),
+        );
 
         // --- Foreground execution ---
 
@@ -538,13 +910,13 @@ Usage notes:
 
         debug!(
             "Bash tool executing command: {}, session_id: {}, tool_id: {}",
-            command_str, chat_session_id, tool_use_id
+            command_to_execute, chat_session_id, tool_use_id
         );
 
         // 4. Create streaming execution request
         let request = ExecuteCommandRequest {
             session_id: primary_session_id.clone(),
-            command: command_str.to_string(),
+            command: command_to_execute,
             timeout_ms,
             prevent_history: Some(true),
         };
@@ -555,7 +927,11 @@ Usage notes:
         let mut final_exit_code: Option<i32> = None;
         let mut was_interrupted = false;
         let mut timed_out = false;
+        let mut final_shell_state: Option<String> = None;
+        let mut command_started_after_ms: Option<u64> = None;
+        let mut completion_reason_label = "stream_end".to_string();
         let mut interrupt_drain_deadline: Option<tokio::time::Instant> = None;
+        let command_stream_started_at = Instant::now();
 
         // Get event system for sending progress
         let event_system = get_global_event_system();
@@ -609,6 +985,7 @@ Usage notes:
 
             match event {
                 CommandStreamEvent::Started { command_id } => {
+                    command_started_after_ms = Some(elapsed_ms_u64(command_stream_started_at));
                     debug!("Bash command started execution, command_id: {}", command_id);
                 }
                 CommandStreamEvent::Output { data } => {
@@ -634,6 +1011,7 @@ Usage notes:
                     exit_code,
                     total_output,
                     completion_reason,
+                    shell_state,
                 } => {
                     debug!(
                         "Bash command completed, exit_code: {:?}, tool_id: {}",
@@ -641,6 +1019,7 @@ Usage notes:
                     );
                     final_exit_code = exit_code.or(final_exit_code);
                     timed_out = completion_reason == CommandCompletionReason::TimedOut;
+                    completion_reason_label = format!("{:?}", completion_reason);
 
                     if !timed_out && matches!(exit_code, Some(130) | Some(-1073741510)) {
                         was_interrupted = true;
@@ -648,6 +1027,11 @@ Usage notes:
 
                     if !total_output.is_empty() {
                         accumulated_output = total_output;
+                    }
+
+                    // Capture post-command terminal state for the AI agent
+                    if shell_state.is_some() {
+                        final_shell_state = shell_state;
                     }
                     break;
                 }
@@ -665,7 +1049,22 @@ Usage notes:
         }
 
         // 6. Build result
-        let execution_time_ms = start_time.elapsed().as_millis() as u64;
+        let execution_time_ms = elapsed_ms_u64(start_time);
+        let command_stream_ms = elapsed_ms_u64(command_stream_started_at);
+        info!(
+            "Bash command completed: tool_id={}, terminal_session_id={}, duration_ms={}, terminal_ready_ms={}, command_started_after_ms={:?}, command_stream_ms={}, output_bytes={}, exit_code={:?}, interrupted={}, timed_out={}, completion_reason={}",
+            tool_use_id,
+            primary_session_id,
+            execution_time_ms,
+            terminal_ready_ms,
+            command_started_after_ms,
+            command_stream_ms,
+            accumulated_output.len(),
+            final_exit_code,
+            was_interrupted,
+            timed_out,
+            completion_reason_label
+        );
 
         let result_data = json!({
             "success": final_exit_code.unwrap_or(-1) == 0,
@@ -674,29 +1073,79 @@ Usage notes:
             "exit_code": final_exit_code,
             "interrupted": was_interrupted,
             "timed_out": timed_out,
-            "working_directory": primary_cwd,
+            "working_directory": execution_working_directory,
             "execution_time_ms": execution_time_ms,
             "terminal_session_id": primary_session_id,
         });
 
         let result_for_assistant = self.render_result(
             &primary_session_id,
+            &execution_working_directory,
             &accumulated_output,
             was_interrupted,
             timed_out,
             final_exit_code.unwrap_or(-1),
+            final_shell_state.as_deref(),
         );
 
         Ok(vec![ToolResult::Result {
             data: result_data,
             result_for_assistant: Some(result_for_assistant),
+            image_attachments: None,
         }])
     }
 }
 
+fn command_needs_light_checkpoint(command: &str) -> bool {
+    let command = command.trim().to_ascii_lowercase();
+    let mutating_prefixes = [
+        "rm ",
+        "rmdir ",
+        "del ",
+        "erase ",
+        "move ",
+        "mv ",
+        "cp ",
+        "git reset",
+        "git clean",
+        "git checkout",
+        "git switch",
+        "git merge",
+        "git rebase",
+        "git pull",
+        "git stash",
+        "git commit",
+        "cargo fmt",
+        "cargo fix",
+        "rustfmt",
+        "prettier --write",
+    ];
+
+    mutating_prefixes
+        .iter()
+        .any(|prefix| command.starts_with(prefix))
+        || command.contains(" --fix")
+        || command.contains(" > ")
+        || command.contains(" >> ")
+}
+
 impl BashTool {
+    fn background_output_file_path(
+        context: &ToolUseContext,
+        chat_session_id: &str,
+        tool_use_id: &str,
+    ) -> Option<std::path::PathBuf> {
+        context
+            .current_workspace_session_tool_result_path(
+                chat_session_id,
+                &format!("{}.txt", tool_use_id),
+            )
+            .ok()
+    }
+
     /// Execute a command in a new background terminal session.
     /// Returns immediately with the new session ID.
+    #[allow(clippy::too_many_arguments)]
     async fn call_background(
         &self,
         command_str: &str,
@@ -713,6 +1162,12 @@ impl BashTool {
             command_str, chat_session_id
         );
 
+        if Self::cancellation_requested(context) {
+            return Err(Self::cancellation_error(
+                "before creating background terminal",
+            ));
+        }
+
         // Create a dedicated background terminal session sharing the primary session's cwd
         let bg_session_id = binding
             .create_background_session(
@@ -723,6 +1178,7 @@ impl BashTool {
                     session_name: None,
                     shell_type,
                     env: Some(Self::noninteractive_env()),
+                    source: Some(SessionSource::Agent),
                     ..Default::default()
                 },
             )
@@ -734,8 +1190,26 @@ impl BashTool {
                 ))
             })?;
 
+        let tool_use_id = context
+            .tool_call_id
+            .clone()
+            .unwrap_or_else(|| format!("bash_{}", uuid::Uuid::new_v4()));
+        Self::emit_terminal_ready_event(&tool_use_id, &bg_session_id);
+
         // Subscribe to session output before sending the command so no data is missed
         let mut output_rx = terminal_api.subscribe_session_output(&bg_session_id);
+
+        if Self::cancellation_requested(context) {
+            let _ = terminal_api
+                .close_session(terminal_core::CloseSessionRequest {
+                    session_id: bg_session_id.clone(),
+                    immediate: Some(true),
+                })
+                .await;
+            return Err(Self::cancellation_error(
+                "before sending background command",
+            ));
+        }
 
         // Fire-and-forget: write the command to the PTY without waiting for completion
         terminal_api
@@ -751,12 +1225,11 @@ impl BashTool {
             bg_session_id, chat_session_id
         );
 
-        // Determine output file path: <workspace>/.bitfun/terminals/<bg_session_id>.txt
-        let output_file_path = context.workspace_root().map(|ws| {
-            ws.join(".bitfun")
-                .join("terminals")
-                .join(format!("{}.txt", bg_session_id))
-        });
+        // Store background output under the session-scoped runtime tool-results tree:
+        // local:  ~/.bitfun/projects/<project-slug>/sessions/<chat-session-id>/tool-results/<tool-use-id>.txt
+        // remote: ~/.bitfun/remote_ssh/<host>/<remote-path>/sessions/<chat-session-id>/tool-results/<tool-use-id>.txt
+        let output_file_path =
+            Self::background_output_file_path(context, chat_session_id, &tool_use_id);
 
         // Spawn task: write PTY output to file, delete when session ends
         if let Some(file_path) = output_file_path.clone() {
@@ -765,7 +1238,7 @@ impl BashTool {
                 if let Some(parent) = file_path.parent() {
                     if let Err(e) = tokio::fs::create_dir_all(parent).await {
                         error!(
-                            "Failed to create terminals output dir for bg session {}: {}",
+                            "Failed to create tool-results output dir for bg session {}: {}",
                             bg_id_for_log, e
                         );
                         return;
@@ -815,11 +1288,18 @@ impl BashTool {
             });
         }
 
-        let execution_time_ms = start_time.elapsed().as_millis() as u64;
+        let execution_time_ms = elapsed_ms_u64(start_time);
 
         let output_file_str = output_file_path.as_deref().map(|p| p.display().to_string());
+        let output_file_reference = context
+            .build_session_runtime_artifact_reference(
+                chat_session_id,
+                &format!("tool-results/{}.txt", tool_use_id),
+            )
+            .ok()
+            .or_else(|| output_file_str.clone());
 
-        let output_file_note = output_file_str
+        let output_file_note = output_file_reference
             .as_deref()
             .map(|s| format!("\nOutput is being written to: {}", s))
             .unwrap_or_default();
@@ -833,17 +1313,146 @@ impl BashTool {
             "working_directory": initial_cwd,
             "execution_time_ms": execution_time_ms,
             "terminal_session_id": bg_session_id,
-            "output_file": output_file_str,
+            "output_file": output_file_reference,
         });
 
         let result_for_assistant = format!(
-            "Command started in background terminal session (id: {}).{}",
-            bg_session_id, output_file_note
+            "Command started in background terminal session (id: {}). Working directory: {}.{}",
+            bg_session_id, initial_cwd, output_file_note
         );
 
         Ok(vec![ToolResult::Result {
             data: result_data,
             result_for_assistant: Some(result_for_assistant),
+            image_attachments: None,
         }])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checkpoint_detection_flags_mutating_bash_commands() {
+        assert!(command_needs_light_checkpoint("cargo fmt"));
+        assert!(command_needs_light_checkpoint("pnpm lint --fix"));
+        assert!(command_needs_light_checkpoint("rm -rf target/tmp"));
+        assert!(!command_needs_light_checkpoint("cargo test"));
+        assert!(!command_needs_light_checkpoint("git status"));
+    }
+
+    #[test]
+    fn truncate_output_preserving_tail_keeps_end_of_output() {
+        let input = "BEGIN-".to_string() + &"x".repeat(120) + "-IMPORTANT-END";
+
+        let truncated = truncate_output_preserving_tail(&input, 80);
+
+        assert!(truncated.contains("tail preserved"));
+        assert!(truncated.ends_with("IMPORTANT-END"));
+        assert!(!truncated.contains("BEGIN-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"));
+        assert!(truncated.chars().count() <= 80);
+    }
+
+    #[test]
+    fn detect_osascript_keystroke_non_ascii_flags_cjk_keystroke() {
+        let cmd = r#"osascript -e 'tell application "System Events" to keystroke "尉怡青"'"#;
+        let hit = detect_osascript_keystroke_non_ascii(cmd).expect("should flag CJK keystroke");
+        assert!(hit.contains("尉怡青"));
+    }
+
+    #[test]
+    fn detect_osascript_keystroke_non_ascii_flags_emoji_keystroke() {
+        let cmd = r#"osascript -e 'tell application "System Events" to keystroke "hi 👋"'"#;
+        assert!(detect_osascript_keystroke_non_ascii(cmd).is_some());
+    }
+
+    #[test]
+    fn detect_osascript_keystroke_non_ascii_passes_pure_ascii() {
+        let cmd = r#"osascript -e 'tell application "System Events" to keystroke "hello"'"#;
+        assert!(detect_osascript_keystroke_non_ascii(cmd).is_none());
+    }
+
+    #[test]
+    fn detect_osascript_keystroke_non_ascii_passes_non_osascript() {
+        let cmd = r#"echo "尉怡青""#;
+        assert!(detect_osascript_keystroke_non_ascii(cmd).is_none());
+    }
+
+    #[test]
+    fn detect_osascript_im_app_flags_wechat() {
+        let cmd = r#"osascript -e 'tell application "WeChat" to activate'"#;
+        assert_eq!(detect_osascript_im_app(cmd), Some("WeChat"));
+    }
+
+    #[test]
+    fn detect_osascript_im_app_flags_weixin_chinese() {
+        let cmd = r#"osascript -e 'tell application "微信" to activate'"#;
+        assert_eq!(detect_osascript_im_app(cmd), Some("微信"));
+    }
+
+    #[test]
+    fn detect_osascript_im_app_passes_non_im() {
+        let cmd = r#"osascript -e 'tell application "Finder" to activate'"#;
+        assert!(detect_osascript_im_app(cmd).is_none());
+    }
+
+    #[test]
+    fn render_result_marks_truncated_output_and_keeps_tail() {
+        let tool = BashTool::new();
+        let long_output =
+            "prefix\n".to_string() + &"y".repeat(MAX_OUTPUT_LENGTH + 100) + "\nfinal-error";
+
+        let rendered =
+            tool.render_result("session-1", "/repo", &long_output, false, false, 1, None);
+
+        assert!(rendered.contains("<output truncated=\"true\">"));
+        assert!(rendered.contains("tail preserved"));
+        assert!(rendered.contains("final-error"));
+        assert!(rendered.contains("<exit_code>1</exit_code>"));
+    }
+
+    #[test]
+    fn input_schema_accepts_working_directory() {
+        let tool = BashTool::new();
+        let schema = tool.input_schema();
+
+        assert!(schema["properties"].get("working_directory").is_some());
+        assert_eq!(schema["additionalProperties"], false);
+    }
+
+    #[test]
+    fn command_is_prefixed_with_quoted_working_directory_when_requested() {
+        let command = BashTool::command_for_working_directory(
+            "pnpm install",
+            Some("/Users/example/My Project"),
+        );
+
+        assert_eq!(command, "cd '/Users/example/My Project' && pnpm install");
+    }
+
+    #[test]
+    fn command_prefix_escapes_single_quotes_in_working_directory() {
+        let command = BashTool::command_for_working_directory("pwd", Some("/tmp/it's fine"));
+
+        assert_eq!(command, "cd '/tmp/it'\\''s fine' && pwd");
+    }
+
+    #[test]
+    fn command_result_includes_working_directory_for_model() {
+        let tool = BashTool::new();
+        let rendered = tool.render_result(
+            "session-1",
+            "/private/tmp",
+            "ERR_PNPM_NO_PKG_MANIFEST No package.json found in /private/tmp",
+            false,
+            false,
+            1,
+            None,
+        );
+
+        assert!(rendered.contains("<exit_code>1</exit_code>"));
+        assert!(rendered.contains("<working_directory>/private/tmp</working_directory>"));
+        assert!(rendered.contains("ERR_PNPM_NO_PKG_MANIFEST"));
     }
 }

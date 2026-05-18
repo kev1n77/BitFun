@@ -7,12 +7,17 @@
 
 export type ConfigTab =
   | 'basics'
+  | 'appearance'
   | 'models'
-  | 'session-config'
-  | 'ai-context'
+  | 'session-personalization'
+  | 'session-permissions'
+  | 'quick-actions'
+  | 'review'
   | 'mcp-tools'
+  | 'acp-agents'
   // | 'lsp' // temporarily hidden from config center
-  | 'editor';
+  | 'editor'
+  | 'keyboard';
 
 export interface ConfigTabDef {
   id: ConfigTab;
@@ -21,6 +26,8 @@ export interface ConfigTabDef {
   descriptionKey?: string;
   /** Language-neutral extra tokens matched by search (ASCII recommended). */
   keywords?: string[];
+  /** Show a Beta pill next to the tab label in the settings nav. */
+  beta?: boolean;
 }
 
 export interface ConfigCategoryDef {
@@ -39,11 +46,6 @@ export const SETTINGS_CATEGORIES: ConfigCategoryDef[] = [
         labelKey: 'configCenter.tabs.basics',
         descriptionKey: 'configCenter.tabDescriptions.basics',
         keywords: [
-          'language',
-          'locale',
-          'i18n',
-          'theme',
-          'appearance',
           'logging',
           'log',
           'terminal',
@@ -54,6 +56,25 @@ export const SETTINGS_CATEGORIES: ConfigCategoryDef[] = [
           'login',
           'boot',
           'launch',
+          'notification',
+          'notifications',
+          'startup tips',
+        ],
+      },
+      {
+        id: 'appearance',
+        labelKey: 'configCenter.tabs.appearance',
+        descriptionKey: 'configCenter.tabDescriptions.appearance',
+        keywords: [
+          'language',
+          'locale',
+          'i18n',
+          'theme',
+          'appearance',
+          'font',
+          'fonts',
+          'typography',
+          'size',
         ],
       },
       {
@@ -74,6 +95,20 @@ export const SETTINGS_CATEGORIES: ConfigCategoryDef[] = [
           'token',
         ],
       },
+      {
+        id: 'keyboard',
+        labelKey: 'configCenter.tabs.keyboard',
+        descriptionKey: 'configCenter.tabDescriptions.keyboard',
+        keywords: [
+          'keyboard',
+          'shortcut',
+          'keybinding',
+          'hotkey',
+          'shortcut key',
+          '\u5feb\u6377\u952e',
+          '\u952e\u4f4d',
+        ],
+      },
     ],
   },
   {
@@ -81,30 +116,95 @@ export const SETTINGS_CATEGORIES: ConfigCategoryDef[] = [
     nameKey: 'configCenter.categories.smartCapabilities',
     tabs: [
       {
-        id: 'session-config',
-        labelKey: 'configCenter.tabs.sessionConfig',
-        descriptionKey: 'configCenter.tabDescriptions.sessionConfig',
+        id: 'session-personalization',
+        labelKey: 'configCenter.tabs.sessionPersonalization',
+        descriptionKey: 'configCenter.tabDescriptions.sessionPersonalization',
         keywords: [
           'session',
-          'chat',
-          'streaming',
-          'tool',
-          'timeout',
-          'confirmation',
-          'history',
+          'title',
+          'companion',
+          'agent',
+          'pixel',
+          'pet',
+          'partner',
+          '\u4f19\u4f34',
+          '\u4e2a\u6027\u5316',
         ],
       },
       {
-        id: 'ai-context',
-        labelKey: 'configCenter.tabs.aiContext',
-        descriptionKey: 'configCenter.tabDescriptions.aiContext',
-        keywords: ['rules', 'memory', 'context', 'rag', 'knowledge'],
+        id: 'session-permissions',
+        labelKey: 'configCenter.tabs.sessionPermissions',
+        descriptionKey: 'configCenter.tabDescriptions.sessionPermissions',
+        keywords: [
+          'session',
+          'tool',
+          'timeout',
+          'confirmation',
+          'computer use',
+          'browser',
+          'cdp',
+          'debug',
+          'permission',
+          'accessibility',
+          'screen',
+          'workspace',
+          'search',
+          'flashgrep',
+          'index',
+          '\u6743\u9650',
+        ],
+      },
+      {
+        id: 'quick-actions',
+        labelKey: 'configCenter.tabs.quickActions',
+        descriptionKey: 'configCenter.tabDescriptions.quickActions',
+        keywords: [
+          'quick action',
+          'quick actions',
+          'commit',
+          'pr',
+          'pull request',
+          'post-coding',
+          'shortcut',
+          '快捷动作',
+          '提交',
+        ],
+      },
+      {
+        id: 'review',
+        labelKey: 'configCenter.tabs.review',
+        descriptionKey: 'configCenter.tabDescriptions.review',
+        keywords: [
+          'review',
+          'code review',
+          'deep review',
+          'review team',
+          'subagent',
+          'readonly',
+          'audit',
+          '\u5ba1\u6838',
+          '\u4ee3\u7801\u5ba1\u6838',
+        ],
       },
       {
         id: 'mcp-tools',
         labelKey: 'configCenter.tabs.mcpTools',
         descriptionKey: 'configCenter.tabDescriptions.mcpTools',
         keywords: ['mcp', 'server', 'plugin', 'stdio', 'sse', 'tools'],
+      },
+      {
+        id: 'acp-agents',
+        labelKey: 'configCenter.tabs.acpAgents',
+        descriptionKey: 'configCenter.tabDescriptions.acpAgents',
+        keywords: [
+          'acp',
+          'agent client protocol',
+          'external agent',
+          'opencode',
+          'claude code',
+          'codex',
+          'stdio',
+        ],
       },
     ],
   },
@@ -138,14 +238,18 @@ export const SETTINGS_CATEGORIES: ConfigCategoryDef[] = [
   },
 ];
 
-export const DEFAULT_SETTINGS_TAB: ConfigTab = 'models';
+export const DEFAULT_SETTINGS_TAB: ConfigTab = 'basics';
 
 const KNOWN_TABS: ConfigTab[] = SETTINGS_CATEGORIES.flatMap((c) => c.tabs.map((t) => t.id));
 
 /** Map removed or renamed tabs; used by deep links and IDE actions. */
 export function normalizeSettingsTab(section: string): ConfigTab {
-  if (section === 'theme' || section === 'logging' || section === 'terminal') return 'basics';
+  if (section === 'theme' || section === 'font' || section === 'fonts') return 'appearance';
+  if (section === 'logging' || section === 'terminal') return 'basics';
   if (section === 'lsp') return DEFAULT_SETTINGS_TAB;
+  if (section === 'session-config') return 'session-personalization';
+  if (section === 'deep-review' || section === 'code-review' || section === 'review-team') return 'review';
+  if (section === 'shortcuts' || section === 'keybindings' || section === 'hotkeys') return 'keyboard';
   if ((KNOWN_TABS as readonly string[]).includes(section)) return section as ConfigTab;
   return DEFAULT_SETTINGS_TAB;
 }

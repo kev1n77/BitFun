@@ -15,6 +15,8 @@ type ProviderConfigLike = {
 
 function inferProviderTemplate(config: ProviderConfigLike): ProviderTemplate | undefined {
   const matchedCatalogItem = matchProviderCatalogItemByBaseUrl(config.base_url);
+  // Safe module-level forward reference: PROVIDER_TEMPLATES is initialized before this runs.
+  // eslint-disable-next-line @typescript-eslint/no-use-before-define
   return matchedCatalogItem ? PROVIDER_TEMPLATES[matchedCatalogItem.id] : undefined;
 }
 
@@ -119,7 +121,7 @@ export const PROVIDER_TEMPLATES: Record<string, ProviderTemplate> = {
     name: t('settings/ai-model:providers.deepseek.name'),
     baseUrl: 'https://api.deepseek.com/v1',
     format: 'openai',
-    models: ['deepseek-chat', 'deepseek-reasoner'],
+    models: ['deepseek-v4-flash', 'deepseek-v4-pro'],
     requiresApiKey: true,
     description: t('settings/ai-model:providers.deepseek.description'),
     helpUrl: 'https://platform.deepseek.com/api_keys'

@@ -8,6 +8,10 @@ import {
   GalleryGrid,
 } from '@/app/components';
 import { useWorkspaceContext } from '@/infrastructure/contexts/WorkspaceContext';
+import { useApp } from '@/app/hooks/useApp';
+import { useSceneStore } from '@/app/stores/sceneStore';
+import { flowChatManager } from '@/flow_chat/services/FlowChatManager';
+import type { WorkspaceInfo } from '@/shared/types';
 import { configAPI } from '@/infrastructure/api/service-api/ConfigAPI';
 import { configManager } from '@/infrastructure/config/services/ConfigManager';
 import type { AIModelConfig } from '@/infrastructure/config/types';
@@ -15,6 +19,11 @@ import { createLogger } from '@/shared/utils/logger';
 import AssistantCard from './AssistantCard';
 import { useNurseryStore } from '../nurseryStore';
 import { estimateTokens, formatTokenCount } from './useTokenEstimate';
+
+interface DeleteConfirmState {
+  workspaceId: string;
+  name: string;
+}
 
 const log = createLogger('NurseryGallery');
 
@@ -26,9 +35,13 @@ interface TemplateStats {
 
 const NurseryGallery: React.FC = () => {
   const { t } = useTranslation('scenes/profile');
-  const { assistantWorkspacesList, createAssistantWorkspace } = useWorkspaceContext();
+  const { assistantWorkspacesList, createAssistantWorkspace, setActiveWorkspace, deleteAssistantWorkspace } = useWorkspaceContext();
+  const openScene = useSceneStore(s => s.openScene);
+  const { switchLeftPanelTab } = useApp();
   const { openTemplate, openAssistant } = useNurseryStore();
   const [creating, setCreating] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirmState | null>(null);
   const [templateStats, setTemplateStats] = useState<TemplateStats | null>(null);
 
   useEffect(() => {
@@ -52,7 +65,7 @@ const NurseryGallery: React.FC = () => {
         setTemplateStats({
           primaryModelName: resolveModelName('primary', t('nursery.template.stats.primaryDefault')),
           fastModelName: resolveModelName('fast', t('nursery.template.stats.fastDefault')),
-          enabledToolCount: modeConf?.available_tools?.length ?? 0,
+          enabledToolCount: modeConf?.enabled_tools?.length ?? 0,
         });
       } catch (e) {
         log.error('Failed to load template stats', e);
@@ -77,6 +90,52 @@ const NurseryGallery: React.FC = () => {
       setCreating(false);
     }
   }, [creating, createAssistantWorkspace, openAssistant]);
+
+  const sortedAssistantWorkspacesList = useMemo(
+    () => {
+      const primary = assistantWorkspacesList.filter(w => !w.assistantId);
+      const secondary = assistantWorkspacesList.filter(w => w.assistantId);
+      return [...primary, ...secondary];
+    },
+    [assistantWorkspacesList]
+  );
+
+  const handleDeleteRequest = useCallback((workspace: WorkspaceInfo) => {
+    const identity = workspace.identity;
+    const name = identity?.name?.trim() || workspace.name || t('nursery.card.unnamed');
+    setDeleteConfirm({ workspaceId: workspace.id, name });
+  }, [t]);
+
+  const handleDeleteConfirm = useCallback(async () => {
+    if (!deleteConfirm || deleting) return;
+    setDeleting(true);
+    try {
+      await deleteAssistantWorkspace(deleteConfirm.workspaceId);
+    } catch (e) {
+      log.error('Failed to delete assistant workspace', e);
+    } finally {
+      setDeleting(false);
+      setDeleteConfirm(null);
+    }
+  }, [deleteConfirm, deleting, deleteAssistantWorkspace]);
+
+  const handleDeleteCancel = useCallback(() => {
+    setDeleteConfirm(null);
+  }, []);
+
+  const handleNewAssistantSession = useCallback(
+    async (workspace: WorkspaceInfo) => {
+      openScene('session');
+      switchLeftPanelTab('sessions');
+      try {
+        await flowChatManager.createChatSession({ workspacePath: workspace.rootPath }, 'Claw');
+        await setActiveWorkspace(workspace.id);
+      } catch (e) {
+        log.error('Failed to create assistant session from gallery', e);
+      }
+    },
+    [openScene, setActiveWorkspace, switchLeftPanelTab],
+  );
 
   return (
     <GalleryLayout className="nursery-gallery">
@@ -122,7 +181,6 @@ const NurseryGallery: React.FC = () => {
           aria-label={t('nursery.template.title')}
         >
           <div className="nursery-template-card__content">
-            <span className="nursery-template-card__tag">{t('nursery.template.tag')}</span>
             <h3 className="nursery-template-card__title">{t('nursery.template.title')}</h3>
             <p className="nursery-template-card__subtitle">{t('nursery.template.subtitle')}</p>
 
@@ -171,21 +229,57 @@ const NurseryGallery: React.FC = () => {
           title={t('nursery.gallery.assistantsTitle')}
           subtitle={t('nursery.gallery.assistantsSubtitle')}
           tools={(
-            <span className="gallery-zone-count">{assistantWorkspacesList.length}</span>
+            <span className="gallery-zone-count">{sortedAssistantWorkspacesList.length}</span>
           )}
         >
-          <GalleryGrid minCardWidth={260}>
-            {assistantWorkspacesList.map((workspace, i) => (
-              <AssistantCard
-                key={workspace.id}
-                workspace={workspace}
-                onClick={() => openAssistant(workspace.id)}
-                style={{ '--card-index': i } as React.CSSProperties}
-              />
-            ))}
+          <GalleryGrid minCardWidth={360}>
+            {sortedAssistantWorkspacesList.map((workspace, i) => {
+              const isPrimary = !workspace.assistantId;
+              return (
+                <AssistantCard
+                  key={workspace.id}
+                  workspace={workspace}
+                  isPrimary={isPrimary}
+                  onClick={() => openAssistant(workspace.id)}
+                  onNewSession={() => { void handleNewAssistantSession(workspace); }}
+                  onDelete={isPrimary ? undefined : () => handleDeleteRequest(workspace)}
+                  style={{ '--card-index': i } as React.CSSProperties}
+                />
+              );
+            })}
           </GalleryGrid>
         </GalleryZone>
       </div>
+
+      {/* Delete confirmation dialog */}
+      {deleteConfirm && (
+        <div className="nursery-delete-overlay" role="dialog" aria-modal="true">
+          <div className="nursery-delete-dialog">
+            <h3 className="nursery-delete-dialog__title">{t('nursery.card.deleteConfirmTitle')}</h3>
+            <p className="nursery-delete-dialog__message">
+              {t('nursery.card.deleteConfirmMessage', { name: deleteConfirm.name })}
+            </p>
+            <div className="nursery-delete-dialog__actions">
+              <button
+                type="button"
+                className="nursery-delete-dialog__btn nursery-delete-dialog__btn--cancel"
+                onClick={handleDeleteCancel}
+                disabled={deleting}
+              >
+                {t('nursery.card.deleteCancel')}
+              </button>
+              <button
+                type="button"
+                className="nursery-delete-dialog__btn nursery-delete-dialog__btn--confirm"
+                onClick={() => { void handleDeleteConfirm(); }}
+                disabled={deleting}
+              >
+                {t('nursery.card.deleteConfirm')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </GalleryLayout>
   );
 };

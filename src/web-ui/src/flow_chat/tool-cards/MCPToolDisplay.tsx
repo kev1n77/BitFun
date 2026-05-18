@@ -13,7 +13,12 @@ import { createLogger } from '@/shared/utils/logger';
 import { MCPAPI, MCP_APPS_PROTOCOL_VERSION, type McpUiResourceCsp, type McpUiResourcePermissions, type McpUiMessageParams, type McpUiMessageResult, type McpAppMessageEvent, type McpAppMessageResponseEvent } from '@/infrastructure/api/service-api/MCPAPI';
 import { systemAPI } from '@/infrastructure/api/service-api/SystemAPI';
 import { globalEventBus } from '@/infrastructure/event-bus';
+import { isMcpToolName } from '@/infrastructure/mcp/toolName';
+import { getCachedToolInfo } from '@/infrastructure/mcp/toolInfoCache';
+import type { ToolInfo } from '@/shared/types/agent-api';
 import { useToolCardHeightContract } from './useToolCardHeightContract';
+import { hasAcpPermissionOptions } from './AcpPermissionActions.utils';
+import { AcpPermissionActions } from './AcpPermissionActions';
 import './MCPToolDisplay.scss';
 
 const log = createLogger('MCPToolDisplay');
@@ -156,6 +161,7 @@ export const MCPToolDisplay: React.FC<ToolCardProps> = ({
     toolId,
     toolName: toolItem.toolName,
   });
+  const [resolvedToolInfo, setResolvedToolInfo] = useState<ToolInfo | null>(null);
 
   const getResultData = (): MCPToolResult | null => {
     if (!toolResult?.result) return null;
@@ -173,17 +179,34 @@ export const MCPToolDisplay: React.FC<ToolCardProps> = ({
 
   const resultData = getResultData();
 
-  const getToolInfo = () => {
-    const fullToolName = config.toolName;
-    const parts = fullToolName.split('_');
-    const actualToolName = parts.slice(2).join('_') || fullToolName;
-    const serverName = parts[1] || 'unknown';
-    
-    return { toolName: actualToolName, serverName };
-  };
+  useEffect(() => {
+    let cancelled = false;
 
-  const { toolName, serverName } = getToolInfo();
-  const serverId = serverName;
+    if (!isMcpToolName(config.toolName)) {
+      setResolvedToolInfo(null);
+      return;
+    }
+
+    getCachedToolInfo(config.toolName)
+      .then((info) => {
+        if (!cancelled) {
+          setResolvedToolInfo(info);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setResolvedToolInfo(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [config.toolName]);
+
+  const resolvedMcpToolName = resolvedToolInfo?.dynamic_info?.mcp?.toolName ?? null;
+  const toolName = resolvedMcpToolName ?? config.toolName;
+  const serverId = resolvedToolInfo?.dynamic_info?.mcp?.serverId ?? null;
   const isFailed = status === 'error';
 
   const mcpAppIframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -217,7 +240,7 @@ export const MCPToolDisplay: React.FC<ToolCardProps> = ({
   useEffect(() => {
     if (
       uiResourceUriFromResult ||
-      !config.toolName.startsWith('mcp_') ||
+      !isMcpToolName(config.toolName) ||
       status !== 'completed' ||
       isFailed
     ) {
@@ -227,7 +250,7 @@ export const MCPToolDisplay: React.FC<ToolCardProps> = ({
     MCPAPI.getMCPToolUiUri(config.toolName)
       .then((uri) => setToolMetaUiUri(uri))
       .catch(() => setToolMetaUiUri(null));
-  }, [config.toolName, uiResourceUriFromResult, status, isFailed]);
+  }, [config.toolName, uiResourceUriFromResult, status, isFailed, toolId]);
 
   // Auto-expand when MCP App UI is ready so user sees the interactive UI immediately
   useEffect(() => {
@@ -273,7 +296,7 @@ export const MCPToolDisplay: React.FC<ToolCardProps> = ({
               toolInfo: {
                 id: tc?.id,
                 tool: {
-                  name: cfg.toolName,
+                  name: resolvedMcpToolName ?? cfg.toolName,
                   description: undefined,
                   inputSchema: { type: 'object' as const, properties: {}, additionalProperties: true }
                 }
@@ -399,15 +422,20 @@ export const MCPToolDisplay: React.FC<ToolCardProps> = ({
 
             // Set up response listener before emitting
             const responsePromise = new Promise<McpUiMessageResult>((resolve) => {
+              let handleResponse: ((response: McpAppMessageResponseEvent) => void) | null = null;
               const timeout = setTimeout(() => {
-                globalEventBus.off('mcp-app:message-response', handleResponse);
+                if (handleResponse) {
+                  globalEventBus.off('mcp-app:message-response', handleResponse);
+                }
                 resolve({ isError: true });
               }, 5000); // 5 second timeout
 
-              const handleResponse = (response: McpAppMessageResponseEvent) => {
+              handleResponse = (response: McpAppMessageResponseEvent) => {
                 if (response.requestId === requestId) {
                   clearTimeout(timeout);
-                  globalEventBus.off('mcp-app:message-response', handleResponse);
+                  if (handleResponse) {
+                    globalEventBus.off('mcp-app:message-response', handleResponse);
+                  }
                   resolve(response.result);
                 }
               };
@@ -467,7 +495,7 @@ export const MCPToolDisplay: React.FC<ToolCardProps> = ({
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [mcpAppState?.html, serverId]);
+  }, [mcpAppState?.html, serverId, resolvedMcpToolName]);
 
   const handleIframeLoad = useCallback(() => {
     /* iframe loaded, ref is ready for postMessage bridge */
@@ -513,7 +541,17 @@ export const MCPToolDisplay: React.FC<ToolCardProps> = ({
         );
       });
     return () => { cancelled = true; };
-  }, [uiResourceUri, serverId, status, isFailed]);
+  }, [
+    config.toolName,
+    isFailed,
+    resultData,
+    serverId,
+    status,
+    toolId,
+    toolMetaUiUri,
+    uiResourceUri,
+    uiResourceUriFromResult,
+  ]);
 
   const getContentSummary = () => {
     if (!resultData?.content && !uiResourceUri) return null;
@@ -535,7 +573,7 @@ export const MCPToolDisplay: React.FC<ToolCardProps> = ({
     });
 
     const parts = [];
-    if (hasUiApp) parts.push(t('toolCards.mcp.interactiveApp', 'interactive app'));
+    if (hasUiApp) parts.push(t('toolCards.mcp.interactiveApp'));
     if (counts.text > 0) parts.push(`${counts.text} text`);
     if (counts.image > 0) parts.push(`${counts.image} images`);
     if (counts.resource > 0 && !hasUiApp) parts.push(`${counts.resource} resources`);
@@ -557,7 +595,7 @@ export const MCPToolDisplay: React.FC<ToolCardProps> = ({
     if (toolResult && 'error' in toolResult) {
       return toolResult.error;
     }
-    return 'MCP tool execution failed';
+    return t('toolCards.mcp.executionFailed');
   };
 
   const handleCardClick = useCallback((e: React.MouseEvent) => {
@@ -590,11 +628,10 @@ export const MCPToolDisplay: React.FC<ToolCardProps> = ({
     <ToolCardHeader
       icon={renderToolIcon()}
       iconClassName="mcp-icon"
-      action={isFailed ? 'MCP tool failed' : 'MCP tool:'}
+      action={isFailed ? t('toolCards.mcp.failedLabel') : t('toolCards.mcp.actionLabel')}
       content={
         <span className="mcp-tool-info">
           <span className="tool-name">{toolName}</span>
-          <span className="server-tag">from {serverName}</span>
         </span>
       }
       extra={
@@ -607,32 +644,45 @@ export const MCPToolDisplay: React.FC<ToolCardProps> = ({
           
           {requiresConfirmation && !userConfirmed && status !== 'completed' && (
             <div className="mcp-action-buttons">
-              <IconButton
-                className="mcp-icon-button mcp-confirm-btn"
-                variant="success"
-                size="xs"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onConfirm?.(toolCall?.input);
-                }}
-                disabled={status === 'streaming'}
-                tooltip={t('toolCards.mcp.confirmExecute')}
-              >
-                <Check size={14} />
-              </IconButton>
-              <IconButton
-                className="mcp-icon-button mcp-reject-btn"
-                variant="danger"
-                size="xs"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onReject?.();
-                }}
-                disabled={status === 'streaming'}
-                tooltip={t('toolCards.mcp.cancel')}
-              >
-                <X size={14} />
-              </IconButton>
+              {hasAcpPermissionOptions(toolItem) ? (
+                <AcpPermissionActions
+                  toolItem={toolItem}
+                  input={toolCall?.input}
+                  disabled={status === 'streaming'}
+                  buttonClassName="mcp-icon-button"
+                  onConfirm={onConfirm}
+                  onReject={onReject}
+                />
+              ) : (
+                <>
+                  <IconButton
+                    className="mcp-icon-button mcp-confirm-btn"
+                    variant="success"
+                    size="xs"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onConfirm?.(toolCall?.input);
+                    }}
+                    disabled={status === 'streaming'}
+                    tooltip={t('toolCards.mcp.confirmExecute')}
+                  >
+                    <Check size={14} />
+                  </IconButton>
+                  <IconButton
+                    className="mcp-icon-button mcp-reject-btn"
+                    variant="danger"
+                    size="xs"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onReject?.();
+                    }}
+                    disabled={status === 'streaming'}
+                    tooltip={t('toolCards.mcp.cancel')}
+                  >
+                    <X size={14} />
+                  </IconButton>
+                </>
+              )}
             </div>
           )}
           
@@ -677,12 +727,12 @@ export const MCPToolDisplay: React.FC<ToolCardProps> = ({
             {mcpAppState.loading && (
               <div className="mcp-app-loading">
                 <CubeLoading size="small" />
-                <span>{t('toolCards.mcp.loadingApp', 'Loading interactive app...')}</span>
+                <span>{t('toolCards.mcp.loadingApp')}</span>
               </div>
             )}
             {mcpAppState.error && (
               <div className="mcp-app-error">
-                <span>{t('toolCards.mcp.appLoadError', 'Failed to load app')}: {mcpAppState.error}</span>
+                <span>{t('toolCards.mcp.appLoadError')}: {mcpAppState.error}</span>
               </div>
             )}
             {mcpAppState.html && !mcpAppState.loading && (
@@ -733,11 +783,6 @@ export const MCPToolDisplay: React.FC<ToolCardProps> = ({
   const renderErrorContent = () => (
     <div className="error-content">
       <div className="error-message">{getErrorMessage()}</div>
-      <div className="error-meta">
-        <span className="error-tool">Tool: {toolName}</span>
-        <span className="error-separator">|</span>
-        <span className="error-server">Server: {serverName}</span>
-      </div>
     </div>
   );
 

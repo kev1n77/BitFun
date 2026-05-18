@@ -206,6 +206,10 @@ When in doubt, use this tool. Being proactive with task management demonstrates 
 "###.to_string())
     }
 
+    fn short_description(&self) -> String {
+        "Create and update the session todo list.".to_string()
+    }
+
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -322,6 +326,7 @@ When in doubt, use this tool. Being proactive with task management demonstrates 
         Ok(vec![ToolResult::Result {
             data: result,
             result_for_assistant: Some(summary),
+            image_attachments: None,
         }])
     }
 }

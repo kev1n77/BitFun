@@ -10,6 +10,7 @@ use super::types::{
 };
 use crate::agentic::coordination::get_global_coordinator;
 use crate::agentic::tools::pipeline::SubagentParentInfo;
+use crate::service::bootstrap::ensure_workspace_gitignore_ignores_bitfun;
 use crate::util::errors::{BitFunError, BitFunResult};
 use log::{debug, warn};
 use std::collections::HashSet;
@@ -284,6 +285,8 @@ impl ProjectContextService {
                 Some(workspace.to_string_lossy().into_owned()),
                 None,
                 Some(&cancel_token),
+                None,
+                None,
             )
             .await;
 
@@ -336,7 +339,7 @@ impl ProjectContextService {
     pub async fn cancel_generate_document(&self, doc_id: &str) -> BitFunResult<()> {
         super::cancellation::cancel_generation(doc_id)
             .await
-            .map_err(|e| BitFunError::service(e))
+            .map_err(BitFunError::service)
     }
 
     /// Parses a filter string.
@@ -435,7 +438,7 @@ impl ProjectContextService {
         workspace: &Path,
         filter: Option<&str>,
     ) -> BitFunResult<String> {
-        let filter = filter.and_then(|f| Self::parse_filter(f));
+        let filter = filter.and_then(Self::parse_filter);
         let config = self.load_config_and_cleanup(workspace).await?;
         let statuses = self.get_document_statuses(workspace).await?;
 
@@ -649,6 +652,14 @@ impl ProjectContextService {
             fs::create_dir_all(parent).await.map_err(|e| {
                 BitFunError::service(format!("Failed to create .bitfun directory: {}", e))
             })?;
+        }
+
+        if let Err(e) = ensure_workspace_gitignore_ignores_bitfun(workspace).await {
+            warn!(
+                "Failed to ensure workspace .gitignore ignores .bitfun: workspace={}, error={}",
+                workspace.display(),
+                e
+            );
         }
 
         let content = serde_json::to_string_pretty(config)

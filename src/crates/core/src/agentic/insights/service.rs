@@ -1,6 +1,11 @@
 use crate::agentic::insights::cancellation;
 use crate::agentic::insights::collector::InsightsCollector;
+use crate::agentic::insights::facet_cache;
 use crate::agentic::insights::html::generate_html;
+use crate::agentic::insights::prompt_context::{
+    aggregate_stats_json_for_prompt, friction_block, summaries_block, user_instructions_block,
+};
+use crate::agentic::insights::session_paths::collect_effective_session_storage_roots;
 use crate::agentic::insights::types::*;
 use crate::infrastructure::ai::get_global_ai_client_factory;
 use crate::infrastructure::ai::AIClient;
@@ -8,7 +13,7 @@ use crate::infrastructure::events::{emit_global_event, BackendEvent};
 use crate::infrastructure::get_path_manager_arc;
 use crate::service::config::get_global_config_service;
 use crate::service::config::AppConfig;
-use crate::service::workspace::get_global_workspace_service;
+use crate::service::i18n::LocaleId;
 use crate::util::errors::{BitFunError, BitFunResult};
 use crate::util::types::Message;
 use log::{debug, info, warn};
@@ -36,12 +41,10 @@ pub struct InsightsService;
 impl InsightsService {
     async fn get_user_language() -> String {
         match get_global_config_service().await {
-            Ok(config_service) => {
-                match config_service.get_config::<AppConfig>(Some("app")).await {
-                    Ok(app_config) => app_config.language,
-                    Err(_) => "en-US".to_string(),
-                }
-            }
+            Ok(config_service) => match config_service.get_config::<AppConfig>(Some("app")).await {
+                Ok(app_config) => app_config.language,
+                Err(_) => "en-US".to_string(),
+            },
             Err(_) => "en-US".to_string(),
         }
     }
@@ -57,8 +60,6 @@ impl InsightsService {
             json_rule.to_string()
         } else {
             let lang_name = match lang {
-                "zh-CN" => "Simplified Chinese (简体中文)",
-                "zh-TW" => "Traditional Chinese (繁體中文)",
                 "ja" | "ja-JP" => "Japanese (日本語)",
                 "ko" | "ko-KR" => "Korean (한국어)",
                 "fr" | "fr-FR" => "French (Français)",
@@ -66,7 +67,9 @@ impl InsightsService {
                 "es" | "es-ES" => "Spanish (Español)",
                 "pt" | "pt-BR" => "Portuguese (Português)",
                 "ru" | "ru-RU" => "Russian (Русский)",
-                _ => lang,
+                _ => LocaleId::from_str(lang)
+                    .map(|locale| locale.model_language_name())
+                    .unwrap_or(lang),
             };
             format!(
                 "\n\nIMPORTANT: All descriptive text, summaries, suggestions, and narrative content in your response MUST be written in {}. Keep JSON keys and enum values in English.{}",
@@ -88,10 +91,7 @@ impl InsightsService {
         cancellation::cancel().await
     }
 
-    async fn generate_inner(
-        days: u32,
-        token: &CancellationToken,
-    ) -> BitFunResult<InsightsReport> {
+    async fn generate_inner(days: u32, token: &CancellationToken) -> BitFunResult<InsightsReport> {
         let user_lang = Self::get_user_language().await;
         let lang_instruction = Self::build_language_instruction(&user_lang);
         debug!("Insights generation using language: {}", user_lang);
@@ -150,12 +150,8 @@ impl InsightsService {
         Self::emit_progress("Analyzing patterns...", "analysis", 0, 0).await;
 
         let (suggestions, areas, wins_friction, interaction, horizon, fun_ending) =
-            Self::generate_analysis_parallel(
-                &ai_client_primary,
-                &aggregate,
-                &lang_instruction,
-            )
-            .await;
+            Self::generate_analysis_parallel(&ai_client_primary, &aggregate, &lang_instruction)
+                .await;
 
         Self::check_cancelled(token)?;
 
@@ -255,8 +251,7 @@ impl InsightsService {
                     )
                     .await;
 
-                    let result =
-                        Self::extract_single_facet(&client, &transcript, &lang).await;
+                    let result = Self::extract_single_facet(&client, &transcript, &lang).await;
 
                     if let Err(ref e) = result {
                         if is_rate_limit_error(e) {
@@ -325,18 +320,11 @@ impl InsightsService {
                 )
                 .await;
 
-                match Self::extract_single_facet(
-                    ai_client,
-                    &transcripts[*idx],
-                    lang_instruction,
-                )
-                .await
+                match Self::extract_single_facet(ai_client, &transcripts[*idx], lang_instruction)
+                    .await
                 {
                     Ok(facet) => facets.push(facet),
-                    Err(e) => warn!(
-                        "Sequential retry also failed for session {}: {}",
-                        idx, e
-                    ),
+                    Err(e) => warn!("Sequential retry also failed for session {}: {}", idx, e),
                 }
 
                 if i + 1 < retry_count {
@@ -353,6 +341,10 @@ impl InsightsService {
         transcript: &SessionTranscript,
         lang_instruction: &str,
     ) -> BitFunResult<SessionFacet> {
+        if let Ok(Some(cached)) = facet_cache::try_load_cached_facet(transcript).await {
+            return Ok(cached);
+        }
+
         let session_info = format!(
             "Session: {}\nAgent: {}\nName: {}\nDate: {}\nDuration: {} min\n\n{}",
             transcript.session_id,
@@ -380,14 +372,14 @@ impl InsightsService {
             BitFunError::Deserialization(format!("Failed to parse facet JSON: {}", e))
         })?;
 
-        Ok(SessionFacet {
+        let facet = SessionFacet {
             session_id: transcript.session_id.clone(),
-            underlying_goal: value["underlying_goal"]
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
+            underlying_goal: value["underlying_goal"].as_str().unwrap_or("").to_string(),
             goal_categories: parse_string_u32_map(&value["goal_categories"]),
-            outcome: value["outcome"].as_str().unwrap_or("unclear_from_transcript").to_string(),
+            outcome: value["outcome"]
+                .as_str()
+                .unwrap_or("unclear_from_transcript")
+                .to_string(),
             user_satisfaction_counts: parse_string_u32_map(&value["user_satisfaction_counts"]),
             claude_helpfulness: value["claude_helpfulness"]
                 .as_str()
@@ -398,18 +390,9 @@ impl InsightsService {
                 .unwrap_or("single_task")
                 .to_string(),
             friction_counts: parse_string_u32_map(&value["friction_counts"]),
-            friction_detail: value["friction_detail"]
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
-            primary_success: value["primary_success"]
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
-            brief_summary: value["brief_summary"]
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
+            friction_detail: value["friction_detail"].as_str().unwrap_or("").to_string(),
+            primary_success: value["primary_success"].as_str().unwrap_or("").to_string(),
+            brief_summary: value["brief_summary"].as_str().unwrap_or("").to_string(),
             languages_used: value["languages_used"]
                 .as_array()
                 .map(|arr| {
@@ -426,7 +409,11 @@ impl InsightsService {
                         .collect()
                 })
                 .unwrap_or_default(),
-        })
+        };
+
+        let _ = facet_cache::save_cached_facet(transcript, &facet).await;
+
+        Ok(facet)
     }
 
     // ============ Stage 4a: Parallel Analysis ============
@@ -435,11 +422,17 @@ impl InsightsService {
         ai_client: &Arc<AIClient>,
         aggregate: &InsightsAggregate,
         lang_instruction: &str,
-    ) -> (InsightsSuggestions, Vec<ProjectArea>, WinsFrictionResult, InteractionStyleResult, HorizonResult, Option<FunEnding>) {
-        let aggregate_json =
-            serde_json::to_string_pretty(aggregate).unwrap_or_else(|_| "{}".to_string());
-        let summaries_text = format!("- {}", aggregate.session_summaries.join("\n- "));
-        let friction_text = format!("- {}", aggregate.friction_details.join("\n- "));
+    ) -> (
+        InsightsSuggestions,
+        Vec<ProjectArea>,
+        WinsFrictionResult,
+        InteractionStyleResult,
+        HorizonResult,
+        Option<FunEnding>,
+    ) {
+        let aggregate_json = aggregate_stats_json_for_prompt(aggregate);
+        let summaries_text = summaries_block(aggregate);
+        let friction_text = friction_block(aggregate);
 
         let semaphore = Arc::new(Semaphore::new(3));
 
@@ -483,7 +476,14 @@ impl InsightsService {
         let sem_3b = semaphore.clone();
         let friction_handle = tokio::spawn(async move {
             let _permit = sem_3b.acquire().await.unwrap();
-            Self::analyze_friction(&client_3b, &agg_json_3b, &summaries_3b, &friction_3b, &lang_3b).await
+            Self::analyze_friction(
+                &client_3b,
+                &agg_json_3b,
+                &summaries_3b,
+                &friction_3b,
+                &lang_3b,
+            )
+            .await
         });
 
         // Task 4: Interaction Style
@@ -525,37 +525,50 @@ impl InsightsService {
             suggestions_handle,
             "Suggestions",
             || async { Self::generate_suggestions(ai_client, aggregate, lang_instruction).await },
-            || default_suggestions(),
-        ).await;
+            default_suggestions,
+        )
+        .await;
 
         let areas = Self::resolve_with_retry(
             areas_handle,
             "Areas",
             || async { Self::identify_areas(ai_client, aggregate, lang_instruction).await },
             Vec::new,
-        ).await;
+        )
+        .await;
 
         let wins_result = Self::resolve_with_retry(
             wins_handle,
             "Wins",
             || async {
                 Self::analyze_wins(
-                    ai_client, &aggregate_json, &summaries_text, lang_instruction,
-                ).await
+                    ai_client,
+                    &aggregate_stats_json_for_prompt(aggregate),
+                    &summaries_block(aggregate),
+                    lang_instruction,
+                )
+                .await
             },
             WinsResult::default,
-        ).await;
+        )
+        .await;
 
         let friction_result = Self::resolve_with_retry(
             friction_handle,
             "Friction",
             || async {
                 Self::analyze_friction(
-                    ai_client, &aggregate_json, &summaries_text, &friction_text, lang_instruction,
-                ).await
+                    ai_client,
+                    &aggregate_stats_json_for_prompt(aggregate),
+                    &summaries_block(aggregate),
+                    &friction_block(aggregate),
+                    lang_instruction,
+                )
+                .await
             },
             FrictionResult::default,
-        ).await;
+        )
+        .await;
 
         let wins_friction = WinsFrictionResult {
             wins_intro: wins_result.intro,
@@ -569,35 +582,58 @@ impl InsightsService {
             "Interaction Style",
             || async {
                 Self::analyze_interaction_style(
-                    ai_client, &aggregate_json, &summaries_text, lang_instruction,
-                ).await
+                    ai_client,
+                    &aggregate_stats_json_for_prompt(aggregate),
+                    &summaries_block(aggregate),
+                    lang_instruction,
+                )
+                .await
             },
             InteractionStyleResult::default,
-        ).await;
+        )
+        .await;
 
         let horizon = Self::resolve_with_retry(
             horizon_handle,
             "Horizon",
             || async {
                 Self::generate_horizon(
-                    ai_client, &aggregate_json, &summaries_text, &friction_text, lang_instruction,
-                ).await
+                    ai_client,
+                    &aggregate_stats_json_for_prompt(aggregate),
+                    &summaries_block(aggregate),
+                    &friction_block(aggregate),
+                    lang_instruction,
+                )
+                .await
             },
             HorizonResult::default,
-        ).await;
+        )
+        .await;
 
         let fun_ending = Self::resolve_with_retry(
             fun_ending_handle,
             "Fun Ending",
             || async {
                 Self::generate_fun_ending(
-                    ai_client, &aggregate_json, &summaries_text, lang_instruction,
-                ).await
+                    ai_client,
+                    &aggregate_stats_json_for_prompt(aggregate),
+                    &summaries_block(aggregate),
+                    lang_instruction,
+                )
+                .await
             },
             || None,
-        ).await;
+        )
+        .await;
 
-        (suggestions, areas, wins_friction, interaction, horizon, fun_ending)
+        (
+            suggestions,
+            areas,
+            wins_friction,
+            interaction,
+            horizon,
+            fun_ending,
+        )
     }
 
     /// Generic helper to resolve a spawned task with retry on transient failures.
@@ -657,8 +693,7 @@ impl InsightsService {
         interaction: &InteractionStyleResult,
         lang_instruction: &str,
     ) -> AtAGlance {
-        let aggregate_json =
-            serde_json::to_string_pretty(aggregate).unwrap_or_else(|_| "{}".to_string());
+        let aggregate_json = aggregate_stats_json_for_prompt(aggregate);
 
         let areas_text = areas
             .iter()
@@ -698,22 +733,17 @@ impl InsightsService {
         aggregate: &InsightsAggregate,
         lang_instruction: &str,
     ) -> BitFunResult<InsightsSuggestions> {
-        let aggregate_json =
-            serde_json::to_string_pretty(aggregate).unwrap_or_else(|_| "{}".to_string());
-        let summaries = aggregate.session_summaries.join("\n- ");
-        let friction_details = aggregate.friction_details.join("\n- ");
-        let user_instructions = if aggregate.user_instructions.is_empty() {
-            "None captured".to_string()
-        } else {
-            aggregate.user_instructions.join("\n- ")
-        };
+        let aggregate_json = aggregate_stats_json_for_prompt(aggregate);
+        let summaries = summaries_block(aggregate);
+        let friction_details = friction_block(aggregate);
+        let user_instructions = user_instructions_block(aggregate);
 
         let prompt = format!(
             "{}{}",
             SUGGESTIONS_PROMPT_TEMPLATE
                 .replace("{aggregate_json}", &aggregate_json)
-                .replace("{summaries}", &format!("- {}", summaries))
-                .replace("{friction_details}", &format!("- {}", friction_details))
+                .replace("{summaries}", &summaries)
+                .replace("{friction_details}", &friction_details)
                 .replace("{user_instructions}", &user_instructions),
             lang_instruction
         );
@@ -724,7 +754,11 @@ impl InsightsService {
             .await
             .map_err(|e| BitFunError::service(format!("Suggestions AI call failed: {}", e)))?;
 
-        info!("Suggestions response: len={}, finish={:?}", response.text.len(), response.finish_reason);
+        info!(
+            "Suggestions response: len={}, finish={:?}",
+            response.text.len(),
+            response.finish_reason
+        );
         debug!("Suggestions text: {}", safe_truncate(&response.text, 300));
 
         let json_str = extract_json_from_response(&response.text)?;
@@ -738,9 +772,18 @@ impl InsightsService {
 
         debug!(
             "Suggestions parsed: md_additions={}, features={}, patterns={}",
-            value["bitfun_md_additions"].as_array().map(|a| a.len()).unwrap_or(0),
-            value["features_to_try"].as_array().map(|a| a.len()).unwrap_or(0),
-            value["usage_patterns"].as_array().map(|a| a.len()).unwrap_or(0),
+            value["bitfun_md_additions"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0),
+            value["features_to_try"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0),
+            value["usage_patterns"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0),
         );
 
         Ok(InsightsSuggestions {
@@ -793,28 +836,23 @@ impl InsightsService {
                 .as_array()
                 .map(|arr| {
                     arr.iter()
-                        .filter_map(|v| {
-                            Some(UsagePattern {
-                                pattern: v["pattern"]
-                                    .as_str()
-                                    .or(v["title"].as_str())
-                                    .unwrap_or("")
-                                    .to_string(),
-                                description: v["description"]
-                                    .as_str()
-                                    .or(v["suggestion"].as_str())
-                                    .unwrap_or("")
-                                    .to_string(),
-                                detail: v["detail"]
-                                    .as_str()
-                                    .unwrap_or("")
-                                    .to_string(),
-                                suggested_prompt: v["suggested_prompt"]
-                                    .as_str()
-                                    .or(v["copyable_prompt"].as_str())
-                                    .unwrap_or("")
-                                    .to_string(),
-                            })
+                        .map(|v| UsagePattern {
+                            pattern: v["pattern"]
+                                .as_str()
+                                .or(v["title"].as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            description: v["description"]
+                                .as_str()
+                                .or(v["suggestion"].as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            detail: v["detail"].as_str().unwrap_or("").to_string(),
+                            suggested_prompt: v["suggested_prompt"]
+                                .as_str()
+                                .or(v["copyable_prompt"].as_str())
+                                .unwrap_or("")
+                                .to_string(),
                         })
                         .collect()
                 })
@@ -827,15 +865,14 @@ impl InsightsService {
         aggregate: &InsightsAggregate,
         lang_instruction: &str,
     ) -> BitFunResult<Vec<ProjectArea>> {
-        let aggregate_json =
-            serde_json::to_string_pretty(aggregate).unwrap_or_else(|_| "{}".to_string());
-        let summaries = aggregate.session_summaries.join("\n- ");
+        let aggregate_json = aggregate_stats_json_for_prompt(aggregate);
+        let summaries = summaries_block(aggregate);
 
         let prompt = format!(
             "{}{}",
             AREAS_PROMPT_TEMPLATE
                 .replace("{aggregate_json}", &aggregate_json)
-                .replace("{summaries}", &format!("- {}", summaries)),
+                .replace("{summaries}", &summaries),
             lang_instruction
         );
 
@@ -845,7 +882,11 @@ impl InsightsService {
             .await
             .map_err(|e| BitFunError::service(format!("Areas AI call failed: {}", e)))?;
 
-        info!("Areas response: len={}, finish={:?}", response.text.len(), response.finish_reason);
+        info!(
+            "Areas response: len={}, finish={:?}",
+            response.text.len(),
+            response.finish_reason
+        );
         debug!("Areas text: {}", safe_truncate(&response.text, 300));
 
         let json_str = extract_json_from_response(&response.text)?;
@@ -889,7 +930,11 @@ impl InsightsService {
             .await
             .map_err(|e| BitFunError::service(format!("Wins AI call failed: {}", e)))?;
 
-        info!("Wins response: len={}, finish={:?}", response.text.len(), response.finish_reason);
+        info!(
+            "Wins response: len={}, finish={:?}",
+            response.text.len(),
+            response.finish_reason
+        );
         debug!("Wins text: {}", safe_truncate(&response.text, 300));
 
         let json_str = extract_json_from_response(&response.text)?;
@@ -938,7 +983,11 @@ impl InsightsService {
             .await
             .map_err(|e| BitFunError::service(format!("Friction AI call failed: {}", e)))?;
 
-        info!("Friction response: len={}, finish={:?}", response.text.len(), response.finish_reason);
+        info!(
+            "Friction response: len={}, finish={:?}",
+            response.text.len(),
+            response.finish_reason
+        );
         debug!("Friction text: {}", safe_truncate(&response.text, 300));
 
         let json_str = extract_json_from_response(&response.text)?;
@@ -989,13 +1038,19 @@ impl InsightsService {
         );
 
         let messages = vec![Message::user(prompt)];
-        let response = ai_client
-            .send_message(messages, None)
-            .await
-            .map_err(|e| BitFunError::service(format!("Interaction Style AI call failed: {}", e)))?;
+        let response = ai_client.send_message(messages, None).await.map_err(|e| {
+            BitFunError::service(format!("Interaction Style AI call failed: {}", e))
+        })?;
 
-        info!("Interaction Style response: len={}, finish={:?}", response.text.len(), response.finish_reason);
-        debug!("Interaction Style text: {}", safe_truncate(&response.text, 300));
+        info!(
+            "Interaction Style response: len={}, finish={:?}",
+            response.text.len(),
+            response.finish_reason
+        );
+        debug!(
+            "Interaction Style text: {}",
+            safe_truncate(&response.text, 300)
+        );
 
         let json_str = extract_json_from_response(&response.text)?;
         let value: Value = serde_json::from_str(&json_str).map_err(|e| {
@@ -1041,7 +1096,11 @@ impl InsightsService {
             .await
             .map_err(|e| BitFunError::service(format!("At a Glance AI call failed: {}", e)))?;
 
-        info!("At a Glance response: len={}, finish={:?}", response.text.len(), response.finish_reason);
+        info!(
+            "At a Glance response: len={}, finish={:?}",
+            response.text.len(),
+            response.finish_reason
+        );
         debug!("At a Glance text: {}", safe_truncate(&response.text, 300));
 
         let json_str = extract_json_from_response(&response.text)?;
@@ -1088,7 +1147,11 @@ impl InsightsService {
             .await
             .map_err(|e| BitFunError::service(format!("Horizon AI call failed: {}", e)))?;
 
-        info!("Horizon response: len={}, finish={:?}", response.text.len(), response.finish_reason);
+        info!(
+            "Horizon response: len={}, finish={:?}",
+            response.text.len(),
+            response.finish_reason
+        );
         debug!("Horizon text: {}", safe_truncate(&response.text, 300));
 
         let json_str = extract_json_from_response(&response.text)?;
@@ -1107,7 +1170,10 @@ impl InsightsService {
                                 title: v["title"].as_str()?.to_string(),
                                 whats_possible: v["whats_possible"].as_str()?.to_string(),
                                 how_to_try: v["how_to_try"].as_str().unwrap_or("").to_string(),
-                                copyable_prompt: v["copyable_prompt"].as_str().unwrap_or("").to_string(),
+                                copyable_prompt: v["copyable_prompt"]
+                                    .as_str()
+                                    .unwrap_or("")
+                                    .to_string(),
                             })
                         })
                         .collect()
@@ -1136,7 +1202,11 @@ impl InsightsService {
             .await
             .map_err(|e| BitFunError::service(format!("Fun Ending AI call failed: {}", e)))?;
 
-        info!("Fun Ending response: len={}, finish={:?}", response.text.len(), response.finish_reason);
+        info!(
+            "Fun Ending response: len={}, finish={:?}",
+            response.text.len(),
+            response.finish_reason
+        );
         debug!("Fun Ending text: {}", safe_truncate(&response.text, 300));
 
         let json_str = extract_json_from_response(&response.text)?;
@@ -1160,6 +1230,7 @@ impl InsightsService {
 
     // ============ Stage 5: Assembly ============
 
+    #[allow(clippy::too_many_arguments)]
     fn assemble_report(
         _base_stats: BaseStats,
         aggregate: InsightsAggregate,
@@ -1171,27 +1242,26 @@ impl InsightsService {
         horizon: HorizonResult,
         fun_ending: Option<FunEnding>,
     ) -> InsightsReport {
-        let days_covered = if !aggregate.date_range.start.is_empty()
-            && !aggregate.date_range.end.is_empty()
-        {
-            let parse = |s: &str| -> Option<chrono::DateTime<chrono::Utc>> {
-                chrono::DateTime::parse_from_rfc3339(s)
-                    .ok()
-                    .map(|d| d.with_timezone(&chrono::Utc))
-            };
-            match (
-                parse(&aggregate.date_range.start),
-                parse(&aggregate.date_range.end),
-            ) {
-                (Some(start), Some(end)) => {
-                    end.signed_duration_since(start).num_days().unsigned_abs() as u32
+        let days_covered =
+            if !aggregate.date_range.start.is_empty() && !aggregate.date_range.end.is_empty() {
+                let parse = |s: &str| -> Option<chrono::DateTime<chrono::Utc>> {
+                    chrono::DateTime::parse_from_rfc3339(s)
+                        .ok()
+                        .map(|d| d.with_timezone(&chrono::Utc))
+                };
+                match (
+                    parse(&aggregate.date_range.start),
+                    parse(&aggregate.date_range.end),
+                ) {
+                    (Some(start), Some(end)) => {
+                        end.signed_duration_since(start).num_days().unsigned_abs() as u32
+                    }
+                    _ => 1,
                 }
-                _ => 1,
-            }
-            .max(1)
-        } else {
-            1
-        };
+                .max(1)
+            } else {
+                1
+            };
 
         InsightsReport {
             generated_at: SystemTime::now()
@@ -1262,8 +1332,9 @@ impl InsightsService {
         report.html_report_path = Some(html_path.to_string_lossy().to_string());
 
         let json_path = usage_dir.join(format!("insights-{}.json", timestamp));
-        let json_str = serde_json::to_string_pretty(&report)
-            .map_err(|e| BitFunError::serialization(format!("Failed to serialize report: {}", e)))?;
+        let json_str = serde_json::to_string_pretty(&report).map_err(|e| {
+            BitFunError::serialization(format!("Failed to serialize report: {}", e))
+        })?;
         tokio::fs::write(&json_path, &json_str)
             .await
             .map_err(|e| BitFunError::io(format!("Failed to write report JSON: {}", e)))?;
@@ -1308,16 +1379,10 @@ impl InsightsService {
         let pm = PersistenceManager::new(path_manager)?;
         let cutoff = SystemTime::now() - std::time::Duration::from_secs(days as u64 * 86400);
 
-        if let Some(ws_service) = get_global_workspace_service() {
-            let workspaces = ws_service.list_workspaces().await;
-            for ws in workspaces {
-                if !ws.root_path.join(".bitfun").join("sessions").exists() {
-                    continue;
-                }
-                if let Ok(sessions) = pm.list_sessions(&ws.root_path).await {
-                    if sessions.iter().any(|s| s.last_activity_at >= cutoff) {
-                        return Ok(true);
-                    }
+        for ws_path in collect_effective_session_storage_roots().await {
+            if let Ok(sessions) = pm.list_sessions(&ws_path).await {
+                if sessions.iter().any(|s| s.last_activity_at >= cutoff) {
+                    return Ok(true);
                 }
             }
         }
@@ -1369,10 +1434,8 @@ impl InsightsService {
                             .take(3)
                             .map(|(name, _)| name.clone())
                             .collect();
-                        let mut lang_entries: Vec<_> =
-                            report.stats.languages.iter().collect();
-                        lang_entries
-                            .sort_by(|(_, a), (_, b)| b.cmp(a));
+                        let mut lang_entries: Vec<_> = report.stats.languages.iter().collect();
+                        lang_entries.sort_by(|(_, a), (_, b)| b.cmp(a));
                         let languages: Vec<String> = lang_entries
                             .iter()
                             .take(3)
@@ -1563,9 +1626,8 @@ fn safe_truncate(s: &str, max_bytes: usize) -> &str {
 }
 
 fn extract_json_from_response(response: &str) -> BitFunResult<String> {
-    crate::util::extract_json_from_ai_response(response).ok_or_else(|| {
-        BitFunError::service("Cannot extract JSON from AI response")
-    })
+    crate::util::extract_json_from_ai_response(response)
+        .ok_or_else(|| BitFunError::service("Cannot extract JSON from AI response"))
 }
 
 /// Extract a string from a JSON value that may be a plain string or a nested object.

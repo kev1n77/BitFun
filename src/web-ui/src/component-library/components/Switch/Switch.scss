@@ -33,9 +33,14 @@
     height: 100%;
     margin: 0;
     padding: 0;
+    appearance: none;
     opacity: 0;
     cursor: pointer;
     z-index: 1;
+
+    &:focus {
+      outline: none;
+    }
 
     &:disabled {
       cursor: default;
@@ -56,8 +61,8 @@
     pointer-events: none;
 
     &--checked {
-      background: rgba(99, 102, 241, 0.1);
-      border-color: var(--color-accent-500);
+      background: var(--color-accent-200);
+      border-color: var(--color-accent-400);
     }
   }
 
@@ -89,19 +94,28 @@
   &__loading {
     width: 10px;
     height: 10px;
-    color: tokens.$color-accent-500;
+    color: var(--color-accent-500, #{tokens.$color-accent-500});
     animation: bitfun-switch-spin 1s linear infinite;
   }
 
   &__input:checked + &__track &__thumb {
     left: calc(100% - 18px);
-    background: var(--color-accent-500);
-    border-color: var(--color-accent-500);
+    background: var(--btn-primary-bg, var(--color-accent-500, #{tokens.$color-accent-500}));
+    border-color: var(--btn-primary-bg, var(--color-accent-500, #{tokens.$color-accent-500}));
+  }
+
+  :root[data-theme-type='dark'] &__input:checked + &__track &__thumb {
+    background: var(--color-accent-500, #{tokens.$color-accent-500});
+    border-color: var(--color-accent-600, #{tokens.$color-accent-600});
   }
 
   &__input:focus-visible + &__track {
-    outline: 2px solid tokens.$color-accent-400;
+    outline: 2px solid var(--color-accent-400, #{tokens.$color-accent-400});
     outline-offset: 2px;
+  }
+
+  &__input:not(:focus-visible) + &__track {
+    outline: none;
   }
 
   &:hover:not(&--disabled):not(&--loading) &__track {
@@ -114,13 +128,22 @@
   }
 
   &:hover:not(&--disabled):not(&--loading) &__input:checked + &__track {
-    background: rgba(99, 102, 241, 0.15);
-    border-color: var(--color-accent-400);
+    background: var(--color-accent-300);
+    border-color: var(--color-accent-500, #{tokens.$color-accent-500});
   }
 
   &:hover:not(&--disabled):not(&--loading) &__input:checked + &__track &__thumb {
-    background: var(--color-accent-400);
-    border-color: var(--color-accent-400);
+    background: var(--btn-primary-hover-bg, var(--color-accent-500, #{tokens.$color-accent-500}));
+    border-color: var(--btn-primary-hover-bg, var(--color-accent-500, #{tokens.$color-accent-500}));
+  }
+
+  :root[data-theme-type='dark'] &:hover:not(&--disabled):not(&--loading) &__input:checked + &__track &__thumb {
+    background: color-mix(in srgb, var(--color-accent-500, #{tokens.$color-accent-500}) 88%, white);
+    border-color: var(--color-accent-500, #{tokens.$color-accent-500});
+  }
+
+  &__input:checked + &__track &__loading {
+    color: rgba(255, 255, 255, 0.92);
   }
 
   &__input:active:not(:disabled) + &__track {
@@ -134,14 +157,14 @@
   }
 
   &__label {
-    font-size: tokens.$font-size-sm;
+    font-size: var(--font-size-sm);
     font-weight: tokens.$font-weight-medium;
     color: var(--color-text-primary, tokens.$color-text-primary);
     line-height: tokens.$line-height-base;
   }
 
   &__description {
-    font-size: tokens.$font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-muted, tokens.$color-text-muted);
     line-height: tokens.$line-height-base;
   }
@@ -172,7 +195,7 @@
     }
 
     .bitfun-switch__label {
-      font-size: tokens.$font-size-xs;
+      font-size: var(--font-size-xs);
     }
 
     .bitfun-switch__description {
@@ -209,11 +232,11 @@
     }
 
     .bitfun-switch__label {
-      font-size: tokens.$font-size-base;
+      font-size: var(--font-size-base);
     }
 
     .bitfun-switch__description {
-      font-size: tokens.$font-size-xs;
+      font-size: var(--font-size-xs);
     }
   }
 }

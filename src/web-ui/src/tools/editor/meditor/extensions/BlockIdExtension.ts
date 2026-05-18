@@ -14,6 +14,9 @@ const TOP_LEVEL_TYPES = [
   'codeBlock',
   'horizontalRule',
   'markdownTable',
+  'details',
+  'renderOnlyBlock',
+  'rawHtmlBlock',
 ];
 
 export const BlockIdExtension = Extension.create({

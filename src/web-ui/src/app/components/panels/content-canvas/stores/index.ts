@@ -8,8 +8,11 @@ export {
   useAgentCanvasStore,
   useProjectCanvasStore,
   useGitCanvasStore,
+  usePanelViewCanvasStore,
   useGroupTabs,
   useActiveTabId,
   useLayout,
   useDragging,
+  switchAgentCanvasWorkspace,
+  removeAgentCanvasSnapshot,
 } from './canvasStore';

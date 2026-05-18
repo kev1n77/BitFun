@@ -1,6 +1,10 @@
 /* Markdown renderer styles */
 .markdown-renderer {
   --markdown-font-mono: "Fira Code", "JetBrains Mono", Consolas, "Courier New", monospace;
+  --markdown-block-gap: 0.65rem;
+  --markdown-code-bg-elevated: color-mix(in srgb, var(--color-bg-primary) 92%, #ffffff 8%);
+  --markdown-link-color: var(--flowchat-link-color, #60a5fa);
+  --markdown-link-hover-color: var(--flowchat-link-hover-color, #93c5fd);
 
   color: var(--color-text-primary);
   line-height: var(--line-height-relaxed);
@@ -33,7 +37,7 @@
 
 
 .markdown-renderer > * + * {
-  margin-top: 0.25rem;
+  margin-top: var(--markdown-block-gap);
 }
 
 
@@ -50,7 +54,7 @@
 
 
 .markdown-renderer p + p {
-  margin-top: 0.25rem;
+  margin-top: 0.5rem;
 }
 
 
@@ -71,9 +75,9 @@
 
 .markdown-renderer p {
   margin-top: 0;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.65rem;
   display: block;
-  line-height: 1.5;
+  line-height: 1.62;
   font-size: 0.9rem;
   color: var(--color-text-primary);
 }
@@ -106,7 +110,7 @@
   margin: 1.5rem 0 1rem 0;
   padding: 0 0 0.6rem 0;
   color: var(--color-text-primary);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
 }
 
 
@@ -117,7 +121,7 @@
   margin: 1.25rem 0 0.75rem 0;
   padding-bottom: 0.4rem;
   color: var(--color-text-primary);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
 }
 
 
@@ -210,20 +214,20 @@
 
 
 .markdown-renderer .inline-code {
-  padding: 0.1em 0.4em;
-  margin: 0 0.05em;
-  font-size: 0.9em;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
+  padding: 0.12em 0.38em;
+  margin: 0 0.04em;
+  font-size: 0.88em;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 5px;
   font-family: var(--markdown-font-mono);
   white-space: nowrap;
   vertical-align: baseline;
-  line-height: 1.4;
+  line-height: 1.45;
   user-select: text !important;
-  color: #a8b4c8;
+  color: color-mix(in srgb, var(--color-text-primary) 88%, #a8b4c8 12%);
   font-weight: 500;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
 }
@@ -242,41 +246,71 @@
 
 
 .markdown-renderer .code-block-wrapper {
-  margin: 0.25rem 0.3rem;
-  border-radius: 4px;
-  background: var(--color-bg-primary);
-  border: 1px dashed rgba(255, 255, 255, 0.1);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column;
+  margin: 0.75rem 0;
+  border-radius: 8px;
+  background: var(--markdown-code-bg-elevated);
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.09));
+  box-shadow: none;
   overflow: hidden;
   position: relative;
-  transition: all 0.3s ease;
+  transition: border-color 0.2s ease;
 }
 
 
 .markdown-renderer .code-block-wrapper:hover {
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-color: rgba(255, 255, 255, 0.15);
+  border-color: color-mix(in srgb, var(--border-color, rgba(255, 255, 255, 0.09)) 70%, var(--primary-color, #3b82f6) 30%);
+  box-shadow: none;
+}
+
+
+.markdown-renderer .code-block-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 2.25rem;
+  padding: 0.35rem 0.5rem 0.35rem 0.75rem;
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--color-bg-primary) 94%, #ffffff 6%);
+  border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+}
+
+
+.markdown-renderer .code-block-lang {
+  font-family: var(--font-family-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  user-select: none;
+}
+
+
+.markdown-renderer .code-block-body {
+  min-width: 0;
+  overflow-x: auto;
 }
 
 
 .markdown-renderer .copy-button {
-  position: absolute;
-  top: 0.35rem;
-  transform: none;
-  right: 0.75rem;
-  padding: 0.5rem;
+  position: relative;
+  flex-shrink: 0;
+  padding: 0.35rem;
   background: transparent;
   border: none;
   border-radius: 6px;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--color-text-muted);
   cursor: pointer;
-  transition: color 0.25s cubic-bezier(0.4, 0, 0.2, 1), background 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1), transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: color 0.2s ease, background-color 0.2s ease;
   display: flex;
   align-items: center;
   justify-content: center;
   width: 32px;
   height: 32px;
-  opacity: 0;
+  opacity: 0.9;
   z-index: 10;
 }
 
@@ -290,45 +324,30 @@
 }
 
 .markdown-renderer .copy-button:hover {
-  background: transparent;
-  color: #3b82f6;
-  transform: scale(1.1);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--primary-color, #3b82f6);
 }
 
 .markdown-renderer .copy-button:active {
-  transform: scale(1);
   color: #2563eb;
-}
-
-.markdown-renderer .code-block-wrapper--single-line .copy-button {
-  top: 50%;
-  transform: translateY(-50%);
-}
-
-.markdown-renderer .code-block-wrapper--single-line .copy-button:hover {
-  transform: translateY(-50%) scale(1.1);
-}
-
-.markdown-renderer .code-block-wrapper--single-line .copy-button:active {
-  transform: translateY(-50%) scale(1);
 }
 
 
 .markdown-renderer .code-block-wrapper pre[class*="language-"] {
   margin: 0 !important;
   border: none !important;
-  border-radius: 8px !important;
-  padding: 1.25rem !important;
+  border-radius: 0 0 8px 8px !important;
+  padding: 1rem 1rem 1rem 0.75rem !important;
   background: var(--color-bg-primary) !important;
   box-shadow: none !important;
-  font-size: 0.7rem !important;
+  font-size: 0.875rem !important;
 }
 
 
 .markdown-renderer .code-block-wrapper pre code {
   font-family: var(--markdown-font-mono, "Fira Code", "JetBrains Mono", Consolas, "Courier New", monospace) !important;
   background: var(--color-bg-primary) !important;
-  font-size: 0.7rem !important;
+  font-size: 0.875rem !important;
 }
 
 
@@ -336,13 +355,13 @@
   background: var(--color-bg-primary) !important;
   border: none !important;
   box-shadow: none !important;
-  font-size: 0.5rem !important;
+  font-size: 0.875rem !important;
 }
 
 .markdown-renderer .code-block-wrapper code[style] {
   background: var(--color-bg-primary) !important;
   border: none !important;
-  font-size: 0.8rem !important;
+  font-size: 0.875rem !important;
 }
 
 .markdown-renderer .inline-code:hover {
@@ -355,24 +374,21 @@
 .markdown-renderer pre {
   padding: 1.25rem;
   overflow: auto;
-  font-size: 0.3rem;
-  line-height: 1.5;
+  font-size: 0.875rem;
+  line-height: 1.55;
   background: var(--color-bg-primary);
-  border: 1px dashed rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
-  margin: 0.25rem 0.3rem;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.09));
+  border-radius: 8px;
+  margin: 0.65rem 0;
+  box-shadow: none;
   position: relative;
-  transition: all 0.3s ease;
+  transition: border-color 0.2s ease;
 }
 
 
 .markdown-renderer pre:hover {
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  box-shadow:
-    0 8px 24px rgba(0, 0, 0, 0.4),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+  border-color: color-mix(in srgb, var(--border-color, rgba(255, 255, 255, 0.09)) 75%, var(--primary-color, #3b82f6) 25%);
+  box-shadow: none;
 }
 
 
@@ -381,7 +397,7 @@
   background: transparent !important;
   border: none !important;
   border-radius: 0 !important;
-  margin: 1rem 0.3rem !important;
+  margin: 0.75rem 0 !important;
   box-shadow: none !important;
   position: static !important;
 }
@@ -422,7 +438,7 @@
   font-family: var(--markdown-font-mono);
   user-select: text !important;
   box-shadow: none;
-  font-size: 0.7rem !important;
+  font-size: 0.875rem !important;
   color: inherit;
   font-weight: inherit;
 }
@@ -457,6 +473,69 @@
 
 .markdown-renderer blockquote p {
   margin: 0.5rem 0;
+}
+
+/* inline-block so multiple badges / linked images can sit on one row (shields, etc.) */
+.markdown-renderer img,
+.markdown-renderer .markdown-image {
+  display: inline-block;
+  max-width: 100%;
+  height: auto;
+  margin: 0.35rem 0.25rem;
+  vertical-align: middle;
+  border-radius: 8px;
+}
+
+/* README-style centered badge rows: each badge is often its own <p> inside a div */
+.markdown-renderer div[align="center"] {
+  text-align: center;
+}
+
+.markdown-renderer div[align="center"] > p {
+  display: inline-block;
+  margin: 0.2rem 0.25rem;
+  vertical-align: middle;
+}
+
+.markdown-renderer div[align="center"] > p + p {
+  margin-top: 0.2rem;
+}
+
+.markdown-renderer div[align="center"] > p > a:has(> img) + br,
+.markdown-renderer div[align="center"] > p > img + br {
+  display: none;
+}
+
+.markdown-renderer .markdown-image--loading {
+  opacity: 0.75;
+}
+
+.markdown-renderer .markdown-image--error {
+  outline: 1px dashed rgba(239, 68, 68, 0.35);
+}
+
+.markdown-renderer details {
+  margin: 1rem 0;
+  padding: 0.9rem 1rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+}
+
+.markdown-renderer summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.markdown-renderer details[open] > summary {
+  margin-bottom: 0.75rem;
+}
+
+.markdown-renderer .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.25rem 0;
 }
 
 
@@ -527,12 +606,15 @@
 
 
 .markdown-renderer a {
-  color: var(--primary-color);
-  text-decoration: none;
+  color: var(--markdown-link-color);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
 }
 
 .markdown-renderer a:hover {
-  text-decoration: underline;
+  color: var(--markdown-link-hover-color);
+  text-decoration-thickness: 1.5px;
 }
 
 
@@ -541,8 +623,10 @@
 .tab-link {
   background: none;
   border: none;
-  color: var(--primary-color);
+  color: var(--markdown-link-color);
   text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
   cursor: pointer;
   font: inherit;
   padding: 0;
@@ -552,14 +636,31 @@
 .file-link:hover,
 .visualization-link:hover,
 .tab-link:hover {
-  color: var(--primary-color-hover);
+  color: var(--markdown-link-hover-color);
+  text-decoration-thickness: 1.5px;
+}
+
+.markdown-renderer a .inline-code,
+.file-link .inline-code,
+.visualization-link .inline-code,
+.tab-link .inline-code {
+  color: inherit;
+}
+
+.markdown-link-path-tooltip {
+  display: inline-block;
+  max-width: min(520px, 80vw);
+  overflow-wrap: anywhere;
+  text-align: left;
+  font-family: var(--markdown-font-mono);
+  font-size: 0.78rem;
+  line-height: 1.4;
 }
 
 
 .markdown-renderer strong {
   font-weight: 650;
-  color: #f5f5f5;
-  text-shadow: 0 0 1px rgba(255, 255, 255, 0.15);
+  color: var(--color-text-primary);
 }
 
 
@@ -650,6 +751,8 @@
 :root[data-theme-type="light"] .markdown-renderer,
 [data-theme-type="light"] .markdown-renderer,
 .light .markdown-renderer {
+  --markdown-link-color: #0969da;
+  --markdown-link-hover-color: #0550ae;
 
   .inline-code {
     background: rgba(0, 0, 0, 0.05);
@@ -673,6 +776,15 @@
     border-color: rgba(0, 0, 0, 0.15);
   }
 
+  .code-block-toolbar {
+    background: #eef1f6;
+    border-bottom-color: rgba(15, 23, 42, 0.1);
+  }
+
+  .code-block-lang {
+    color: #64748b;
+  }
+
   pre {
     background: #f6f8fa;
     border-color: rgba(0, 0, 0, 0.1);
@@ -689,6 +801,7 @@
 
   .copy-button:hover {
     color: #0969da;
+    background: rgba(15, 23, 42, 0.06);
   }
 
 
@@ -748,6 +861,19 @@
 
   .table-wrapper tbody tr:hover {
     background: #eef4ff;
+  }
+
+  blockquote,
+  .custom-blockquote {
+    background: var(--flowchat-md-bq-bg, rgba(15, 23, 42, 0.07));
+    border-left: 3px solid var(--flowchat-md-bq-border, rgba(15, 23, 42, 0.24));
+    color: var(--flowchat-md-bq-fg, var(--color-text-secondary, #475569));
+  }
+
+  blockquote:hover,
+  .custom-blockquote:hover {
+    background: var(--flowchat-md-bq-hover-bg, rgba(15, 23, 42, 0.1));
+    border-left-color: var(--flowchat-md-bq-hover-border, rgba(15, 23, 42, 0.34));
   }
 }
 
@@ -831,14 +957,6 @@
 }
 
 
-.markdown-renderer pre:hover {
-  box-shadow:
-    0 8px 24px rgba(0, 0, 0, 0.4),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.05);
-  border-color: rgba(255, 255, 255, 0.15);
-}
-
 .markdown-renderer blockquote:hover {
   background: rgba(255, 255, 255, 0.03);
   border-left-color: rgba(255, 255, 255, 0.2);
@@ -852,69 +970,7 @@
 .markdown-renderer .inline-code:hover,
 .markdown-renderer pre:hover,
 .markdown-renderer blockquote:hover {
-  will-change: transform, color, background;
+  will-change: color, background;
 }
 
 
-.markdown-renderer--streaming > p:last-child,
-.markdown-renderer--streaming > ul:last-child > li:last-child,
-.markdown-renderer--streaming > ol:last-child > li:last-child,
-.markdown-renderer--streaming > blockquote:last-child > p:last-child {
-  -webkit-mask-image: linear-gradient(
-    90deg,
-    #000 0%,
-    #000 50%,
-    rgba(0, 0, 0, 0.7) 70%,
-    rgba(0, 0, 0, 0.4) 85%,
-    rgba(0, 0, 0, 0.15) 100%
-  );
-  mask-image: linear-gradient(
-    90deg,
-    #000 0%,
-    #000 50%,
-    rgba(0, 0, 0, 0.7) 70%,
-    rgba(0, 0, 0, 0.4) 85%,
-    rgba(0, 0, 0, 0.15) 100%
-  );
-  animation: ink-fade-pulse 2s ease-in-out infinite;
-}
-
-
-@keyframes ink-fade-pulse {
-  0%, 100% {
-    -webkit-mask-image: linear-gradient(
-      90deg,
-      #000 0%,
-      #000 50%,
-      rgba(0, 0, 0, 0.7) 70%,
-      rgba(0, 0, 0, 0.4) 85%,
-      rgba(0, 0, 0, 0.15) 100%
-    );
-    mask-image: linear-gradient(
-      90deg,
-      #000 0%,
-      #000 50%,
-      rgba(0, 0, 0, 0.7) 70%,
-      rgba(0, 0, 0, 0.4) 85%,
-      rgba(0, 0, 0, 0.15) 100%
-    );
-  }
-  50% {
-    -webkit-mask-image: linear-gradient(
-      90deg,
-      #000 0%,
-      #000 55%,
-      rgba(0, 0, 0, 0.75) 75%,
-      rgba(0, 0, 0, 0.5) 90%,
-      rgba(0, 0, 0, 0.25) 100%
-    );
-    mask-image: linear-gradient(
-      90deg,
-      #000 0%,
-      #000 55%,
-      rgba(0, 0, 0, 0.75) 75%,
-      rgba(0, 0, 0, 0.5) 90%,
-      rgba(0, 0, 0, 0.25) 100%
-    );
-  }
-}

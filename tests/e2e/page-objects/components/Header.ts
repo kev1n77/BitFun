@@ -6,12 +6,11 @@ import { $ } from '@wdio/globals';
 
 export class Header extends BasePage {
   private selectors = {
-    // Use actual frontend class names - NavBar uses bitfun-nav-bar class
-    container: '.bitfun-nav-bar, [data-testid="header-container"], .bitfun-header, header',
+    container: '.bitfun-nav-panel, .bitfun-scene-bar, .bitfun-nav-bar, [data-testid="header-container"], .bitfun-header, header',
     homeBtn: '[data-testid="header-home-btn"], .bitfun-nav-bar__logo-button, .bitfun-header__home',
-    minimizeBtn: '[data-testid="header-minimize-btn"], .bitfun-title-bar__minimize',
-    maximizeBtn: '[data-testid="header-maximize-btn"], .bitfun-title-bar__maximize',
-    closeBtn: '[data-testid="header-close-btn"], .bitfun-title-bar__close',
+    minimizeBtn: '[data-testid="header-minimize-btn"], .bitfun-title-bar__minimize, .window-controls__btn--minimize, button[aria-label*="Minimize"], button[aria-label*="最小化"]',
+    maximizeBtn: '[data-testid="header-maximize-btn"], .bitfun-title-bar__maximize, .window-controls__btn--maximize, button[aria-label*="Maximize"], button[aria-label*="最大化"], button[aria-label*="Restore"], button[aria-label*="还原"]',
+    closeBtn: '[data-testid="header-close-btn"], .bitfun-title-bar__close, .window-controls__btn--close, button[aria-label*="Close"], button[aria-label*="关闭"]',
     leftPanelToggle: '[data-testid="header-left-panel-toggle"], .bitfun-nav-bar__panel-toggle',
     rightPanelToggle: '[data-testid="header-right-panel-toggle"]',
     newSessionBtn: '[data-testid="header-new-session-btn"]',
@@ -19,8 +18,23 @@ export class Header extends BasePage {
     configBtn: '[data-testid="header-config-btn"], .bitfun-header-right button',
   };
 
+  private async findExistingElement(selectors: string[]): Promise<WebdriverIO.Element | null> {
+    for (const selector of selectors) {
+      try {
+        const element = await $(selector);
+        if (await element.isExisting()) {
+          return element;
+        }
+      } catch (error) {
+        // Try the next selector.
+      }
+    }
+
+    return null;
+  }
+
   async isVisible(): Promise<boolean> {
-    const selectors = ['.bitfun-nav-bar', '[data-testid="header-container"]', '.bitfun-header', 'header'];
+    const selectors = ['.bitfun-nav-panel', '.bitfun-scene-bar', '.bitfun-nav-bar', '[data-testid="header-container"]', '.bitfun-header', 'header'];
     for (const selector of selectors) {
       try {
         const element = await $(selector);
@@ -36,8 +50,7 @@ export class Header extends BasePage {
   }
 
   async waitForLoad(): Promise<void> {
-    // Wait for any header element - NavBar uses bitfun-nav-bar class
-    const selectors = ['.bitfun-nav-bar', '[data-testid="header-container"]', '.bitfun-header', 'header'];
+    const selectors = ['.bitfun-nav-panel', '.bitfun-scene-bar', '.bitfun-nav-bar', '[data-testid="header-container"]', '.bitfun-header', 'header'];
     for (const selector of selectors) {
       try {
         const element = await $(selector);
@@ -62,76 +75,97 @@ export class Header extends BasePage {
   }
 
   async clickMinimize(): Promise<void> {
-    await this.safeClick(this.selectors.minimizeBtn);
+    const element = await this.findExistingElement([
+      '[data-testid="header-minimize-btn"]',
+      '.bitfun-title-bar__minimize',
+      '.window-controls__btn--minimize',
+      'button[aria-label*="Minimize"]',
+      'button[aria-label*="最小化"]',
+      '.window-controls button:first-child',
+    ]);
+
+    if (!element) {
+      throw new Error('Minimize button not found');
+    }
+
+    await element.scrollIntoView();
+    await element.waitForClickable({ timeout: 10000 });
+    await element.click();
   }
 
   async isMinimizeButtonVisible(): Promise<boolean> {
-    // Check for window controls in various possible locations
-    const selectors = [
+    return (await this.findExistingElement([
       '[data-testid="header-minimize-btn"]',
       '.bitfun-title-bar__minimize',
+      '.window-controls__btn--minimize',
+      'button[aria-label*="Minimize"]',
+      'button[aria-label*="最小化"]',
       '.window-controls button:first-child',
-    ];
-    for (const selector of selectors) {
-      try {
-        const element = await $(selector);
-        const exists = await element.isExisting();
-        if (exists) {
-          return true;
-        }
-      } catch (e) {
-        // Continue
-      }
-    }
-    return false;
+    ])) !== null;
   }
 
   async clickMaximize(): Promise<void> {
-    await this.safeClick(this.selectors.maximizeBtn);
+    const element = await this.findExistingElement([
+      '[data-testid="header-maximize-btn"]',
+      '.bitfun-title-bar__maximize',
+      '.window-controls__btn--maximize',
+      'button[aria-label*="Maximize"]',
+      'button[aria-label*="最大化"]',
+      'button[aria-label*="Restore"]',
+      'button[aria-label*="还原"]',
+      '.window-controls button:nth-child(2)',
+    ]);
+
+    if (!element) {
+      throw new Error('Maximize button not found');
+    }
+
+    await element.scrollIntoView();
+    await element.waitForClickable({ timeout: 10000 });
+    await element.click();
   }
 
   async isMaximizeButtonVisible(): Promise<boolean> {
-    const selectors = [
+    return (await this.findExistingElement([
       '[data-testid="header-maximize-btn"]',
       '.bitfun-title-bar__maximize',
+      '.window-controls__btn--maximize',
+      'button[aria-label*="Maximize"]',
+      'button[aria-label*="最大化"]',
+      'button[aria-label*="Restore"]',
+      'button[aria-label*="还原"]',
       '.window-controls button:nth-child(2)',
-    ];
-    for (const selector of selectors) {
-      try {
-        const element = await $(selector);
-        const exists = await element.isExisting();
-        if (exists) {
-          return true;
-        }
-      } catch (e) {
-        // Continue
-      }
-    }
-    return false;
+    ])) !== null;
   }
 
   async clickClose(): Promise<void> {
-    await this.safeClick(this.selectors.closeBtn);
+    const element = await this.findExistingElement([
+      '[data-testid="header-close-btn"]',
+      '.bitfun-title-bar__close',
+      '.window-controls__btn--close',
+      'button[aria-label*="Close"]',
+      'button[aria-label*="关闭"]',
+      '.window-controls button:last-child',
+    ]);
+
+    if (!element) {
+      throw new Error('Close button not found');
+    }
+
+    await element.scrollIntoView();
+    await element.waitForClickable({ timeout: 10000 });
+    await element.click();
   }
 
   async isCloseButtonVisible(): Promise<boolean> {
-    const selectors = [
+    return (await this.findExistingElement([
       '[data-testid="header-close-btn"]',
       '.bitfun-title-bar__close',
+      '.window-controls__btn--close',
+      'button[aria-label*="Close"]',
+      'button[aria-label*="关闭"]',
       '.window-controls button:last-child',
-    ];
-    for (const selector of selectors) {
-      try {
-        const element = await $(selector);
-        const exists = await element.isExisting();
-        if (exists) {
-          return true;
-        }
-      } catch (e) {
-        // Continue
-      }
-    }
-    return false;
+    ])) !== null;
   }
 
   async toggleLeftPanel(): Promise<void> {
@@ -164,13 +198,19 @@ export class Header extends BasePage {
   }
 
   async areWindowControlsVisible(): Promise<boolean> {
-    // In Tauri apps, window controls might be handled by the OS
-    // Check if any window control elements exist
+    const controlsContainer = await this.findExistingElement([
+      '.window-controls',
+      '.bitfun-header-right .window-controls',
+    ]);
+
+    if (controlsContainer) {
+      return true;
+    }
+
     const minimizeVisible = await this.isMinimizeButtonVisible();
     const maximizeVisible = await this.isMaximizeButtonVisible();
     const closeVisible = await this.isCloseButtonVisible();
 
-    // If any control exists, consider controls visible
     return minimizeVisible || maximizeVisible || closeVisible;
   }
 }

@@ -6,14 +6,42 @@
 import { createLogger } from '@/shared/utils/logger';
 import type { FlowChatContext, DialogTurn } from './types';
 import { buildSessionMetadata } from '../../utils/sessionMetadata';
+import { settleInterruptedDialogTurn } from '../../utils/dialogTurnStability';
+import { isRuntimeStatusItem } from './RuntimeStatusModule';
 
 const log = createLogger('PersistenceModule');
+const COALESCED_IMMEDIATE_SAVE_DELAY_MS = 500;
+
+function isTransientSession(session: { isTransient?: boolean } | undefined): boolean {
+  return session?.isTransient === true;
+}
 
 function requireWorkspacePath(sessionId: string, workspacePath?: string): string {
   if (!workspacePath) {
     throw new Error(`Workspace path is required for session: ${sessionId}`);
   }
   return workspacePath;
+}
+
+function getDialogTurn(context: FlowChatContext, sessionId: string, turnId: string): DialogTurn | undefined {
+  return context.flowChatStore
+    .getState()
+    .sessions
+    .get(sessionId)
+    ?.dialogTurns
+    .find(turn => turn.id === turnId);
+}
+
+function isTerminalDialogTurnStatus(status: DialogTurn['status']): boolean {
+  return status === 'completed' || status === 'cancelled' || status === 'error';
+}
+
+function clearSaveTimer(context: FlowChatContext, key: string): void {
+  const existingTimer = context.saveDebouncers.get(key);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+    context.saveDebouncers.delete(key);
+  }
 }
 
 async function runSerialDialogTurnSave(
@@ -52,7 +80,12 @@ export function calculateTurnHash(dialogTurn: DialogTurn): string {
   const keyData = JSON.stringify({
     status: dialogTurn.status,
     roundsCount: dialogTurn.modelRounds.length,
-    lastRoundData: dialogTurn.modelRounds[dialogTurn.modelRounds.length - 1] || null,
+    lastRoundData: dialogTurn.modelRounds[dialogTurn.modelRounds.length - 1]
+      ? {
+          ...dialogTurn.modelRounds[dialogTurn.modelRounds.length - 1],
+          items: dialogTurn.modelRounds[dialogTurn.modelRounds.length - 1].items.filter(item => !isRuntimeStatusItem(item)),
+        }
+      : null,
     error: dialogTurn.error,
     endTime: dialogTurn.endTime
   });
@@ -104,17 +137,11 @@ export function immediateSaveDialogTurn(
   skipDuplicateCheck: boolean = false
 ): void {
   const key = `${sessionId}:${turnId}`;
-  
-  const existingTimer = context.saveDebouncers.get(key);
-  if (existingTimer) {
-    clearTimeout(existingTimer);
-    context.saveDebouncers.delete(key);
-  }
+  const dialogTurn = getDialogTurn(context, sessionId, turnId);
   
   if (!skipDuplicateCheck) {
     const session = context.flowChatStore.getState().sessions.get(sessionId);
     if (session) {
-      const dialogTurn = session.dialogTurns.find(turn => turn.id === turnId);
       if (dialogTurn) {
         const currentHash = calculateTurnHash(dialogTurn);
         const lastHash = context.lastSaveHashes.get(key);
@@ -130,10 +157,28 @@ export function immediateSaveDialogTurn(
       }
     }
   }
-  
-  saveDialogTurnToDisk(context, sessionId, turnId).catch(error => {
-    log.warn('Immediate save failed', { sessionId, turnId, error });
-  });
+
+  const shouldFlushImmediately =
+    skipDuplicateCheck ||
+    !dialogTurn ||
+    isTerminalDialogTurnStatus(dialogTurn.status);
+
+  if (shouldFlushImmediately) {
+    clearSaveTimer(context, key);
+    saveDialogTurnToDisk(context, sessionId, turnId).catch(error => {
+      log.warn('Immediate save failed', { sessionId, turnId, error });
+    });
+    return;
+  }
+
+  clearSaveTimer(context, key);
+  const timer = setTimeout(() => {
+    context.saveDebouncers.delete(key);
+    saveDialogTurnToDisk(context, sessionId, turnId).catch(error => {
+      log.warn('Coalesced save failed', { sessionId, turnId, error });
+    });
+  }, COALESCED_IMMEDIATE_SAVE_DELAY_MS);
+  context.saveDebouncers.set(key, timer);
 }
 
 /**
@@ -206,6 +251,7 @@ export async function saveDialogTurnToDisk(
   sessionId: string,
   turnId: string
 ): Promise<void> {
+  clearSaveTimer(context, `${sessionId}:${turnId}`);
   await runSerialDialogTurnSave(context, sessionId, turnId);
 }
 
@@ -222,6 +268,9 @@ async function performSaveDialogTurnToDisk(
       log.debug('Session not found, skipping save', { sessionId, turnId });
       return;
     }
+    if (isTransientSession(session)) {
+      return;
+    }
 
     const workspacePath = requireWorkspacePath(sessionId, session.workspacePath);
     
@@ -233,7 +282,12 @@ async function performSaveDialogTurnToDisk(
 
     const turnIndex = dialogTurn.backendTurnIndex ?? session.dialogTurns.indexOf(dialogTurn);
     const turnData = convertDialogTurnToBackendFormat(dialogTurn, turnIndex);
-    await sessionAPI.saveSessionTurn(turnData, workspacePath);
+    await sessionAPI.saveSessionTurn(
+      turnData,
+      workspacePath,
+      session.remoteConnectionId,
+      session.remoteSshHost
+    );
     
     await updateSessionMetadata(context, sessionId);
     
@@ -243,14 +297,18 @@ async function performSaveDialogTurnToDisk(
 }
 
 /**
- * Save all in-progress dialog turns
- * Used when closing the window to persist unfinished session turns
+ * Save all in-progress dialog turns by settling them for persistence.
+ * Call only when the app process is about to exit; hiding to tray/dock keeps the
+ * app alive and settling here would clear in-memory "active" state (e.g. desktop pet bubbles).
  */
 export async function saveAllInProgressTurns(context: FlowChatContext): Promise<void> {
   const state = context.flowChatStore.getState();
   const savePromises: Promise<void>[] = [];
   
   for (const [sessionId, session] of state.sessions.entries()) {
+    if (isTransientSession(session)) {
+      continue;
+    }
     const lastTurn = session.dialogTurns[session.dialogTurns.length - 1];
     
     if (lastTurn) {
@@ -262,21 +320,37 @@ export async function saveAllInProgressTurns(context: FlowChatContext): Promise<
       }
       
       if (
-        lastTurn.status === 'processing' ||
-        lastTurn.status === 'pending' ||
-        lastTurn.status === 'image_analyzing'
+        lastTurn.status !== 'completed' &&
+        lastTurn.status !== 'cancelled' &&
+        lastTurn.status !== 'error'
       ) {
-        context.flowChatStore.updateDialogTurn(sessionId, lastTurn.id, turn => ({
-          ...turn,
-          status: 'cancelled' as const,
-          endTime: Date.now()
-        }));
-        
+        const settledAt = Date.now();
+        context.flowChatStore.updateDialogTurn(sessionId, lastTurn.id, turn =>
+          settleInterruptedDialogTurn(turn, settledAt, {
+            preservePendingConfirmation: true,
+            interruptionReason: 'app_restart',
+          })
+        );
+
+        // Mark session as unread if it was interrupted while not active
+        if (sessionId !== state.activeSessionId) {
+          context.flowChatStore.markSessionUnreadCompletion(sessionId, 'completed');
+        }
+
         savePromises.push(
           saveDialogTurnToDisk(context, sessionId, lastTurn.id).catch(error => {
             log.error('Failed to save in-progress turn', { sessionId, turnId: lastTurn.id, error });
           })
         );
+
+        // Also persist the unread completion metadata
+        if (sessionId !== state.activeSessionId) {
+          savePromises.push(
+            updateSessionMetadata(context, sessionId).catch(error => {
+              log.error('Failed to update session metadata for unread completion', { sessionId, error });
+            })
+          );
+        }
       }
     }
   }
@@ -288,27 +362,35 @@ export async function saveAllInProgressTurns(context: FlowChatContext): Promise<
  * Convert FlowChat DialogTurn to backend format
  */
 export function convertDialogTurnToBackendFormat(dialogTurn: DialogTurn, turnIndex: number): any {
+  const userMetadata = dialogTurn.userMessage.metadata
+    ? { ...dialogTurn.userMessage.metadata }
+    : undefined;
+  const mergedUserMetadata =
+    dialogTurn.userMessage.images?.length
+      ? {
+          ...(userMetadata || {}),
+          images: dialogTurn.userMessage.images.map(img => ({
+            id: img.id,
+            name: img.name,
+            data_url: img.dataUrl,
+            image_path: img.imagePath,
+            mime_type: img.mimeType,
+          })),
+          original_text: dialogTurn.userMessage.content,
+        }
+      : userMetadata;
+
   return {
     turnId: dialogTurn.id,
     turnIndex,
     sessionId: dialogTurn.sessionId,
     timestamp: dialogTurn.startTime,
+    kind: dialogTurn.kind || 'user_dialog',
     userMessage: {
       id: dialogTurn.userMessage.id,
       content: dialogTurn.userMessage.content,
       timestamp: dialogTurn.userMessage.timestamp,
-      metadata: dialogTurn.userMessage.images?.length
-        ? {
-            images: dialogTurn.userMessage.images.map(img => ({
-              id: img.id,
-              name: img.name,
-              data_url: img.dataUrl,
-              image_path: img.imagePath,
-              mime_type: img.mimeType,
-            })),
-            original_text: dialogTurn.userMessage.content,
-          }
-        : undefined,
+      metadata: mergedUserMetadata,
     },
     modelRounds: dialogTurn.modelRounds.map((round, roundIndex) => {
       return {
@@ -316,9 +398,10 @@ export function convertDialogTurnToBackendFormat(dialogTurn: DialogTurn, turnInd
         turnId: dialogTurn.id,
         roundIndex,
         timestamp: round.startTime,
+        renderHints: round.renderHints,
         textItems: round.items
           .map((item, index) => ({ item, index }))
-          .filter(({ item }) => item.type === 'text')
+          .filter(({ item }) => item.type === 'text' && !isRuntimeStatusItem(item))
           .map(({ item, index }) => {
             return {
               id: item.id,
@@ -341,9 +424,13 @@ export function convertDialogTurnToBackendFormat(dialogTurn: DialogTurn, turnInd
             return {
               id: item.id,
               toolName: toolItem.toolName || '',
+              interruptionReason: toolItem.interruptionReason,
               toolCall: toolItem.toolCall || { input: {}, id: item.id },
               toolResult: toolItem.toolResult,
               aiIntent: toolItem.aiIntent,
+              requiresConfirmation: toolItem.requiresConfirmation,
+              userConfirmed: toolItem.userConfirmed,
+              acpPermission: toolItem.acpPermission,
               startTime: toolItem.startTime || item.timestamp,
               endTime: toolItem.endTime,
               status: item.status || 'completed',
@@ -351,6 +438,8 @@ export function convertDialogTurnToBackendFormat(dialogTurn: DialogTurn, turnInd
               isSubagentItem: toolItem.isSubagentItem,
               parentTaskToolId: toolItem.parentTaskToolId,
               subagentSessionId: toolItem.subagentSessionId,
+              subagentModelId: toolItem.subagentModelId,
+              subagentModelAlias: toolItem.subagentModelAlias,
             };
           }),
         thinkingItems: round.items
@@ -399,19 +488,30 @@ export async function updateSessionMetadata(
 
     const session = context.flowChatStore.getState().sessions.get(sessionId);
     if (!session) return;
+    if (isTransientSession(session)) return;
 
     const workspacePath = requireWorkspacePath(sessionId, session.workspacePath);
 
     let existingMetadata: any = null;
     try {
-      existingMetadata = await sessionAPI.loadSessionMetadata(sessionId, workspacePath);
+      existingMetadata = await sessionAPI.loadSessionMetadata(
+        sessionId,
+        workspacePath,
+        session.remoteConnectionId,
+        session.remoteSshHost
+      );
     } catch {
       // ignore
     }
 
     const metadata = buildSessionMetadata(session, existingMetadata);
 
-    await sessionAPI.saveSessionMetadata(metadata, workspacePath);
+    await sessionAPI.saveSessionMetadata(
+      metadata,
+      workspacePath,
+      session.remoteConnectionId,
+      session.remoteSshHost
+    );
   } catch (error) {
     log.warn('Failed to update session metadata', { sessionId, error });
   }
@@ -420,10 +520,20 @@ export async function updateSessionMetadata(
 /**
  * Update session activity time (used for session switching)
  */
-export async function touchSessionActivity(sessionId: string, workspacePath?: string): Promise<void> {
+export async function touchSessionActivity(
+  sessionId: string,
+  workspacePath?: string,
+  remoteConnectionId?: string,
+  remoteSshHost?: string
+): Promise<void> {
   try {
     const { sessionAPI } = await import('@/infrastructure/api');
-    await sessionAPI.touchSessionActivity(sessionId, requireWorkspacePath(sessionId, workspacePath));
+    await sessionAPI.touchSessionActivity(
+      sessionId,
+      requireWorkspacePath(sessionId, workspacePath),
+      remoteConnectionId,
+      remoteSshHost
+    );
   } catch (error) {
     log.debug('Failed to touch session activity', { sessionId, error });
   }

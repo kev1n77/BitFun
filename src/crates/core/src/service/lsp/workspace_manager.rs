@@ -9,7 +9,7 @@
 //! - Push real-time events to the frontend
 
 use anyhow::{anyhow, Result};
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -310,7 +310,7 @@ impl WorkspaceLspManager {
         let server_language = match self.get_running_server_for_language(&language).await {
             Some(lang) => lang,
             None => {
-                debug!(
+                trace!(
                     "LSP server not running for language: {}, skipping didOpen",
                     language
                 );
@@ -432,7 +432,9 @@ impl WorkspaceLspManager {
                 let is_related = (language == "c" && lang == "cpp")
                     || (language == "cpp" && lang == "c")
                     || (language == "javascript" && lang == "typescript")
-                    || (language == "typescript" && lang == "javascript");
+                    || (language == "typescript" && lang == "javascript")
+                    || (language == "javascriptreact" && lang == "javascript")
+                    || (language == "typescriptreact" && lang == "typescript");
 
                 if is_related {
                     return Some(lang.clone());
@@ -458,7 +460,9 @@ impl WorkspaceLspManager {
                 let is_related = (language == "c" && lang == "cpp")
                     || (language == "cpp" && lang == "c")
                     || (language == "javascript" && lang == "typescript")
-                    || (language == "typescript" && lang == "javascript");
+                    || (language == "typescript" && lang == "javascript")
+                    || (language == "javascriptreact" && lang == "javascript")
+                    || (language == "typescriptreact" && lang == "typescript");
 
                 if is_related {
                     return lang.clone();
@@ -476,11 +480,7 @@ impl WorkspaceLspManager {
         let status = {
             let states = self.server_states.read().await;
 
-            if let Some(state) = states.get(language) {
-                Some(state.status.clone())
-            } else {
-                None
-            }
+            states.get(language).map(|state| state.status.clone())
         };
 
         if let Some(status) = status {
@@ -737,7 +737,7 @@ impl WorkspaceLspManager {
                     if let Some(state) = states.get_mut(&language) {
                         state.status = ServerStatus::Failed;
                         state.last_error =
-                            Some(format!("Server process crashed or became unresponsive"));
+                            Some("Server process crashed or became unresponsive".to_string());
                     }
                 }
 

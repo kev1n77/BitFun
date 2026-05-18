@@ -1,69 +1,22 @@
 /**
  * useKeyboardShortcuts Hook
- * Keyboard shortcut system.
+ *
+ * Registers canvas-level keyboard shortcuts via ShortcutManager.
+ * All shortcuts use scope 'canvas' so they only fire when focus is inside
+ * the editor canvas area (data-shortcut-scope="canvas").
  */
 
-import { useEffect, useCallback } from 'react';
+import { useCallback } from 'react';
+import { useShortcut } from '@/infrastructure/hooks/useShortcut';
+import { activeEditTargetService } from '@/tools/editor/services/ActiveEditTargetService';
 import { useCanvasStore } from '../stores';
 import type { EditorGroupId } from '../types';
 
-/**
- * Shortcut definitions.
- */
-const SHORTCUTS = {
-  // Mission control
-  'mod+tab': 'toggleMissionControl',
-  
-  // Split layout
-  'mod+\\': 'toggleHorizontalSplit',
-  'mod+shift+\\': 'toggleVerticalSplit',
-  
-  // Anchor zone
-  'mod+`': 'toggleAnchorZone',
-  
-  // Maximize
-  'mod+shift+m': 'maximizeEditor',
-  
-  // Tab actions
-  'mod+w': 'closeCurrentTab',
-  'mod+shift+t': 'reopenClosedTab',
-  'mod+1': 'switchToTab1',
-  'mod+2': 'switchToTab2',
-  'mod+3': 'switchToTab3',
-  'mod+4': 'switchToTab4',
-  'mod+5': 'switchToTab5',
-  'mod+6': 'switchToTab6',
-  'mod+7': 'switchToTab7',
-  'mod+8': 'switchToTab8',
-  'mod+9': 'switchToLastTab',
-} as const;
-
-type ShortcutAction = typeof SHORTCUTS[keyof typeof SHORTCUTS];
-
 interface UseKeyboardShortcutsOptions {
-  /** Whether enabled */
   enabled?: boolean;
-  /** Dirty-check callback before closing tab */
   handleCloseWithDirtyCheck?: (tabId: string, groupId: EditorGroupId) => Promise<boolean>;
 }
 
-/**
- * Check if modifier keys are pressed.
- */
-const checkModifiers = (e: KeyboardEvent, mod: boolean, shift: boolean): boolean => {
-  const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
-  const modPressed = isMac ? e.metaKey : e.ctrlKey;
-  
-  if (mod && !modPressed) return false;
-  if (shift && !e.shiftKey) return false;
-  if (!shift && e.shiftKey && mod) return false; // Shift pressed when not required
-  
-  return true;
-};
-
-/**
- * Keyboard shortcuts hook.
- */
 export const useKeyboardShortcuts = (options: UseKeyboardShortcutsOptions = {}) => {
   const { enabled = true, handleCloseWithDirtyCheck } = options;
 
@@ -80,140 +33,117 @@ export const useKeyboardShortcuts = (options: UseKeyboardShortcutsOptions = {}) 
     toggleMaximize,
     toggleMissionControl,
   } = useCanvasStore();
-  // Execute shortcut action
-  const executeAction = useCallback((action: ShortcutAction) => {
-    const activeGroup = activeGroupId === 'primary' ? primaryGroup : secondaryGroup;
-    const visibleTabs = activeGroup.tabs.filter(t => !t.isHidden);
 
-    switch (action) {
-      case 'toggleMissionControl':
-        toggleMissionControl();
-        break;
-        
-      case 'toggleHorizontalSplit':
-        setSplitMode(layout.splitMode === 'horizontal' ? 'none' : 'horizontal');
-        break;
-        
-      case 'toggleVerticalSplit':
-        setSplitMode(layout.splitMode === 'vertical' ? 'none' : 'vertical');
-        break;
-        
-      case 'toggleAnchorZone':
-        setAnchorPosition(layout.anchorPosition === 'hidden' ? 'bottom' : 'hidden');
-        break;
-        
-      case 'maximizeEditor':
-        toggleMaximize();
-        break;
-        
-      case 'closeCurrentTab':
-        if (activeGroup.activeTabId) {
-          if (handleCloseWithDirtyCheck) {
-            handleCloseWithDirtyCheck(activeGroup.activeTabId, activeGroupId);
-          } else {
-            closeTab(activeGroup.activeTabId, activeGroupId);
-          }
-        }
-        break;
-        
-      case 'reopenClosedTab':
-        reopenClosedTab();
-        break;
-        
-      case 'switchToTab1':
-      case 'switchToTab2':
-      case 'switchToTab3':
-      case 'switchToTab4':
-      case 'switchToTab5':
-      case 'switchToTab6':
-      case 'switchToTab7':
-      case 'switchToTab8':
-        const tabIndex = parseInt(action.replace('switchToTab', '')) - 1;
-        if (visibleTabs[tabIndex]) {
-          switchToTab(visibleTabs[tabIndex].id, activeGroupId);
-        }
-        break;
-        
-      case 'switchToLastTab':
-        if (visibleTabs.length > 0) {
-          switchToTab(visibleTabs[visibleTabs.length - 1].id, activeGroupId);
-        }
-        break;
-    }
-  }, [
-    activeGroupId,
-    primaryGroup,
-    secondaryGroup,
-    layout,
-    toggleMissionControl,
-    setSplitMode,
-    setAnchorPosition,
-    toggleMaximize,
-    closeTab,
-    reopenClosedTab,
-    switchToTab,
-  ]);
+  const getActiveGroup = useCallback(() => {
+    return activeGroupId === 'primary' ? primaryGroup : secondaryGroup;
+  }, [activeGroupId, primaryGroup, secondaryGroup]);
 
-  // Keyboard event handling
-  useEffect(() => {
-    if (!enabled) return;
+  const getVisibleTabs = useCallback(() => {
+    return getActiveGroup().tabs.filter((t) => !t.isHidden);
+  }, [getActiveGroup]);
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Skip most shortcuts when an input is focused
-      const activeElement = document.activeElement;
-      const isInputFocused = activeElement instanceof HTMLInputElement ||
-        activeElement instanceof HTMLTextAreaElement ||
-        (activeElement as HTMLElement)?.isContentEditable;
+  // Find in file (Monaco) — only when `data-shortcut-scope="editor"` is innermost
+  useShortcut(
+    'editor.findInFile',
+    { key: 'f', ctrl: true, scope: 'editor', allowInInput: true },
+    () => {
+      activeEditTargetService.openMonacoFind();
+    },
+    { enabled, priority: 20, description: 'keyboard.shortcuts.editor.findInFile' }
+  );
 
-      // Some shortcuts should still work while typing
-      const alwaysHandle = ['mod+tab', 'mod+w', 'mod+shift+t'];
+  // Mission control
+  useShortcut(
+    'canvas.missionControl',
+    { key: 'Tab', ctrl: true, scope: 'canvas', allowInInput: true },
+    () => toggleMissionControl(),
+    { enabled, priority: 10, description: 'keyboard.shortcuts.canvas.missionControl' }
+  );
 
-      // Check each shortcut
-      for (const [shortcut, action] of Object.entries(SHORTCUTS)) {
-        const parts = shortcut.split('+');
-        const key = parts[parts.length - 1];
-        const needsMod = parts.includes('mod');
-        const needsShift = parts.includes('shift');
+  // Horizontal split: mod+\
+  useShortcut(
+    'canvas.splitHorizontal',
+    { key: '\\', ctrl: true, scope: 'canvas' },
+    () => setSplitMode(layout.splitMode === 'horizontal' ? 'none' : 'horizontal'),
+    { enabled, description: 'keyboard.shortcuts.canvas.splitHorizontal' }
+  );
 
-        // Check key
-        if (e.key.toLowerCase() !== key.toLowerCase() && 
-            e.key !== key && 
-            e.code !== `Key${key.toUpperCase()}` &&
-            e.code !== `Digit${key}` &&
-            e.key !== '`' && key !== '`') {
-          continue;
-        }
+  // Vertical split: mod+Shift+\
+  useShortcut(
+    'canvas.splitVertical',
+    { key: '\\', ctrl: true, shift: true, scope: 'canvas' },
+    () => setSplitMode(layout.splitMode === 'vertical' ? 'none' : 'vertical'),
+    { enabled, description: 'keyboard.shortcuts.canvas.splitVertical' }
+  );
 
-        // Special handling for Tab
-        if (key === 'tab' && e.key !== 'Tab') continue;
-        
-        // Special handling for backtick
-        if (key === '`' && e.key !== '`') continue;
+  // Anchor zone: mod+`
+  useShortcut(
+    'canvas.anchorZone',
+    { key: '`', ctrl: true, scope: 'canvas' },
+    () => setAnchorPosition(layout.anchorPosition === 'hidden' ? 'bottom' : 'hidden'),
+    { enabled, description: 'keyboard.shortcuts.canvas.anchorZone' }
+  );
 
-        // Check modifiers
-        if (!checkModifiers(e, needsMod, needsShift)) {
-          continue;
-        }
+  // Maximize: mod+Shift+M
+  useShortcut(
+    'canvas.maximize',
+    { key: 'M', ctrl: true, shift: true, scope: 'canvas' },
+    () => toggleMaximize(),
+    { enabled, description: 'keyboard.shortcuts.canvas.maximize' }
+  );
 
-        // Only handle certain shortcuts when input is focused
-        if (isInputFocused && !alwaysHandle.includes(shortcut)) {
-          continue;
-        }
+  // Close canvas preview/modal overlay: Escape
+  useShortcut(
+    'canvas.closePreview',
+    { key: 'Escape', scope: 'canvas', allowInInput: true },
+    () => window.dispatchEvent(new CustomEvent('closePreview')),
+    { enabled, priority: 5, description: 'keyboard.shortcuts.canvas.closePreview' }
+  );
 
-        // Prevent default and execute action
-        e.preventDefault();
-        executeAction(action);
-        return;
+  // Close current tab: mod+W
+  useShortcut(
+    'tab.close',
+    { key: 'W', ctrl: true, scope: 'canvas', allowInInput: true },
+    () => {
+      const activeGroup = getActiveGroup();
+      if (!activeGroup.activeTabId) return;
+      if (handleCloseWithDirtyCheck) {
+        handleCloseWithDirtyCheck(activeGroup.activeTabId, activeGroupId);
+      } else {
+        closeTab(activeGroup.activeTabId, activeGroupId);
       }
-    };
+    },
+    { enabled, priority: 10, description: 'keyboard.shortcuts.tab.close' }
+  );
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [enabled, executeAction]);
+  // Reopen closed tab: mod+Shift+T
+  useShortcut(
+    'tab.reopenClosed',
+    { key: 'T', ctrl: true, shift: true, scope: 'canvas', allowInInput: true },
+    () => reopenClosedTab(),
+    { enabled, priority: 10, description: 'keyboard.shortcuts.tab.reopenClosed' }
+  );
 
-  return {
-    executeAction,
-  };
+  // Switch to tab by number: mod+1~9
+  const switchToTabByIndex = useCallback(
+    (index: number) => {
+      const tabs = getVisibleTabs();
+      const target = index === -1 ? tabs[tabs.length - 1] : tabs[index];
+      if (target) switchToTab(target.id, activeGroupId);
+    },
+    [getVisibleTabs, switchToTab, activeGroupId]
+  );
+
+  // allowInInput so Ctrl+1..9 still work while focus is in a Monaco editor
+  useShortcut('tab.switch1',    { key: '1', ctrl: true, scope: 'canvas', allowInInput: true }, () => switchToTabByIndex(0),  { enabled, description: 'keyboard.shortcuts.tab.switchMerged' });
+  useShortcut('tab.switch2',    { key: '2', ctrl: true, scope: 'canvas', allowInInput: true }, () => switchToTabByIndex(1),  { enabled, description: 'keyboard.shortcuts.tab.switchMerged' });
+  useShortcut('tab.switch3',    { key: '3', ctrl: true, scope: 'canvas', allowInInput: true }, () => switchToTabByIndex(2),  { enabled, description: 'keyboard.shortcuts.tab.switchMerged' });
+  useShortcut('tab.switch4',    { key: '4', ctrl: true, scope: 'canvas', allowInInput: true }, () => switchToTabByIndex(3),  { enabled, description: 'keyboard.shortcuts.tab.switchMerged' });
+  useShortcut('tab.switch5',    { key: '5', ctrl: true, scope: 'canvas', allowInInput: true }, () => switchToTabByIndex(4),  { enabled, description: 'keyboard.shortcuts.tab.switchMerged' });
+  useShortcut('tab.switch6',    { key: '6', ctrl: true, scope: 'canvas', allowInInput: true }, () => switchToTabByIndex(5),  { enabled, description: 'keyboard.shortcuts.tab.switchMerged' });
+  useShortcut('tab.switch7',    { key: '7', ctrl: true, scope: 'canvas', allowInInput: true }, () => switchToTabByIndex(6),  { enabled, description: 'keyboard.shortcuts.tab.switchMerged' });
+  useShortcut('tab.switch8',    { key: '8', ctrl: true, scope: 'canvas', allowInInput: true }, () => switchToTabByIndex(7),  { enabled, description: 'keyboard.shortcuts.tab.switchMerged' });
+  useShortcut('tab.switchLast', { key: '9', ctrl: true, scope: 'canvas', allowInInput: true }, () => switchToTabByIndex(-1), { enabled, description: 'keyboard.shortcuts.tab.switchMerged' });
 };
 
 export default useKeyboardShortcuts;

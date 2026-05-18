@@ -1,113 +1,90 @@
 /**
- * Skill tool display component.
- * Refactored from the BaseToolCard patterns.
+ * Skill tool display — compact row (same pattern as Read file).
  */
 
-import React from 'react';
-import { Sparkles } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { CubeLoading } from '../../component-library';
 import type { ToolCardProps } from '../types/flow-chat';
-import { BaseToolCard, ToolCardHeader } from './BaseToolCard';
-import './SkillDisplay.scss';
+import { CompactToolCard, CompactToolCardHeader } from './CompactToolCard';
+import type { CompactToolCardProps } from './CompactToolCard';
+import { ToolCardStatusSlot } from './ToolCardStatusSlot';
 
-export const SkillDisplay: React.FC<ToolCardProps> = ({
-  toolItem
-}) => {
+export const SkillDisplay: React.FC<ToolCardProps> = React.memo(({ toolItem }) => {
   const { t } = useTranslation('flow-chat');
   const { toolCall, toolResult, status } = toolItem;
 
-  const getSkillInfo = () => {
+  const skillInfo = useMemo(() => {
     if (!toolResult?.result) return null;
-    const result = toolResult.result;
+    const result = toolResult.result as Record<string, unknown>;
     return {
-      name: result.skill_name || result.name || t('toolCards.skill.unknownSkill'),
-      location: result.location || 'unknown',
+      name: (result.skill_name || result.name || t('toolCards.skill.unknownSkill')) as string,
     };
-  };
+  }, [toolResult?.result, t]);
 
-  const skillInfo = getSkillInfo();
-  const commandName = toolCall?.input?.command || toolCall?.input?.skill_name || t('toolCards.skill.unknown');
+  const commandName =
+    (toolCall?.input?.command as string | undefined) ||
+    (toolCall?.input?.skill_name as string | undefined) ||
+    t('toolCards.skill.unknown');
 
-  // Map known locations to localized labels.
-  const getLocationLabel = (location: string) => {
-    switch (location) {
-      case 'user':
-      case 'personal':
-        return t('toolCards.skill.userLevel');
-      case 'project':
-        return t('toolCards.skill.projectLevel');
-      default:
-        return location;
-    }
-  };
-
-  const isLoading = status === 'preparing' || status === 'streaming' || status === 'running';
-
-  const isFailed = status === 'error';
+  const displayName = status === 'completed' && skillInfo ? skillInfo.name : commandName;
 
   const getErrorMessage = () => {
-    if (toolResult && 'error' in toolResult) {
-      return toolResult.error;
+    if (toolResult && 'error' in toolResult && toolResult.error) {
+      return String(toolResult.error);
     }
     return t('toolCards.skill.loadSkillFailed');
   };
 
-  const renderToolIcon = () => {
-    return <Sparkles size={16} />;
-  };
-
-  const renderStatusIcon = () => {
-    if (isLoading) {
-      return <CubeLoading size="small" />;
+  const renderContent = () => {
+    if (status === 'error') {
+      return (
+        <>
+          {getErrorMessage()}
+          {commandName ? <span className="read-file-meta"> {commandName}</span> : null}
+        </>
+      );
     }
-    return null;
+    if (status === 'completed') {
+      return (
+        <>
+          {t('toolCards.skill.skillAction')} {displayName}
+        </>
+      );
+    }
+    if (status === 'running' || status === 'streaming' || status === 'preparing') {
+      return (
+        <>
+          {t('toolCards.skill.loadingSkill')} {displayName}...
+        </>
+      );
+    }
+    if (status === 'pending') {
+      return (
+        <>
+          {t('toolCards.skill.preparingSkill')} {displayName}
+        </>
+      );
+    }
+    return (
+      <>
+        {t('toolCards.skill.skillAction')} {displayName}
+      </>
+    );
   };
-
-  const renderHeader = () => (
-    <ToolCardHeader
-      icon={renderToolIcon()}
-      iconClassName="skill-icon"
-      action={isFailed ? t('toolCards.skill.loadSkillFailed') : t('toolCards.skill.skillAction')}
-      content={
-        <span className="skill-name-wrapper">
-          {status === 'completed' && skillInfo ? (
-            <>
-              <span className="skill-name">{skillInfo.name}</span>
-              {skillInfo.location && (
-                <span className={`location-tag location-${skillInfo.location}`}>
-                  {getLocationLabel(skillInfo.location)}
-                </span>
-              )}
-            </>
-          ) : (
-            <span className="skill-name">{commandName}</span>
-          )}
-        </span>
-      }
-      statusIcon={renderStatusIcon()}
-    />
-  );
-
-  const renderErrorContent = () => (
-    <div className="error-content">
-      <div className="error-message">{getErrorMessage()}</div>
-      {commandName && (
-        <div className="error-meta">
-          <span className="error-skill">{t('toolCards.skill.skillAction')} {commandName}</span>
-        </div>
-      )}
-    </div>
-  );
 
   return (
-    <BaseToolCard
-      status={status}
+    <CompactToolCard
+      status={status as CompactToolCardProps['status']}
       isExpanded={false}
-      className="skill-display"
-      header={renderHeader()}
-      errorContent={renderErrorContent()}
-      isFailed={isFailed}
+      className="skill-tool-compact"
+      clickable={false}
+      header={
+        <CompactToolCardHeader
+          icon={<ToolCardStatusSlot status={status as CompactToolCardProps['status']} toolIcon={<Zap size={16} />} />}
+          content={renderContent()}
+        />
+      }
     />
   );
-};
+});

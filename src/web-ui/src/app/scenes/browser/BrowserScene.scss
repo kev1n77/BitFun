@@ -44,7 +44,7 @@
       box-shadow: none;
       background: transparent;
       color: var(--color-text-primary);
-      font-size: $font-size-sm;
+      font-size: var(--font-size-sm);
       appearance: none;
       -webkit-appearance: none;
       border-radius: 0;
@@ -68,7 +68,7 @@
     border-radius: $size-radius-base;
     background: color-mix(in srgb, var(--color-warning) 12%, transparent);
     color: var(--color-text-secondary);
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
 
     svg {
       color: var(--color-warning);
@@ -103,7 +103,7 @@
     justify-content: center;
     gap: $size-gap-2;
     color: var(--color-text-muted);
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     background:
       radial-gradient(circle at top, color-mix(in srgb, var(--color-accent-500) 8%, transparent), transparent 42%),
       var(--color-bg-primary);

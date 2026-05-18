@@ -37,7 +37,7 @@
   }
 
   &__title {
-    font-size: $font-size-lg;
+    font-size: var(--font-size-lg);
     font-weight: $font-weight-semibold;
     color: var(--color-text-primary);
   }
@@ -82,7 +82,7 @@
     display: flex;
     align-items: center;
     gap: $size-gap-2;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     color: var(--color-text-secondary);
     font-weight: $font-weight-medium;
 
@@ -93,7 +93,7 @@
 
   &__base-value {
     font-family: $font-family-mono;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     color: var(--color-text-primary);
     font-weight: $font-weight-medium;
     padding: 2px 8px;
@@ -115,7 +115,7 @@
   }
 
   &__label {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     font-weight: $font-weight-medium;
     color: var(--color-text-secondary);
     display: flex;
@@ -135,7 +135,7 @@
     border-radius: $size-radius-sm;
     color: var(--color-text-primary);
     font-family: $font-family-mono;
-    font-size: $font-size-sm;
+    font-size: var(--font-size-sm);
     transition: all $motion-base $easing-standard;
 
     &:focus {
@@ -174,12 +174,12 @@
     border: 1px solid rgba(239, 68, 68, 0.25);
     border-radius: $size-radius-sm;
     color: #ef4444;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     animation: bitfun-create-branch-dialog-shake 0.4s ease-in-out;
   }
 
   &__hint {
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     line-height: 1.6;
 
@@ -229,7 +229,7 @@
 
   &__shortcuts {
     margin-top: $size-gap-2;
-    font-size: $font-size-xs;
+    font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     text-align: center;
 

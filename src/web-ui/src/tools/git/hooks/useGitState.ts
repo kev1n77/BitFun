@@ -30,6 +30,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { gitStateManager } from '../state/GitStateManager';
+import { sendDebugProbe } from '@/shared/utils/debugProbe';
 import {
   GitState,
   UseGitStateOptions,
@@ -41,6 +42,7 @@ export function useGitState(options: UseGitStateOptions): UseGitStateReturn {
   const {
     repositoryPath,
     isActive = true,
+    participateInWindowFocusRefresh = true,
     selector,
     refreshOnMount = true,
     refreshOnActive = true,
@@ -106,18 +108,30 @@ export function useGitState(options: UseGitStateOptions): UseGitStateReturn {
   const isFirstMountRef = useRef(true);
 
   useEffect(() => {
+    if (!normalizedPath || !isActive || !participateInWindowFocusRefresh) {
+      return;
+    }
+
+    return gitStateManager.registerWindowFocusRefresh(normalizedPath);
+  }, [isActive, normalizedPath, participateInWindowFocusRefresh]);
+
+  useEffect(() => {
     if (!normalizedPath) return;
 
     const isFirstMount = isFirstMountRef.current;
     isFirstMountRef.current = false;
-
-    gitStateManager.setVisibility(normalizedPath, isActive);
 
     const shouldRefresh = 
       (isFirstMount && refreshOnMount) ||
       (!isFirstMount && isActive && !prevActiveRef.current && refreshOnActive);
 
     if (shouldRefresh) {
+      sendDebugProbe('useGitState.ts:visibilityEffect', 'Git refresh requested', {
+        repositoryPath: normalizedPath,
+        isActive,
+        reason: isFirstMount ? 'mount' : 'visibility',
+        layers: layersRef.current || ['basic', 'status'],
+      });
       gitStateManager.refresh(normalizedPath, {
         layers: layersRef.current || ['basic', 'status'],
         reason: isFirstMount ? 'mount' : 'visibility',
@@ -125,10 +139,6 @@ export function useGitState(options: UseGitStateOptions): UseGitStateReturn {
     }
 
     prevActiveRef.current = isActive;
-
-    return () => {
-      gitStateManager.setVisibility(normalizedPath, false);
-    };
   }, [isActive, normalizedPath, refreshOnMount, refreshOnActive]);
 
   const refresh = useCallback(
@@ -188,6 +198,7 @@ export function useGitBasicInfo(repositoryPath: string) {
   return useGitState({
     repositoryPath,
     isActive: true,
+    participateInWindowFocusRefresh: false,
     layers: ['basic'],
     refreshOnMount: true,
     refreshOnActive: false,

@@ -116,17 +116,17 @@
 .welcome-panel__narrative-text {
   margin: 0;
   font-size: 15px;
-  line-height: 1.8;
+  line-height: 1.55;
   color: var(--color-text-muted);
 }
 
-/* One flex row: lead text, workspace/branch controls, trail text share the same vertical center */
+/* Lead text, chips, and trail text share one typographic line (baseline-aligned) */
 .welcome-panel__narrative-sentence {
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
   flex-wrap: wrap;
   column-gap: 0.35em;
-  row-gap: 0.2em;
+  row-gap: 0.25em;
 }
 
 .welcome-panel__narrative-sentence__text {
@@ -137,7 +137,7 @@
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  padding: 1px 5px;
+  padding: 0 5px;
   margin: 0 1px;
   background: none;
   border: none;
@@ -146,14 +146,17 @@
   font-size: inherit;
   font-family: inherit;
   font-weight: 600;
-  /* Do not inherit narrative line-height (1.8); it inflates the flex line box vs fixed-size SVGs */
-  line-height: 1.2;
-  cursor: pointer;
-  vertical-align: middle;
+  line-height: inherit;
+  cursor: default;
+  vertical-align: baseline;
   transition: background 0.15s;
 }
 
-.welcome-panel__inline-btn:hover {
+.welcome-panel__inline-btn--interactive {
+  cursor: pointer;
+}
+
+.welcome-panel__inline-btn--interactive:hover:not(:disabled) {
   background: var(--element-bg-subtle);
 }
 
@@ -190,13 +193,14 @@
 
 .welcome-panel__context-row {
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
   flex-wrap: nowrap;
   margin: 0 1px;
 }
 
 .welcome-panel__context-sep {
   padding: 0 2px;
+  line-height: inherit;
   color: var(--color-text-muted);
   opacity: 0.4;
   font-weight: 400;
@@ -208,7 +212,13 @@
 .welcome-panel__workspace-anchor {
   position: relative;
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
+}
+
+/* Git status line: tight follow-up under workspace sentence (avoid <br> full line-gap) */
+.welcome-panel__narrative-git {
+  display: block;
+  margin-top: 0.28em;
 }
 
 /* ── Dropdown ── */

@@ -97,6 +97,14 @@ export interface EditorContext extends BaseContext {
   };
    
   selectedText?: string;
+
+  /** Monaco selection range when the user has a non-empty selection in the editor. */
+  selectionRange?: {
+    startLine: number;
+    endLine: number;
+    startColumn: number;
+    endColumn: number;
+  };
    
   isReadOnly?: boolean;
 }

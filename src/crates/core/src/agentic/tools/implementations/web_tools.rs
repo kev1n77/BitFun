@@ -1,7 +1,10 @@
 //! Web tool implementation - WebSearchTool and URLFetcherTool
 
-use crate::agentic::tools::framework::{Tool, ToolResult, ToolUseContext, ValidationResult};
+use crate::agentic::tools::framework::{
+    Tool, ToolExposure, ToolResult, ToolUseContext, ValidationResult,
+};
 use crate::util::errors::{BitFunError, BitFunResult};
+use crate::util::truncate_at_char_boundary;
 use async_trait::async_trait;
 use log::{error, info};
 use serde::Deserialize;
@@ -30,6 +33,12 @@ struct ExaContent {
 }
 
 pub struct WebSearchTool;
+
+impl Default for WebSearchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl WebSearchTool {
     pub fn new() -> Self {
@@ -228,6 +237,14 @@ Advanced features:
         )
     }
 
+    fn short_description(&self) -> String {
+        "Search the web for up-to-date information and sources.".to_string()
+    }
+
+    fn default_exposure(&self) -> ToolExposure {
+        ToolExposure::Collapsed
+    }
+
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -344,6 +361,7 @@ Advanced features:
                 results.len(),
                 formatted_results
             )),
+            image_attachments: None,
         };
 
         Ok(vec![result])
@@ -353,9 +371,80 @@ Advanced features:
 /// WebFetch tool
 pub struct WebFetchTool;
 
+impl Default for WebFetchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WebFetchTool {
     pub fn new() -> Self {
         Self
+    }
+
+    fn is_html(content_type: Option<&str>, content: &str) -> bool {
+        if let Some(ct) = content_type {
+            let ct = ct.to_lowercase();
+            if ct.contains("text/html") || ct.contains("application/xhtml") {
+                return true;
+            }
+        }
+        let sample = truncate_at_char_boundary(content, 2048);
+        let sample_lower = sample.to_lowercase();
+        sample_lower.contains("<!doctype html")
+            || sample_lower.contains("<html")
+            || sample_lower.contains("</html>")
+    }
+
+    fn html_to_text(html: &str) -> String {
+        use regex::Regex;
+
+        let mut text = html.to_string();
+        for tag in [
+            "script", "style", "noscript", "nav", "header", "footer", "aside", "iframe",
+        ] {
+            let pattern = format!(r"(?is)<{}[^\u003e]*>[\s\S]*?</\s*{}\s*>", tag, tag);
+            if let Ok(re) = Regex::new(&pattern) {
+                text = re.replace_all(&text, "\n").to_string();
+            }
+        }
+
+        let text = Regex::new(r"(?i)<br\s*/?>")
+            .unwrap()
+            .replace_all(&text, "\n");
+
+        let text = Regex::new(r"<[^>]+>").unwrap().replace_all(&text, " ");
+
+        let text = text
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&#x27;", "'")
+            .replace("&nbsp;", " ")
+            .replace("&#160;", " ");
+
+        text.lines()
+            .map(|line| {
+                let mut result = String::new();
+                let mut prev_space = true;
+                for ch in line.chars() {
+                    if ch.is_whitespace() {
+                        if !prev_space {
+                            result.push(' ');
+                            prev_space = true;
+                        }
+                    } else {
+                        result.push(ch);
+                        prev_space = false;
+                    }
+                }
+                result.trim().to_string()
+            })
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -375,15 +464,25 @@ Use this tool to:
 - Access online resources
 
 Supports different output formats:
-- text: Plain text content
+- raw: Raw response content (original HTML or text)
+- text: Plain text content (extracts text from HTML pages, leaves other content unchanged)
 - markdown: Convert HTML to markdown
 - json: Parse JSON responses
 
 Example usage:
+- Fetch raw HTML: {"url": "https://example.com", "format": "raw"}
+- Fetch plain text: {"url": "https://example.com/article", "format": "text"}
 - Fetch documentation: {"url": "https://doc.rust-lang.org/book/", "format": "markdown"}
-- Get API data: {"url": "https://api.example.com/data", "format": "json"}
-- Read webpage: {"url": "https://example.com/article"}"#
+- Get API data: {"url": "https://api.example.com/data", "format": "json"}"#
             .to_string())
+    }
+
+    fn short_description(&self) -> String {
+        "Fetch content from a URL in raw, text, markdown, or JSON format.".to_string()
+    }
+
+    fn default_exposure(&self) -> ToolExposure {
+        ToolExposure::Collapsed
     }
 
     fn input_schema(&self) -> Value {
@@ -396,8 +495,8 @@ Example usage:
                 },
                 "format": {
                     "type": "string",
-                    "enum": ["text", "markdown", "json"],
-                    "description": "Output format (default: text)",
+                    "enum": ["raw", "text", "markdown", "json"],
+                    "description": "Output format. Use 'raw' for original HTML, 'text' for extracted plain text, 'markdown' for simple HTML-to-markdown, or 'json' for parsed JSON.",
                     "default": "text"
                 }
             },
@@ -497,12 +596,19 @@ Example usage:
             )));
         }
 
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
         let content = response
             .text()
             .await
             .map_err(|e| BitFunError::tool(format!("Failed to read response: {}", e)))?;
 
         let processed_content = match format {
+            "raw" => content,
             "markdown" => {
                 // Simplified HTML to Markdown conversion
                 content
@@ -519,7 +625,13 @@ Example usage:
                     .map_err(|e| BitFunError::tool(format!("Invalid JSON response: {}", e)))?;
                 content
             }
-            _ => content,
+            _ => {
+                if Self::is_html(content_type.as_deref(), &content) {
+                    Self::html_to_text(&content)
+                } else {
+                    content
+                }
+            }
         };
 
         let result = ToolResult::Result {
@@ -530,6 +642,7 @@ Example usage:
                 "content_length": processed_content.len()
             }),
             result_for_assistant: Some(processed_content),
+            image_attachments: None,
         };
 
         Ok(vec![result])
@@ -541,7 +654,6 @@ mod tests {
     use super::{WebFetchTool, WebSearchTool};
     use crate::agentic::tools::framework::{Tool, ToolResult, ToolUseContext};
     use serde_json::json;
-    use std::collections::HashMap;
     use std::io::ErrorKind;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -549,19 +661,15 @@ mod tests {
     fn empty_context() -> ToolUseContext {
         ToolUseContext {
             tool_call_id: None,
-            message_id: None,
             agent_type: None,
             session_id: None,
             dialog_turn_id: None,
             workspace: None,
-            safe_mode: None,
-            abort_controller: None,
-            read_file_timestamps: HashMap::new(),
-            options: None,
-            response_state: None,
-            image_context_provider: None,
-            subagent_parent_info: None,
+            unlocked_collapsed_tools: Vec::new(),
+            custom_data: std::collections::HashMap::new(),
+            computer_use_host: None,
             cancellation_token: None,
+            runtime_tool_restrictions: Default::default(),
             workspace_services: None,
         }
     }
@@ -617,6 +725,7 @@ mod tests {
             ToolResult::Result {
                 data,
                 result_for_assistant,
+                ..
             } => {
                 assert_eq!(data["content"], "hello from webfetch");
                 assert_eq!(data["format"], "text");
@@ -649,6 +758,7 @@ mod tests {
             ToolResult::Result {
                 data,
                 result_for_assistant,
+                ..
             } => {
                 let content = data["content"].as_str().expect("content should be string");
                 assert!(content.contains("Example Domain"));
@@ -661,6 +771,44 @@ mod tests {
             }
             other => panic!("unexpected tool result variant: {:?}", other),
         }
+    }
+
+    #[test]
+    fn webfetch_html_to_text_extracts_plain_text() {
+        let html = r#"<!DOCTYPE html>
+<html>
+<head><title>Test Page</title></head>
+<body>
+<script>alert('ignore me');</script>
+<style>.hidden { display: none; }</style>
+<h1>Hello World</h1>
+<p>This is a paragraph with <strong>bold</strong> text.</p>
+<ul><li>Item one</li><li>Item two</li></ul>
+</body>
+</html>"#;
+
+        let text = WebFetchTool::html_to_text(html);
+        assert!(!text.contains("<script>"));
+        assert!(!text.contains("alert("));
+        assert!(!text.contains(".hidden"));
+        assert!(text.contains("Hello World"));
+        assert!(text.contains("This is a paragraph with bold text."));
+        assert!(text.contains("Item one"));
+        assert!(text.contains("Item two"));
+    }
+
+    #[test]
+    fn webfetch_is_html_detects_html_content() {
+        assert!(WebFetchTool::is_html(
+            Some("text/html; charset=utf-8"),
+            "any"
+        ));
+        assert!(WebFetchTool::is_html(Some("application/xhtml+xml"), "any"));
+        assert!(WebFetchTool::is_html(None, "<!DOCTYPE html><html></html>"));
+        assert!(WebFetchTool::is_html(None, "<html lang=\"en\"></html>"));
+        assert!(!WebFetchTool::is_html(Some("application/json"), "{}"));
+        assert!(!WebFetchTool::is_html(Some("text/plain"), "hello"));
+        assert!(!WebFetchTool::is_html(None, "just plain text"));
     }
 
     #[test]

@@ -14,73 +14,11 @@ import {
   ApiConfig
 } from './types';
 import { createLogger } from '@/shared/utils/logger';
+import { elapsedMs, nowMs } from '@/shared/utils/timing';
+import { sanitizeErrorForLog, sanitizeLogValue, sanitizeTextForLog } from '../logSanitizer';
 
 const log = createLogger('ApiClient');
-const SENSITIVE_KEY_PATTERNS = [
-  'api_key',
-  'apikey',
-  'token',
-  'secret',
-  'password',
-  'authorization'
-];
-
-function isSensitiveKey(key: string): boolean {
-  const normalized = key.toLowerCase();
-  return SENSITIVE_KEY_PATTERNS.some(pattern => normalized.includes(pattern));
-}
-
-function maskSensitiveValue(value: unknown): string {
-  if (typeof value !== 'string') {
-    return '***';
-  }
-  if (value.length <= 8) {
-    return '***';
-  }
-  return `${value.slice(0, 4)}***${value.slice(-4)}`;
-}
-
-function sanitizeForLog(value: unknown, parentKey?: string): unknown {
-  if (value === null || value === undefined) {
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    return value.map(item => sanitizeForLog(item, parentKey));
-  }
-
-  if (typeof value !== 'object') {
-    if (parentKey && isSensitiveKey(parentKey)) {
-      return maskSensitiveValue(value);
-    }
-    return value;
-  }
-
-  const obj = value as Record<string, unknown>;
-  const sanitized: Record<string, unknown> = {};
-
-  for (const [key, rawVal] of Object.entries(obj)) {
-    if (isSensitiveKey(key)) {
-      sanitized[key] = maskSensitiveValue(rawVal);
-      continue;
-    }
-
-    // For HTTP header maps, mask sensitive header values by header name.
-    if ((key === 'headers' || key === 'custom_headers') && rawVal && typeof rawVal === 'object') {
-      const headerObj = rawVal as Record<string, unknown>;
-      const maskedHeaders: Record<string, unknown> = {};
-      for (const [hKey, hVal] of Object.entries(headerObj)) {
-        maskedHeaders[hKey] = isSensitiveKey(hKey) ? maskSensitiveValue(hVal) : hVal;
-      }
-      sanitized[key] = maskedHeaders;
-      continue;
-    }
-
-    sanitized[key] = sanitizeForLog(rawVal, key);
-  }
-
-  return sanitized;
-}
+const sanitizeForLog = sanitizeLogValue;
 
 export class ApiClient implements IApiClient {
   private config: ApiConfig;
@@ -165,7 +103,7 @@ export class ApiClient implements IApiClient {
       
       await this.invoke('ping', {}, { timeout: 5000, retries: 1 });
       return true;
-    } catch (error) {
+    } catch (_error) {
       return false;
     }
   }
@@ -190,7 +128,7 @@ export class ApiClient implements IApiClient {
   }
 
   private async executeRequest<T>(request: ApiRequest): Promise<T> {
-    const startTime = Date.now();
+    const startedAt = nowMs();
     
     this.updateStats({ totalRequests: this.stats.totalRequests + 1 });
 
@@ -218,15 +156,15 @@ export class ApiClient implements IApiClient {
         this.activeRequests.delete(request.id);
 
         
-        const responseTime = Date.now() - startTime;
-        this.recordResponseTime(responseTime);
+        const durationMs = elapsedMs(startedAt);
+        this.recordResponseTime(durationMs);
         this.updateStats({ successfulRequests: this.stats.successfulRequests + 1 });
 
 
         if (this.config.enableLogging) {
           log.debug('Request completed', {
             type: request.type,
-            responseTime,
+            durationMs,
             config: sanitizeForLog(request.config)
           });
         }
@@ -264,7 +202,7 @@ export class ApiClient implements IApiClient {
           requestId: request.id,
           retryCount: request.retryCount,
           config: sanitizeForLog(request.config),
-          error
+          error: sanitizeErrorForLog(error)
         });
       }
 
@@ -295,14 +233,14 @@ export class ApiClient implements IApiClient {
       if (isExpectedError && this.config.enableLogging) {
         log.debug('Command returned expected result', {
           command: config.command,
-          message: errorMessage
+          message: sanitizeTextForLog(errorMessage)
         });
       } else {
         log.error('Command failed', {
           command: config.command,
           args: sanitizeForLog(config.args),
-          error: errorMessage,
-          rawError: error
+          error: sanitizeTextForLog(errorMessage),
+          rawError: sanitizeErrorForLog(error)
         });
       }
       
@@ -469,20 +407,20 @@ export const api = {
 export function createLoggingMiddleware(): ApiMiddleware {
   const middlewareLog = createLogger('ApiMiddleware');
   return async (request: ApiRequest, next: (request: ApiRequest) => Promise<ApiResponse>) => {
-    const startTime = Date.now();
+    const startedAt = nowMs();
     
     try {
       const response = await next(request);
-      const duration = Date.now() - startTime;
+      const durationMs = elapsedMs(startedAt);
       middlewareLog.debug('Request completed', {
         type: request.type,
-        duration,
+        durationMs,
         config: sanitizeForLog(request.config)
       });
       return response;
     } catch (error) {
-      const duration = Date.now() - startTime;
-      middlewareLog.error('Request failed', { type: request.type, duration, error });
+      const durationMs = elapsedMs(startedAt);
+      middlewareLog.error('Request failed', { type: request.type, durationMs, error });
       throw error;
     }
   };

@@ -6,15 +6,19 @@ use std::sync::Arc;
 use tauri::{AppHandle, State};
 
 use crate::api::app_state::AppState;
+use crate::api::session_storage_path::desktop_effective_session_storage_path;
 use bitfun_core::agentic::coordination::{
     AssistantBootstrapBlockReason, AssistantBootstrapEnsureOutcome, AssistantBootstrapSkipReason,
     ConversationCoordinator, DialogScheduler, DialogSubmissionPolicy, DialogTriggerSource,
+    SubagentTimeoutAction,
 };
 use bitfun_core::agentic::core::*;
+use bitfun_core::agentic::deep_review_policy::{
+    apply_deep_review_queue_control, default_review_team_definition, DeepReviewQueueControlAction,
+    ReviewTeamDefinition,
+};
 use bitfun_core::agentic::image_analysis::ImageContextData;
 use bitfun_core::agentic::tools::image_context::get_image_context;
-use bitfun_core::service::remote_ssh::workspace_state::get_effective_session_path;
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateSessionRequest {
@@ -22,6 +26,12 @@ pub struct CreateSessionRequest {
     pub session_name: String,
     pub agent_type: String,
     pub workspace_path: String,
+    #[serde(default)]
+    pub session_kind: Option<SessionKind>,
+    #[serde(default)]
+    pub remote_connection_id: Option<String>,
+    #[serde(default)]
+    pub remote_ssh_host: Option<String>,
     pub config: Option<SessionConfigDTO>,
 }
 
@@ -36,6 +46,10 @@ pub struct SessionConfigDTO {
     pub enable_context_compression: Option<bool>,
     pub compression_threshold: Option<f32>,
     pub model_name: Option<String>,
+    #[serde(default)]
+    pub remote_connection_id: Option<String>,
+    #[serde(default)]
+    pub remote_ssh_host: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -55,6 +69,18 @@ pub struct UpdateSessionModelRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UpdateSessionTitleRequest {
+    pub session_id: String,
+    pub title: String,
+    pub workspace_path: Option<String>,
+    #[serde(default)]
+    pub remote_connection_id: Option<String>,
+    #[serde(default)]
+    pub remote_ssh_host: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StartDialogTurnRequest {
     pub session_id: String,
     pub user_input: String,
@@ -64,6 +90,8 @@ pub struct StartDialogTurnRequest {
     pub turn_id: Option<String>,
     #[serde(default)]
     pub image_contexts: Option<Vec<ImageContextData>>,
+    #[serde(default)]
+    pub user_message_metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -71,6 +99,28 @@ pub struct StartDialogTurnRequest {
 pub struct StartDialogTurnResponse {
     pub success: bool,
     pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactSessionRequest {
+    pub session_id: String,
+    pub workspace_path: Option<String>,
+    #[serde(default)]
+    pub remote_connection_id: Option<String>,
+    #[serde(default)]
+    pub remote_ssh_host: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnsureCoordinatorSessionRequest {
+    pub session_id: String,
+    pub workspace_path: String,
+    #[serde(default)]
+    pub remote_connection_id: Option<String>,
+    #[serde(default)]
+    pub remote_ssh_host: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,25 +159,66 @@ pub struct SessionResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GetMessagesRequest {
+pub struct CancelDialogTurnRequest {
     pub session_id: String,
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MessageDTO {
-    pub id: String,
-    pub role: String,
-    pub content: serde_json::Value,
-    pub timestamp: u64,
+    pub dialog_turn_id: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CancelDialogTurnRequest {
+pub struct SteerDialogTurnRequest {
     pub session_id: String,
     pub dialog_turn_id: String,
+    /// Rendered content delivered to the model. When omitted by the caller this
+    /// equals the displayed user text.
+    pub content: String,
+    /// Original user text for UI rendering (defaults to `content`).
+    #[serde(default)]
+    pub display_content: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SteerDialogTurnResponse {
+    pub success: bool,
+    pub steering_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlDeepReviewQueueRequest {
+    pub session_id: String,
+    pub dialog_turn_id: String,
+    pub tool_id: String,
+    pub action: ControlDeepReviewQueueActionDTO,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlDeepReviewQueueActionDTO {
+    Pause,
+    Continue,
+    Cancel,
+    SkipOptional,
+}
+
+impl From<ControlDeepReviewQueueActionDTO> for DeepReviewQueueControlAction {
+    fn from(value: ControlDeepReviewQueueActionDTO) -> Self {
+        match value {
+            ControlDeepReviewQueueActionDTO::Pause => DeepReviewQueueControlAction::Pause,
+            ControlDeepReviewQueueActionDTO::Continue => DeepReviewQueueControlAction::Continue,
+            ControlDeepReviewQueueActionDTO::Cancel => DeepReviewQueueControlAction::Cancel,
+            ControlDeepReviewQueueActionDTO::SkipOptional => {
+                DeepReviewQueueControlAction::SkipOptional
+            }
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelSessionRequest {
+    pub session_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,6 +233,10 @@ pub struct CancelToolRequest {
 pub struct DeleteSessionRequest {
     pub session_id: String,
     pub workspace_path: String,
+    #[serde(default)]
+    pub remote_connection_id: Option<String>,
+    #[serde(default)]
+    pub remote_ssh_host: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,12 +244,20 @@ pub struct DeleteSessionRequest {
 pub struct RestoreSessionRequest {
     pub session_id: String,
     pub workspace_path: String,
+    #[serde(default)]
+    pub remote_connection_id: Option<String>,
+    #[serde(default)]
+    pub remote_ssh_host: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListSessionsRequest {
     pub workspace_path: String,
+    #[serde(default)]
+    pub remote_connection_id: Option<String>,
+    #[serde(default)]
+    pub remote_ssh_host: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -186,6 +289,22 @@ pub async fn create_session(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: CreateSessionRequest,
 ) -> Result<CreateSessionResponse, String> {
+    fn norm_conn(s: Option<String>) -> Option<String> {
+        s.map(|x| x.trim().to_string()).filter(|x| !x.is_empty())
+    }
+    let remote_conn = norm_conn(request.remote_connection_id.clone()).or_else(|| {
+        request
+            .config
+            .as_ref()
+            .and_then(|c| norm_conn(c.remote_connection_id.clone()))
+    });
+    let remote_ssh_host = norm_conn(request.remote_ssh_host.clone()).or_else(|| {
+        request
+            .config
+            .as_ref()
+            .and_then(|c| norm_conn(c.remote_ssh_host.clone()))
+    });
+
     let config = request
         .config
         .map(|c| SessionConfig {
@@ -197,23 +316,41 @@ pub async fn create_session(
             enable_context_compression: c.enable_context_compression.unwrap_or(true),
             compression_threshold: c.compression_threshold.unwrap_or(0.8),
             workspace_path: Some(request.workspace_path.clone()),
+            remote_connection_id: remote_conn.clone(),
+            remote_ssh_host: remote_ssh_host.clone(),
             model_id: c.model_name,
         })
         .unwrap_or(SessionConfig {
             workspace_path: Some(request.workspace_path.clone()),
+            remote_connection_id: remote_conn.clone(),
+            remote_ssh_host: remote_ssh_host.clone(),
             ..Default::default()
         });
 
-    let session = coordinator
-        .create_session_with_workspace(
-            request.session_id,
-            request.session_name.clone(),
-            request.agent_type.clone(),
-            config,
-            request.workspace_path,
-        )
-        .await
-        .map_err(|e| format!("Failed to create session: {}", e))?;
+    let session_kind = request.session_kind.unwrap_or_default();
+    let session = if matches!(session_kind, SessionKind::Subagent) {
+        coordinator
+            .create_hidden_subagent_session_with_workspace(
+                request.session_id,
+                request.session_name.clone(),
+                request.agent_type.clone(),
+                config,
+                request.workspace_path,
+                None,
+            )
+            .await
+    } else {
+        coordinator
+            .create_session_with_workspace(
+                request.session_id,
+                request.session_name.clone(),
+                request.agent_type.clone(),
+                config,
+                request.workspace_path,
+            )
+            .await
+    }
+    .map_err(|e| format!("Failed to create session: {}", e))?;
 
     Ok(CreateSessionResponse {
         session_id: session.session_id,
@@ -234,6 +371,90 @@ pub async fn update_session_model(
 }
 
 #[tauri::command]
+pub async fn update_session_title(
+    coordinator: State<'_, Arc<ConversationCoordinator>>,
+    app_state: State<'_, AppState>,
+    request: UpdateSessionTitleRequest,
+) -> Result<String, String> {
+    let session_id = request.session_id.trim();
+    if session_id.is_empty() {
+        return Err("session_id is required".to_string());
+    }
+
+    if coordinator
+        .get_session_manager()
+        .get_session(session_id)
+        .is_none()
+    {
+        let workspace_path = request
+            .workspace_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                "workspace_path is required when the session is not loaded".to_string()
+            })?;
+
+        let effective = desktop_effective_session_storage_path(
+            &app_state,
+            workspace_path,
+            request.remote_connection_id.as_deref(),
+            request.remote_ssh_host.as_deref(),
+        )
+        .await;
+
+        coordinator
+            .restore_session(&effective, session_id)
+            .await
+            .map_err(|e| format!("Failed to restore session before renaming: {}", e))?;
+    }
+
+    coordinator
+        .update_session_title(session_id, &request.title)
+        .await
+        .map_err(|e| format!("Failed to update session title: {}", e))
+}
+
+/// Load the session into the coordinator process when it exists on disk but is not in memory.
+/// Uses the same remote→local session path mapping as `restore_session`.
+#[tauri::command]
+pub async fn ensure_coordinator_session(
+    coordinator: State<'_, Arc<ConversationCoordinator>>,
+    app_state: State<'_, AppState>,
+    request: EnsureCoordinatorSessionRequest,
+) -> Result<(), String> {
+    let session_id = request.session_id.trim();
+    if session_id.is_empty() {
+        return Err("session_id is required".to_string());
+    }
+    if coordinator
+        .get_session_manager()
+        .get_session(session_id)
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let wp = request.workspace_path.trim();
+    if wp.is_empty() {
+        return Err("workspace_path is required when the session is not loaded".to_string());
+    }
+
+    let effective = desktop_effective_session_storage_path(
+        &app_state,
+        wp,
+        request.remote_connection_id.as_deref(),
+        request.remote_ssh_host.as_deref(),
+    )
+    .await;
+    coordinator
+        .restore_session(&effective, session_id)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn start_dialog_turn(
     _app: AppHandle,
     _coordinator: State<'_, Arc<ConversationCoordinator>>,
@@ -248,6 +469,7 @@ pub async fn start_dialog_turn(
         workspace_path,
         turn_id,
         image_contexts,
+        user_message_metadata,
     } = request;
 
     let policy = DialogSubmissionPolicy::for_source(DialogTriggerSource::DesktopUi);
@@ -271,6 +493,7 @@ pub async fn start_dialog_turn(
             workspace_path,
             policy,
             None,
+            user_message_metadata,
             resolved_images,
         )
         .await
@@ -279,6 +502,54 @@ pub async fn start_dialog_turn(
     Ok(StartDialogTurnResponse {
         success: true,
         message: "Dialog turn started".to_string(),
+    })
+}
+
+#[tauri::command]
+pub async fn compact_session(
+    coordinator: State<'_, Arc<ConversationCoordinator>>,
+    app_state: State<'_, AppState>,
+    request: CompactSessionRequest,
+) -> Result<StartDialogTurnResponse, String> {
+    let session_id = request.session_id.trim();
+    if session_id.is_empty() {
+        return Err("session_id is required".to_string());
+    }
+
+    if coordinator
+        .get_session_manager()
+        .get_session(session_id)
+        .is_none()
+    {
+        let workspace_path = request
+            .workspace_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                "workspace_path is required when the session is not loaded".to_string()
+            })?;
+        let effective = desktop_effective_session_storage_path(
+            &app_state,
+            workspace_path,
+            request.remote_connection_id.as_deref(),
+            request.remote_ssh_host.as_deref(),
+        )
+        .await;
+        coordinator
+            .restore_session(&effective, session_id)
+            .await
+            .map_err(|e| format!("Failed to restore session before compacting: {}", e))?;
+    }
+
+    coordinator
+        .compact_session_manually(session_id.to_string())
+        .await
+        .map_err(|e| format!("Failed to compact session: {}", e))?;
+
+    Ok(StartDialogTurnResponse {
+        success: true,
+        message: "Session compaction started".to_string(),
     })
 }
 
@@ -383,8 +654,28 @@ fn resolve_missing_image_payloads(
 #[tauri::command]
 pub async fn cancel_dialog_turn(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
+    app_state: State<'_, AppState>,
     request: CancelDialogTurnRequest,
 ) -> Result<(), String> {
+    if let Some(acp_client_service) = app_state.acp_client_service.as_ref() {
+        match acp_client_service
+            .cancel_bitfun_session(&request.session_id)
+            .await
+        {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(error) => {
+                log::error!(
+                    "Failed to cancel ACP dialog turn: session_id={}, dialog_turn_id={}, error={}",
+                    request.session_id,
+                    request.dialog_turn_id,
+                    error
+                );
+                return Err(format!("Failed to cancel ACP dialog turn: {}", error));
+            }
+        }
+    }
+
     coordinator
         .cancel_dialog_turn(&request.session_id, &request.dialog_turn_id)
         .await
@@ -396,6 +687,128 @@ pub async fn cancel_dialog_turn(
                 e
             );
             format!("Failed to cancel dialog turn: {}", e)
+        })
+}
+
+#[tauri::command]
+pub async fn steer_dialog_turn(
+    scheduler: State<'_, Arc<DialogScheduler>>,
+    request: SteerDialogTurnRequest,
+) -> Result<SteerDialogTurnResponse, String> {
+    let SteerDialogTurnRequest {
+        session_id,
+        dialog_turn_id,
+        content,
+        display_content,
+    } = request;
+
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Err("Steering content cannot be empty".to_string());
+    }
+
+    let outcome = scheduler
+        .submit_steering(session_id, dialog_turn_id, content, display_content)
+        .await
+        .map_err(|e| format!("Failed to steer dialog turn: {}", e))?;
+
+    let steering_id = match outcome {
+        bitfun_core::agentic::coordination::DialogSteerOutcome::Buffered {
+            steering_id, ..
+        } => steering_id,
+    };
+
+    Ok(SteerDialogTurnResponse {
+        success: true,
+        steering_id,
+    })
+}
+
+#[tauri::command]
+pub async fn control_deep_review_queue(
+    request: ControlDeepReviewQueueRequest,
+) -> Result<(), String> {
+    if request.session_id.trim().is_empty() {
+        return Err("Missing session_id".to_string());
+    }
+    if request.dialog_turn_id.trim().is_empty() {
+        return Err("Missing dialog_turn_id".to_string());
+    }
+    if request.tool_id.trim().is_empty() {
+        return Err("Missing tool_id".to_string());
+    }
+
+    apply_deep_review_queue_control(
+        &request.dialog_turn_id,
+        &request.tool_id,
+        request.action.into(),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cancel_session(
+    coordinator: State<'_, Arc<ConversationCoordinator>>,
+    request: CancelSessionRequest,
+) -> Result<(), String> {
+    coordinator
+        .cancel_active_turn_for_session(&request.session_id, std::time::Duration::from_secs(5))
+        .await
+        .map_err(|e| {
+            log::error!(
+                "Failed to cancel session: session_id={}, error={}",
+                request.session_id,
+                e
+            );
+            format!("Failed to cancel session: {}", e)
+        })?;
+
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetSubagentTimeoutRequest {
+    pub session_id: String,
+    pub action: SetSubagentTimeoutActionDTO,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", content = "payload")]
+pub enum SetSubagentTimeoutActionDTO {
+    Disable,
+    Restore,
+    Extend { seconds: u64 },
+}
+
+impl From<SetSubagentTimeoutActionDTO> for SubagentTimeoutAction {
+    fn from(dto: SetSubagentTimeoutActionDTO) -> Self {
+        match dto {
+            SetSubagentTimeoutActionDTO::Disable => SubagentTimeoutAction::Disable,
+            SetSubagentTimeoutActionDTO::Restore => SubagentTimeoutAction::Restore,
+            SetSubagentTimeoutActionDTO::Extend { seconds } => {
+                SubagentTimeoutAction::Extend { seconds }
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn set_subagent_timeout(
+    coordinator: State<'_, Arc<ConversationCoordinator>>,
+    request: SetSubagentTimeoutRequest,
+) -> Result<(), String> {
+    let action: SubagentTimeoutAction = request.action.into();
+    coordinator
+        .set_subagent_timeout(&request.session_id, action)
+        .await
+        .map_err(|e| {
+            log::error!(
+                "Failed to set subagent timeout: session_id={}, error={}",
+                request.session_id,
+                e
+            );
+            format!("Failed to set subagent timeout: {}", e)
         })
 }
 
@@ -424,9 +837,21 @@ pub async fn cancel_tool(
 #[tauri::command]
 pub async fn delete_session(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
+    app_state: State<'_, AppState>,
     request: DeleteSessionRequest,
 ) -> Result<(), String> {
-    let effective_path = get_effective_session_path(&request.workspace_path).await;
+    let effective_path = desktop_effective_session_storage_path(
+        &app_state,
+        &request.workspace_path,
+        request.remote_connection_id.as_deref(),
+        request.remote_ssh_host.as_deref(),
+    )
+    .await;
+    if let Some(acp_client_service) = app_state.acp_client_service.as_ref() {
+        acp_client_service
+            .release_bitfun_session(&request.session_id)
+            .await;
+    }
     coordinator
         .delete_session(&effective_path, &request.session_id)
         .await
@@ -436,9 +861,16 @@ pub async fn delete_session(
 #[tauri::command]
 pub async fn restore_session(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
+    app_state: State<'_, AppState>,
     request: RestoreSessionRequest,
 ) -> Result<SessionResponse, String> {
-    let effective_path = get_effective_session_path(&request.workspace_path).await;
+    let effective_path = desktop_effective_session_storage_path(
+        &app_state,
+        &request.workspace_path,
+        request.remote_connection_id.as_deref(),
+        request.remote_ssh_host.as_deref(),
+    )
+    .await;
     let session = coordinator
         .restore_session(&effective_path, &request.session_id)
         .await
@@ -450,10 +882,16 @@ pub async fn restore_session(
 #[tauri::command]
 pub async fn list_sessions(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
+    app_state: State<'_, AppState>,
     request: ListSessionsRequest,
 ) -> Result<Vec<SessionResponse>, String> {
-    // Map remote workspace path to local session storage path
-    let effective_path = get_effective_session_path(&request.workspace_path).await;
+    let effective_path = desktop_effective_session_storage_path(
+        &app_state,
+        &request.workspace_path,
+        request.remote_connection_id.as_deref(),
+        request.remote_ssh_host.as_deref(),
+    )
+    .await;
     let summaries = coordinator
         .list_sessions(&effective_path)
         .await
@@ -472,21 +910,6 @@ pub async fn list_sessions(
         .collect();
 
     Ok(responses)
-}
-
-#[tauri::command]
-pub async fn get_session_messages(
-    coordinator: State<'_, Arc<ConversationCoordinator>>,
-    request: GetMessagesRequest,
-) -> Result<Vec<MessageDTO>, String> {
-    let messages = coordinator
-        .get_messages(&request.session_id)
-        .await
-        .map_err(|e| format!("Failed to get messages: {}", e))?;
-
-    let message_dtos = messages.into_iter().map(message_to_dto).collect();
-
-    Ok(message_dtos)
 }
 
 #[tauri::command]
@@ -543,11 +966,15 @@ pub async fn get_available_modes(state: State<'_, AppState>) -> Result<Vec<ModeI
             is_readonly: info.is_readonly,
             tool_count: info.tool_count,
             default_tools: info.default_tools,
-            enabled: info.enabled,
         })
         .collect();
 
     Ok(dtos)
+}
+
+#[tauri::command]
+pub async fn get_default_review_team_definition() -> Result<ReviewTeamDefinition, String> {
+    Ok(default_review_team_definition())
 }
 
 #[derive(Debug, Serialize)]
@@ -559,7 +986,6 @@ pub struct ModeInfoDTO {
     pub is_readonly: bool,
     pub tool_count: usize,
     pub default_tools: Vec<String>,
-    pub enabled: bool,
 }
 
 fn assistant_bootstrap_outcome_to_response(
@@ -621,73 +1047,6 @@ fn session_to_response(session: Session) -> SessionResponse {
         state: format!("{:?}", session.state),
         turn_count: session.dialog_turn_ids.len(),
         created_at: system_time_to_unix_secs(session.created_at),
-    }
-}
-
-fn message_to_dto(message: Message) -> MessageDTO {
-    let role = match message.role {
-        MessageRole::User => "user",
-        MessageRole::Assistant => "assistant",
-        MessageRole::Tool => "tool",
-        MessageRole::System => "system",
-    };
-
-    let content = match message.content {
-        MessageContent::Text(text) => serde_json::json!({ "type": "text", "text": text }),
-        MessageContent::Multimodal { text, images } => {
-            let images: Vec<serde_json::Value> = images
-                .into_iter()
-                .map(|img| {
-                    serde_json::json!({
-                        "id": img.id,
-                        "image_path": img.image_path,
-                        "mime_type": img.mime_type,
-                        "metadata": img.metadata,
-                        "has_data_url": img.data_url.as_ref().is_some_and(|s| !s.is_empty()),
-                    })
-                })
-                .collect();
-
-            serde_json::json!({
-                "type": "multimodal",
-                "text": text,
-                "images": images,
-            })
-        }
-        MessageContent::ToolResult {
-            tool_id,
-            tool_name,
-            result,
-            result_for_assistant,
-            is_error: _,
-        } => {
-            serde_json::json!({
-                "type": "tool_result",
-                "tool_id": tool_id,
-                "tool_name": tool_name,
-                "result": result,
-                "result_for_assistant": result_for_assistant,
-            })
-        }
-        MessageContent::Mixed {
-            reasoning_content,
-            text,
-            tool_calls,
-        } => {
-            serde_json::json!({
-                "type": "mixed",
-                "reasoning_content": reasoning_content,
-                "text": text,
-                "tool_calls": tool_calls,
-            })
-        }
-    };
-
-    MessageDTO {
-        id: message.id,
-        role: role.to_string(),
-        content,
-        timestamp: system_time_to_unix_secs(message.timestamp),
     }
 }
 

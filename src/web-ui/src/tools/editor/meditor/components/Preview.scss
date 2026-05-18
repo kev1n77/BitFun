@@ -1,83 +1,12 @@
 @use '../../../../component-library/styles/tokens.scss' as *;
 
 .m-editor-preview {
-  position: relative;
   width: 100%;
   height: 100%;
   overflow-y: auto;
-  
-  &-loading {
-    position: absolute;
-    top: $size-gap-4;
-    right: $size-gap-4;
-    padding: $size-gap-1 $size-gap-2;
-    background: $element-bg-strong;
-    color: var(--color-text-primary);
-    border-radius: $size-radius-base;
-    font-size: $font-size-xs;
-    backdrop-filter: blur(8px);
-    border: 1px solid $border-base;
-    box-shadow: $shadow-sm;
-  }
-  
+
   &-content {
     padding: $size-gap-4;
     overflow-x: auto;
-
-    &.markdown-body {
-    }
-  }
-  
-}
-
-.mermaid-container {
-  margin: $size-gap-4 0;
-  padding: $size-gap-4;
-  background: $element-bg-subtle;
-  border: 1px solid $border-base;
-  border-radius: $size-radius-base;
-  overflow-x: auto;
-
-  &.mermaid-rendered {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-  }
-
-  svg {
-    max-width: 100%;
-    height: auto;
-  }
-}
-
-.mermaid-placeholder {
-  text-align: center;
-  color: var(--color-text-muted);
-  font-size: $font-size-sm;
-  padding: $size-gap-4;
-}
-
-.mermaid-error {
-  text-align: left !important;
-  padding: $size-gap-2 $size-gap-3;
-  font-size: $font-size-xs;
-  line-height: $line-height-base;
-
-  &-title {
-    color: $color-error;
-    font-weight: $font-weight-medium;
-    margin-bottom: $size-gap-1;
-  }
-
-  &-divider {
-    border: none;
-    border-top: 1px dashed $border-base;
-    margin: $size-gap-1 0;
-  }
-
-  &-detail {
-    color: $color-text-muted;
-    white-space: pre-wrap;
-    word-break: break-word;
   }
 }

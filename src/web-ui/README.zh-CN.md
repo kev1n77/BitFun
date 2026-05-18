@@ -11,7 +11,7 @@
 
 ## 技术栈
 
-- React 19
+- React 18.3
 - TypeScript 5.8
 - Vite 7
 - SCSS
@@ -59,7 +59,7 @@ src/web-ui/
 - **Desktop**：Tauri API（`invoke`, `listen`）
 - **Server/Web**：WebSocket / Fetch API
 
-### 适配器模式（简化示例）
+### 适配器模式（概念示例）
 
 ```ts
 const adapter = IS_TAURI ? TauriAdapter : WebSocketAdapter;
@@ -73,31 +73,29 @@ adapter.listen("agentic://text-chunk", callback);
 ### 启动开发服务器
 
 ```bash
-cd src/web-ui
-
 # Desktop
-pnpm run dev
+pnpm --dir src/web-ui run dev
 
 # Server/Web
-VITE_BUILD_TARGET=web pnpm run dev
+VITE_BUILD_TARGET=web pnpm --dir src/web-ui run dev
 ```
 
 ### 构建
 
 ```bash
 # Desktop
-pnpm run build
+pnpm --dir src/web-ui run build
 
 # Server/Web
-VITE_BUILD_TARGET=web pnpm run build
+VITE_BUILD_TARGET=web pnpm --dir src/web-ui run build
 # 产物：dist/
 ```
 
 ## 相关文档（本包内）
 
-- `LOGGING.md`
-- `src/component-library/README.md`
-- `src/infrastructure/i18n/README.md`
+- [日志说明](LOGGING.md)
+- [组件库 README](src/component-library/README.md)
+- [i18n README](src/infrastructure/i18n/README.md)
 
 ## 注意事项
 

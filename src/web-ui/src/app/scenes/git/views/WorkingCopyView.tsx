@@ -3,6 +3,7 @@
  */
 
 import React, { useCallback, useState, useMemo, useEffect, useRef } from 'react';
+import { useShortcut } from '@/infrastructure/hooks/useShortcut';
 import { useTranslation } from 'react-i18next';
 import {
   GitBranch,
@@ -52,9 +53,13 @@ const FILE_LIST_WIDTH_MAX = 560;
 
 interface WorkingCopyViewProps {
   workspacePath?: string;
+  isActive?: boolean;
 }
 
-const WorkingCopyView: React.FC<WorkingCopyViewProps> = ({ workspacePath }) => {
+const WorkingCopyView: React.FC<WorkingCopyViewProps> = ({
+  workspacePath,
+  isActive = true,
+}) => {
   const { t } = useTranslation('panels/git');
   const notification = useNotification();
 
@@ -76,7 +81,7 @@ const WorkingCopyView: React.FC<WorkingCopyViewProps> = ({ workspacePath }) => {
     refresh,
   } = useGitState({
     repositoryPath: workspacePath ?? '',
-    isActive: true,
+    isActive,
     refreshOnMount: true,
     layers: ['basic', 'status'],
   });
@@ -89,7 +94,7 @@ const WorkingCopyView: React.FC<WorkingCopyViewProps> = ({ workspacePath }) => {
     [currentBranch, staged, unstaged, untracked, ahead, behind]
   );
 
-  const { isOperating, addFiles, commit, push, pull } = useGitOperations({
+  const { isOperating, addFiles, commit, push, pull, resetFiles } = useGitOperations({
     repositoryPath: workspacePath ?? '',
     autoRefresh: false,
   });
@@ -256,7 +261,11 @@ const WorkingCopyView: React.FC<WorkingCopyViewProps> = ({ workspacePath }) => {
   const toggleFileGroup = useCallback((groupId: string) => {
     setExpandedFileGroups(prev => {
       const next = new Set(prev);
-      next.has(groupId) ? next.delete(groupId) : next.add(groupId);
+      if (next.has(groupId)) {
+        next.delete(groupId);
+      } else {
+        next.add(groupId);
+      }
       return next;
     });
   }, []);
@@ -302,6 +311,76 @@ const WorkingCopyView: React.FC<WorkingCopyViewProps> = ({ workspacePath }) => {
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
   }, [fileListWidth]);
+
+  const handleGitStageAll = useCallback(async () => {
+    const files = getAllUnstagedFiles();
+    if (files.length === 0) return;
+    const result = await addFiles({ files, all: false });
+    if (result.success) {
+      setSelectedFiles(new Set());
+      await handleRefresh();
+      notification.success(t('notifications.stageSuccess', { count: files.length }));
+    } else if (result.error) notification.error(t('notifications.stageFailed', { error: result.error }));
+  }, [getAllUnstagedFiles, addFiles, handleRefresh, notification, t]);
+
+  const handleGitUnstageAll = useCallback(async () => {
+    if (!status?.staged?.length) return;
+    const paths = status.staged.map((f: { path: string }) => f.path);
+    const result = await resetFiles(paths, true);
+    if (result.success) await handleRefresh();
+    else if (result.error) notification.error(result.error);
+  }, [status, resetFiles, handleRefresh, notification]);
+
+  const gitShortcutsEnabled = Boolean(workspacePath) && isActive;
+
+  useShortcut(
+    'git.refresh',
+    { key: 'F5', scope: 'git' },
+    () => {
+      void handleRefresh();
+    },
+    { enabled: gitShortcutsEnabled, description: 'keyboard.shortcuts.git.refresh' }
+  );
+  useShortcut(
+    'git.commit',
+    { key: 'Enter', ctrl: true, scope: 'git', allowInInput: true },
+    () => {
+      void handleQuickCommit();
+    },
+    { enabled: gitShortcutsEnabled, description: 'keyboard.shortcuts.git.commit' }
+  );
+  useShortcut(
+    'git.push',
+    { key: 'P', ctrl: true, shift: true, scope: 'git' },
+    () => {
+      void handlePush();
+    },
+    { enabled: gitShortcutsEnabled, description: 'keyboard.shortcuts.git.push' }
+  );
+  useShortcut(
+    'git.pull',
+    { key: 'L', ctrl: true, shift: true, scope: 'git' },
+    () => {
+      void handlePull();
+    },
+    { enabled: gitShortcutsEnabled, description: 'keyboard.shortcuts.git.pull' }
+  );
+  useShortcut(
+    'git.stageAll',
+    { key: 'A', ctrl: true, shift: true, scope: 'git' },
+    () => {
+      void handleGitStageAll();
+    },
+    { enabled: gitShortcutsEnabled, description: 'keyboard.shortcuts.git.stageAll' }
+  );
+  useShortcut(
+    'git.unstageAll',
+    { key: 'U', ctrl: true, shift: true, scope: 'git' },
+    () => {
+      void handleGitUnstageAll();
+    },
+    { enabled: gitShortcutsEnabled, description: 'keyboard.shortcuts.git.unstageAll' }
+  );
 
   if (!workspacePath) {
     return (

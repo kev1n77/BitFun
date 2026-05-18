@@ -1,21 +1,24 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Plus, Edit2, Trash2, Wifi, Loader, AlertTriangle, X, Settings, ExternalLink, BarChart3, Eye, EyeOff } from 'lucide-react';
-import { Button, Switch, Select, IconButton, NumberInput, Card, Checkbox, Modal, Input, Textarea, type SelectOption } from '@/component-library';
+import { Plus, SquarePen, Trash2, Wifi, Loader, RefreshCw, AlertTriangle, X, Settings, ExternalLink, Eye, EyeOff, ChevronDown, ChevronRight, Info } from 'lucide-react';
+import { Button, Switch, Select, IconButton, NumberInput, Card, Modal, Input, Textarea, Tooltip, type SelectOption } from '@/component-library';
 import { 
   AIModelConfig as AIModelConfigType, 
   ProxyConfig, 
   ModelCategory,
-  ModelCapability
+  ModelCapability,
+  ReasoningMode
 } from '../types';
 import { configManager } from '../services/ConfigManager';
 import { PROVIDER_TEMPLATES, getModelDisplayName, getProviderDisplayName, getProviderTemplateId } from '../services/modelConfigs';
+import { DEFAULT_REASONING_MODE, getEffectiveReasoningMode, supportsAnthropicAdaptive, supportsAnthropicReasoning, supportsAnthropicThinkingBudget, supportsDeepSeekReasoningEffort, supportsResponsesReasoning } from '../utils/reasoning';
 import { aiApi, systemAPI } from '@/infrastructure/api';
+import type { DiscoveredCliCredential } from '@/infrastructure/api/service-api/AIApi';
 import { useNotification } from '@/shared/notification-system';
 import { ConfigPageHeader, ConfigPageLayout, ConfigPageContent, ConfigPageSection, ConfigPageRow, ConfigCollectionItem } from './common';
 import DefaultModelConfig from './DefaultModelConfig';
-import TokenStatsModal from './TokenStatsModal';
 import { createLogger } from '@/shared/utils/logger';
+import { translateConnectionTestMessage } from '@/shared/utils/aiConnectionTestMessages';
 import './AIModelConfig.scss';
 
 const log = createLogger('AIModelConfig');
@@ -32,7 +35,9 @@ interface SelectedModelDraft {
   category: ModelCategory;
   contextWindow: number;
   maxTokens: number;
-  enableThinking: boolean;
+  reasoningMode: ReasoningMode;
+  reasoningEffort?: string;
+  thinkingBudgetTokens?: number;
 }
 
 interface ProviderGroup {
@@ -42,7 +47,7 @@ interface ProviderGroup {
 }
 
 function isResponsesProvider(provider?: string): boolean {
-  return provider === 'response' || provider === 'responses';
+  return supportsResponsesReasoning(provider);
 }
 
 function createModelDraft(
@@ -57,14 +62,157 @@ function createModelDraft(
     configId: overrides?.configId ?? baseConfig?.id,
     modelName: trimmedModelName,
     category: overrides?.category ?? baseConfig?.category ?? 'general_chat',
-    contextWindow: overrides?.contextWindow ?? baseConfig?.context_window ?? 128000,
-    maxTokens: overrides?.maxTokens ?? baseConfig?.max_tokens ?? 8192,
-    enableThinking: overrides?.enableThinking ?? baseConfig?.enable_thinking_process ?? false,
+    contextWindow: overrides?.contextWindow ?? baseConfig?.context_window ?? 200000,
+    maxTokens: overrides?.maxTokens ?? baseConfig?.max_tokens ?? 32000,
+    reasoningMode: overrides?.reasoningMode ?? getEffectiveReasoningMode(baseConfig),
+    reasoningEffort: overrides?.reasoningEffort ?? baseConfig?.reasoning_effort,
+    thinkingBudgetTokens: overrides?.thinkingBudgetTokens ?? baseConfig?.thinking_budget_tokens,
+  };
+}
+
+function normalizeDraftReasoningForProvider(
+  draft: SelectedModelDraft,
+  config?: Partial<Pick<AIModelConfigType, 'name' | 'provider' | 'base_url'>>
+): SelectedModelDraft {
+  const provider = config?.provider;
+  let reasoningMode = draft.reasoningMode;
+
+  if (supportsResponsesReasoning(provider)) {
+    reasoningMode = DEFAULT_REASONING_MODE;
+  } else if (!supportsAnthropicReasoning(provider) && reasoningMode === 'adaptive') {
+    reasoningMode = 'enabled';
+  } else if (supportsAnthropicReasoning(provider)
+    && reasoningMode === 'adaptive'
+    && !supportsAnthropicAdaptive(draft.modelName)) {
+    reasoningMode = 'enabled';
+  }
+
+  const supportsDeepSeekEffort = supportsDeepSeekReasoningEffort({
+    name: config?.name,
+    base_url: config?.base_url,
+    model_name: draft.modelName,
+  });
+  const keepReasoningEffort = supportsResponsesReasoning(provider)
+    || (supportsAnthropicReasoning(provider) && reasoningMode === 'adaptive')
+    || (supportsDeepSeekEffort && reasoningMode !== 'disabled');
+  const keepThinkingBudget = supportsAnthropicReasoning(provider)
+    && reasoningMode === 'enabled'
+    && supportsAnthropicThinkingBudget(draft.modelName);
+
+  return {
+    ...draft,
+    reasoningMode,
+    reasoningEffort: keepReasoningEffort ? draft.reasoningEffort : undefined,
+    thinkingBudgetTokens: keepThinkingBudget ? draft.thinkingBudgetTokens : undefined,
   };
 }
 
 function uniqModelNames(modelNames: string[]): string[] {
   return Array.from(new Set(modelNames.map(name => name.trim()).filter(Boolean)));
+}
+
+function modelNameLookupKey(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+/** Map lowercased model_name -> config (first wins if duplicates exist in storage). */
+function buildConfiguredModelsByLowerName(models: AIModelConfigType[]): Map<string, AIModelConfigType> {
+  const map = new Map<string, AIModelConfigType>();
+  for (const model of models) {
+    const key = modelNameLookupKey(model.model_name);
+    if (!map.has(key)) {
+      map.set(key, model);
+    }
+  }
+  return map;
+}
+
+function resolveModelNameWithExisting(
+  rawName: string,
+  configuredByLower: Map<string, AIModelConfigType>
+): string {
+  const trimmed = rawName.trim();
+  if (!trimmed) return trimmed;
+  const configured = configuredByLower.get(modelNameLookupKey(trimmed));
+  return configured?.model_name.trim() ?? trimmed;
+}
+
+/**
+ * Trim, optionally collapse to single selection, resolve each name against existing provider models
+ * (case-insensitive), then dedupe so one provider cannot list the same logical model twice.
+ */
+function normalizeProviderModelNameList(
+  modelNames: string[],
+  configuredByLower: Map<string, AIModelConfigType>,
+  singleSelection: boolean
+): string[] {
+  let list = uniqModelNames(modelNames);
+  if (singleSelection) {
+    list = list.slice(0, 1);
+  }
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of list) {
+    const resolved = resolveModelNameWithExisting(raw, configuredByLower);
+    if (!resolved) continue;
+    const key = modelNameLookupKey(resolved);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(resolved);
+  }
+  return out;
+}
+
+/** Compact display for context/output token counts (e.g. 200000 -> "200K", 1000000 -> "1M"). */
+function formatTokenCountShort(n: number): string {
+  if (!Number.isFinite(n) || n < 0) {
+    return String(n);
+  }
+  if (n >= 1_000_000) {
+    const m = n / 1_000_000;
+    const s = m % 1 === 0 ? `${m}` : m.toFixed(1).replace(/\.0$/, '');
+    return `${s}M`;
+  }
+  if (n >= 1_000) {
+    const k = n / 1_000;
+    const s = k % 1 === 0 ? `${k}` : k.toFixed(1).replace(/\.0$/, '');
+    return `${s}K`;
+  }
+  return String(n);
+}
+
+function parseOptionalPositiveIntegerInput(value: string): number | null | undefined {
+  const trimmed = value.trim();
+  if (trimmed === '') {
+    return null;
+  }
+
+  if (!/^\d+$/.test(trimmed)) {
+    return undefined;
+  }
+
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    return undefined;
+  }
+
+  return parsed;
+}
+
+/** Last line of defense: same logical model name once per save; prefer draft tied to an existing config id. */
+function dedupeSelectedModelDraftsByModelName(drafts: SelectedModelDraft[]): SelectedModelDraft[] {
+  const out: SelectedModelDraft[] = [];
+  for (const draft of drafts) {
+    const k = modelNameLookupKey(draft.modelName);
+    const i = out.findIndex(d => modelNameLookupKey(d.modelName) === k);
+    if (i < 0) {
+      out.push(draft);
+      continue;
+    }
+    const prev = out[i];
+    out[i] = !prev.configId && draft.configId ? draft : prev;
+  }
+  return out;
 }
 
 function getCapabilitiesByCategory(category: ModelCategory): ModelCapability[] {
@@ -134,10 +282,7 @@ const AIModelConfig: React.FC = () => {
   const notification = useNotification();
   
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
-  
-  const [showTokenStats, setShowTokenStats] = useState(false);
-  const [selectedModelForStats, setSelectedModelForStats] = useState<{ id: string; name: string } | null>(null);
-  
+
   const [creationMode, setCreationMode] = useState<'selection' | 'form' | null>(null);
   
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
@@ -147,6 +292,8 @@ const AIModelConfig: React.FC = () => {
     username: '',
     password: ''
   });
+  const [streamIdleTimeoutInput, setStreamIdleTimeoutInput] = useState('');
+  const [isStreamIdleTimeoutSaving, setIsStreamIdleTimeoutSaving] = useState(false);
   const [isProxySaving, setIsProxySaving] = useState(false);
   const [remoteModelOptions, setRemoteModelOptions] = useState<RemoteModelOption[]>([]);
   const [isFetchingRemoteModels, setIsFetchingRemoteModels] = useState(false);
@@ -154,6 +301,9 @@ const AIModelConfig: React.FC = () => {
   const [hasAttemptedRemoteFetch, setHasAttemptedRemoteFetch] = useState(false);
   const [selectedModelDrafts, setSelectedModelDrafts] = useState<SelectedModelDraft[]>([]);
   const [manualModelInput, setManualModelInput] = useState('');
+  const [expandedModelCards, setExpandedModelCards] = useState<Set<string>>(new Set());
+  const [discoveredCli, setDiscoveredCli] = useState<DiscoveredCliCredential[]>([]);
+  const [isDiscoveringCli, setIsDiscoveringCli] = useState(false);
   const lastRemoteFetchSignatureRef = React.useRef<string | null>(null);
   const activeRemoteFetchSignatureRef = React.useRef<string | null>(null);
 
@@ -163,6 +313,7 @@ const AIModelConfig: React.FC = () => {
       { label: 'OpenAI (responses)', value: 'responses' },
       { label: 'Anthropic (messages)', value: 'anthropic' },
       { label: 'Gemini (generateContent)', value: 'gemini' },
+      { label: 'Gemini Code Assist (cloudcode-pa)', value: 'gemini-code-assist' },
     ],
     []
   );
@@ -173,8 +324,10 @@ const AIModelConfig: React.FC = () => {
     [requestFormatOptions]
   );
 
-  const reasoningEffortOptions = useMemo(
+  const responsesReasoningEffortOptions = useMemo(
     () => [
+      { label: 'None', value: 'none' },
+      { label: 'Minimal', value: 'minimal' },
       { label: 'Low', value: 'low' },
       { label: 'Medium', value: 'medium' },
       { label: 'High', value: 'high' },
@@ -183,13 +336,40 @@ const AIModelConfig: React.FC = () => {
     []
   );
 
-  const thinkingModeOptions = useMemo(
+  const anthropicReasoningEffortOptions = useMemo(
     () => [
+      { label: 'Low', value: 'low' },
+      { label: 'Medium', value: 'medium' },
+      { label: 'High', value: 'high' },
+      { label: 'Max', value: 'max' },
+    ],
+    []
+  );
+
+  const deepSeekReasoningEffortOptions = useMemo(
+    () => [
+      { label: 'High', value: 'high' },
+      { label: 'Max', value: 'max' },
+    ],
+    []
+  );
+
+  const buildReasoningModeOptions = useCallback((provider?: string, modelName?: string, currentMode?: ReasoningMode): SelectOption[] => {
+    const options: SelectOption[] = [
+      { label: t('thinking.optionDefault'), value: DEFAULT_REASONING_MODE },
       { label: t('thinking.optionEnabled'), value: 'enabled' },
       { label: t('thinking.optionDisabled'), value: 'disabled' },
-    ],
-    [t]
-  );
+    ];
+
+    if (
+      supportsAnthropicReasoning(provider)
+      && (supportsAnthropicAdaptive(modelName) || currentMode === 'adaptive')
+    ) {
+      options.push({ label: t('thinking.optionAdaptive'), value: 'adaptive' });
+    }
+
+    return options;
+  }, [t]);
 
   const categoryOptions = useMemo<SelectOption[]>(
     () => [
@@ -206,27 +386,77 @@ const AIModelConfig: React.FC = () => {
     }),
     [t]
   );
+  const parsedStreamIdleTimeout = useMemo(
+    () => parseOptionalPositiveIntegerInput(streamIdleTimeoutInput),
+    [streamIdleTimeoutInput]
+  );
+  const isStreamIdleTimeoutInvalid = parsedStreamIdleTimeout === undefined;
+
+  const getCustomRequestBodyTrimHint = useCallback((provider?: string): string => {
+    switch (provider) {
+      case 'responses':
+        return t('advancedSettings.customRequestBody.trimHintResponses');
+      case 'anthropic':
+        return t('advancedSettings.customRequestBody.trimHintAnthropic');
+      case 'gemini':
+        return t('advancedSettings.customRequestBody.trimHintGemini');
+      case 'openai':
+      default:
+        return t('advancedSettings.customRequestBody.trimHintOpenAI');
+    }
+  }, [t]);
+
+  const getCustomRequestBodyModeHint = useCallback((provider?: string, mode?: string | null): string => {
+    return mode === 'trim'
+      ? getCustomRequestBodyTrimHint(provider)
+      : t('advancedSettings.customRequestBody.modeMergeHint');
+  }, [getCustomRequestBodyTrimHint, t]);
 
   
-  useEffect(() => {
-    loadConfig();
-  }, []);
-
-  const loadConfig = async () => {
+  const loadConfig = useCallback(async () => {
     try {
-      const models = await configManager.getConfig<AIModelConfigType[]>('ai.models') || [];
-      const proxy = await configManager.getConfig<ProxyConfig>('ai.proxy');
+      const [models, proxy, streamIdleTimeoutSecs] = await Promise.all([
+        configManager.getConfig<AIModelConfigType[]>('ai.models'),
+        configManager.getConfig<ProxyConfig>('ai.proxy'),
+        configManager.getConfig<number | null>('ai.stream_idle_timeout_secs'),
+      ]);
       setAiModels(models);
       if (proxy) {
         setProxyConfig(proxy);
       }
+      setStreamIdleTimeoutInput(
+        streamIdleTimeoutSecs != null ? String(streamIdleTimeoutSecs) : ''
+      );
     } catch (error) {
       log.error('Failed to load AI config', error);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    loadConfig();
+  }, [loadConfig]);
+
+  const refreshDiscoveredCli = useCallback(async () => {
+    setIsDiscoveringCli(true);
+    try {
+      const items = await aiApi.discoverCliCredentials();
+      setDiscoveredCli(items);
+    } catch (e) {
+      log.warn('discover_cli_credentials failed', { error: String(e) });
+    } finally {
+      setIsDiscoveringCli(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshDiscoveredCli();
+  }, [refreshDiscoveredCli]);
   
   // Provider options with translations (must be at top level, before any conditional returns)
-  const providerOrder = ['openbitfun', 'zhipu', 'qwen', 'deepseek', 'volcengine', 'minimax', 'moonshot', 'gemini', 'anthropic'];
+  const providerOrder = useMemo(
+    () => ['openbitfun', 'zhipu', 'qwen', 'deepseek', 'volcengine', 'minimax', 'moonshot', 'gemini', 'anthropic'],
+    []
+  );
   const providers = useMemo(() => {
     const sorted = Object.values(PROVIDER_TEMPLATES).sort((a, b) => {
       const indexA = providerOrder.indexOf(a.id);
@@ -240,7 +470,7 @@ const AIModelConfig: React.FC = () => {
       name: t(`providers.${provider.id}.name`),
       description: t(`providers.${provider.id}.description`)
     }));
-  }, [t]);
+  }, [providerOrder, t]);
 
   // Current template with translations (must be at top level, before any conditional returns)
   const currentTemplate = useMemo(() => {
@@ -273,51 +503,72 @@ const AIModelConfig: React.FC = () => {
   const createDraftsFromConfigs = (configs: AIModelConfigType[]) => (
     configs.map(config => createModelDraft(config.model_name, config, {
       configId: config.id,
-      contextWindow: config.context_window || 128000,
-      maxTokens: config.max_tokens || 8192,
-      enableThinking: config.enable_thinking_process ?? false,
+      contextWindow: config.context_window || 200000,
+      maxTokens: config.max_tokens || 32000,
+      reasoningMode: getEffectiveReasoningMode(config),
+      reasoningEffort: config.reasoning_effort,
+      thinkingBudgetTokens: config.thinking_budget_tokens,
     }))
   );
 
-  const resetRemoteModelDiscovery = () => {
+  const resetRemoteModelDiscovery = useCallback(() => {
     setRemoteModelOptions([]);
     setIsFetchingRemoteModels(false);
     setRemoteModelsError(null);
     setHasAttemptedRemoteFetch(false);
     lastRemoteFetchSignatureRef.current = null;
     activeRemoteFetchSignatureRef.current = null;
-  };
+  }, []);
 
   const syncSelectedModelDrafts = (
     modelNames: string[],
     baseConfig?: Partial<AIModelConfigType>,
     singleSelection = false
   ) => {
-    const nextModelNames = singleSelection
-      ? uniqModelNames(modelNames).slice(0, 1)
-      : uniqModelNames(modelNames);
-
+    const reasoningProviderConfig = {
+      name: baseConfig?.name ?? editingConfig?.name ?? currentTemplate?.name,
+      provider: baseConfig?.provider ?? editingConfig?.provider ?? currentTemplate?.format,
+      base_url: baseConfig?.base_url ?? editingConfig?.base_url ?? currentTemplate?.baseUrl,
+    };
     const providerName = (
       baseConfig?.name ||
       editingConfig?.name ||
       currentTemplate?.name ||
       ''
     ).trim();
-    const configuredModelsByName = new Map(
-      getConfiguredModelsForProvider(providerName).map(model => [model.model_name, model])
+    const configuredByLower = buildConfiguredModelsByLowerName(
+      getConfiguredModelsForProvider(providerName)
     );
+    const nextModelNames = normalizeProviderModelNameList(
+      modelNames,
+      configuredByLower,
+      singleSelection
+    );
+
+    const pinnedRowId =
+      singleSelection && baseConfig?.id ? String(baseConfig.id) : undefined;
 
     setSelectedModelDrafts(prevDrafts =>
       nextModelNames.map(modelName => {
-        const existingDraft = prevDrafts.find(draft => draft.modelName === modelName);
+        const lookupKey = modelNameLookupKey(modelName);
+        const existingDraft = prevDrafts.find(
+          draft => modelNameLookupKey(draft.modelName) === lookupKey
+        );
+        const configuredModel = configuredByLower.get(lookupKey);
+
         if (existingDraft) {
-          return existingDraft;
+          const configId = pinnedRowId ?? configuredModel?.id ?? existingDraft.configId;
+          return normalizeDraftReasoningForProvider({
+            ...existingDraft,
+            modelName,
+            configId,
+            key: configId ?? modelName,
+          }, reasoningProviderConfig);
         }
 
-        const configuredModel = configuredModelsByName.get(modelName);
-        return createModelDraft(modelName, configuredModel || baseConfig, {
-          configId: configuredModel?.id,
-        });
+        return normalizeDraftReasoningForProvider(createModelDraft(modelName, configuredModel || baseConfig, {
+          configId: pinnedRowId ?? configuredModel?.id,
+        }), reasoningProviderConfig);
       })
     );
 
@@ -348,7 +599,34 @@ const AIModelConfig: React.FC = () => {
     )));
   };
 
+  const toggleSelectedModelCardExpanded = useCallback((draftKey: string) => {
+    setExpandedModelCards(prev => {
+      const next = new Set(prev);
+      if (next.has(draftKey)) next.delete(draftKey);
+      else next.add(draftKey);
+      return next;
+    });
+  }, []);
+
+  const onSelectedModelHeadKeyDown = useCallback(
+    (e: React.KeyboardEvent, draftKey: string) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      toggleSelectedModelCardExpanded(draftKey);
+    },
+    [toggleSelectedModelCardExpanded]
+  );
+
   const removeSelectedModelDraft = (modelName: string) => {
+    const removed = selectedModelDrafts.find(d => d.modelName === modelName);
+    if (removed) {
+      setExpandedModelCards(prev => {
+        const next = new Set(prev);
+        next.delete(removed.key);
+        return next;
+      });
+    }
+
     const remainingModelNames = selectedModelDrafts
       .filter(draft => draft.modelName !== modelName)
       .map(draft => draft.modelName);
@@ -360,20 +638,44 @@ const AIModelConfig: React.FC = () => {
     const trimmedModelName = manualModelInput.trim();
     if (!trimmedModelName) return;
 
+    const providerName = (
+      editingConfig?.name ||
+      currentTemplate?.name ||
+      ''
+    ).trim();
+    const configuredByLower = buildConfiguredModelsByLowerName(
+      getConfiguredModelsForProvider(providerName)
+    );
+    const resolvedName = resolveModelNameWithExisting(trimmedModelName, configuredByLower);
+    const matchesExistingSaved = configuredByLower.has(modelNameLookupKey(trimmedModelName));
+    const alreadyInDrafts = selectedModelDrafts.some(
+      draft => modelNameLookupKey(draft.modelName) === modelNameLookupKey(trimmedModelName)
+    );
+
+    if (alreadyInDrafts) {
+      notification.info(t('providerSelection.modelAlreadyInList'));
+      setManualModelInput('');
+      return;
+    }
+
     const nextModelNames = editingConfig?.id
-      ? [trimmedModelName]
+      ? [resolvedName]
       : uniqModelNames([
           ...selectedModelDrafts.map(draft => draft.modelName),
-          trimmedModelName,
+          resolvedName,
         ]);
 
     syncSelectedModelDrafts(nextModelNames, editingConfig || undefined, !!editingConfig?.id);
     setManualModelInput('');
+    if (matchesExistingSaved) {
+      notification.info(t('providerSelection.reusedExistingModel'));
+    }
   };
 
   const buildModelDiscoveryConfig = (config: Partial<AIModelConfigType>): AIModelConfigType | null => {
     const resolvedBaseUrl = (config.base_url || currentTemplate?.baseUrl || '').trim();
     const resolvedProvider = (config.provider || currentTemplate?.format || 'openai').trim();
+    const resolvedAuth = config.auth || { type: 'api_key' };
     const resolvedApiKey = (config.api_key || '').trim();
     const resolvedModelName = (
       config.model_name ||
@@ -382,7 +684,11 @@ const AIModelConfig: React.FC = () => {
       'model-discovery'
     ).trim();
 
-    if (!resolvedBaseUrl || !resolvedProvider || !resolvedApiKey) {
+    // CLI-backed auth (Codex/Gemini) resolves the bearer token at request time
+    // from `~/.codex` or `~/.gemini`, so we must NOT gate discovery on the
+    // user pasting an API key. Only the legacy `api_key` mode requires it.
+    const requiresApiKey = resolvedAuth.type === 'api_key';
+    if (!resolvedBaseUrl || !resolvedProvider || (requiresApiKey && !resolvedApiKey)) {
       return null;
     }
 
@@ -394,9 +700,8 @@ const AIModelConfig: React.FC = () => {
       base_url: resolvedBaseUrl,
       request_url: config.request_url || resolveRequestUrl(resolvedBaseUrl, resolvedProvider, resolvedModelName),
       model_name: resolvedModelName,
-      description: config.description,
-      context_window: config.context_window || 128000,
-      max_tokens: config.max_tokens || 8192,
+      context_window: config.context_window || 200000,
+      max_tokens: config.max_tokens || 32000,
       temperature: config.temperature,
       top_p: config.top_p,
       enabled: config.enabled ?? true,
@@ -404,13 +709,16 @@ const AIModelConfig: React.FC = () => {
       capabilities: config.capabilities || ['text_chat'],
       recommended_for: config.recommended_for || [],
       metadata: config.metadata || {},
-      enable_thinking_process: config.enable_thinking_process ?? false,
-      support_preserved_thinking: config.support_preserved_thinking ?? false,
+      reasoning_mode: config.reasoning_mode ?? getEffectiveReasoningMode(config),
+      inline_think_in_text: config.inline_think_in_text ?? true,
       reasoning_effort: config.reasoning_effort,
+      thinking_budget_tokens: config.thinking_budget_tokens,
       custom_headers: config.custom_headers,
       custom_headers_mode: config.custom_headers_mode,
       skip_ssl_verify: config.skip_ssl_verify ?? false,
-      custom_request_body: config.custom_request_body
+      custom_request_body: config.custom_request_body,
+      custom_request_body_mode: config.custom_request_body_mode,
+      auth: resolvedAuth,
     };
   };
 
@@ -419,10 +727,13 @@ const AIModelConfig: React.FC = () => {
     base_url: config.base_url,
     api_key: config.api_key,
     model_name: config.model_name,
+    inline_think_in_text: config.inline_think_in_text ?? true,
     skip_ssl_verify: config.skip_ssl_verify ?? false,
     custom_headers_mode: config.custom_headers_mode || null,
     custom_headers: config.custom_headers || null,
     custom_request_body: config.custom_request_body || null,
+    custom_request_body_mode: config.custom_request_body_mode || null,
+    auth: config.auth || { type: 'api_key' },
   });
 
   const fetchRemoteModels = async (config: Partial<AIModelConfigType> | null) => {
@@ -478,7 +789,8 @@ const AIModelConfig: React.FC = () => {
 
   const handleModelSelectionOpenChange = (isOpen: boolean) => {
     if (!isOpen || !editingConfig || isFetchingRemoteModels) return;
-    if (!editingConfig.api_key?.trim()) return;
+    const authType = editingConfig.auth?.type ?? 'api_key';
+    if (authType === 'api_key' && !editingConfig.api_key?.trim()) return;
     if (hasAttemptedRemoteFetch) return;
     if (remoteModelOptions.length > 0) return;
     void fetchRemoteModels(editingConfig);
@@ -493,6 +805,47 @@ const AIModelConfig: React.FC = () => {
     setSelectedProviderId(null);
     setCreationMode('selection');
   };
+
+  const handleImportFromCli = useCallback((cred: DiscoveredCliCredential) => {
+    resetRemoteModelDiscovery();
+    setManualModelInput('');
+    setShowApiKey(false);
+    setSelectedProviderId(null);
+    const authType: 'codex_cli' | 'gemini_cli' = cred.kind === 'codex' ? 'codex_cli' : 'gemini_cli';
+    setEditingConfig({
+      name: cred.display_label,
+      provider: cred.suggested_format,
+      base_url: cred.suggested_base_url,
+      // Leave request_url + model_name empty so the user must pick a model
+      // from the live CLI list. We never inject a hard-coded default slug.
+      request_url: '',
+      api_key: '',
+      model_name: '',
+      enabled: true,
+      context_window: 200000,
+      max_tokens: 32000,
+      category: 'general_chat',
+      capabilities: ['text_chat', 'function_calling'],
+      recommended_for: [],
+      metadata: {},
+      inline_think_in_text: true,
+      auth: { type: authType },
+    });
+    setSelectedModelDrafts([]);
+    setShowAdvancedSettings(false);
+    setCreationMode('form');
+    setIsEditing(true);
+  }, [resetRemoteModelDiscovery]);
+
+  const handleRefreshCli = useCallback(async (kind: 'codex' | 'gemini') => {
+    try {
+      await aiApi.refreshCliCredential(kind);
+      await refreshDiscoveredCli();
+      notification.success(t('cliAuth.refreshSuccess'));
+    } catch (e) {
+      notification.error(t('cliAuth.refreshFailed', { error: String(e) }));
+    }
+  }, [refreshDiscoveredCli, notification, t]);
 
   
   const handleSelectProvider = (providerId: string) => {
@@ -521,20 +874,21 @@ const AIModelConfig: React.FC = () => {
       model_name: defaultModel,
       provider: primaryConfiguredModel?.provider || template.format,
       enabled: true,
-      context_window: 128000,
-      max_tokens: 8192,
+      context_window: 200000,
+      max_tokens: 32000,
       category: 'general_chat',
       capabilities: ['text_chat', 'function_calling'],
       recommended_for: [],
-      metadata: {}
+      metadata: {},
+      inline_think_in_text: true,
     });
     setSelectedModelDrafts(
       configuredProviderModels.length > 0
         ? createDraftsFromConfigs(configuredProviderModels)
         : (defaultModel ? [createModelDraft(defaultModel, {
-            context_window: 128000,
-            max_tokens: 8192,
-            enable_thinking_process: false,
+            context_window: 200000,
+            max_tokens: 32000,
+            reasoning_mode: DEFAULT_REASONING_MODE,
           })] : [])
     );
     setShowAdvancedSettings(false);
@@ -556,13 +910,14 @@ const AIModelConfig: React.FC = () => {
       model_name: '',
       provider: 'openai',  
       enabled: true,
-      context_window: 128000,
-      max_tokens: 8192,  
+      context_window: 200000,
+      max_tokens: 32000,  
       
       category: 'general_chat',
       capabilities: ['text_chat'],
       recommended_for: [],
-      metadata: {}
+      metadata: {},
+      inline_think_in_text: true,
     });
     setSelectedModelDrafts([]);
     setShowAdvancedSettings(false);  
@@ -587,24 +942,23 @@ const AIModelConfig: React.FC = () => {
       model_name: '',
       provider: config.provider,
       enabled: true,
-      description: config.description,
-      context_window: config.context_window || 128000,
-      max_tokens: config.max_tokens || 8192,
+      context_window: config.context_window || 200000,
+      max_tokens: config.max_tokens || 32000,
       category: config.category || 'general_chat',
       capabilities: config.capabilities || getCapabilitiesByCategory(config.category || 'general_chat'),
       recommended_for: config.recommended_for || [],
       metadata: config.metadata || {},
-      enable_thinking_process: config.enable_thinking_process ?? false,
-      support_preserved_thinking: config.support_preserved_thinking ?? false,
-      reasoning_effort: config.reasoning_effort,
+      inline_think_in_text: config.inline_think_in_text ?? true,
       custom_headers: config.custom_headers,
       custom_headers_mode: config.custom_headers_mode,
       skip_ssl_verify: config.skip_ssl_verify ?? false,
       custom_request_body: config.custom_request_body,
+      custom_request_body_mode: config.custom_request_body_mode,
     });
     setSelectedModelDrafts(createDraftsFromConfigs(configuredProviderModels));
     setShowAdvancedSettings(
       !!config.skip_ssl_verify ||
+      config.custom_request_body_mode === 'trim' ||
       (!!config.custom_request_body && config.custom_request_body.trim() !== '') ||
       (!!config.custom_headers && Object.keys(config.custom_headers).length > 0)
     );
@@ -619,15 +973,22 @@ const AIModelConfig: React.FC = () => {
     setEditingConfig({ ...config, name: getProviderDisplayName(config) });
     setSelectedModelDrafts([
       createModelDraft(config.model_name, config, {
-        contextWindow: config.context_window || 128000,
-        maxTokens: config.max_tokens || 8192,
-        enableThinking: config.enable_thinking_process ?? false,
+        contextWindow: config.context_window || 200000,
+        maxTokens: config.max_tokens || 32000,
+        reasoningMode: getEffectiveReasoningMode(config),
+        reasoningEffort: config.reasoning_effort,
+        thinkingBudgetTokens: config.thinking_budget_tokens,
       })
     ]);
     
     const hasCustomHeaders = !!config.custom_headers && Object.keys(config.custom_headers).length > 0;
     const hasCustomBody = !!config.custom_request_body && config.custom_request_body.trim() !== '';
-    setShowAdvancedSettings(hasCustomHeaders || hasCustomBody || !!config.skip_ssl_verify);
+    setShowAdvancedSettings(
+      hasCustomHeaders ||
+      hasCustomBody ||
+      config.custom_request_body_mode === 'trim' ||
+      !!config.skip_ssl_verify
+    );
     setIsEditing(true);
   };
 
@@ -656,7 +1017,8 @@ const AIModelConfig: React.FC = () => {
           .map(model => model.id)
           .filter((id): id is string => !!id)
       );
-      const configsToSave: AIModelConfigType[] = selectedModelDrafts.map((draft, index) => {
+      const draftsToSave = dedupeSelectedModelDraftsByModelName(selectedModelDrafts);
+      const configsToSave: AIModelConfigType[] = draftsToSave.map((draft, index) => {
         return {
           id: editingConfig.id || draft.configId || `model_${Date.now()}_${index}`,
           name: providerName,
@@ -670,22 +1032,38 @@ const AIModelConfig: React.FC = () => {
           model_name: draft.modelName,
           provider: editingConfig.provider || 'openai',
           enabled: editingConfig.enabled ?? true,
-          description: editingConfig.description,
           context_window: draft.contextWindow,
           max_tokens: draft.maxTokens,
           category: draft.category,
           capabilities: getCapabilitiesByCategory(draft.category),
           recommended_for: editingConfig.recommended_for || [],
           metadata: editingConfig.metadata,
-          enable_thinking_process: draft.enableThinking,
-          support_preserved_thinking: editingConfig.support_preserved_thinking ?? false,
-          reasoning_effort: editingConfig.reasoning_effort,
+          reasoning_mode: draft.reasoningMode,
+          inline_think_in_text: editingConfig.inline_think_in_text ?? true,
+          reasoning_effort: draft.reasoningEffort,
+          thinking_budget_tokens: draft.thinkingBudgetTokens,
           custom_headers: editingConfig.custom_headers,
           custom_headers_mode: editingConfig.custom_headers_mode,
           skip_ssl_verify: editingConfig.skip_ssl_verify ?? false,
-          custom_request_body: editingConfig.custom_request_body
+          custom_request_body: editingConfig.custom_request_body,
+          custom_request_body_mode: editingConfig.custom_request_body_mode,
+          auth: editingConfig.auth || { type: 'api_key' },
         };
       });
+
+      if (editingConfig.id && configsToSave[0]) {
+        const dupKey = modelNameLookupKey(configsToSave[0].model_name);
+        const nameConflict = aiModels.some(
+          m =>
+            m.id !== editingConfig.id &&
+            getProviderDisplayName(m) === providerName &&
+            modelNameLookupKey(m.model_name) === dupKey
+        );
+        if (nameConflict) {
+          notification.warning(t('messages.duplicateModelNameUnderProvider'));
+          return;
+        }
+      }
 
       let updatedModels: AIModelConfigType[];
       if (editingConfig.id) {
@@ -752,9 +1130,16 @@ const AIModelConfig: React.FC = () => {
             const result = await aiApi.testAIConfigConnection(config);
             const baseMessage = result.success ? t('messages.testSuccess') : t('messages.testFailed');
             let message = baseMessage + (result.response_time_ms ? ` (${result.response_time_ms}ms)` : '');
+            const localizedMessage = translateConnectionTestMessage(result.message_code, t);
 
-            if (!result.success && result.error_details) {
-              message += `\n${t('messages.errorDetails')}: ${result.error_details}`;
+            if (localizedMessage) {
+              message += `\n${localizedMessage}`;
+            }
+
+            if (result.error_details) {
+              message += result.success
+                ? `\n${result.error_details}`
+                : `\n${t('messages.errorDetails')}: ${result.error_details}`;
             }
 
             setTestResults(prev => ({
@@ -818,8 +1203,13 @@ const AIModelConfig: React.FC = () => {
       
       const baseMessage = result.success ? t('messages.testSuccess') : t('messages.testFailed');
       let message = baseMessage + (result.response_time_ms ? ` (${result.response_time_ms}ms)` : '');
+      const localizedMessage = translateConnectionTestMessage(result.message_code, t);
       
-      if (!result.success && result.error_details) {
+      if (localizedMessage) {
+        message += `\n${localizedMessage}`;
+      }
+
+      if (result.error_details) {
         message += `\n${t('messages.errorDetails')}: ${result.error_details}`;
       }
       
@@ -867,6 +1257,30 @@ const AIModelConfig: React.FC = () => {
       notification.error(t('messages.saveFailed'));
     } finally {
       setIsProxySaving(false);
+    }
+  };
+
+  const handleSaveStreamIdleTimeout = async () => {
+    if (isStreamIdleTimeoutInvalid) {
+      notification.warning(t('streamIdleTimeout.invalid'));
+      return;
+    }
+
+    setIsStreamIdleTimeoutSaving(true);
+    try {
+      await configManager.setConfig(
+        'ai.stream_idle_timeout_secs',
+        parsedStreamIdleTimeout ?? null
+      );
+      setStreamIdleTimeoutInput(
+        parsedStreamIdleTimeout != null ? String(parsedStreamIdleTimeout) : ''
+      );
+      notification.success(t('streamIdleTimeout.saveSuccess'));
+    } catch (error) {
+      log.error('Failed to save stream idle timeout', error);
+      notification.error(t('messages.saveFailed'));
+    } finally {
+      setIsStreamIdleTimeoutSaving(false);
     }
   };
 
@@ -1074,6 +1488,49 @@ const AIModelConfig: React.FC = () => {
       </button>
     );
 
+    const formatReasoningSummary = (draft: SelectedModelDraft) => {
+      const parts: string[] = [];
+
+      switch (draft.reasoningMode) {
+        case 'enabled':
+          parts.push(t('thinking.summaryEnabled'));
+          break;
+        case 'disabled':
+          parts.push(t('thinking.summaryDisabled'));
+          break;
+        case 'adaptive':
+          parts.push(t('thinking.summaryAdaptive'));
+          break;
+        default:
+          parts.push(t('thinking.summaryDefault'));
+          break;
+      }
+
+      if (draft.reasoningEffort) {
+        parts.push(draft.reasoningEffort);
+      }
+
+      return parts.join(' · ');
+    };
+
+    const getDraftReasoningEffortOptions = (
+      config?: Partial<Pick<AIModelConfigType, 'name' | 'provider' | 'base_url' | 'model_name'>>
+    ) => {
+      if (supportsDeepSeekReasoningEffort(config)) {
+        return deepSeekReasoningEffortOptions;
+      }
+
+      if (supportsResponsesReasoning(config?.provider)) {
+        return responsesReasoningEffortOptions;
+      }
+
+      if (supportsAnthropicReasoning(config?.provider)) {
+        return anthropicReasoningEffortOptions;
+      }
+
+      return [];
+    };
+
     const renderSelectedModelRows = () => {
       if (selectedModelDrafts.length === 0) {
         return (
@@ -1085,110 +1542,258 @@ const AIModelConfig: React.FC = () => {
 
       return (
         <div className="bitfun-ai-model-config__selected-models-list">
-          {selectedModelDrafts.map(draft => (
-            <div key={draft.key} className="bitfun-ai-model-config__selected-model-row">
-              <div className="bitfun-ai-model-config__selected-model-head">
-                <div className="bitfun-ai-model-config__selected-model-name">{`${currentProviderLabel}/${draft.modelName}`}</div>
-                {!editingConfig.id && (
-                  <IconButton
-                    variant="ghost"
-                    size="small"
-                    onClick={() => removeSelectedModelDraft(draft.modelName)}
-                    tooltip={t('providerSelection.removeModel')}
-                  >
-                    <X size={14} />
-                  </IconButton>
+          {selectedModelDrafts.map(draft => {
+            const isExpanded = expandedModelCards.has(draft.key) || selectedModelDrafts.length === 1;
+            const categoryLabel = categoryCompactLabels[draft.category] ?? draft.category;
+            const canToggleExpand = selectedModelDrafts.length > 1;
+            const modelDisplayName = draft.modelName;
+            const reasoningModeOptions = buildReasoningModeOptions(editingConfig.provider, draft.modelName, draft.reasoningMode);
+            const reasoningCapabilityConfig = {
+              name: editingConfig.name,
+              provider: editingConfig.provider,
+              base_url: editingConfig.base_url,
+              model_name: draft.modelName,
+            };
+            const reasoningEffortOptions = getDraftReasoningEffortOptions(reasoningCapabilityConfig);
+            const showReasoningModeControl = !supportsResponsesReasoning(editingConfig.provider);
+            const showReasoningEffortControl = reasoningEffortOptions.length > 0
+              && (
+                supportsResponsesReasoning(editingConfig.provider)
+                || (supportsAnthropicReasoning(editingConfig.provider) && draft.reasoningMode === 'adaptive')
+                || (supportsDeepSeekReasoningEffort(reasoningCapabilityConfig) && draft.reasoningMode !== 'disabled')
+              );
+            const showThinkingBudgetControl = supportsAnthropicReasoning(editingConfig.provider)
+              && draft.reasoningMode === 'enabled'
+              && supportsAnthropicThinkingBudget(draft.modelName);
+            const displayedThinkingBudget = draft.thinkingBudgetTokens
+              ?? Math.min(Math.floor(draft.maxTokens * 0.75), 10000);
+
+            return (
+              <div key={draft.key} className="bitfun-ai-model-config__selected-model-row">
+                <div
+                  className={[
+                    'bitfun-ai-model-config__selected-model-head',
+                    canToggleExpand && 'bitfun-ai-model-config__selected-model-head--toggleable',
+                  ].filter(Boolean).join(' ')}
+                  onClick={canToggleExpand ? () => toggleSelectedModelCardExpanded(draft.key) : undefined}
+                  onKeyDown={canToggleExpand ? (e) => onSelectedModelHeadKeyDown(e, draft.key) : undefined}
+                  role={canToggleExpand ? 'button' : undefined}
+                  tabIndex={canToggleExpand ? 0 : undefined}
+                  aria-expanded={canToggleExpand ? isExpanded : undefined}
+                  aria-label={
+                    canToggleExpand
+                      ? t(
+                          isExpanded
+                            ? 'providerSelection.collapseModelSettings'
+                            : 'providerSelection.expandModelSettings',
+                          { name: modelDisplayName }
+                        )
+                      : undefined
+                  }
+                >
+                  <div className="bitfun-ai-model-config__selected-model-head-title">
+                    <div className="bitfun-ai-model-config__selected-model-head-top">
+                      <div className="bitfun-ai-model-config__selected-model-toggle">
+                        {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      </div>
+                      <div className="bitfun-ai-model-config__selected-model-name">{modelDisplayName}</div>
+                    </div>
+                    {!editingConfig.id && (
+                      <IconButton
+                        variant="ghost"
+                        size="small"
+                        className="bitfun-ai-model-config__selected-model-remove"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeSelectedModelDraft(draft.modelName);
+                        }}
+                        tooltip={t('providerSelection.removeModel')}
+                      >
+                        <X size={14} />
+                      </IconButton>
+                    )}
+                  </div>
+                  {!isExpanded && (
+                    <div className="bitfun-ai-model-config__selected-model-head-bottom">
+                      <span className="bitfun-ai-model-config__selected-model-summary">
+                        {categoryLabel}
+                        {' · '}
+                        {formatTokenCountShort(draft.contextWindow)} ctx
+                        {' · '}
+                        {formatTokenCountShort(draft.maxTokens)} out
+                        {' · '}
+                        {formatReasoningSummary(draft)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+                {isExpanded && (
+                  <div className="bitfun-ai-model-config__selected-model-grid">
+                    <div className="bitfun-ai-model-config__selected-model-field">
+                      <span>{t('category.label')}</span>
+                      <Select
+                        value={draft.category}
+                        onChange={(value) => updateModelDraft(draft.modelName, { category: value as ModelCategory })}
+                        options={categoryOptions}
+                        size="small"
+                        className="bitfun-ai-model-config__selected-model-category-select"
+                        renderValue={(option) => {
+                          if (!option || Array.isArray(option)) {
+                            return null;
+                          }
+
+                          const compactLabel = categoryCompactLabels[option.value as ModelCategory] ?? option.label;
+
+                          return (
+                            <span className="select__value">
+                              <span className="select__value-label">{compactLabel}</span>
+                            </span>
+                          );
+                        }}
+                      />
+                    </div>
+                    <div className="bitfun-ai-model-config__selected-model-field">
+                      <span>{t('form.contextWindow')}</span>
+                      <NumberInput
+                        value={draft.contextWindow}
+                        onChange={(value) => updateModelDraft(draft.modelName, { contextWindow: value })}
+                        min={1000}
+                        max={2000000}
+                        step={1000}
+                        size="small"
+                        disableWheel
+                      />
+                    </div>
+                    <div className="bitfun-ai-model-config__selected-model-field">
+                      <span>{t('form.maxTokens')}</span>
+                      <NumberInput
+                        value={draft.maxTokens}
+                        onChange={(value) => updateModelDraft(draft.modelName, { maxTokens: value })}
+                        min={1000}
+                        max={1000000}
+                        step={1000}
+                        size="small"
+                        disableWheel
+                      />
+                    </div>
+                    {showReasoningModeControl && (
+                      <div className="bitfun-ai-model-config__selected-model-field">
+                        <span>{t('thinking.mode')}</span>
+                        <Select
+                          value={draft.reasoningMode}
+                          onChange={(value) => updateModelDraft(draft.modelName, { reasoningMode: value as ReasoningMode })}
+                          options={reasoningModeOptions}
+                          size="small"
+                        />
+                      </div>
+                    )}
+                    {showReasoningEffortControl && (
+                      <div className="bitfun-ai-model-config__selected-model-field">
+                        <span>{t('reasoningEffort.label')}</span>
+                        <Select
+                          value={draft.reasoningEffort || ''}
+                          onChange={(value) => updateModelDraft(draft.modelName, { reasoningEffort: (value as string) || undefined })}
+                          placeholder={t('reasoningEffort.placeholder')}
+                          options={reasoningEffortOptions}
+                          size="small"
+                        />
+                      </div>
+                    )}
+                    {showThinkingBudgetControl && (
+                      <div className="bitfun-ai-model-config__selected-model-field">
+                        <span>{t('thinking.budgetTokens')}</span>
+                        <NumberInput
+                          value={displayedThinkingBudget}
+                          onChange={(value) => updateModelDraft(draft.modelName, { thinkingBudgetTokens: value || undefined })}
+                          min={1024}
+                          max={50000}
+                          step={1024}
+                          size="small"
+                          disableWheel
+                        />
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
-              <div className="bitfun-ai-model-config__selected-model-grid">
-                <div className="bitfun-ai-model-config__selected-model-field">
-                  <span>{t('category.label')}</span>
-                  <Select
-                    value={draft.category}
-                    onChange={(value) => updateModelDraft(draft.modelName, { category: value as ModelCategory })}
-                    options={categoryOptions}
-                    size="small"
-                    className="bitfun-ai-model-config__selected-model-category-select"
-                    renderValue={(option) => {
-                      if (!option || Array.isArray(option)) {
-                        return null;
-                      }
-
-                      const compactLabel = categoryCompactLabels[option.value as ModelCategory] ?? option.label;
-
-                      return (
-                        <span className="select__value">
-                          <span className="select__value-label">{compactLabel}</span>
-                        </span>
-                      );
-                    }}
-                  />
-                </div>
-                <div className="bitfun-ai-model-config__selected-model-field">
-                  <span>{t('form.contextWindow')}</span>
-                  <NumberInput
-                    value={draft.contextWindow}
-                    onChange={(value) => updateModelDraft(draft.modelName, { contextWindow: value })}
-                    min={1000}
-                    max={2000000}
-                    step={1000}
-                    size="small"
-                    disableWheel
-                  />
-                </div>
-                <div className="bitfun-ai-model-config__selected-model-field">
-                  <span>{t('form.maxTokens')}</span>
-                  <NumberInput
-                    value={draft.maxTokens}
-                    onChange={(value) => updateModelDraft(draft.modelName, { maxTokens: value })}
-                    min={1000}
-                    max={1000000}
-                    step={1000}
-                    size="small"
-                    disableWheel
-                  />
-                </div>
-                <div className="bitfun-ai-model-config__selected-model-field">
-                  <span>{t('thinking.enable')}</span>
-                  <Select
-                    value={draft.enableThinking ? 'enabled' : 'disabled'}
-                    onChange={(value) => updateModelDraft(draft.modelName, { enableThinking: value === 'enabled' })}
-                    options={thinkingModeOptions}
-                    size="small"
-                  />
-                </div>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       );
     };
 
+    const authType: 'api_key' | 'codex_cli' | 'gemini_cli' = editingConfig.auth?.type || 'api_key';
+    const authIsCli = authType !== 'api_key';
+    const cliAuthOptions: SelectOption[] = [
+      { value: 'api_key', label: t('cliAuth.options.apiKey') },
+      { value: 'codex_cli', label: t('cliAuth.options.codexCli') },
+      { value: 'gemini_cli', label: t('cliAuth.options.geminiCli') },
+    ];
+    const matchedCliCredential = authType === 'codex_cli'
+      ? discoveredCli.find(c => c.kind === 'codex')
+      : authType === 'gemini_cli'
+        ? discoveredCli.find(c => c.kind === 'gemini')
+        : undefined;
+
+    const renderAuthRow = () => (
+      <ConfigPageRow label={t('cliAuth.label')} align={authIsCli ? 'start' : 'center'} wide>
+        <div className="bitfun-ai-model-config__control-stack">
+          <Select
+            value={authType}
+            onChange={(value) => {
+              const next = String(value) as 'api_key' | 'codex_cli' | 'gemini_cli';
+              setEditingConfig(prev => ({ ...prev, auth: { type: next } }));
+            }}
+            options={cliAuthOptions}
+            size="small"
+          />
+          {authIsCli && (
+            <small className={matchedCliCredential ? 'resolved-url__hint bitfun-ai-model-config__cli-auth-hint' : `resolved-url__hint bitfun-ai-model-config__cli-auth-hint bitfun-ai-model-config__json-status--error`}>
+              {matchedCliCredential
+                ? t('cliAuth.detected', {
+                    label: matchedCliCredential.display_label,
+                    account: matchedCliCredential.account || t('cliAuth.unknownAccount'),
+                  })
+                : t('cliAuth.notDetected', {
+                    kind: authType === 'codex_cli' ? 'Codex CLI' : 'Gemini CLI',
+                  })}
+            </small>
+          )}
+        </div>
+      </ConfigPageRow>
+    );
+
+    const renderApiKeyRow = (label: string) => (
+      <ConfigPageRow label={label} align="center" wide>
+        <Input
+          type={showApiKey ? 'text' : 'password'}
+          value={editingConfig.api_key || ''}
+          onChange={(e) => {
+            resetRemoteModelDiscovery();
+            setEditingConfig(prev => ({ ...prev, api_key: e.target.value }));
+          }}
+          placeholder={t('form.apiKeyPlaceholder')}
+          inputSize="small"
+          suffix={apiKeySuffix}
+        />
+      </ConfigPageRow>
+    );
+
     return (
       <>
         <div className="bitfun-ai-model-config__form bitfun-ai-model-config__form--modal">
-          <ConfigPageSection
-            title={isProviderScopedEditing ? t('editProviderSubtitle') : t('editSubtitle')}
-            className="bitfun-ai-model-config__edit-section"
-          >
+          <div className="bitfun-ai-model-config__form-scrollable">
+            <ConfigPageSection
+              title={isProviderScopedEditing ? t('editProviderSubtitle') : t('editSubtitle')}
+              className="bitfun-ai-model-config__edit-section"
+            >
             {isFromTemplate ? (
               <>
                 <ConfigPageRow label={`${t('form.configName')} *`} align="center" wide>
                   <Input value={editingConfig.name || ''} onChange={(e) => setEditingConfig(prev => ({ ...prev, name: e.target.value }))} placeholder={t('form.configNamePlaceholder')} inputSize="small" />
                 </ConfigPageRow>
-                <ConfigPageRow label={`${t('form.apiKey')} *`} align="center" wide>
-                  <Input
-                    type={showApiKey ? 'text' : 'password'}
-                    value={editingConfig.api_key || ''}
-                    onChange={(e) => {
-                      resetRemoteModelDiscovery();
-                      setEditingConfig(prev => ({ ...prev, api_key: e.target.value }));
-                    }}
-                    placeholder={t('form.apiKeyPlaceholder')}
-                    inputSize="small"
-                    suffix={apiKeySuffix}
-                  />
-                </ConfigPageRow>
+                {renderAuthRow()}
+                {!authIsCli && renderApiKeyRow(`${t('form.apiKey')} *`)}
                 <ConfigPageRow label={t('form.baseUrl')} align="center" wide>
                   <div className="bitfun-ai-model-config__control-stack">
                     {currentTemplate?.baseUrlOptions && currentTemplate.baseUrlOptions.length > 0 && (
@@ -1242,11 +1847,19 @@ const AIModelConfig: React.FC = () => {
                   <Select
                     value={editingConfig.provider || 'openai'}
                     onChange={(value) => {
+                      const provider = value as string;
                       resetRemoteModelDiscovery();
+                      setSelectedModelDrafts(prevDrafts =>
+                        prevDrafts.map(draft => normalizeDraftReasoningForProvider(draft, {
+                          name: editingConfig?.name,
+                          provider,
+                          base_url: editingConfig?.base_url,
+                        }))
+                      );
                       setEditingConfig(prev => ({
                         ...prev,
-                        provider: value as string,
-                        request_url: resolveRequestUrl(prev?.base_url || '', value as string, prev?.model_name || '')
+                        provider,
+                        request_url: resolveRequestUrl(prev?.base_url || '', provider, prev?.model_name || '')
                       }));
                     }}
                     placeholder={t('form.providerPlaceholder')}
@@ -1301,11 +1914,6 @@ const AIModelConfig: React.FC = () => {
                     {renderSelectedModelRows()}
                   </div>
                 </ConfigPageRow>
-                {isResponsesProvider(editingConfig.provider) && (
-                  <ConfigPageRow label={t('reasoningEffort.label')} description={t('reasoningEffort.hint')} align="center">
-                    <Select value={editingConfig.reasoning_effort || ''} onChange={(v) => setEditingConfig(prev => ({ ...prev, reasoning_effort: (v as string) || undefined }))} placeholder={t('reasoningEffort.placeholder')} options={reasoningEffortOptions} size="small" />
-                  </ConfigPageRow>
-                )}
               </>
             ) : (
               <>
@@ -1314,6 +1922,8 @@ const AIModelConfig: React.FC = () => {
                     <ConfigPageRow label={`${t('form.configName')} *`} align="center" wide>
                       <Input value={editingConfig.name || ''} onChange={(e) => setEditingConfig(prev => ({ ...prev, name: e.target.value }))} placeholder={t('form.configNamePlaceholder')} inputSize="small" />
                     </ConfigPageRow>
+                    {renderAuthRow()}
+                    {!authIsCli && renderApiKeyRow(`${t('form.apiKey')} *`)}
                     <ConfigPageRow label={`${t('form.baseUrl')} *`} align="center" wide>
                       <div className="bitfun-ai-model-config__control-stack">
                         <Input
@@ -1344,28 +1954,21 @@ const AIModelConfig: React.FC = () => {
                         )}
                       </div>
                     </ConfigPageRow>
-                    <ConfigPageRow label={`${t('form.apiKey')} *`} align="center" wide>
-                      <Input
-                        type={showApiKey ? 'text' : 'password'}
-                        value={editingConfig.api_key || ''}
-                        onChange={(e) => {
-                          resetRemoteModelDiscovery();
-                          setEditingConfig(prev => ({ ...prev, api_key: e.target.value }));
-                        }}
-                        placeholder={t('form.apiKeyPlaceholder')}
-                        inputSize="small"
-                        suffix={apiKeySuffix}
-                      />
-                    </ConfigPageRow>
                     <ConfigPageRow label={t('form.provider')} align="center" wide>
                       <Select value={editingConfig.provider || 'openai'} onChange={(value) => {
                         const provider = value as string;
                         resetRemoteModelDiscovery();
+                        setSelectedModelDrafts(prevDrafts =>
+                          prevDrafts.map(draft => normalizeDraftReasoningForProvider(draft, {
+                            name: editingConfig?.name,
+                            provider,
+                            base_url: editingConfig?.base_url,
+                          }))
+                        );
                         setEditingConfig(prev => ({
                           ...prev,
                           provider,
                           request_url: resolveRequestUrl(prev?.base_url || '', provider, prev?.model_name || ''),
-                          reasoning_effort: isResponsesProvider(provider) ? (prev?.reasoning_effort || 'medium') : undefined,
                         }));
                       }} placeholder={t('form.providerPlaceholder')} options={requestFormatOptions} size="small" />
                     </ConfigPageRow>
@@ -1423,14 +2026,6 @@ const AIModelConfig: React.FC = () => {
                     {renderSelectedModelRows()}
                   </div>
                 </ConfigPageRow>
-                {isResponsesProvider(editingConfig.provider) && (
-                  <ConfigPageRow label={t('reasoningEffort.label')} description={t('reasoningEffort.hint')} align="center">
-                    <Select value={editingConfig.reasoning_effort || ''} onChange={(v) => setEditingConfig(prev => ({ ...prev, reasoning_effort: (v as string) || undefined }))} placeholder={t('reasoningEffort.placeholder')} options={reasoningEffortOptions} size="small" />
-                  </ConfigPageRow>
-                )}
-                <ConfigPageRow label={t('form.description')} multiline>
-                  <Textarea value={editingConfig.description || ''} onChange={(e) => setEditingConfig(prev => ({ ...prev, description: e.target.value }))} placeholder={t('form.descriptionPlaceholder')} rows={2} />
-                </ConfigPageRow>
               </>
             )}
           </ConfigPageSection>
@@ -1445,38 +2040,95 @@ const AIModelConfig: React.FC = () => {
 
             {showAdvancedSettings && (
               <>
-                {editingConfig.enable_thinking_process && (
-                  <ConfigPageRow label={t('thinking.preserve')} description={t('thinking.preserveHint')} align="center">
-                    <Switch checked={editingConfig.support_preserved_thinking ?? false} onChange={(e) => setEditingConfig(prev => ({ ...prev, support_preserved_thinking: e.target.checked }))} size="small" />
+                {(editingConfig.provider === 'openai' || editingConfig.provider === 'anthropic') && (
+                  <ConfigPageRow
+                    label={t('advancedSettings.inlineThinkInText.label')}
+                    description={t('advancedSettings.inlineThinkInText.hint')}
+                    align="center"
+                    className="bitfun-ai-model-config__toggle-row"
+                  >
+                    <Switch
+                      checked={editingConfig.inline_think_in_text ?? true}
+                      onChange={(e) => setEditingConfig(prev => ({ ...prev, inline_think_in_text: e.target.checked }))}
+                      size="small"
+                    />
                   </ConfigPageRow>
                 )}
-                <ConfigPageRow label={t('advancedSettings.skipSslVerify.label')} align="center">
-                  <div className="bitfun-ai-model-config__row-control--stack">
-                    <Checkbox label={t('advancedSettings.skipSslVerify.label')} checked={editingConfig.skip_ssl_verify || false} onChange={(e) => setEditingConfig(prev => ({ ...prev, skip_ssl_verify: e.target.checked }))} />
-                    {editingConfig.skip_ssl_verify && (
-                      <div className="bitfun-ai-model-config__warning">
-                        <AlertTriangle size={16} />
-                        <span>{t('advancedSettings.skipSslVerify.warning')}</span>
-                      </div>
-                    )}
-                  </div>
+                <ConfigPageRow
+                  label={t('advancedSettings.skipSslVerify.label')}
+                  description={editingConfig.skip_ssl_verify ? (
+                    <span className="bitfun-ai-model-config__warning-inline">
+                      <AlertTriangle size={14} />
+                      <span>{t('advancedSettings.skipSslVerify.warning')}</span>
+                    </span>
+                  ) : undefined}
+                  align="center"
+                  className="bitfun-ai-model-config__toggle-row"
+                >
+                  <Switch
+                    checked={editingConfig.skip_ssl_verify || false}
+                    onChange={(e) => setEditingConfig(prev => ({ ...prev, skip_ssl_verify: e.target.checked }))}
+                    size="small"
+                  />
                 </ConfigPageRow>
-                <ConfigPageRow label={t('advancedSettings.customHeaders.label')} description={t('advancedSettings.customHeaders.hint')} multiline>
+                <ConfigPageRow
+                  label={(
+                    <span className="bitfun-ai-model-config__inline-header">
+                      <span className="bitfun-ai-model-config__inline-header-main">
+                        <span>{t('advancedSettings.customHeaders.label')}</span>
+                        <Tooltip
+                          content={(
+                            <span className="bitfun-ai-model-config__header-tooltip">
+                              <span>{t('advancedSettings.customHeaders.hint')}</span>
+                              <span>
+                                {(editingConfig.custom_headers_mode || 'merge') === 'replace'
+                                  ? t('advancedSettings.customHeaders.modeReplaceHint')
+                                  : t('advancedSettings.customHeaders.modeMergeHint')}
+                              </span>
+                            </span>
+                          )}
+                          placement="top"
+                        >
+                          <span
+                            className="bitfun-ai-model-config__inline-header-info"
+                            role="button"
+                            tabIndex={0}
+                            aria-label={t('advancedSettings.customHeaders.hint')}
+                          >
+                            <Info size={14} />
+                          </span>
+                        </Tooltip>
+                      </span>
+                      <span className="bitfun-ai-model-config__inline-header-actions">
+                        <Tooltip content={t('advancedSettings.customHeaders.modeMergeHint')} placement="top">
+                          <Button
+                            type="button"
+                            variant={(editingConfig.custom_headers_mode || 'merge') === 'merge' ? 'primary' : 'ghost'}
+                            size="small"
+                            className="bitfun-ai-model-config__mode-button"
+                            onClick={() => setEditingConfig(prev => ({ ...prev, custom_headers_mode: 'merge' }))}
+                          >
+                            {t('advancedSettings.customHeaders.modeMerge')}
+                          </Button>
+                        </Tooltip>
+                        <Tooltip content={t('advancedSettings.customHeaders.modeReplaceHint')} placement="top">
+                          <Button
+                            type="button"
+                            variant={editingConfig.custom_headers_mode === 'replace' ? 'primary' : 'ghost'}
+                            size="small"
+                            className="bitfun-ai-model-config__mode-button"
+                            onClick={() => setEditingConfig(prev => ({ ...prev, custom_headers_mode: 'replace' }))}
+                          >
+                            {t('advancedSettings.customHeaders.modeReplace')}
+                          </Button>
+                        </Tooltip>
+                      </span>
+                    </span>
+                  )}
+                  multiline
+                  className="bitfun-ai-model-config__custom-headers-row"
+                >
                   <div className="bitfun-ai-model-config__row-control--stack">
-                    <div className="bitfun-ai-model-config__header-mode">
-                      <label>{t('advancedSettings.customHeaders.modeLabel')}</label>
-                      <div>
-                        <label className="bitfun-ai-model-config__radio-label">
-                          <input type="radio" name="custom_headers_mode" value="merge" checked={(editingConfig.custom_headers_mode || 'merge') === 'merge'} onChange={() => setEditingConfig(prev => ({ ...prev, custom_headers_mode: 'merge' }))} />
-                          <span>{t('advancedSettings.customHeaders.modeMerge')}</span>
-                        </label>
-                        <label className="bitfun-ai-model-config__radio-label">
-                          <input type="radio" name="custom_headers_mode" value="replace" checked={editingConfig.custom_headers_mode === 'replace'} onChange={() => setEditingConfig(prev => ({ ...prev, custom_headers_mode: 'replace' }))} />
-                          <span>{t('advancedSettings.customHeaders.modeReplace')}</span>
-                        </label>
-                      </div>
-                      <small>{editingConfig.custom_headers_mode === 'replace' ? t('advancedSettings.customHeaders.modeReplaceHint') : t('advancedSettings.customHeaders.modeMergeHint')}</small>
-                    </div>
                     <div className="bitfun-ai-model-config__custom-headers">
                       {Object.entries(editingConfig.custom_headers || {}).map(([key, value], index) => (
                         <div key={index} className="bitfun-ai-model-config__header-row">
@@ -1485,11 +2137,63 @@ const AIModelConfig: React.FC = () => {
                           <IconButton variant="ghost" size="small" onClick={() => { const nh = { ...editingConfig.custom_headers }; delete nh[key]; setEditingConfig(prev => ({ ...prev, custom_headers: Object.keys(nh).length > 0 ? nh : undefined })); }} tooltip={t('actions.delete')}><X size={14} /></IconButton>
                         </div>
                       ))}
-                      <Button variant="secondary" size="small" onClick={() => setEditingConfig(prev => ({ ...prev, custom_headers: { ...prev?.custom_headers, '': '' } }))} className="bitfun-ai-model-config__add-header-btn"><Plus size={14} />{t('advancedSettings.customHeaders.addHeader')}</Button>
+                      <Button type="button" variant="secondary" size="small" onClick={() => setEditingConfig(prev => ({ ...prev, custom_headers: { ...prev?.custom_headers, '': '' } }))} className="bitfun-ai-model-config__add-header-btn"><Plus size={14} />{t('advancedSettings.customHeaders.addHeader')}</Button>
                     </div>
                   </div>
                 </ConfigPageRow>
-                <ConfigPageRow label={t('advancedSettings.customRequestBody.label')} description={t('advancedSettings.customRequestBody.hint')} multiline>
+                <ConfigPageRow
+                  label={(
+                    <span className="bitfun-ai-model-config__inline-header">
+                      <span className="bitfun-ai-model-config__inline-header-main">
+                        <span>{t('advancedSettings.customRequestBody.label')}</span>
+                        <Tooltip
+                          content={(
+                            <span className="bitfun-ai-model-config__header-tooltip">
+                              <span>{t('advancedSettings.customRequestBody.hint')}</span>
+                              <span>{getCustomRequestBodyModeHint(editingConfig.provider, editingConfig.custom_request_body_mode)}</span>
+                            </span>
+                          )}
+                          placement="top"
+                        >
+                          <span
+                            className="bitfun-ai-model-config__inline-header-info"
+                            role="button"
+                            tabIndex={0}
+                            aria-label={t('advancedSettings.customRequestBody.hint')}
+                          >
+                            <Info size={14} />
+                          </span>
+                        </Tooltip>
+                      </span>
+                      <span className="bitfun-ai-model-config__inline-header-actions">
+                        <Tooltip content={t('advancedSettings.customRequestBody.modeMergeHint')} placement="top">
+                          <Button
+                            type="button"
+                            variant={(editingConfig.custom_request_body_mode || 'merge') === 'merge' ? 'primary' : 'ghost'}
+                            size="small"
+                            className="bitfun-ai-model-config__mode-button"
+                            onClick={() => setEditingConfig(prev => ({ ...prev, custom_request_body_mode: 'merge' }))}
+                          >
+                            {t('advancedSettings.customRequestBody.modeMerge')}
+                          </Button>
+                        </Tooltip>
+                        <Tooltip content={getCustomRequestBodyTrimHint(editingConfig.provider)} placement="top">
+                          <Button
+                            type="button"
+                            variant={editingConfig.custom_request_body_mode === 'trim' ? 'primary' : 'ghost'}
+                            size="small"
+                            className="bitfun-ai-model-config__mode-button"
+                            onClick={() => setEditingConfig(prev => ({ ...prev, custom_request_body_mode: 'trim' }))}
+                          >
+                            {t('advancedSettings.customRequestBody.modeTrim')}
+                          </Button>
+                        </Tooltip>
+                      </span>
+                    </span>
+                  )}
+                  multiline
+                  className="bitfun-ai-model-config__custom-request-body-row"
+                >
                   <div className="bitfun-ai-model-config__row-control--stack">
                     <Textarea value={editingConfig.custom_request_body || ''} onChange={(e) => setEditingConfig(prev => ({ ...prev, custom_request_body: e.target.value }))} placeholder={t('advancedSettings.customRequestBody.placeholder')} rows={8} style={{ fontFamily: 'var(--font-family-mono)', fontSize: '13px' }} />
                     {editingConfig.custom_request_body && editingConfig.custom_request_body.trim() !== '' && (() => {
@@ -1501,8 +2205,9 @@ const AIModelConfig: React.FC = () => {
               </>
             )}
           </ConfigPageSection>
+          </div>
 
-          <div className="bitfun-ai-model-config__form-actions">
+          <div className="bitfun-ai-model-config__form-actions bitfun-ai-model-config__form-actions--sticky">
             <Button variant="secondary" onClick={closeEditingModal}>{t('actions.cancel')}</Button>
             <Button variant="primary" onClick={handleSave}>{t('actions.save')}</Button>
           </div>
@@ -1572,14 +2277,6 @@ const AIModelConfig: React.FC = () => {
                 </div>
               </div>
             )}
-            {config.description && (
-              <div className="bitfun-ai-model-config__details-item bitfun-ai-model-config__details-item--wide">
-                <span className="bitfun-ai-model-config__details-label">{t('details.description')}</span>
-                <span className="bitfun-ai-model-config__details-value bitfun-ai-model-config__details-value--text">
-                  {config.description}
-                </span>
-              </div>
-            )}
           </div>
         </div>
         {testResult && (
@@ -1604,42 +2301,31 @@ const AIModelConfig: React.FC = () => {
           }}
           size="small"
         />
-        <button
-          type="button"
-          className="bitfun-collection-btn"
+        <IconButton
+          variant="ghost"
+          size="small"
+          isLoading={isTesting}
           onClick={() => void handleTest(config)}
-          disabled={isTesting}
-          title={t('actions.test')}
+          tooltip={t('actions.test')}
         >
-          {isTesting ? <Loader size={14} className="spinning" /> : <Wifi size={14} />}
-        </button>
-        <button
-          type="button"
-          className="bitfun-collection-btn"
-          onClick={() => {
-            setSelectedModelForStats({ id: config.id!, name: modelLabel });
-            setShowTokenStats(true);
-          }}
-          title={t('actions.viewStats')}
-        >
-          <BarChart3 size={14} />
-        </button>
-        <button
-          type="button"
-          className="bitfun-collection-btn"
+          {isTesting ? <Loader size={14} /> : <Wifi size={14} />}
+        </IconButton>
+        <IconButton
+          variant="ghost"
+          size="small"
           onClick={() => handleEdit(config)}
-          title={t('actions.edit')}
+          tooltip={t('actions.edit')}
         >
-          <Edit2 size={14} />
-        </button>
-        <button
-          type="button"
-          className="bitfun-collection-btn bitfun-collection-btn--danger"
+          <SquarePen size={14} />
+        </IconButton>
+        <IconButton
+          variant="danger"
+          size="small"
           onClick={() => void handleDelete(config.id!)}
-          title={t('actions.delete')}
+          tooltip={t('actions.delete')}
         >
           <Trash2 size={14} />
-        </button>
+        </IconButton>
       </>
     );
 
@@ -1674,11 +2360,76 @@ const AIModelConfig: React.FC = () => {
         </ConfigPageSection>
 
         <ConfigPageSection
+          title={t('cliAuth.sectionTitle')}
+          description={t('cliAuth.sectionDescription')}
+          extra={(
+            <IconButton
+              variant="ghost"
+              size="small"
+              onClick={refreshDiscoveredCli}
+              tooltip={t('cliAuth.rescan')}
+              disabled={isDiscoveringCli}
+            >
+              <RefreshCw size={16} className={isDiscoveringCli ? 'bitfun-ai-model-config__spin' : ''} />
+            </IconButton>
+          )}
+        >
+          {discoveredCli.length === 0 ? (
+            <div className="bitfun-ai-model-config__cli-empty">
+              <p>{t('cliAuth.empty')}</p>
+            </div>
+          ) : (
+            <div className="bitfun-ai-model-config__cli-discovery">
+              {discoveredCli.map(cred => {
+                const descriptionParts: string[] = [];
+                if (cred.account) {
+                  descriptionParts.push(cred.account);
+                }
+                if (cred.expires_at) {
+                  descriptionParts.push(
+                    t('cliAuth.expiresAt', {
+                      time: new Date(cred.expires_at * 1000).toLocaleString(),
+                    }),
+                  );
+                } else {
+                  descriptionParts.push(t('cliAuth.tokenValid'));
+                }
+                return (
+                  <ConfigPageRow
+                    key={`${cred.kind}-${cred.source_path}`}
+                    label={cred.display_label}
+                    description={descriptionParts.join(' · ')}
+                    align="center"
+                  >
+                    <div className="bitfun-ai-model-config__cli-actions">
+                      <Button
+                        size="small"
+                        variant="secondary"
+                        onClick={() => handleRefreshCli(cred.kind)}
+                      >
+                        {t('cliAuth.refresh')}
+                      </Button>
+                      <Button
+                        size="small"
+                        variant="primary"
+                        onClick={() => handleImportFromCli(cred)}
+                      >
+                        {t('cliAuth.import')}
+                      </Button>
+                    </div>
+                  </ConfigPageRow>
+                );
+              })}
+            </div>
+          )}
+        </ConfigPageSection>
+
+        <ConfigPageSection
           title={tDefault('tabs.models')}
           description={t('subtitle')}
           extra={(
             <IconButton
-              variant="primary"
+              variant="ghost"
               size="small"
               onClick={handleCreateNew}
               tooltip={t('actions.addProvider')}
@@ -1715,7 +2466,7 @@ const AIModelConfig: React.FC = () => {
                         onClick={() => handleEditProvider(group.models[0])}
                         tooltip={t('actions.edit')}
                       >
-                        <Edit2 size={14} />
+                        <SquarePen size={14} />
                       </IconButton>
                     </div>
                   </div>
@@ -1726,6 +2477,37 @@ const AIModelConfig: React.FC = () => {
               ))}
             </div>
           )}
+        </ConfigPageSection>
+
+        <ConfigPageSection
+          title={t('streamIdleTimeout.title')}
+          description={t('streamIdleTimeout.hint')}
+          extra={(
+            <Button
+              variant="primary"
+              size="small"
+              onClick={handleSaveStreamIdleTimeout}
+              disabled={isStreamIdleTimeoutSaving || isStreamIdleTimeoutInvalid}
+            >
+              {isStreamIdleTimeoutSaving ? (
+                <Loader size={16} className="spinning" />
+              ) : (
+                t('streamIdleTimeout.save')
+              )}
+            </Button>
+          )}
+        >
+          <ConfigPageRow
+            label={t('streamIdleTimeout.label')}
+            align="center"
+          >
+            <Input
+              value={streamIdleTimeoutInput}
+              onChange={(e) => setStreamIdleTimeoutInput(e.target.value)}
+              placeholder={t('streamIdleTimeout.placeholder')}
+              inputSize="small"
+            />
+          </ConfigPageRow>
         </ConfigPageSection>
 
         <ConfigPageSection
@@ -1789,21 +2571,10 @@ const AIModelConfig: React.FC = () => {
             ? t('editProvider')
             : (currentTemplate ? `${t('newProvider')} - ${currentTemplate.name}` : t('newProvider')))}
         size="xlarge"
+        contentClassName="modal__content--fill-flex bitfun-ai-model-config__form--modal"
       >
         {renderEditingForm()}
       </Modal>
-
-      {selectedModelForStats && (
-        <TokenStatsModal
-          isOpen={showTokenStats}
-          onClose={() => {
-            setShowTokenStats(false);
-            setSelectedModelForStats(null);
-          }}
-          modelId={selectedModelForStats.id}
-          modelName={selectedModelForStats.name}
-        />
-      )}
     </ConfigPageLayout>
   );
 };

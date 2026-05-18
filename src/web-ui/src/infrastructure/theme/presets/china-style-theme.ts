@@ -183,8 +183,8 @@ export const bitfunChinaStyleTheme: ThemeConfig = {
   
   typography: {
     font: {
-      sans: "'Noto Sans SC', 'Source Han Sans CN', 'Microsoft YaHei', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      mono: "'Source Han Mono CN', 'Noto Sans Mono CJK SC', 'FiraCode', 'JetBrains Mono', 'Consolas', monospace",
+      sans: "'Noto Sans SC', 'Source Han Sans CN', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif",
+      mono: "'Source Han Mono CN', 'Noto Sans Mono CJK SC', 'JetBrains Mono', 'FiraCode', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, 'Cascadia Mono', 'Cascadia Code', Consolas, 'Liberation Mono', 'Courier New', monospace",
     },
     
     weight: {
@@ -196,14 +196,14 @@ export const bitfunChinaStyleTheme: ThemeConfig = {
     
     size: {
       xs: '12px',
-      sm: '14px',
-      base: '15px',
-      lg: '16px',
-      xl: '18px',
-      '2xl': '20px',
-      '3xl': '24px',
-      '4xl': '30px',
-      '5xl': '36px',
+      sm: '13px',
+      base: '14px',
+      lg: '15px',
+      xl: '16px',
+      '2xl': '18px',
+      '3xl': '22px',
+      '4xl': '26px',
+      '5xl': '32px',
     },
     
     lineHeight: {
@@ -275,21 +275,21 @@ export const bitfunChinaStyleTheme: ThemeConfig = {
       
       primary: {
         default: {
-          background: 'rgba(46, 94, 138, 0.20)',
-          color: '#4a7aa5',
+          background: '#000000',
+          color: '#ffffff',
           border: 'transparent',
           shadow: 'none',
         },
         hover: {
-          background: 'rgba(46, 94, 138, 0.30)',
-          color: '#3d6689',
+          background: '#262626',
+          color: '#ffffff',
           border: 'transparent',
           shadow: 'none',
           transform: 'none',
         },
         active: {
-          background: 'rgba(46, 94, 138, 0.24)',
-          color: '#3d6689',
+          background: '#1a1a1a',
+          color: '#ffffff',
           border: 'transparent',
           shadow: 'none',
           transform: 'none',

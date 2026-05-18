@@ -1,9 +1,10 @@
 use super::prompt_markup::is_system_reminder_only;
 use crate::agentic::image_analysis::ImageContextData;
-use crate::util::types::{Message as AIMessage, ToolCall as AIToolCall};
+use crate::util::types::{Message as AIMessage, ToolCall as AIToolCall, ToolImageAttachment};
 use crate::util::TokenCounter;
 use log::warn;
 use serde::{Deserialize, Serialize};
+use std::fmt::{self, Display};
 use std::time::SystemTime;
 use uuid::Uuid;
 
@@ -39,6 +40,8 @@ pub enum MessageContent {
         result: serde_json::Value,
         result_for_assistant: Option<String>,
         is_error: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        image_attachments: Option<Vec<ToolImageAttachment>>,
     },
     Mixed {
         /// Reasoning content (for interleaved thinking mode)
@@ -53,13 +56,13 @@ pub struct MessageMetadata {
     pub turn_id: Option<String>,
     pub round_id: Option<String>,
     pub tokens: Option<usize>,
-    #[serde(skip)] // Not serialized, auxiliary field for runtime use only
-    pub keep_thinking: bool,
     /// Anthropic extended thinking signature (for passing back in multi-turn conversations)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic_kind: Option<MessageSemanticKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compression_payload: Option<CompressionPayload>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +70,164 @@ pub struct MessageMetadata {
 pub enum MessageSemanticKind {
     ActualUserInput,
     InternalReminder,
+    CompressionBoundaryMarker,
+    CompressionSummary,
+    /// Shown in chat after Computer use; omitted from model API requests (see `build_ai_messages_for_send`).
+    ComputerUseVerificationScreenshot,
+    /// Full-screen snapshot appended after mutating ComputerUse tool results within the same turn;
+    /// **included** in the next model request so the agent sees the desktop without calling screenshot again.
+    ComputerUsePostActionSnapshot,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CompressionPayload {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<CompressionEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CompressionEntry {
+    Contract {
+        contract: CompressionContract,
+    },
+    ModelSummary {
+        text: String,
+    },
+    Turn {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        messages: Vec<CompressedMessage>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        todo: Option<CompressedTodoSnapshot>,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompressionContract {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub touched_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verification_commands: Vec<CompressionContractItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocking_failures: Vec<CompressionContractItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subagent_statuses: Vec<CompressionContractItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompressionContractItem {
+    pub target: String,
+    pub status: String,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
+}
+
+impl CompressionContract {
+    pub fn is_empty(&self) -> bool {
+        self.touched_files.is_empty()
+            && self.verification_commands.is_empty()
+            && self.blocking_failures.is_empty()
+            && self.subagent_statuses.is_empty()
+    }
+
+    pub fn render_for_model(&self) -> String {
+        let mut lines = vec![
+            "Compaction contract: preserve these factual fields when continuing the task."
+                .to_string(),
+        ];
+
+        if !self.touched_files.is_empty() {
+            lines.push("Touched files:".to_string());
+            for file in &self.touched_files {
+                lines.push(format!("- {}", file));
+            }
+        }
+
+        render_contract_items(
+            &mut lines,
+            "Verification commands:",
+            &self.verification_commands,
+        );
+        render_contract_items(&mut lines, "Blocking failures:", &self.blocking_failures);
+        render_contract_items(&mut lines, "Subagent statuses:", &self.subagent_statuses);
+
+        lines.join("\n")
+    }
+}
+
+fn render_contract_items(lines: &mut Vec<String>, title: &str, items: &[CompressionContractItem]) {
+    if items.is_empty() {
+        return;
+    }
+
+    lines.push(title.to_string());
+    for item in items {
+        let mut rendered = format!("- {} [{}]: {}", item.target, item.status, item.summary);
+        if let Some(error_kind) = item.error_kind.as_ref() {
+            rendered.push_str(&format!(" ({})", error_kind));
+        }
+        lines.push(rendered);
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressedMessage {
+    pub role: CompressedMessageRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<CompressedToolCall>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressedMessageRole {
+    User,
+    Assistant,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressedToolCall {
+    pub tool_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_error: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressedTodoSnapshot {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub todos: Vec<CompressedTodoItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressedTodoItem {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub content: String,
+    pub status: String,
+}
+
+impl CompressionPayload {
+    pub fn from_summary(text: String) -> Self {
+        Self {
+            entries: vec![CompressionEntry::ModelSummary { text }],
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl From<Message> for AIMessage {
@@ -77,7 +238,6 @@ impl From<Message> for AIMessage {
             MessageRole::Tool => "tool",
             MessageRole::System => "system",
         };
-        let keep_thinking = msg.metadata.keep_thinking;
         let thinking_signature = msg.metadata.thinking_signature.clone();
 
         match msg.content {
@@ -105,6 +265,8 @@ impl From<Message> for AIMessage {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    is_error: None,
+                    tool_image_attachments: None,
                 }
             }
             MessageContent::Multimodal { text, images } => {
@@ -137,6 +299,8 @@ impl From<Message> for AIMessage {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    is_error: None,
+                    tool_image_attachments: None,
                 }
             }
             MessageContent::Mixed {
@@ -151,20 +315,11 @@ impl From<Message> for AIMessage {
                     Some(
                         tool_calls
                             .into_iter()
-                            .map(|tc| {
-                                // Convert serde_json::Value to HashMap
-                                let arguments = if let serde_json::Value::Object(map) = tc.arguments
-                                {
-                                    map.into_iter().map(|(k, v)| (k, v)).collect()
-                                } else {
-                                    std::collections::HashMap::new()
-                                };
-
-                                AIToolCall {
-                                    id: tc.tool_id,
-                                    name: tc.tool_name,
-                                    arguments,
-                                }
+                            .map(|tc| AIToolCall {
+                                id: tc.tool_id,
+                                name: tc.tool_name,
+                                arguments: tc.arguments,
+                                raw_arguments: tc.raw_arguments,
                             })
                             .collect(),
                     )
@@ -178,20 +333,16 @@ impl From<Message> for AIMessage {
                 };
 
                 // Reasoning content (interleaved thinking mode)
-                let reasoning = if keep_thinking {
-                    reasoning_content.filter(|r| !r.is_empty())
-                } else {
-                    None
-                };
-
                 Self {
                     role: "assistant".to_string(),
                     content,
-                    reasoning_content: reasoning,
+                    reasoning_content,
                     thinking_signature: thinking_signature.clone(),
                     tool_calls: converted_tool_calls,
                     tool_call_id: None,
                     name: None,
+                    is_error: None,
+                    tool_image_attachments: None,
                 }
             }
             MessageContent::ToolResult {
@@ -199,7 +350,8 @@ impl From<Message> for AIMessage {
                 tool_name,
                 result,
                 result_for_assistant,
-                ..
+                is_error,
+                image_attachments,
             } => {
                 // Tool messages must include tool_call_id
                 // Prefer result_for_assistant (text specifically for AI), if None or empty then use result (data field)
@@ -226,6 +378,8 @@ impl From<Message> for AIMessage {
                     tool_calls: None,
                     tool_call_id: Some(tool_id),
                     name: Some(tool_name),
+                    is_error: Some(is_error),
+                    tool_image_attachments: image_attachments.clone(),
                 }
             }
         }
@@ -323,6 +477,7 @@ impl Message {
                 result: result.result.clone(),
                 result_for_assistant: result.result_for_assistant.clone(),
                 is_error: result.is_error,
+                image_attachments: result.image_attachments.clone(),
             },
             timestamp: SystemTime::now(),
             metadata: MessageMetadata::default(),
@@ -365,6 +520,12 @@ impl Message {
         self
     }
 
+    pub fn with_compression_payload(mut self, compression_payload: CompressionPayload) -> Self {
+        self.metadata.compression_payload = Some(compression_payload);
+        self.metadata.tokens = None;
+        self
+    }
+
     /// Set message's thinking_signature (for Anthropic extended thinking multi-turn conversations)
     pub fn with_thinking_signature(mut self, signature: Option<String>) -> Self {
         self.metadata.thinking_signature = signature;
@@ -393,13 +554,13 @@ impl Message {
             })
             .unwrap_or((1024, 1024));
 
-        let tiles_w = (width + 511) / 512;
-        let tiles_h = (height + 511) / 512;
+        let tiles_w = width.div_ceil(512);
+        let tiles_h = height.div_ceil(512);
         let tiles = (tiles_w.max(1) * tiles_h.max(1)) as usize;
         50 + tiles * 200
     }
 
-    fn estimate_tokens(&self) -> usize {
+    pub fn estimate_tokens_with_reasoning(&self, include_reasoning: bool) -> usize {
         let mut total = 0usize;
         total += 4;
 
@@ -418,7 +579,7 @@ impl Message {
                 text,
                 tool_calls,
             } => {
-                if self.metadata.keep_thinking {
+                if include_reasoning {
                     if let Some(reasoning) = reasoning_content.as_ref() {
                         total += TokenCounter::estimate_tokens(reasoning);
                     }
@@ -427,9 +588,15 @@ impl Message {
 
                 for tool_call in tool_calls {
                     total += TokenCounter::estimate_tokens(&tool_call.tool_name);
-                    if let Ok(json_str) = serde_json::to_string(&tool_call.arguments) {
-                        total += TokenCounter::estimate_tokens(&json_str);
-                    }
+                    let serialized_arguments = tool_call
+                        .raw_arguments
+                        .clone()
+                        .filter(|raw| serde_json::from_str::<serde_json::Value>(raw).is_ok())
+                        .unwrap_or_else(|| {
+                            serde_json::to_string(&tool_call.arguments)
+                                .unwrap_or_else(|_| "{}".to_string())
+                        });
+                    total += TokenCounter::estimate_tokens(&serialized_arguments);
                     total += 10;
                 }
             }
@@ -437,6 +604,7 @@ impl Message {
                 tool_name,
                 result,
                 result_for_assistant,
+                image_attachments,
                 ..
             } => {
                 if let Some(text) = result_for_assistant.as_ref().filter(|s| !s.is_empty()) {
@@ -446,18 +614,28 @@ impl Message {
                 } else {
                     total += TokenCounter::estimate_tokens(tool_name);
                 }
+                if let Some(imgs) = image_attachments {
+                    for _ in imgs {
+                        total += Self::estimate_image_tokens(None);
+                    }
+                }
             }
         }
 
         total
     }
+
+    fn estimate_tokens(&self) -> usize {
+        self.estimate_tokens_with_reasoning(true)
+    }
 }
 
-impl ToString for MessageContent {
-    fn to_string(&self) -> String {
+impl Display for MessageContent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            MessageContent::Text(text) => text.clone(),
-            MessageContent::Multimodal { text, images } => format!(
+            MessageContent::Text(text) => write!(f, "{}", text),
+            MessageContent::Multimodal { text, images } => write!(
+                f,
                 "Multimodal: text_length={}, images={}",
                 text.len(),
                 images.len()
@@ -468,49 +646,92 @@ impl ToString for MessageContent {
                 result,
                 result_for_assistant,
                 is_error,
-            } => {
-                format!(
-                    "ToolResult: tool_id={}, tool_name={}, result={}, result_for_assistant={:?}, is_error={}",
-                    tool_id, tool_name, result, result_for_assistant, is_error
-                )
-            }
+                image_attachments,
+            } => write!(
+                f,
+                "ToolResult: tool_id={}, tool_name={}, result={}, result_for_assistant={:?}, is_error={}, images={}",
+                tool_id,
+                tool_name,
+                result,
+                result_for_assistant,
+                is_error,
+                image_attachments.as_ref().map(|v| v.len()).unwrap_or(0)
+            ),
             MessageContent::Mixed {
                 reasoning_content,
                 text,
                 tool_calls,
-            } => {
-                format!(
-                    "Mixed: reasoning_content={:?}, text={}, tool_calls={}",
-                    reasoning_content,
-                    text,
-                    tool_calls
-                        .iter()
-                        .map(|tc| format!(
-                            "ToolCall: tool_id={}, tool_name={}, arguments={}",
-                            tc.tool_id, tc.tool_name, tc.arguments
-                        ))
-                        .collect::<Vec<String>>()
-                        .join(", ")
-                )
-            }
+            } => write!(
+                f,
+                "Mixed: reasoning_content={:?}, text={}, tool_calls={}",
+                reasoning_content,
+                text,
+                tool_calls
+                    .iter()
+                    .map(|tc| format!(
+                        "ToolCall: tool_id={}, tool_name={}, arguments={}",
+                        tc.tool_id, tc.tool_name, tc.arguments
+                    ))
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Message;
+    use crate::util::types::Message as AIMessage;
+
+    #[test]
+    fn preserves_empty_reasoning_content_for_provider_replay() {
+        let msg = Message::assistant_with_reasoning(Some(String::new()), String::new(), vec![])
+            .with_thinking_signature(Some("sig_1".to_string()));
+
+        let ai_msg = AIMessage::from(msg);
+
+        assert_eq!(ai_msg.reasoning_content.as_deref(), Some(""));
+        assert_eq!(ai_msg.thinking_signature.as_deref(), Some("sig_1"));
     }
 }
 
 // ============ Tool Calls and Results ============
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolCall {
     pub tool_id: String,
     pub tool_name: String,
     pub arguments: serde_json::Value,
+    /// Original provider-emitted argument JSON, preserved for replay stability when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_arguments: Option<String>,
     /// Record whether tool parameters are valid
+    #[serde(default)]
     pub is_error: bool,
+    /// True when the raw JSON arguments were truncated mid-stream and we
+    /// successfully repaired them. Downstream consumers can flag this to the
+    /// model so it understands the content may be incomplete.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recovered_from_truncation: bool,
 }
 
 impl ToolCall {
     pub fn is_valid(&self) -> bool {
         !self.tool_id.is_empty() && !self.tool_name.is_empty() && !self.is_error
+    }
+}
+
+impl From<bitfun_agent_stream::ToolCall> for ToolCall {
+    fn from(tool_call: bitfun_agent_stream::ToolCall) -> Self {
+        Self {
+            tool_id: tool_call.tool_id,
+            tool_name: tool_call.tool_name,
+            arguments: tool_call.arguments,
+            raw_arguments: tool_call.raw_arguments,
+            is_error: tool_call.is_error,
+            recovered_from_truncation: tool_call.recovered_from_truncation,
+        }
     }
 }
 
@@ -523,21 +744,17 @@ pub struct ToolResult {
     pub result_for_assistant: Option<String>,
     pub is_error: bool,
     pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_attachments: Option<Vec<ToolImageAttachment>>,
 }
 
 impl From<ToolCall> for AIToolCall {
     fn from(tc: ToolCall) -> Self {
-        // Convert serde_json::Value to HashMap
-        let arguments = if let serde_json::Value::Object(map) = &tc.arguments {
-            map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-        } else {
-            std::collections::HashMap::new()
-        };
-
         Self {
             id: tc.tool_id.clone(),
             name: tc.tool_name.clone(),
-            arguments,
+            arguments: tc.arguments,
+            raw_arguments: tc.raw_arguments,
         }
     }
 }

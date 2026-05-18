@@ -31,14 +31,16 @@ import { sessionAPI } from './service-api/SessionAPI';
 import { i18nAPI } from './service-api/I18nAPI';
 import { btwAPI } from './service-api/BtwAPI';
 import { editorAiAPI } from './service-api/EditorAiAPI';
-import { tokenUsageApi } from './tokenUsageApi';
+import { reviewPlatformAPI } from './service-api/ReviewPlatformAPI';
 import { insightsApi } from './insightsApi';
 
 // Export API modules
-export { workspaceAPI, configAPI, aiApi, toolAPI, agentAPI, systemAPI, projectAPI, diffAPI, snapshotAPI, globalAPI, contextAPI, cronAPI, gitAPI, gitAgentAPI, gitRepoHistoryAPI, startchatAgentAPI, sessionAPI, i18nAPI, btwAPI, editorAiAPI, tokenUsageApi, insightsApi };
+export { workspaceAPI, configAPI, aiApi, toolAPI, agentAPI, systemAPI, projectAPI, diffAPI, snapshotAPI, globalAPI, contextAPI, cronAPI, gitAPI, gitAgentAPI, gitRepoHistoryAPI, startchatAgentAPI, sessionAPI, i18nAPI, btwAPI, editorAiAPI, reviewPlatformAPI, insightsApi };
+export * from './service-api/ReviewPlatformAPI';
 
 // Export types
 export type { GitRepoHistory };
+export type { CheckForUpdatesResponse } from './service-api/SystemAPI';
 
 // BitFun API collection: a single access point for all API modules.
 export const bitfunAPI = {
@@ -62,7 +64,7 @@ export const bitfunAPI = {
   i18n: i18nAPI,
   btw: btwAPI,
   editorAi: editorAiAPI,
-  tokenUsage: tokenUsageApi,
+  reviewPlatform: reviewPlatformAPI,
   insights: insightsApi,
 };
 

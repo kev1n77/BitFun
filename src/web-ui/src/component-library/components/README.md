@@ -1,60 +1,61 @@
+[中文](README.zh-CN.md) | **English**
+
 # Component Library
 
-BitFun component library built with SCSS and BEM naming, unified dark theme.
+BitFun component library for reusable UI building blocks and previewable demos.
 
-## Components
+## Scope
 
-- Markdown: rendering with GFM and syntax highlighting; preview at `/markdown-preview.html`
-- Button: variants, sizes, and loading state
-- Card: container with variant/hoverable
-- Loading: indicator with size/variant
-- Modal: ESC/backdrop close and locks background scroll
+This directory contains:
+
+- reusable components exported through [index.ts](index.ts)
+- preview registrations in [registry.tsx](registry.tsx)
+- component-specific docs such as [FlowChatCards README](FlowChatCards/README.md)
+
+## Component areas
+
+Current component folders include:
+
+- **Actions & window controls**: `Button`, `IconButton`, `WindowControls`
+- **Dialogs & overlays**: `Modal`, `InputDialog`, `ConfirmDialog`, `Tooltip`
+- **Form inputs**: `Input`, `NumberInput`, `Search`, `Select`, `Checkbox`, `Switch`, `Textarea`
+- **Display & content**: `Alert`, `Badge`, `Tag`, `Avatar`, `Card`, `Empty`, `Markdown`, `Tabs`
+- **Editors & text**: `CodeEditor`, `StreamText`
+- **Visual utilities**: `CubeLoading`, `CubeLogo`, `DotMatrixLoader`, `TextStrokeEffect`
+- **Feature-specific UI**: `ConfigPage`, `FilterPill`, `FlowChatCards`
+
+## Exports and Previews
+
+- Add reusable exports in [index.ts](index.ts)
+- Register preview entries in [registry.tsx](registry.tsx)
+- Keep README examples aligned with actual exported components
 
 ## Usage
 
 ```tsx
-import { Button, Card, Loading } from '@components';
+import { Button, Card, Input, Markdown } from '@components';
 
-function App() {
+function Example() {
   return (
     <Card>
-      <Button variant="primary">Click</Button>
-      <Loading size="small" />
+      <Input placeholder="Search project files" />
+      <Button variant="primary">Run</Button>
+      <Markdown># Preview</Markdown>
     </Card>
   );
 }
 ```
 
-## Styling
-
-- BEM naming
-- SCSS variables and mixins for theming
-- Transition: `transition: all 0.2s ease;`
-
-## Structure
-
-```
-src/component-library/components/
-├── Button/
-│   ├── Button.tsx
-│   ├── Button.scss
-│   └── index.ts
-├── Card/
-├── Loading/
-├── Modal/
-├── index.ts
-└── registry.tsx
-```
-
 ## Development
 
-1. Create a folder under `components/`
-2. Implement `.tsx` and `.scss`
-3. Export via the component `index.ts` and `components/index.ts`
-4. Register preview in `registry.tsx`
+1. Create a component folder under `components/`
+2. Implement the component and related styles
+3. Export it through the component `index.ts` and `components/index.ts`
+4. Add or update preview demos in `registry.tsx`
+5. Update the nearest README when the public surface changes
 
 ## Notes
 
-- Dark theme only
-- Import via `@components` alias
-- Components support standard HTML attributes
+- Use existing SCSS patterns and naming conventions from nearby components
+- Treat [registry.tsx](registry.tsx) as the source of truth for preview coverage
+- If a component group grows large, add a local README in that subdirectory

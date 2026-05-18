@@ -1,9 +1,99 @@
 //! Theme System
 
+use std::sync::{OnceLock, RwLock};
+
 use bitfun_core::infrastructure::try_get_path_manager_arc;
 use bitfun_core::service::config::types::GlobalConfig;
+use dark_light::Mode;
 use log::{debug, error, warn};
-use tauri::WebviewUrl;
+use tauri::{Manager, WebviewUrl};
+
+const AGENT_COMPANION_WINDOW_LABEL: &str = "agent-companion-pet";
+const AGENT_COMPANION_WINDOW_MIN_SIZE: f64 = 96.0;
+const AGENT_COMPANION_WINDOW_MAX_WIDTH: f64 = 360.0;
+const AGENT_COMPANION_WINDOW_MAX_HEIGHT: f64 = 240.0;
+const AGENT_COMPANION_WINDOW_MARGIN: i32 = 64;
+const AGENT_COMPANION_WINDOW_EDGE_MARGIN: f64 = 8.0;
+
+static AGENT_COMPANION_WINDOW_OPS: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+static AGENT_COMPANION_WINDOW_LAST_POSITION: OnceLock<RwLock<Option<tauri::LogicalPosition<f64>>>> =
+    OnceLock::new();
+
+fn agent_companion_window_ops() -> &'static tokio::sync::Mutex<()> {
+    AGENT_COMPANION_WINDOW_OPS.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+fn agent_companion_window_last_position() -> &'static RwLock<Option<tauri::LogicalPosition<f64>>> {
+    AGENT_COMPANION_WINDOW_LAST_POSITION.get_or_init(|| RwLock::new(None))
+}
+
+fn remember_agent_companion_window_position(position: tauri::LogicalPosition<f64>) {
+    match agent_companion_window_last_position().write() {
+        Ok(mut last_position) => {
+            *last_position = Some(position);
+        }
+        Err(error) => {
+            warn!(
+                "Failed to remember Agent companion window position: {}",
+                error
+            );
+        }
+    }
+}
+
+fn remembered_agent_companion_window_position() -> Option<tauri::LogicalPosition<f64>> {
+    agent_companion_window_last_position()
+        .read()
+        .ok()
+        .and_then(|position| *position)
+}
+
+fn work_area_for_agent_companion_window(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+) -> Option<(tauri::LogicalPosition<f64>, tauri::LogicalSize<f64>)> {
+    let monitor: Option<tauri::Monitor> = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| app.primary_monitor().ok().flatten());
+    let monitor = monitor?;
+    let scale_factor = monitor.scale_factor();
+    let area = monitor.work_area();
+    Some((
+        area.position.to_logical::<f64>(scale_factor),
+        area.size.to_logical::<f64>(scale_factor),
+    ))
+}
+
+fn clamp_agent_companion_window_position(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    position: tauri::LogicalPosition<f64>,
+    size: tauri::LogicalSize<f64>,
+) -> tauri::LogicalPosition<f64> {
+    let Some((area_position, area_size)) = work_area_for_agent_companion_window(app, window) else {
+        return position;
+    };
+
+    let min_x = area_position.x + AGENT_COMPANION_WINDOW_EDGE_MARGIN;
+    let min_y = area_position.y + AGENT_COMPANION_WINDOW_EDGE_MARGIN;
+    let max_x = area_position.x + area_size.width - size.width - AGENT_COMPANION_WINDOW_EDGE_MARGIN;
+    let max_y =
+        area_position.y + area_size.height - size.height - AGENT_COMPANION_WINDOW_EDGE_MARGIN;
+    tauri::LogicalPosition::new(
+        if max_x >= min_x {
+            position.x.clamp(min_x, max_x)
+        } else {
+            area_position.x
+        },
+        if max_y >= min_y {
+            position.y.clamp(min_y, max_y)
+        } else {
+            area_position.y
+        },
+    )
+}
 
 #[derive(Debug, Clone)]
 pub struct ThemeConfig {
@@ -19,15 +109,15 @@ pub struct ThemeConfig {
 
 impl Default for ThemeConfig {
     fn default() -> Self {
-        Self::get_builtin_theme("bitfun-slate").unwrap_or_else(|| Self {
-            id: "bitfun-slate".to_string(),
-            bg_primary: "#1a1c1e".to_string(),
-            bg_secondary: "#1a1c1e".to_string(),
-            bg_scene: "#1d2023".to_string(),
-            is_light: false,
-            text_primary: "#e4e6e8".to_string(),
-            text_muted: "#8a8d92".to_string(),
-            accent_color: "#6b9bd5".to_string(),
+        Self::get_builtin_theme("bitfun-light").unwrap_or_else(|| Self {
+            id: "bitfun-light".to_string(),
+            bg_primary: "#f3f3f5".to_string(),
+            bg_secondary: "#ffffff".to_string(),
+            bg_scene: "#ffffff".to_string(),
+            is_light: true,
+            text_primary: "#1e293b".to_string(),
+            text_muted: "#64748b".to_string(),
+            accent_color: "#64748b".to_string(),
         })
     }
 }
@@ -75,6 +165,16 @@ impl ThemeConfig {
                 text_muted: "rgba(255, 255, 255, 0.4)".to_string(),
                 accent_color: "#00e6ff".to_string(),
             }),
+            "bitfun-tokyo-night" => Some(Self {
+                id: theme_id.to_string(),
+                bg_primary: "#1a1b26".to_string(),
+                bg_secondary: "#16161e".to_string(),
+                bg_scene: "#1a1b26".to_string(),
+                is_light: false,
+                text_primary: "#c0caf5".to_string(),
+                text_muted: "rgba(255, 255, 255, 0.4)".to_string(),
+                accent_color: "#7aa2f7".to_string(),
+            }),
             "bitfun-china-night" => Some(Self {
                 id: theme_id.to_string(),
                 bg_primary: "#1a1814".to_string(),
@@ -87,13 +187,13 @@ impl ThemeConfig {
             }),
             "bitfun-light" => Some(Self {
                 id: theme_id.to_string(),
-                bg_primary: "#f4f4f4".to_string(),
+                bg_primary: "#f3f3f5".to_string(),
                 bg_secondary: "#ffffff".to_string(),
                 bg_scene: "#ffffff".to_string(),
                 is_light: true,
-                text_primary: "#111827".to_string(),
-                text_muted: "rgba(0, 0, 0, 0.5)".to_string(),
-                accent_color: "#3b82f6".to_string(),
+                text_primary: "#1e293b".to_string(),
+                text_muted: "#64748b".to_string(),
+                accent_color: "#64748b".to_string(),
             }),
             "bitfun-china-style" => Some(Self {
                 id: theme_id.to_string(),
@@ -145,15 +245,29 @@ impl ThemeConfig {
             .themes
             .as_ref()
             .map(|t| t.current.as_str())
-            .unwrap_or("bitfun-slate");
+            .unwrap_or("bitfun-light");
 
-        match Self::get_builtin_theme(theme_id) {
+        let resolved_id = Self::resolve_builtin_theme_id(theme_id);
+
+        match Self::get_builtin_theme(resolved_id) {
             Some(config) => config,
             None => {
                 warn!("Unknown theme ID: {}, using default theme", theme_id);
                 default
             }
         }
+    }
+
+    /// Maps config `themes.current` to a built-in id for splash / window chrome.
+    /// `system` follows OS light/dark (aligned with web-ui `getSystemPreferredDefaultThemeId`).
+    fn resolve_builtin_theme_id(theme_id: &str) -> &str {
+        if theme_id == "system" {
+            return match dark_light::detect() {
+                Mode::Dark => "bitfun-dark",
+                Mode::Light | Mode::Default => "bitfun-light",
+            };
+        }
+        theme_id
     }
 
     pub fn generate_init_script(&self) -> String {
@@ -244,6 +358,9 @@ pub fn create_main_window(app_handle: &tauri::AppHandle) {
         .accept_first_mouse(true)
         .initialization_script(&init_script);
 
+    // Keep HTML5 drag-and-drop working inside the webview for desktop UI drag targets.
+    builder = builder.disable_drag_drop_handler();
+
     #[cfg(target_os = "macos")]
     {
         builder = builder
@@ -260,17 +377,17 @@ pub fn create_main_window(app_handle: &tauri::AppHandle) {
 
     match builder.build() {
         Ok(window) => {
-            #[cfg(debug_assertions)]
+            #[cfg(any(debug_assertions, feature = "devtools"))]
             {
                 if std::env::var("BITFUN_OPEN_DEVTOOLS")
                     .map(|v| v == "1")
                     .unwrap_or(false)
                 {
-                    window.open_devtools();
+                    let _ = window.open_devtools();
                 }
             }
 
-            #[cfg(not(debug_assertions))]
+            #[cfg(not(any(debug_assertions, feature = "devtools")))]
             let _ = window;
         }
         Err(e) => {
@@ -279,10 +396,267 @@ pub fn create_main_window(app_handle: &tauri::AppHandle) {
     }
 }
 
+fn app_url(path: &str) -> WebviewUrl {
+    if cfg!(debug_assertions) {
+        match format!("http://localhost:1422/{}", path).parse() {
+            Ok(url) => WebviewUrl::External(url),
+            Err(e) => {
+                error!("Invalid dev URL, fallback to app URL: {}", e);
+                WebviewUrl::App(path.into())
+            }
+        }
+    } else {
+        let app_path = if path.starts_with('?') {
+            format!("index.html{}", path)
+        } else {
+            path.to_string()
+        };
+        WebviewUrl::App(app_path.into())
+    }
+}
+
+fn agent_companion_default_position(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+) -> Option<tauri::LogicalPosition<f64>> {
+    let (area_position, area_size) = work_area_for_agent_companion_window(app, window)?;
+
+    let monitor: Option<tauri::Monitor> = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| app.primary_monitor().ok().flatten());
+    let scale_factor = monitor
+        .as_ref()
+        .map(|monitor| monitor.scale_factor())
+        .unwrap_or(1.0);
+    let window_size = window
+        .outer_size()
+        .ok()
+        .map(|size| size.to_logical::<f64>(scale_factor));
+    let window_width = window_size
+        .as_ref()
+        .map(|size| size.width)
+        .unwrap_or(AGENT_COMPANION_WINDOW_MIN_SIZE);
+    let window_height = window_size
+        .as_ref()
+        .map(|size| size.height)
+        .unwrap_or(AGENT_COMPANION_WINDOW_MIN_SIZE);
+    let x =
+        area_position.x + area_size.width - window_width - f64::from(AGENT_COMPANION_WINDOW_MARGIN);
+    let y = area_position.y + area_size.height
+        - window_height
+        - f64::from(AGENT_COMPANION_WINDOW_MARGIN);
+
+    Some(clamp_agent_companion_window_position(
+        app,
+        window,
+        tauri::LogicalPosition::new(x, y),
+        tauri::LogicalSize::new(window_width, window_height),
+    ))
+}
+
+fn agent_companion_window_effective_size(window: &tauri::WebviewWindow) -> tauri::LogicalSize<f64> {
+    let scale_factor = window.scale_factor().unwrap_or(1.0);
+    let size = window
+        .outer_size()
+        .ok()
+        .map(|size| size.to_logical::<f64>(scale_factor))
+        .unwrap_or_else(|| {
+            tauri::LogicalSize::new(
+                AGENT_COMPANION_WINDOW_MIN_SIZE,
+                AGENT_COMPANION_WINDOW_MIN_SIZE,
+            )
+        });
+
+    tauri::LogicalSize::new(
+        size.width.clamp(
+            AGENT_COMPANION_WINDOW_MIN_SIZE,
+            AGENT_COMPANION_WINDOW_MAX_WIDTH,
+        ),
+        size.height.clamp(
+            AGENT_COMPANION_WINDOW_MIN_SIZE,
+            AGENT_COMPANION_WINDOW_MAX_HEIGHT,
+        ),
+    )
+}
+
+fn position_agent_companion_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    let Some(position) = remembered_agent_companion_window_position()
+        .or_else(|| agent_companion_default_position(app, window))
+    else {
+        return;
+    };
+
+    let size = agent_companion_window_effective_size(window);
+    let position = clamp_agent_companion_window_position(app, window, position, size);
+
+    if let Err(e) = window.set_position(position) {
+        warn!("Failed to position Agent companion window: {}", e);
+    } else {
+        remember_agent_companion_window_position(position);
+    }
+}
+
+fn resize_agent_companion_window(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    width: f64,
+    height: f64,
+) {
+    if !width.is_finite() || !height.is_finite() {
+        warn!(
+            "Ignored invalid Agent companion window size: width={}, height={}",
+            width, height
+        );
+        return;
+    }
+
+    let width = width.clamp(
+        AGENT_COMPANION_WINDOW_MIN_SIZE,
+        AGENT_COMPANION_WINDOW_MAX_WIDTH,
+    );
+    let height = height.clamp(
+        AGENT_COMPANION_WINDOW_MIN_SIZE,
+        AGENT_COMPANION_WINDOW_MAX_HEIGHT,
+    );
+    let scale_factor = window.scale_factor().unwrap_or(1.0);
+    let size = agent_companion_window_effective_size(window);
+    if (size.width - width).abs() < 0.5 && (size.height - height).abs() < 0.5 {
+        return;
+    }
+
+    let old_position = window
+        .outer_position()
+        .ok()
+        .map(|position| position.to_logical::<f64>(scale_factor));
+
+    if let Err(e) = window.set_size(tauri::LogicalSize::new(width, height)) {
+        warn!("Failed to resize Agent companion window: {}", e);
+        return;
+    }
+
+    // Keep the bottom-right corner fixed when bubbles change height. If we cannot
+    // read the previous geometry (e.g. transient platform errors), avoid snapping
+    // back to the default corner — that would feel like the pet "jumped".
+    if let Some(position) = old_position {
+        let next_position = clamp_agent_companion_window_position(
+            app,
+            window,
+            tauri::LogicalPosition::new(
+                position.x + size.width - width,
+                position.y + size.height - height,
+            ),
+            tauri::LogicalSize::new(width, height),
+        );
+        if let Err(e) = window.set_position(next_position) {
+            warn!("Failed to position Agent companion window: {}", e);
+        } else {
+            remember_agent_companion_window_position(next_position);
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn show_agent_companion_desktop_pet(app: tauri::AppHandle) -> Result<(), String> {
+    let _guard = agent_companion_window_ops().lock().await;
+
+    // Reuse any existing window: never destroy here. A previous implementation destroyed
+    // whenever `is_visible` was false, which raced with another `show` that had built the
+    // window but not called `show()` yet (or with `hide`), producing duplicate pets or
+    // stuck windows.
+    if let Some(window) = app.get_webview_window(AGENT_COMPANION_WINDOW_LABEL) {
+        if let Err(e) = window.unminimize() {
+            warn!("Failed to unminimize Agent companion window: {}", e);
+        }
+        position_agent_companion_window(&app, &window);
+        window.show().map_err(|e| {
+            error!("Failed to show Agent companion window: {}", e);
+            format!("Failed to show Agent companion window: {}", e)
+        })?;
+        return Ok(());
+    }
+
+    let url = app_url("?bitfunWindow=agent-companion");
+    let mut builder = tauri::WebviewWindowBuilder::new(&app, AGENT_COMPANION_WINDOW_LABEL, url)
+        .title("BitFun Agent Companion")
+        .inner_size(
+            AGENT_COMPANION_WINDOW_MIN_SIZE,
+            AGENT_COMPANION_WINDOW_MIN_SIZE,
+        )
+        .max_inner_size(
+            AGENT_COMPANION_WINDOW_MAX_WIDTH,
+            AGENT_COMPANION_WINDOW_MAX_HEIGHT,
+        )
+        .min_inner_size(1.0, 1.0)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .shadow(false)
+        .visible(false)
+        .accept_first_mouse(true)
+        .background_color(tauri::window::Color(0, 0, 0, 0));
+
+    builder = builder.disable_drag_drop_handler();
+
+    let window = builder.build().map_err(|e| {
+        error!("Failed to create Agent companion window: {}", e);
+        format!("Failed to create Agent companion window: {}", e)
+    })?;
+
+    position_agent_companion_window(&app, &window);
+
+    window.show().map_err(|e| {
+        error!("Failed to show Agent companion window: {}", e);
+        format!("Failed to show Agent companion window: {}", e)
+    })?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn resize_agent_companion_desktop_pet(
+    app: tauri::AppHandle,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let _guard = agent_companion_window_ops().lock().await;
+    if let Some(window) = app.get_webview_window(AGENT_COMPANION_WINDOW_LABEL) {
+        let app_for_resize = app.clone();
+        let window_for_resize = window.clone();
+        window
+            .run_on_main_thread(move || {
+                resize_agent_companion_window(&app_for_resize, &window_for_resize, width, height);
+            })
+            .map_err(|e| {
+                warn!("Failed to schedule Agent companion window resize: {}", e);
+                format!("Failed to schedule Agent companion window resize: {}", e)
+            })?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn hide_agent_companion_desktop_pet(app: tauri::AppHandle) -> Result<(), String> {
+    let _guard = agent_companion_window_ops().lock().await;
+    if let Some(window) = app.get_webview_window(AGENT_COMPANION_WINDOW_LABEL) {
+        if let Ok(scale_factor) = window.scale_factor() {
+            if let Ok(position) = window.outer_position() {
+                remember_agent_companion_window_position(position.to_logical::<f64>(scale_factor));
+            }
+        }
+        window.destroy().map_err(|e| {
+            error!("Failed to destroy Agent companion window: {}", e);
+            format!("Failed to destroy Agent companion window: {}", e)
+        })?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::Manager;
-
     if let Some(main_window) = app.get_webview_window("main") {
         #[cfg(target_os = "windows")]
         {
@@ -300,6 +674,12 @@ pub async fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
             error!("Failed to show main window: {}", e);
             format!("Failed to show main window: {}", e)
         })?;
+
+        #[cfg(target_os = "macos")]
+        {
+            crate::cancel_main_window_close_request_on_macos();
+            crate::mark_main_window_hidden_on_macos(false);
+        }
 
         main_window.set_focus().map_err(|e| {
             error!("Failed to focus main window: {}", e);

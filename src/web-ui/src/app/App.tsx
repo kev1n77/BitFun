@@ -1,25 +1,30 @@
 import { useEffect, useCallback, useState, useRef } from 'react';
+import { useShortcut } from '@/infrastructure/hooks/useShortcut';
 import { ChatProvider, useAIInitialization } from '../infrastructure';
-import { ViewModeProvider } from '../infrastructure/contexts/ViewModeContext';
+import { ViewModeProvider } from '../infrastructure/contexts/ViewModeProvider';
 import { SSHRemoteProvider } from '../features/ssh-remote';
 import AppLayout from './layout/AppLayout';
 import { useCurrentModelConfig } from '../hooks/useModelConfigs';
 import { ContextMenuRenderer } from '../shared/context-menu-system/components/ContextMenuRenderer';
 import { NotificationContainer, NotificationCenter } from '../shared/notification-system';
+import { AnnouncementProvider } from '../shared/announcement-system';
 import { ConfirmDialogRenderer } from '../component-library';
 import { createLogger } from '@/shared/utils/logger';
+import { aiExperienceConfigService } from '@/infrastructure/config/services/AIExperienceConfigService';
+import { syncAgentCompanionDesktopWindow } from '@/infrastructure/config/services/AgentCompanionWindowService';
+import { isTauriRuntime } from '@/infrastructure/runtime';
+import { buildAgentCompanionActivity, subscribeAgentCompanionActivity } from '@/flow_chat/utils/agentCompanionActivity';
+import { emitAgentCompanionActivity } from '@/flow_chat/services/AgentCompanionActivityBridge';
 import { useWorkspaceContext } from '../infrastructure/contexts/WorkspaceContext';
 import SplashScreen from './components/SplashScreen/SplashScreen';
+import { useGlobalSceneShortcuts } from './hooks/useGlobalSceneShortcuts';
+import { useDebugInspector } from '@/infrastructure/debug/useDebugInspector';
+import { openAgentCompanionSession } from './services/openAgentCompanionSession';
 
 // Toolbar Mode
 import { ToolbarModeProvider } from '../flow_chat';
 
-// Onboarding
-import { OnboardingWizard, useOnboardingStore, onboardingService } from '../features/onboarding';
-
-
 const log = createLogger('App');
-
 /**
  * BitFun main application component.
  *
@@ -32,7 +37,6 @@ const log = createLogger('App');
  */
 // Minimum time (ms) the splash is shown, so the animation is never a flash.
 const MIN_SPLASH_MS = 900;
-const ENABLE_MAIN_ONBOARDING = false;
 
 function App() {
   // AI initialization
@@ -62,45 +66,6 @@ function App() {
     setSplashVisible(false);
   }, []);
 
-  // Onboarding state
-  const { isOnboardingActive, forceShowOnboarding, completeOnboarding } = useOnboardingStore();
-  
-  // Handle onboarding completion
-  const handleOnboardingComplete = useCallback(() => {
-    completeOnboarding();
-  }, [completeOnboarding]);
-
-  // Initialize onboarding: check first launch on startup
-  useEffect(() => {
-    if (!ENABLE_MAIN_ONBOARDING) {
-      onboardingService.markCompleted().catch((error) => {
-        log.warn('Failed to persist onboarding completion while disabled', error);
-      });
-      return;
-    }
-
-    onboardingService.initialize().catch((error) => {
-      log.error('Failed to initialize onboarding service', error);
-    });
-  }, []);
-
-  // In development, trigger onboarding via window.showOnboarding()
-  useEffect(() => {
-    if (!ENABLE_MAIN_ONBOARDING) {
-      delete (window as any).showOnboarding;
-      return;
-    }
-
-    (window as any).showOnboarding = () => {
-      forceShowOnboarding();
-      log.debug('Onboarding activated via debug command');
-    };
-    
-    return () => {
-      delete (window as any).showOnboarding;
-    };
-  }, [forceShowOnboarding]);
-
   const showMainWindow = useCallback(async (reason: string) => {
     if (mainWindowShownRef.current) {
       return;
@@ -127,8 +92,14 @@ function App() {
     }
   }, []);
 
-  // Keep the native window hidden until the startup splash has fully exited.
-  // This avoids showing a blank/half-painted webview before the first stable frame.
+  // Reveal the native window as soon as React has painted a frame.
+  // The splash still covers the UI, so users see immediate feedback instead
+  // of waiting on a hidden window while startup continues in the background.
+  useEffect(() => {
+    void showMainWindow('startup-overlay');
+  }, [showMainWindow]);
+
+  // If the early reveal path fails, keep the old post-splash show as a retry.
   useEffect(() => {
     if (splashVisible) {
       return;
@@ -175,10 +146,81 @@ function App() {
         log.error('Failed to initialize MCP servers', error);
       }
     };
-    
+
+    const initACPClients = async () => {
+      try {
+        const { ACPClientAPI } = await import('../infrastructure/api/service-api/ACPClientAPI');
+        await ACPClientAPI.initializeClients();
+        log.debug('ACP clients initialized');
+        // Requirement probes execute third-party CLIs such as `opencode --version`.
+        // Keep startup side-effect free; settings and ACP session creation can probe on demand.
+      } catch (error) {
+        log.error('Failed to initialize ACP clients', error);
+      }
+    };
+
     initIdeControl();
     initMCPServers();
+    initACPClients();
     
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+
+    const emitCurrentAgentCompanionActivity = () => {
+      void emitAgentCompanionActivity(buildAgentCompanionActivity());
+    };
+
+    void aiExperienceConfigService.getSettingsAsync().then(async settings => {
+      await syncAgentCompanionDesktopWindow(settings);
+      emitCurrentAgentCompanionActivity();
+      window.setTimeout(emitCurrentAgentCompanionActivity, 250);
+    });
+    return aiExperienceConfigService.addChangeListener(settings => {
+      void syncAgentCompanionDesktopWindow(settings).then(() => {
+        emitCurrentAgentCompanionActivity();
+        window.setTimeout(emitCurrentAgentCompanionActivity, 250);
+      });
+    });
+  }, []);
+
+  useEffect(() => subscribeAgentCompanionActivity(activity => {
+    void emitAgentCompanionActivity(activity);
+  }), []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    void import('@tauri-apps/api/event')
+      .then(({ listen }) => listen<{ sessionId?: string }>(
+        'agent-companion://open-session',
+        async event => {
+          const sessionId = event.payload?.sessionId;
+          if (!sessionId) return;
+
+          await openAgentCompanionSession(sessionId);
+
+          try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            await invoke('show_main_window');
+          } catch (error) {
+            log.warn('Failed to show main window from Agent companion bubble', {
+              sessionId,
+              error,
+            });
+          }
+        },
+      ))
+      .then(removeListener => {
+        unlisten = removeListener;
+      })
+      .catch(error => {
+        log.warn('Failed to listen for Agent companion session open events', error);
+      });
+
+    return () => {
+      unlisten?.();
+    };
   }, []);
 
   // Observe AI initialization state
@@ -198,21 +240,35 @@ function App() {
     }
   }, [aiInitialized, aiInitializing, aiError, currentConfig]);
 
-  // Keyboard shortcuts
+  // Block browser-native Ctrl+F (find bar) and Ctrl+R (hard reload).
+  // On macOS the equivalent modifiers are Cmd+F / Cmd+R.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Escape closes modal
-      if (e.key === 'Escape') {
-        window.dispatchEvent(new CustomEvent('closePreview'));
+      const primary = e.ctrlKey || e.metaKey;
+      if (!primary) return;
+      const key = e.key.toLowerCase();
+      if (key === 'f' || key === 'r') {
+        e.preventDefault();
+        e.stopPropagation();
       }
     };
-
-    window.addEventListener('keydown', handleKeyDown);
-    
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-    };
+    window.addEventListener('keydown', handleKeyDown, { capture: true });
+    return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
   }, []);
+
+  // Escape closes preview overlay (registered via ShortcutManager)
+  useShortcut(
+    'app.closePreview',
+    { key: 'Escape', scope: 'app', allowInInput: true },
+    () => window.dispatchEvent(new CustomEvent('closePreview')),
+    { priority: 1, description: 'keyboard.shortcuts.app.closePreview' }
+  );
+
+  // Top SceneBar: Mod+Alt+1..9 / Mod+Alt+PageUp/PageDown
+  useGlobalSceneShortcuts();
+
+  // Debug inspector shortcuts (desktop devtools only)
+  useDebugInspector();
 
   // Unified layout via a single AppLayout
   return (
@@ -220,13 +276,6 @@ function App() {
       <ViewModeProvider defaultMode="coder">
         <SSHRemoteProvider>
           <ToolbarModeProvider>
-            {/* Onboarding overlay (first launch) */}
-            {ENABLE_MAIN_ONBOARDING && isOnboardingActive && (
-              <OnboardingWizard
-                onComplete={handleOnboardingComplete}
-              />
-            )}
-
             {/* Unified app layout with startup/workspace modes */}
             <AppLayout />
 
@@ -239,6 +288,9 @@ function App() {
 
             {/* Confirm dialog */}
             <ConfirmDialogRenderer />
+
+            {/* Announcement / feature-demo / tips system */}
+            <AnnouncementProvider />
 
             {/* Startup splash — sits above everything, exits once workspace is ready */}
             {splashVisible && (

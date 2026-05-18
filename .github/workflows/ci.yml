@@ -3,8 +3,14 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'png/**'
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'png/**'
 
 # Cancel previous runs on same branch/PR
 concurrency:
@@ -66,19 +72,28 @@ jobs:
             pkg-config \
             libglib2.0-dev \
             libgtk-3-dev \
+            libxdo-dev \
             "$WEBKIT_PKG" \
             "$APPINDICATOR_PKG" \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            libleptonica-dev \
+            libtesseract-dev \
+            tesseract-ocr \
+            tesseract-ocr-eng
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: swatinem/rust-cache@v2
         with:
-          shared-key: "ci-check-${{ runner.os }}"
+          shared-key: "ci-check-v2-${{ runner.os }}-no-cargo-bin-v1"
+          cache-bin: false
 
       - name: Check compilation
         run: cargo check --workspace --exclude bitfun-cli
+
+      - name: Run core Rust tests
+        run: cargo test --locked -p bitfun-core
 
   # ── Frontend: build ────────────────────────────────────────────────
   frontend-build:
@@ -100,8 +115,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Type-check web UI
-        run: pnpm run type-check:web
+      - name: Lint web UI
+        run: pnpm run lint:web
 
       - name: Build web UI
         run: pnpm run build:web

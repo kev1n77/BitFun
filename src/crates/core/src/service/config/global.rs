@@ -53,6 +53,27 @@ pub enum ConfigUpdateEvent {
         /// New runtime log level.
         new_level: String,
     },
+    /// Runtime sensitive diagnostics preference updated.
+    LoggingSensitiveDiagnosticsUpdated {
+        /// Whether logs may include prompts, payloads, and other sensitive diagnostics.
+        include_sensitive_diagnostics: bool,
+    },
+    /// AI models / default-model slots / agent-model mappings were reconciled
+    /// after a model became unavailable (disabled, deleted, or otherwise
+    /// invalid). Emitted whenever the config layer had to silently rewrite
+    /// `ai.default_models`, `ai.agent_models`, or `ai.func_agent_models` so they
+    /// only reference enabled models.
+    ModelsReconciled {
+        /// Model ids that just became unusable (disabled or deleted) and that
+        /// any active session, default slot, or agent mapping was pointing at
+        /// before this reconcile pass.
+        invalidated_model_ids: Vec<String>,
+        /// Whether `ai.default_models` was rewritten as part of the reconcile.
+        default_models_changed: bool,
+        /// Whether `ai.agent_models` or `ai.func_agent_models` were rewritten
+        /// as part of the reconcile.
+        agent_models_changed: bool,
+    },
 }
 
 /// Global configuration service manager.
@@ -80,19 +101,18 @@ impl GlobalConfigManager {
 
         info!("Global config service initialized");
 
-        match super::tool_config_sync::sync_tool_configs().await {
+        match super::mode_config_canonicalizer::canonicalize_mode_configs().await {
             Ok(report) => {
-                if !report.new_tools.is_empty() || !report.deleted_tools.is_empty() {
+                if !report.removed_mode_configs.is_empty() || !report.updated_modes.is_empty() {
                     info!(
-                        "Tool config sync completed: {} new, {} deleted, {} updated modes",
-                        report.new_tools.len(),
-                        report.deleted_tools.len(),
+                        "Mode config canonicalization completed: removed_modes={}, updated_modes={}",
+                        report.removed_mode_configs.len(),
                         report.updated_modes.len()
                     );
                 }
             }
             Err(e) => {
-                warn!("Tool config sync failed: {}", e);
+                warn!("Mode config canonicalization failed: {}", e);
             }
         }
 
@@ -136,6 +156,12 @@ impl GlobalConfigManager {
     pub async fn reload() -> BitFunResult<()> {
         let service = Self::get_service().await?;
         service.reload().await?;
+        if let Err(error) = super::mode_config_canonicalizer::canonicalize_mode_configs().await {
+            warn!(
+                "Mode config canonicalization failed after reload: {}",
+                error
+            );
+        }
         Self::broadcast_update(ConfigUpdateEvent::ConfigReloaded).await;
         Ok(())
     }

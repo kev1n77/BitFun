@@ -1,5 +1,5 @@
 use crate::agentic::tools::framework::{
-    Tool, ToolRenderOptions, ToolResult, ToolUseContext, ValidationResult,
+    Tool, ToolExposure, ToolRenderOptions, ToolResult, ToolUseContext, ValidationResult,
 };
 use crate::util::errors::{BitFunError, BitFunResult};
 use async_trait::async_trait;
@@ -9,6 +9,12 @@ use terminal_core::{CloseSessionRequest, SignalRequest, TerminalApi};
 
 /// TerminalControl tool - kill or interrupt a terminal session
 pub struct TerminalControlTool;
+
+impl Default for TerminalControlTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl TerminalControlTool {
     pub fn new() -> Self {
@@ -33,6 +39,14 @@ Actions:
 
 The terminal_session_id is returned inside <terminal_session_id>...</terminal_session_id> tags in BashTool results."#
             .to_string())
+    }
+
+    fn short_description(&self) -> String {
+        "Interrupt or close a managed terminal session.".to_string()
+    }
+
+    fn default_exposure(&self) -> ToolExposure {
+        ToolExposure::Collapsed
     }
 
     fn input_schema(&self) -> Value {
@@ -64,6 +78,10 @@ The terminal_session_id is returned inside <terminal_session_id>...</terminal_se
 
     fn needs_permissions(&self, _input: Option<&Value>) -> bool {
         false
+    }
+
+    async fn is_available_in_context(&self, context: Option<&ToolUseContext>) -> bool {
+        !context.map(|ctx| ctx.is_remote()).unwrap_or(false)
     }
 
     async fn validate_input(
@@ -163,6 +181,7 @@ The terminal_session_id is returned inside <terminal_session_id>...</terminal_se
                         "Sent interrupt (SIGINT) to terminal session '{}'.",
                         terminal_session_id
                     )),
+                    image_attachments: None,
                 }])
             }
 
@@ -217,6 +236,7 @@ The terminal_session_id is returned inside <terminal_session_id>...</terminal_se
                         "action": "kill",
                     }),
                     result_for_assistant: Some(result_for_assistant),
+                    image_attachments: None,
                 }])
             }
 

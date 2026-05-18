@@ -117,10 +117,10 @@
   },
 
   "nursery": {
-    "backToGallery": "Nursery",
+    "backToGallery": "Assistant",
 
     "gallery": {
-      "title":              "Nursery",
+      "title":              "Assistant",
       "subtitle":           "Manage all your assistant instances",
       "newAssistant":       "New Assistant",
       "assistantsTitle":    "Hatched Assistants",
@@ -128,7 +128,6 @@
     },
 
     "template": {
-      "tag":          "Global Default",
       "title":        "Hatch Template",
       "subtitle":     "New assistants inherit these settings",
       "configure":    "Configure",
@@ -146,10 +145,22 @@
       },
       "groupCountEmpty": "None",
       "builtinToolsSection": "Built-in tools",
+      "colEnabled": "Enabled",
+      "colDisabled": "Disabled",
+      "colEmpty": "None",
       "mcpToolsSection": "MCP tools",
       "mcpEmptyTitle": "No MCP servers connected",
       "mcpEmptyHint": "Add MCP servers in Settings to see their tools here.",
-      "mcpServerNoTools": "No tools available from this server"
+      "sectionModelsSubtitle": "Primary and fast model slots inherited when hatching new assistants",
+      "mcpServerNoTools": "No tools available from this server",
+      "closeDetail": "Close detail",
+      "detailPanel": "Detail panel",
+      "openServerDetail": "MCP server details",
+      "toolTypeBuiltin": "Built-in tool",
+      "toolTypeMcp": "MCP tool",
+      "readonlyTool": "Read-only",
+      "serverToolsHeading": "Tools on this server",
+      "skillLevel": "Level {{level}}"
     },
 
     "tabs": {
@@ -160,16 +171,34 @@
     },
 
     "card": {
-      "unnamed":    "Unnamed Assistant",
-      "noVibe":     "An assistant waiting to be defined",
-      "configure":  "Click to configure",
-      "tokenTitle": "Context usage estimate"
+      "unnamed":             "Unnamed Assistant",
+      "noVibe":              "An assistant waiting to be defined",
+      "configure":           "Click to configure",
+      "newSession":          "New session",
+      "tokenTitle":          "Context usage estimate",
+      "primaryBadge":        "Primary",
+      "delete":              "Delete assistant",
+      "deleteConfirmTitle":  "Delete assistant",
+      "deleteConfirmMessage": "Delete assistant \"{{name}}\"? This cannot be undone.",
+      "deleteConfirm":       "Delete",
+      "deleteCancel":        "Cancel"
     },
 
     "assistant": {
       "inheritGroup":   "Inherit from Template",
       "inheritPrimary": "Inherit from template (primary)",
-      "inheritFast":    "Inherit from template (fast)"
+      "inheritFast":    "Inherit from template (fast)",
+      "personaDocsTitle": "Key documents",
+      "sessionsSectionTitle": "Sessions",
+      "scheduledSessionsTitle": "Scheduled sessions",
+      "scheduledSessionsNoWorkspace": "Select an assistant workspace to manage scheduled sessions.",
+      "personaDocs": {
+        "IDENTITY": "Identity",
+        "SOUL":     "Core persona",
+        "USER":     "User profile"
+      },
+      "personaDocSaveFailed": "Failed to save document",
+      "personaDocLoadFailed": "Failed to load document"
     }
   }
 }

@@ -14,6 +14,15 @@ export interface FlowChatContext {
   flowChatStore: FlowChatStore;
   processingManager: typeof processingStatusManager;
   eventBatcher: EventBatcher;
+  pendingTurnCompletions: Map<string, {
+    turnId: string;
+    lastActivityAt: number;
+    timer: ReturnType<typeof setTimeout> | null;
+    /** Set when the turn completed with a partial stream recovery. */
+    partialRecoveryReason?: string;
+  }>;
+  /** In-flight historical session hydration: sessionId -> promise */
+  pendingHistoryLoads: Map<string, Promise<void>>;
   /** Content buffers: sessionId -> (roundId -> content) */
   contentBuffers: Map<string, Map<string, string>>;
   /** Active text items: sessionId -> (roundId -> textItemId) */
@@ -28,6 +37,18 @@ export interface FlowChatContext {
   turnSaveInFlight: Map<string, Promise<void>>;
   /** Pending save marks for coalesced serial execution */
   turnSavePending: Set<string>;
+  /** Transient runtime status timers: key = "sessionId:turnId:roundId:scope" */
+  runtimeStatusTimers: Map<string, ReturnType<typeof setTimeout>>;
+  /** Session IDs that the user explicitly cancelled; used to skip unread marking */
+  userCancelledSessionIds: Set<string>;
+  /**
+   * Turn IDs whose terminal lifecycle event (cancelled / failed / completed)
+   * has already been applied. Backend may emit the same terminal event twice
+   * (e.g. cancelled emitted both by the execution engine when a cancel is
+   * detected mid-round and by the coordinator wrapper on the resulting Err);
+   * this set is used to make handlers idempotent. Key format: `sessionId:turnId`.
+   */
+  handledTerminalTurnEvents: Set<string>;
   currentWorkspacePath: string | null;
 }
 

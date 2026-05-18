@@ -1,15 +1,16 @@
 /**
- * State transition table definition (three-state design)
+ * State transition table definition
  */
 
 import { SessionExecutionState, SessionExecutionEvent, StateTransitionTable, ProcessingPhase } from './types';
 
 /**
- * Minimal three-state transition table
+ * State transition table
  * 
  * Design philosophy:
  * - IDLE: idle, can start new task
  * - PROCESSING: running, can be cancelled or error
+ * - FINISHING: backend completed, frontend is draining late events before becoming idle
  * - ERROR: error state, can reset or retry
  * 
  * Cancellation logic: USER_CANCEL → immediately switch to IDLE (no backend wait)
@@ -21,11 +22,13 @@ export const STATE_TRANSITIONS: StateTransitionTable = {
   
   [SessionExecutionState.PROCESSING]: {
     [SessionExecutionEvent.USER_CANCEL]: SessionExecutionState.IDLE,
+    [SessionExecutionEvent.FINISHING_SETTLED]: SessionExecutionState.IDLE,
     
     [SessionExecutionEvent.ERROR_OCCURRED]: SessionExecutionState.ERROR,
     
-    [SessionExecutionEvent.STREAM_COMPLETE]: SessionExecutionState.IDLE,
+    [SessionExecutionEvent.BACKEND_STREAM_COMPLETED]: SessionExecutionState.FINISHING,
     
+    [SessionExecutionEvent.COMPACTION_STARTED]: SessionExecutionState.PROCESSING,
     [SessionExecutionEvent.MODEL_ROUND_START]: SessionExecutionState.PROCESSING,
     [SessionExecutionEvent.TEXT_CHUNK_RECEIVED]: SessionExecutionState.PROCESSING,
     [SessionExecutionEvent.TOOL_DETECTED]: SessionExecutionState.PROCESSING,
@@ -33,6 +36,21 @@ export const STATE_TRANSITIONS: StateTransitionTable = {
     [SessionExecutionEvent.TOOL_COMPLETED]: SessionExecutionState.PROCESSING,
     [SessionExecutionEvent.TOOL_CONFIRMATION_NEEDED]: SessionExecutionState.PROCESSING,
     [SessionExecutionEvent.TOOL_CONFIRMED]: SessionExecutionState.PROCESSING,
+    [SessionExecutionEvent.TOOL_REJECTED]: SessionExecutionState.IDLE,
+  },
+
+  [SessionExecutionState.FINISHING]: {
+    [SessionExecutionEvent.USER_CANCEL]: SessionExecutionState.IDLE,
+    [SessionExecutionEvent.ERROR_OCCURRED]: SessionExecutionState.ERROR,
+    [SessionExecutionEvent.FINISHING_SETTLED]: SessionExecutionState.IDLE,
+    [SessionExecutionEvent.COMPACTION_STARTED]: SessionExecutionState.FINISHING,
+    [SessionExecutionEvent.MODEL_ROUND_START]: SessionExecutionState.FINISHING,
+    [SessionExecutionEvent.TEXT_CHUNK_RECEIVED]: SessionExecutionState.FINISHING,
+    [SessionExecutionEvent.TOOL_DETECTED]: SessionExecutionState.FINISHING,
+    [SessionExecutionEvent.TOOL_STARTED]: SessionExecutionState.FINISHING,
+    [SessionExecutionEvent.TOOL_COMPLETED]: SessionExecutionState.FINISHING,
+    [SessionExecutionEvent.TOOL_CONFIRMATION_NEEDED]: SessionExecutionState.FINISHING,
+    [SessionExecutionEvent.TOOL_CONFIRMED]: SessionExecutionState.FINISHING,
     [SessionExecutionEvent.TOOL_REJECTED]: SessionExecutionState.IDLE,
   },
   
@@ -48,6 +66,7 @@ export const STATE_TRANSITIONS: StateTransitionTable = {
  */
 export const PHASE_TRANSITIONS: Record<SessionExecutionEvent, ProcessingPhase | null> = {
   [SessionExecutionEvent.START]: ProcessingPhase.STARTING,
+  [SessionExecutionEvent.COMPACTION_STARTED]: ProcessingPhase.COMPACTING,
   [SessionExecutionEvent.MODEL_ROUND_START]: ProcessingPhase.THINKING,
   [SessionExecutionEvent.TEXT_CHUNK_RECEIVED]: ProcessingPhase.STREAMING,
   [SessionExecutionEvent.TOOL_DETECTED]: ProcessingPhase.TOOL_CALLING,
@@ -56,7 +75,8 @@ export const PHASE_TRANSITIONS: Record<SessionExecutionEvent, ProcessingPhase | 
   [SessionExecutionEvent.TOOL_CONFIRMATION_NEEDED]: ProcessingPhase.TOOL_CONFIRMING,
   [SessionExecutionEvent.TOOL_CONFIRMED]: ProcessingPhase.TOOL_CALLING,
   [SessionExecutionEvent.TOOL_REJECTED]: null,
-  [SessionExecutionEvent.STREAM_COMPLETE]: null,
+  [SessionExecutionEvent.BACKEND_STREAM_COMPLETED]: ProcessingPhase.FINALIZING,
+  [SessionExecutionEvent.FINISHING_SETTLED]: null,
   [SessionExecutionEvent.USER_CANCEL]: null,
   [SessionExecutionEvent.ERROR_OCCURRED]: null,
   [SessionExecutionEvent.RESET]: null,

@@ -10,6 +10,7 @@ export type MCPServerStatus =
   | 'Starting'
   | 'Connected'
   | 'Healthy'
+  | 'NeedsAuth'
   | 'Reconnecting'
   | 'Failed'
   | 'Stopping'
@@ -20,13 +21,22 @@ export interface MCPServerInfo {
   id: string;
   name: string;
   status: string;
+  statusMessage?: string;
   serverType: string;
+  transport: string;
   enabled: boolean;
   autoStart: boolean;
+  url?: string;
+  authConfigured?: boolean;
+  authSource?: 'headers' | 'env' | 'oauth';
+  oauthEnabled?: boolean;
+  xaaEnabled?: boolean;
   command?: string;
   commandAvailable?: boolean;
   commandSource?: 'system' | 'managed';
   commandResolvedPath?: string;
+  startSupported: boolean;
+  startDisabledReason?: string;
 }
 
 export interface RuntimeCommandCapability {
@@ -40,20 +50,66 @@ export interface RuntimeCommandCapability {
 export interface MCPResource {
   uri: string;
   name: string;
+  title?: string;
   description?: string;
   mimeType?: string;
+  size?: number;
   metadata?: Record<string, any>;
+}
+
+export interface MCPResourceContent {
+  uri: string;
+  content?: string;
+  blob?: string;
+  mimeType?: string;
+}
+
+export interface ListMCPResourcesRequest {
+  serverId: string;
+  refresh?: boolean;
+}
+
+export interface ReadMCPResourceRequest {
+  serverId: string;
+  resourceUri: string;
+}
+
+export interface ReadMCPResourceResponse {
+  contents: MCPResourceContent[];
 }
 
  
 export interface MCPPrompt {
   name: string;
+  title?: string;
   description?: string;
   arguments?: Array<{
     name: string;
+    title?: string;
     description?: string;
     required: boolean;
   }>;
+}
+
+export interface ListMCPPromptsRequest {
+  serverId: string;
+  refresh?: boolean;
+}
+
+export interface GetMCPPromptRequest {
+  serverId: string;
+  promptName: string;
+  arguments?: Record<string, string>;
+}
+
+export interface MCPPromptMessage {
+  role: string;
+  content: unknown;
+}
+
+export interface GetMCPPromptResponse {
+  description?: string;
+  messages: MCPPromptMessage[];
 }
 
  
@@ -79,13 +135,13 @@ export interface McpUiResourceCsp {
 /** Sandbox permissions requested by the UI resource (aligned with VSCode). */
 export interface McpUiResourcePermissions {
   /** Request camera access. */
-  camera?: {};
+  camera?: Record<string, never>;
   /** Request microphone access. */
-  microphone?: {};
+  microphone?: Record<string, never>;
   /** Request geolocation access. */
-  geolocation?: {};
+  geolocation?: Record<string, never>;
   /** Request clipboard write access. */
-  clipboardWrite?: {};
+  clipboardWrite?: Record<string, never>;
 }
 
 // ==================== MCP App ui/message types ====================
@@ -162,6 +218,60 @@ export interface FetchMCPAppResourceResponse {
   contents: MCPAppResourceContent[];
 }
 
+export interface McpInteractionError {
+  code?: number;
+  message?: string;
+  data?: Record<string, unknown> | unknown[] | string | number | boolean | null;
+}
+
+export interface SubmitMCPInteractionResponseRequest {
+  interactionId: string;
+  approve: boolean;
+  result?: Record<string, unknown> | unknown[] | string | number | boolean | null;
+  error?: McpInteractionError;
+}
+
+export interface UpdateMCPRemoteAuthRequest {
+  serverId: string;
+  authorizationValue: string;
+}
+
+export interface ClearMCPRemoteAuthRequest {
+  serverId: string;
+}
+
+export interface DeleteMCPServerRequest {
+  serverId: string;
+}
+
+export type MCPRemoteOAuthStatus =
+  | 'awaitingBrowser'
+  | 'awaitingCallback'
+  | 'exchangingToken'
+  | 'authorized'
+  | 'failed'
+  | 'cancelled';
+
+export interface MCPRemoteOAuthSessionSnapshot {
+  serverId: string;
+  status: MCPRemoteOAuthStatus;
+  authorizationUrl?: string;
+  redirectUri?: string;
+  message?: string;
+}
+
+export interface StartMCPRemoteOAuthRequest {
+  serverId: string;
+}
+
+export interface GetMCPRemoteOAuthSessionRequest {
+  serverId: string;
+}
+
+export interface CancelMCPRemoteOAuthRequest {
+  serverId: string;
+}
+
 export class MCPAPI {
 
   static async initializeServers(): Promise<void> {
@@ -176,6 +286,22 @@ export class MCPAPI {
    
   static async getServers(): Promise<MCPServerInfo[]> {
     return api.invoke('get_mcp_servers');
+  }
+
+  static async listResources(request: ListMCPResourcesRequest): Promise<MCPResource[]> {
+    return api.invoke('list_mcp_resources', { request });
+  }
+
+  static async readResource(request: ReadMCPResourceRequest): Promise<ReadMCPResourceResponse> {
+    return api.invoke('read_mcp_resource', { request });
+  }
+
+  static async listPrompts(request: ListMCPPromptsRequest): Promise<MCPPrompt[]> {
+    return api.invoke('list_mcp_prompts', { request });
+  }
+
+  static async getPrompt(request: GetMCPPromptRequest): Promise<GetMCPPromptResponse> {
+    return api.invoke('get_mcp_prompt', { request });
   }
 
    
@@ -243,6 +369,44 @@ export class MCPAPI {
     [key: string]: unknown;
   }): Promise<Record<string, unknown>> {
     return api.invoke('send_mcp_app_message', { request });
+  }
+
+  static async submitMCPInteractionResponse(
+    request: SubmitMCPInteractionResponseRequest
+  ): Promise<void> {
+    return api.invoke('submit_mcp_interaction_response', { request });
+  }
+
+  static async updateRemoteAuth(request: UpdateMCPRemoteAuthRequest): Promise<void> {
+    return api.invoke('update_mcp_remote_auth', { request });
+  }
+
+  static async clearRemoteAuth(request: ClearMCPRemoteAuthRequest): Promise<void> {
+    return api.invoke('clear_mcp_remote_auth', { request });
+  }
+
+  static async deleteServer(request: DeleteMCPServerRequest): Promise<void> {
+    return api.invoke('delete_mcp_server', { request });
+  }
+
+  static async startRemoteOAuth(
+    request: StartMCPRemoteOAuthRequest
+  ): Promise<MCPRemoteOAuthSessionSnapshot> {
+    return api.invoke('start_mcp_remote_oauth', { request });
+  }
+
+  static async getRemoteOAuthSession(
+    request: GetMCPRemoteOAuthSessionRequest
+  ): Promise<MCPRemoteOAuthSessionSnapshot | null> {
+    const result = await api.invoke<MCPRemoteOAuthSessionSnapshot | null>(
+      'get_mcp_remote_oauth_session',
+      { request }
+    );
+    return result ?? null;
+  }
+
+  static async cancelRemoteOAuth(request: CancelMCPRemoteOAuthRequest): Promise<void> {
+    return api.invoke('cancel_mcp_remote_oauth', { request });
   }
 }
 

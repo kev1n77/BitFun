@@ -11,24 +11,24 @@
   align-items: center;
   justify-content: center;
   
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
   padding: 0;
-  
-  // Glass-like translucent background
-  background: rgba(20, 20, 30, 0.4);
-  color: rgba(96, 165, 250, 0.9);
-  
-  border: 1px solid rgba(96, 165, 250, 0.3);
-  border-radius: 8px;
-  
-  // Frosted glass effect
-  backdrop-filter: blur(12px) saturate(1.2);
-  -webkit-backdrop-filter: blur(12px) saturate(1.2);
-  
-  box-shadow: 
-    0 4px 12px rgba(0, 0, 0, 0.25),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+
+  // Theme-aware surface so the control separates from the transcript; icon uses primary text (SVG stroke)
+  background: color-mix(in srgb, var(--color-bg-elevated) 92%, transparent);
+  color: var(--color-text-primary);
+
+  border: 2px solid var(--color-text-primary);
+  border-radius: 10px;
+
+  backdrop-filter: blur(14px) saturate(1.15);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+
+  box-shadow:
+    0 4px 18px rgba(0, 0, 0, 0.38),
+    0 0 0 1px color-mix(in srgb, var(--color-text-primary) 28%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--color-text-primary) 12%, transparent);
   
   cursor: pointer;
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
@@ -36,16 +36,15 @@
   z-index: 10;
 
   &:hover {
-    background: rgba(30, 30, 40, 0.6);
-    color: rgba(96, 165, 250, 1);
-    border-color: rgba(96, 165, 250, 0.5);
+    background: color-mix(in srgb, var(--color-bg-elevated) 98%, transparent);
+    color: var(--color-text-primary);
+    border-color: var(--color-text-primary);
     transform: translateY(-2px);
-    
-    // Stronger shine on hover
-    box-shadow: 
-      0 6px 16px rgba(0, 0, 0, 0.3),
-      0 0 20px rgba(96, 165, 250, 0.15),
-      inset 0 1px 0 rgba(255, 255, 255, 0.15);
+
+    box-shadow:
+      0 8px 22px rgba(0, 0, 0, 0.42),
+      0 0 0 1px color-mix(in srgb, var(--color-text-primary) 40%, transparent),
+      inset 0 1px 0 color-mix(in srgb, var(--color-text-primary) 16%, transparent);
   }
 
   &:active {
@@ -54,8 +53,8 @@
   }
 
   &:focus-visible {
-    outline: 2px solid rgba(96, 165, 250, 0.6);
-    outline-offset: 2px;
+    outline: 3px solid var(--color-text-primary);
+    outline-offset: 3px;
   }
 
   .scroll-icon {
@@ -100,8 +99,8 @@
   .scroll-to-bottom-button {
     bottom: 60px; /* Closer to the bottom on mobile */
     right: 16px;
-    width: 32px;
-    height: 32px;
+    width: 40px;
+    height: 40px;
   }
 }
 

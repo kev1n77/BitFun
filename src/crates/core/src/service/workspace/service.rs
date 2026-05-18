@@ -7,9 +7,16 @@ use super::manager::{
     WorkspaceManagerConfig, WorkspaceManagerStatistics, WorkspaceOpenOptions, WorkspaceStatus,
     WorkspaceSummary, WorkspaceType,
 };
+use crate::agentic::persistence::{PersistenceManager, SessionWorkspaceMaintenanceService};
 use crate::infrastructure::storage::{PersistenceService, StorageOptions};
 use crate::infrastructure::{try_get_path_manager_arc, PathManager};
-use crate::service::bootstrap::initialize_workspace_persona_files;
+use crate::service::bootstrap::{
+    ensure_workspace_gitignore_ignores_bitfun, initialize_workspace_persona_files,
+};
+use crate::service::remote_ssh::workspace_state::local_workspace_roots_equal;
+use crate::service::workspace_runtime::{
+    try_get_workspace_runtime_service_arc, WorkspaceRuntimeService,
+};
 use crate::util::errors::*;
 use log::{info, warn};
 
@@ -27,6 +34,8 @@ pub struct WorkspaceService {
     config: WorkspaceManagerConfig,
     persistence: Arc<PersistenceService>,
     path_manager: Arc<PathManager>,
+    runtime_service: Arc<WorkspaceRuntimeService>,
+    session_workspace_maintenance: Arc<SessionWorkspaceMaintenanceService>,
 }
 
 /// Workspace creation options.
@@ -40,6 +49,12 @@ pub struct WorkspaceCreateOptions {
     pub display_name: Option<String>,
     pub description: Option<String>,
     pub tags: Vec<String>,
+    /// See [`crate::service::workspace::manager::WorkspaceOpenOptions::remote_connection_id`].
+    pub remote_connection_id: Option<String>,
+    /// SSH `host` from connection config; used for `~/.bitfun/remote_ssh/...` and stable remote ids.
+    pub remote_ssh_host: Option<String>,
+    /// Deterministic id for [`WorkspaceKind::Remote`] (host + remote path hash).
+    pub stable_workspace_id: Option<String>,
 }
 
 impl Default for WorkspaceCreateOptions {
@@ -53,6 +68,9 @@ impl Default for WorkspaceCreateOptions {
             display_name: None,
             description: None,
             tags: Vec::new(),
+            remote_connection_id: None,
+            remote_ssh_host: None,
+            stable_workspace_id: None,
         }
     }
 }
@@ -84,6 +102,138 @@ struct AssistantWorkspaceDescriptor {
 }
 
 impl WorkspaceService {
+    fn collect_startup_restored_workspaces(manager: &WorkspaceManager) -> Vec<WorkspaceInfo> {
+        let mut targets = Vec::new();
+        let mut seen_workspace_ids = HashSet::new();
+
+        if let Some(workspace) = manager.get_current_workspace() {
+            Self::push_startup_restored_workspace(&mut targets, &mut seen_workspace_ids, workspace);
+        }
+
+        for workspace in manager.get_opened_workspace_infos() {
+            Self::push_startup_restored_workspace(&mut targets, &mut seen_workspace_ids, workspace);
+        }
+
+        targets
+    }
+
+    fn push_startup_restored_workspace(
+        targets: &mut Vec<WorkspaceInfo>,
+        seen_workspace_ids: &mut HashSet<String>,
+        workspace: &WorkspaceInfo,
+    ) {
+        if seen_workspace_ids.insert(workspace.id.clone()) {
+            targets.push(workspace.clone());
+        }
+    }
+
+    async fn prepare_startup_restored_workspaces(&self, workspaces: Vec<WorkspaceInfo>) {
+        for workspace in workspaces {
+            self.ensure_workspace_gitignore_best_effort(&workspace, "restored")
+                .await;
+            self.ensure_workspace_runtime_best_effort(&workspace, "restored")
+                .await;
+            self.maintain_workspace_sessions_best_effort(
+                &workspace.root_path,
+                "workspace_history_restored",
+            )
+            .await;
+        }
+    }
+
+    async fn ensure_workspace_gitignore_best_effort(
+        &self,
+        workspace: &WorkspaceInfo,
+        trigger: &str,
+    ) {
+        if workspace.workspace_kind == WorkspaceKind::Remote || !workspace.root_path.exists() {
+            return;
+        }
+
+        if let Err(e) = ensure_workspace_gitignore_ignores_bitfun(&workspace.root_path).await {
+            warn!(
+                "Failed to ensure workspace .gitignore ignores .bitfun: workspace_path={} trigger={} error={}",
+                workspace.root_path.display(),
+                trigger,
+                e
+            );
+        }
+    }
+
+    async fn ensure_workspace_runtime_best_effort(&self, workspace: &WorkspaceInfo, trigger: &str) {
+        let result = match workspace.workspace_kind {
+            WorkspaceKind::Remote => {
+                let Some(ssh_host) = workspace
+                    .metadata
+                    .get("sshHost")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    warn!(
+                        "Skipping remote runtime ensure due to missing sshHost: workspace_id={} trigger={}",
+                        workspace.id,
+                        trigger
+                    );
+                    return;
+                };
+
+                self.runtime_service
+                    .ensure_remote_workspace_runtime(
+                        ssh_host,
+                        &workspace.root_path.to_string_lossy(),
+                    )
+                    .await
+            }
+            _ => {
+                if !workspace.root_path.exists() {
+                    return;
+                }
+
+                self.runtime_service
+                    .ensure_local_workspace_runtime(&workspace.root_path)
+                    .await
+            }
+        };
+
+        if let Err(e) = result {
+            warn!(
+                "Failed to initialize workspace runtime: workspace_path={} trigger={} error={}",
+                workspace.root_path.display(),
+                trigger,
+                e
+            );
+        }
+    }
+
+    async fn maintain_workspace_sessions_best_effort(&self, workspace_path: &Path, trigger: &str) {
+        match self
+            .session_workspace_maintenance
+            .ensure_workspace_maintained(workspace_path)
+            .await
+        {
+            Ok(report) if report.skipped || report.deleted_sessions == 0 => {}
+            Ok(report) => {
+                info!(
+                    "Workspace session maintenance finished: trigger={}, workspace_path={}, scanned_sessions={}, hidden_sessions={}, deleted_sessions={}",
+                    trigger,
+                    workspace_path.display(),
+                    report.scanned_sessions,
+                    report.hidden_sessions,
+                    report.deleted_sessions
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to maintain workspace sessions: trigger={}, workspace_path={}, error={}",
+                    trigger,
+                    workspace_path.display(),
+                    e
+                );
+            }
+        }
+    }
+
     /// Creates a new workspace service.
     pub async fn new() -> BitFunResult<Self> {
         let config = WorkspaceManagerConfig::default();
@@ -93,6 +243,7 @@ impl WorkspaceService {
     /// Creates a workspace service with a custom configuration.
     pub async fn with_config(config: WorkspaceManagerConfig) -> BitFunResult<Self> {
         let path_manager = try_get_path_manager_arc()?;
+        let runtime_service = try_get_workspace_runtime_service_arc()?;
 
         path_manager.initialize_user_directories().await?;
 
@@ -105,12 +256,17 @@ impl WorkspaceService {
         );
 
         let manager = WorkspaceManager::new(config.clone());
+        let session_workspace_maintenance = Arc::new(SessionWorkspaceMaintenanceService::new(
+            Arc::new(PersistenceManager::new(path_manager.clone())?),
+        ));
 
         let service = Self {
             manager: Arc::new(RwLock::new(manager)),
             config,
             persistence,
             path_manager,
+            runtime_service,
+            session_workspace_maintenance,
         };
 
         if let Err(e) = service.load_workspace_history_only().await {
@@ -141,6 +297,10 @@ impl WorkspaceService {
         &self.persistence
     }
 
+    pub fn runtime_service(&self) -> &Arc<WorkspaceRuntimeService> {
+        &self.runtime_service
+    }
+
     /// Opens a workspace.
     pub async fn open_workspace(&self, path: PathBuf) -> BitFunResult<WorkspaceInfo> {
         self.open_workspace_with_options(path, WorkspaceCreateOptions::default())
@@ -161,10 +321,22 @@ impl WorkspaceService {
                 .await
         };
 
+        if let Ok(workspace) = result.as_ref() {
+            self.ensure_workspace_gitignore_best_effort(workspace, "opened")
+                .await;
+            self.ensure_workspace_runtime_best_effort(workspace, "opened")
+                .await;
+        }
+
         if result.is_ok() {
             if let Err(e) = self.save_workspace_data().await {
                 warn!("Failed to save workspace data after opening: {}", e);
             }
+        }
+
+        if let Ok(workspace) = result.as_ref() {
+            self.maintain_workspace_sessions_best_effort(&workspace.root_path, "workspace_opened")
+                .await;
         }
 
         result
@@ -242,6 +414,7 @@ impl WorkspaceService {
             })?;
         }
 
+        // New assistant dirs get persona files at creation; coordinator also fills missing files when opening.
         initialize_workspace_persona_files(&path).await?;
 
         self.create_workspace(path, options).await
@@ -292,6 +465,18 @@ impl WorkspaceService {
                     "Failed to save workspace data after switching active workspace: {}",
                     e
                 );
+            }
+        }
+
+        if result.is_ok() {
+            if let Some(workspace) = self.get_workspace(workspace_id).await {
+                self.ensure_workspace_runtime_best_effort(&workspace, "activated")
+                    .await;
+                self.maintain_workspace_sessions_best_effort(
+                    &workspace.root_path,
+                    "workspace_activated",
+                )
+                .await;
             }
         }
 
@@ -374,7 +559,13 @@ impl WorkspaceService {
         manager
             .get_workspaces()
             .values()
-            .find(|workspace| workspace.root_path == path)
+            .find(|workspace| {
+                if workspace.workspace_kind == WorkspaceKind::Remote {
+                    workspace.root_path == path
+                } else {
+                    local_workspace_roots_equal(&workspace.root_path, path)
+                }
+            })
             .cloned()
     }
 
@@ -386,6 +577,52 @@ impl WorkspaceService {
             .into_iter()
             .cloned()
             .collect()
+    }
+
+    /// All tracked workspaces with full metadata (insights, maintenance, etc.).
+    pub async fn list_workspace_infos(&self) -> Vec<WorkspaceInfo> {
+        let manager = self.manager.read().await;
+        manager.get_workspaces().values().cloned().collect()
+    }
+
+    /// `metadata["sshHost"]` for a remote workspace matching `connection_id` and normalized remote root.
+    ///
+    /// Used when session APIs receive `remote_connection_id` but the client omitted `remote_ssh_host`:
+    /// session files live under `~/.bitfun/remote_ssh/{sshHost}/...`, not the legacy per-connection tree.
+    /// This reads only persisted workspace records (no filesystem guessing, no DNS).
+    pub async fn remote_ssh_host_for_remote_workspace(
+        &self,
+        connection_id: &str,
+        remote_workspace_path: &str,
+    ) -> Option<String> {
+        use crate::service::remote_ssh::normalize_remote_workspace_path;
+        let cid = connection_id.trim();
+        if cid.is_empty() {
+            return None;
+        }
+        let want = normalize_remote_workspace_path(remote_workspace_path);
+        let manager = self.manager.read().await;
+        for w in manager.get_workspaces().values() {
+            if w.workspace_kind != WorkspaceKind::Remote {
+                continue;
+            }
+            let wcid = w.remote_ssh_connection_id()?;
+            if wcid != cid {
+                continue;
+            }
+            let root = normalize_remote_workspace_path(&w.root_path.to_string_lossy());
+            if root != want {
+                continue;
+            }
+            let host = w
+                .metadata
+                .get("sshHost")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())?;
+            return Some(host.to_string());
+        }
+        None
     }
 
     /// Returns all tracked assistant workspaces, including inactive ones.
@@ -459,6 +696,18 @@ impl WorkspaceService {
         }
 
         recent_workspaces
+    }
+
+    /// Drops a workspace from recent lists only (workspace record and open state unchanged).
+    pub async fn remove_workspace_from_recent(&self, workspace_id: &str) -> BitFunResult<()> {
+        let changed = {
+            let mut manager = self.manager.write().await;
+            manager.remove_from_recent_workspaces_only(workspace_id)
+        };
+        if changed {
+            self.save_workspace_data().await?;
+        }
+        Ok(())
     }
 
     /// Searches workspaces.
@@ -537,6 +786,16 @@ impl WorkspaceService {
                 workspace_kind: existing_workspace.workspace_kind.clone(),
                 assistant_id: existing_workspace.assistant_id.clone(),
                 display_name: Some(existing_workspace.name.clone()),
+                remote_connection_id: existing_workspace
+                    .remote_ssh_connection_id()
+                    .map(str::to_string),
+                remote_ssh_host: existing_workspace
+                    .metadata
+                    .get("sshHost")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string()),
+                stable_workspace_id: None,
             },
         )
         .await?;
@@ -696,11 +955,13 @@ impl WorkspaceService {
 
             {
                 let manager = self.manager.read().await;
-                if manager
-                    .get_workspaces()
-                    .values()
-                    .any(|w| w.root_path == path)
-                {
+                if manager.get_workspaces().values().any(|w| {
+                    if w.workspace_kind == WorkspaceKind::Remote {
+                        w.root_path == path
+                    } else {
+                        local_workspace_roots_equal(&w.root_path, &path)
+                    }
+                }) {
                     result.skipped.push(path_str);
                     continue;
                 }
@@ -938,8 +1199,10 @@ impl WorkspaceService {
             manager.set_opened_workspace_ids(data.opened_workspace_ids);
             manager.set_recent_workspaces(data.recent_workspaces);
             manager.set_recent_assistant_workspaces(data.recent_assistant_workspaces);
+            let id_remap = manager.migrate_local_workspace_ids_to_stable_storage();
 
-            if let Some(current_id) = data.current_workspace_id {
+            if let Some(raw_current) = data.current_workspace_id {
+                let current_id = id_remap.get(&raw_current).cloned().unwrap_or(raw_current);
                 if let Some(workspace) = manager.get_workspaces().get(&current_id) {
                     if workspace.is_valid().await {
                         if let Err(e) = manager.set_current_workspace(current_id) {
@@ -970,26 +1233,94 @@ impl WorkspaceService {
             .await
             .map_err(|e| BitFunError::service(format!("Failed to load workspace data: {}", e)))?;
 
+        let mut workspaces_to_restore = Vec::new();
+        let mut should_persist_cleaned_history = false;
+
         if let Some(data) = workspace_data {
             let mut manager = self.manager.write().await;
 
-            *manager.get_workspaces_mut() = data.workspaces;
-            manager.set_opened_workspace_ids(data.opened_workspace_ids.clone());
-            manager.set_recent_workspaces(data.recent_workspaces);
-            manager.set_recent_assistant_workspaces(data.recent_assistant_workspaces);
+            let mut workspaces = data.workspaces;
+            let original_workspace_count = workspaces.len();
+            // Filter out legacy remote workspaces that don't have the required metadata (sshHost and connectionId)
+            workspaces.retain(|_id, ws| {
+                if ws.workspace_kind == WorkspaceKind::Remote {
+                    // Check if this remote workspace has the required metadata
+                    let has_ssh_host = ws.metadata.get("sshHost").and_then(|v| v.as_str()).is_some_and(|s| !s.trim().is_empty());
+                    let has_connection_id = ws.metadata.get("connectionId").and_then(|v| v.as_str()).is_some_and(|s| !s.trim().is_empty());
+                    if !has_ssh_host || !has_connection_id {
+                        // Skip this legacy remote workspace
+                        info!("Skipping legacy remote workspace without required metadata: id={}, root_path={}", _id, ws.root_path.display());
+                        return false;
+                    }
+                }
+                true
+            });
+            if workspaces.len() != original_workspace_count {
+                should_persist_cleaned_history = true;
+            }
 
-            let current_id = data
+            *manager.get_workspaces_mut() = workspaces;
+            // Also filter opened/recent lists to remove references to removed legacy workspaces
+            let filtered_opened_ids: Vec<String> = data
+                .opened_workspace_ids
+                .clone()
+                .into_iter()
+                .filter(|id| manager.get_workspaces().contains_key(id))
+                .collect();
+            if filtered_opened_ids != data.opened_workspace_ids {
+                should_persist_cleaned_history = true;
+            }
+            manager.set_opened_workspace_ids(filtered_opened_ids);
+
+            let filtered_recent: Vec<String> = data
+                .recent_workspaces
+                .clone()
+                .into_iter()
+                .filter(|id| manager.get_workspaces().contains_key(id))
+                .collect();
+            if filtered_recent != data.recent_workspaces {
+                should_persist_cleaned_history = true;
+            }
+            manager.set_recent_workspaces(filtered_recent);
+
+            let filtered_recent_assistant: Vec<String> = data
+                .recent_assistant_workspaces
+                .clone()
+                .into_iter()
+                .filter(|id| manager.get_workspaces().contains_key(id))
+                .collect();
+            if filtered_recent_assistant != data.recent_assistant_workspaces {
+                should_persist_cleaned_history = true;
+            }
+            manager.set_recent_assistant_workspaces(filtered_recent_assistant);
+
+            let id_remap = manager.migrate_local_workspace_ids_to_stable_storage();
+            if !id_remap.is_empty() {
+                should_persist_cleaned_history = true;
+            }
+
+            let raw_current = data
                 .current_workspace_id
                 .or_else(|| data.opened_workspace_ids.first().cloned());
 
-            if let Some(current_id) = current_id {
+            if let Some(raw) = raw_current {
+                let current_id = id_remap.get(&raw).cloned().unwrap_or(raw);
                 if manager.get_workspaces().contains_key(&current_id) {
                     if let Err(e) = manager.set_current_workspace(current_id) {
                         warn!("Failed to restore current workspace on startup: {}", e);
                     }
                 }
             }
+
+            workspaces_to_restore = Self::collect_startup_restored_workspaces(&manager);
         }
+
+        if should_persist_cleaned_history {
+            self.save_workspace_data().await?;
+        }
+
+        self.prepare_startup_restored_workspaces(workspaces_to_restore)
+            .await;
 
         Ok(())
     }
@@ -1002,6 +1333,9 @@ impl WorkspaceService {
             workspace_kind: options.workspace_kind.clone(),
             assistant_id: options.assistant_id.clone(),
             display_name: options.display_name.clone(),
+            remote_connection_id: options.remote_connection_id.clone(),
+            remote_ssh_host: options.remote_ssh_host.clone(),
+            stable_workspace_id: options.stable_workspace_id.clone(),
         }
     }
 
@@ -1391,9 +1725,8 @@ impl WorkspaceService {
             // If a remote workspace tab exists but nothing is current yet (e.g. pending SSH
             // reconnect), do not auto-activate the default assistant workspace — that would look
             // like a spurious new local workspace.
-            let should_activate = !has_current_workspace
-                && !has_opened_remote
-                && descriptor.assistant_id.is_none();
+            let should_activate =
+                !has_current_workspace && !has_opened_remote && descriptor.assistant_id.is_none();
             let options = WorkspaceCreateOptions {
                 auto_set_current: should_activate,
                 add_to_recent: false,
@@ -1529,4 +1862,222 @@ pub fn set_global_workspace_service(service: Arc<WorkspaceService>) {
 
 pub fn get_global_workspace_service() -> Option<Arc<WorkspaceService>> {
     GLOBAL_WORKSPACE_SERVICE.get().cloned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::storage::{PersistenceService, StorageOptions};
+    use crate::service::session::SessionMetadata;
+    use std::collections::HashMap;
+    use uuid::Uuid;
+
+    struct TestEnvironment {
+        root: PathBuf,
+        path_manager: Arc<PathManager>,
+    }
+
+    impl TestEnvironment {
+        fn new() -> Self {
+            let root = std::env::temp_dir()
+                .join(format!("bitfun-workspace-service-test-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&root).expect("test root should be created");
+
+            let path_manager = Arc::new(PathManager::with_user_root_for_tests(
+                root.join("user-root"),
+            ));
+
+            Self { root, path_manager }
+        }
+
+        fn create_workspace_dir(&self, name: &str) -> PathBuf {
+            let path = self.root.join(name);
+            std::fs::create_dir_all(&path).expect("workspace directory should be created");
+            path
+        }
+    }
+
+    impl Drop for TestEnvironment {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    async fn build_test_workspace_service(path_manager: Arc<PathManager>) -> WorkspaceService {
+        path_manager
+            .initialize_user_directories()
+            .await
+            .expect("user directories should initialize");
+
+        let config = WorkspaceManagerConfig::default();
+        let persistence = Arc::new(
+            PersistenceService::new_user_level(path_manager.clone())
+                .await
+                .expect("persistence should initialize"),
+        );
+        let runtime_service = Arc::new(WorkspaceRuntimeService::new(path_manager.clone()));
+        let session_workspace_maintenance =
+            Arc::new(SessionWorkspaceMaintenanceService::new(Arc::new(
+                PersistenceManager::new(path_manager.clone())
+                    .expect("persistence manager should initialize"),
+            )));
+
+        WorkspaceService {
+            manager: Arc::new(RwLock::new(WorkspaceManager::new(config.clone()))),
+            config,
+            persistence,
+            path_manager,
+            runtime_service,
+            session_workspace_maintenance,
+        }
+    }
+
+    #[tokio::test]
+    async fn ensure_workspace_gitignore_best_effort_skips_remote_workspaces() {
+        let env = TestEnvironment::new();
+        let service = build_test_workspace_service(env.path_manager.clone()).await;
+        let remote_workspace_root = env.create_workspace_dir("remote-workspace-shadow");
+        std::fs::write(remote_workspace_root.join(".gitignore"), "target/\n")
+            .expect("gitignore should be seeded");
+
+        let remote_workspace = WorkspaceInfo::new(
+            remote_workspace_root.clone(),
+            WorkspaceOpenOptions {
+                workspace_kind: WorkspaceKind::Remote,
+                remote_ssh_host: Some("example-host".to_string()),
+                remote_connection_id: Some("conn-1".to_string()),
+                stable_workspace_id: Some("remote-test".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("remote workspace should initialize");
+
+        service
+            .ensure_workspace_gitignore_best_effort(&remote_workspace, "test")
+            .await;
+
+        let gitignore = std::fs::read_to_string(remote_workspace_root.join(".gitignore"))
+            .expect("gitignore should be readable");
+        assert_eq!(gitignore, "target/\n");
+    }
+
+    #[tokio::test]
+    async fn load_workspace_history_only_ensures_all_opened_local_workspaces() {
+        let env = TestEnvironment::new();
+        let service = build_test_workspace_service(env.path_manager.clone()).await;
+        let persistence_manager = PersistenceManager::new(env.path_manager.clone())
+            .expect("persistence manager should initialize");
+
+        let first_workspace_root = env.create_workspace_dir("workspace-one");
+        let second_workspace_root = env.create_workspace_dir("workspace-two");
+
+        let first_workspace = WorkspaceInfo::new(
+            first_workspace_root.clone(),
+            WorkspaceOpenOptions {
+                auto_set_current: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("first workspace should initialize");
+        let second_workspace = WorkspaceInfo::new(
+            second_workspace_root.clone(),
+            WorkspaceOpenOptions {
+                auto_set_current: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("second workspace should initialize");
+
+        let legacy_session = SessionMetadata::new(
+            Uuid::new_v4().to_string(),
+            "Legacy Session".to_string(),
+            "agent".to_string(),
+            "model".to_string(),
+        );
+        persistence_manager
+            .save_session_metadata(&second_workspace_root, &legacy_session)
+            .await
+            .expect("legacy session metadata should save");
+
+        let second_runtime = persistence_manager
+            .runtime_service()
+            .context_for_local_workspace(&second_workspace_root);
+        let legacy_sessions_root = second_workspace_root.join(".bitfun").join("sessions");
+        std::fs::create_dir_all(&legacy_sessions_root)
+            .expect("legacy sessions root should be created");
+        std::fs::rename(
+            second_runtime.sessions_dir.join(&legacy_session.session_id),
+            legacy_sessions_root.join(&legacy_session.session_id),
+        )
+        .expect("session directory should move to legacy path");
+        let _ = std::fs::remove_dir_all(&second_runtime.runtime_root);
+
+        let first_runtime = service
+            .runtime_service
+            .context_for_local_workspace(&first_workspace_root);
+        assert!(
+            !first_runtime.runtime_root.exists(),
+            "startup should begin without a runtime root for the first workspace"
+        );
+        assert!(
+            !second_runtime.runtime_root.exists(),
+            "startup should begin without a runtime root for the second workspace"
+        );
+
+        let workspace_data = WorkspacePersistenceData {
+            workspaces: HashMap::from([
+                (first_workspace.id.clone(), first_workspace.clone()),
+                (second_workspace.id.clone(), second_workspace.clone()),
+            ]),
+            opened_workspace_ids: vec![first_workspace.id.clone(), second_workspace.id.clone()],
+            current_workspace_id: Some(first_workspace.id.clone()),
+            recent_workspaces: vec![first_workspace.id.clone(), second_workspace.id.clone()],
+            recent_assistant_workspaces: Vec::new(),
+            saved_at: chrono::Utc::now(),
+        };
+
+        service
+            .persistence
+            .save_json("workspace_data", &workspace_data, StorageOptions::default())
+            .await
+            .expect("workspace data should save");
+
+        service
+            .load_workspace_history_only()
+            .await
+            .expect("workspace history should restore");
+
+        let restored_current = service
+            .get_current_workspace()
+            .await
+            .expect("current workspace should be restored");
+        assert_eq!(restored_current.id, first_workspace.id);
+        assert!(
+            first_runtime.runtime_root.exists(),
+            "active workspace runtime should be ensured on startup"
+        );
+        assert!(
+            second_runtime
+                .sessions_dir
+                .join(&legacy_session.session_id)
+                .exists(),
+            "non-active opened workspace sessions should migrate into the shared runtime root"
+        );
+
+        let restored_sessions = persistence_manager
+            .list_session_metadata(&second_workspace_root)
+            .await
+            .expect("restored workspace sessions should list successfully");
+        assert_eq!(restored_sessions.len(), 1);
+        assert_eq!(restored_sessions[0].session_id, legacy_session.session_id);
+        assert!(
+            !legacy_sessions_root
+                .join(&legacy_session.session_id)
+                .exists(),
+            "legacy session directory should be removed after startup migration"
+        );
+    }
 }

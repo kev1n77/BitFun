@@ -1,5 +1,6 @@
 @use '../../styles/tokens.scss' as tokens;
 @use '../../styles/_extended-mixins.scss' as mixins;
+@use '../../styles/btn-primary-tokens.scss' as btn-primary;
 
 .btn {
   display: inline-flex;
@@ -60,20 +61,22 @@
   }
 
   &-primary {
-    background: var(--color-accent-200, rgba(96, 165, 250, 0.20));
-    color: var(--color-accent-600, #3b82f6);
+    @include btn-primary.btn-primary-surface-default;
 
     &:hover:not(:disabled) {
-      background: var(--color-accent-300, rgba(96, 165, 250, 0.30));
-      color: var(--color-text-primary, #ffffff);
+      @include btn-primary.btn-primary-surface-hover;
     }
 
     &:active:not(:disabled) {
-      background: var(--color-accent-200, rgba(96, 165, 250, 0.24));
+      @include btn-primary.btn-primary-surface-active;
     }
 
     &:focus-visible {
-      outline-color: rgba(96, 165, 250, 0.6);
+      outline-color: color-mix(
+        in srgb,
+        var(--btn-primary-color, var(--color-accent-500, #60a5fa)) 55%,
+        transparent
+      );
     }
   }
 

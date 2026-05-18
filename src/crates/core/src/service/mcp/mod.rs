@@ -10,11 +10,17 @@
 //! - `config`: MCP configuration management
 
 pub mod adapter;
+pub mod auth;
 pub mod config;
 pub mod protocol;
 pub mod server;
+mod tool_info;
+mod tool_name;
 
-// Re-export main components.
+use std::sync::Arc;
+use std::sync::OnceLock;
+
+// Stable public surface for the MCP service.
 pub use protocol::{
     MCPCapability, MCPMessage, MCPNotification, MCPProtocolVersion, MCPRequest, MCPResponse,
     MCPServerInfo,
@@ -22,7 +28,7 @@ pub use protocol::{
 
 pub use server::{
     MCPConnection, MCPConnectionPool, MCPServerConfig, MCPServerManager, MCPServerStatus,
-    MCPServerType,
+    MCPServerTransport, MCPServerType,
 };
 
 pub use adapter::{
@@ -30,22 +36,26 @@ pub use adapter::{
 };
 
 pub use config::{ConfigLocation, MCPConfigService};
+pub use tool_info::McpToolInfo;
+pub use tool_name::{
+    build_mcp_tool_name, normalize_name_for_mcp, MCP_TOOL_DELIMITER, MCP_TOOL_PREFIX,
+};
 
 /// MCP service interface.
 pub struct MCPService {
-    server_manager: std::sync::Arc<MCPServerManager>,
-    config_service: std::sync::Arc<MCPConfigService>,
-    context_provider: std::sync::Arc<MCPContextProvider>,
+    server_manager: Arc<MCPServerManager>,
+    config_service: Arc<MCPConfigService>,
+    context_provider: Arc<MCPContextProvider>,
 }
 
 impl MCPService {
     /// Creates a new MCP service instance.
     pub fn new(
-        config_service: std::sync::Arc<crate::service::config::ConfigService>,
+        config_service: Arc<crate::service::config::ConfigService>,
     ) -> crate::util::errors::BitFunResult<Self> {
-        let mcp_config_service = std::sync::Arc::new(MCPConfigService::new(config_service)?);
-        let server_manager = std::sync::Arc::new(MCPServerManager::new(mcp_config_service.clone()));
-        let context_provider = std::sync::Arc::new(MCPContextProvider::new(server_manager.clone()));
+        let mcp_config_service = Arc::new(MCPConfigService::new(config_service)?);
+        let server_manager = Arc::new(MCPServerManager::new(mcp_config_service.clone()));
+        let context_provider = Arc::new(MCPContextProvider::new(server_manager.clone()));
 
         Ok(Self {
             server_manager,
@@ -55,17 +65,29 @@ impl MCPService {
     }
 
     /// Returns the server manager.
-    pub fn server_manager(&self) -> std::sync::Arc<MCPServerManager> {
+    pub fn server_manager(&self) -> Arc<MCPServerManager> {
         self.server_manager.clone()
     }
 
     /// Returns the context provider.
-    pub fn context_provider(&self) -> std::sync::Arc<MCPContextProvider> {
+    pub fn context_provider(&self) -> Arc<MCPContextProvider> {
         self.context_provider.clone()
     }
 
     /// Returns the configuration service.
-    pub fn config_service(&self) -> std::sync::Arc<MCPConfigService> {
+    pub fn config_service(&self) -> Arc<MCPConfigService> {
         self.config_service.clone()
     }
+}
+
+static GLOBAL_MCP_SERVICE: OnceLock<Arc<MCPService>> = OnceLock::new();
+
+/// Stores the global MCP service for code paths that cannot receive it via DI yet.
+pub fn set_global_mcp_service(service: Arc<MCPService>) {
+    let _ = GLOBAL_MCP_SERVICE.set(service);
+}
+
+/// Returns the global MCP service if it has been initialized.
+pub fn get_global_mcp_service() -> Option<Arc<MCPService>> {
+    GLOBAL_MCP_SERVICE.get().cloned()
 }

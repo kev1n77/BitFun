@@ -7,17 +7,21 @@ import React from 'react';
 import { getToolCardConfig, getToolCardComponent } from '../tool-cards';
 import type { FlowToolItem } from '../types/flow-chat';
 import { createLogger } from '@/shared/utils/logger';
+import { FlowToolCardErrorBoundary } from './FlowToolCardErrorBoundary';
+import { useTranslation } from 'react-i18next';
+import { getToolInterruptionNote } from '../utils/toolInterruption';
 
 const log = createLogger('FlowToolCard');
 
 interface FlowToolCardProps {
   toolItem: FlowToolItem;
-  onConfirm?: (toolId: string, updatedInput?: any) => void;
-  onReject?: (toolId: string) => void;
+  onConfirm?: (toolId: string, updatedInput?: any, permissionOptionId?: string, approve?: boolean) => void;
+  onReject?: (toolId: string, permissionOptionId?: string) => void;
   onOpenInEditor?: (filePath: string) => void;
   onOpenInPanel?: (panelType: string, data: any) => void;
   onExpand?: (toolId: string) => void;
   sessionId?: string;
+  turnId?: string;
   className?: string;
 }
 
@@ -31,21 +35,26 @@ export const FlowToolCard: React.FC<FlowToolCardProps> = React.memo(({
   sessionId,
   className = ''
 }) => {
+  const { t } = useTranslation('flow-chat');
   const config = getToolCardConfig(toolItem.toolName);
   const CardComponent = getToolCardComponent(toolItem.toolName);
+  const interruptionNote = getToolInterruptionNote(toolItem, t);
+  const cardHandlesInterruptionNote = toolItem.toolName === 'Task';
 
-  const handleConfirm = React.useCallback((updatedInput?: any) => {
+  const handleConfirm = React.useCallback((updatedInput?: any, permissionOptionId?: string, approve?: boolean) => {
     log.debug('handleConfirm called', {
       toolId: toolItem.id,
       toolName: toolItem.toolName,
       hasUpdatedInput: updatedInput !== undefined,
-      updatedInputKeys: updatedInput ? Object.keys(updatedInput) : []
+      updatedInputKeys: updatedInput ? Object.keys(updatedInput) : [],
+      hasPermissionOption: Boolean(permissionOptionId),
+      approve
     });
-    onConfirm?.(toolItem.id, updatedInput);
+    onConfirm?.(toolItem.id, updatedInput, permissionOptionId, approve);
   }, [toolItem.id, toolItem.toolName, onConfirm]);
 
-  const handleReject = React.useCallback(() => {
-    onReject?.(toolItem.id);
+  const handleReject = React.useCallback((permissionOptionId?: string) => {
+    onReject?.(toolItem.id, permissionOptionId);
   }, [toolItem.id, onReject]);
 
   const handleExpand = React.useCallback(() => {
@@ -54,16 +63,28 @@ export const FlowToolCard: React.FC<FlowToolCardProps> = React.memo(({
 
   return (
     <div className={`flow-tool-card-wrapper ${className}`}>
-      <CardComponent
+      <FlowToolCardErrorBoundary
         toolItem={toolItem}
-        config={config}
-        onConfirm={handleConfirm}
-        onReject={handleReject}
-        onOpenInEditor={onOpenInEditor}
-        onOpenInPanel={onOpenInPanel}
-        onExpand={handleExpand}
+        displayName={config.displayName}
         sessionId={sessionId}
-      />
+      >
+        <CardComponent
+          toolItem={toolItem}
+          config={config}
+          interruptionNote={interruptionNote}
+          onConfirm={handleConfirm}
+          onReject={handleReject}
+          onOpenInEditor={onOpenInEditor}
+          onOpenInPanel={onOpenInPanel}
+          onExpand={handleExpand}
+          sessionId={sessionId}
+        />
+      </FlowToolCardErrorBoundary>
+      {interruptionNote && !cardHandlesInterruptionNote && (
+        <div className="flow-tool-card-note" role="note">
+          {interruptionNote}
+        </div>
+      )}
     </div>
   );
 }, (prevProps, nextProps) => {
@@ -73,11 +94,18 @@ export const FlowToolCard: React.FC<FlowToolCardProps> = React.memo(({
   
   return (
     prevProps.toolItem.id === nextProps.toolItem.id &&
+    prevProps.sessionId === nextProps.sessionId &&
     prevProps.toolItem.status === nextProps.toolItem.status &&
+    prevProps.toolItem.interruptionReason === nextProps.toolItem.interruptionReason &&
+    prevProps.toolItem.terminalSessionId === nextProps.toolItem.terminalSessionId &&
     prevProps.toolItem.userConfirmed === nextProps.toolItem.userConfirmed &&
+    prevProps.toolItem.acpPermission === nextProps.toolItem.acpPermission &&
     prevProps.toolItem.isParamsStreaming === nextProps.toolItem.isParamsStreaming &&
+    prevProps.toolItem.subagentSessionId === nextProps.toolItem.subagentSessionId &&
+    prevProps.toolItem.subagentModelId === nextProps.toolItem.subagentModelId &&
+    prevProps.toolItem.subagentModelAlias === nextProps.toolItem.subagentModelAlias &&
     prevProgress === nextProgress &&
-    JSON.stringify(prevProps.toolItem.partialParams) === JSON.stringify(nextProps.toolItem.partialParams) &&
-    JSON.stringify(prevProps.toolItem.toolResult) === JSON.stringify(nextProps.toolItem.toolResult)
+    prevProps.toolItem.partialParams === nextProps.toolItem.partialParams &&
+    prevProps.toolItem.toolResult === nextProps.toolItem.toolResult
   );
 });

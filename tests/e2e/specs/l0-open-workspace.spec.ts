@@ -4,7 +4,7 @@
  */
 
 import { browser, expect, $ } from '@wdio/globals';
-import { openWorkspace } from '../helpers/workspace-helper';
+import { getWorkspaceState, openWorkspace } from '../helpers/workspace-helper';
 import { saveStepScreenshot } from '../helpers/screenshot-utils';
 
 describe('L0 Workspace Opening', () => {
@@ -44,11 +44,16 @@ describe('L0 Workspace Opening', () => {
     it('should have workspace UI elements', async () => {
       expect(hasWorkspace).toBe(true);
 
-      const chatInput = await $('[data-testid="chat-input-container"]');
-      const hasChatInput = await chatInput.isExisting();
+      const state = await getWorkspaceState();
+      const navLabels = state.workspaceLabels.length;
+      const sceneBar = await $('.bitfun-scene-bar');
+      const hasSceneBar = await sceneBar.isExisting();
 
-      console.log('[L0] Chat input exists:', hasChatInput);
-      expect(hasChatInput).toBe(true);
+      console.log('[L0] Workspace state:', state);
+      console.log('[L0] Scene bar exists:', hasSceneBar);
+      expect(state.currentWorkspacePath).toBeTruthy();
+      expect(navLabels).toBeGreaterThan(0);
+      expect(hasSceneBar).toBe(true);
       await saveStepScreenshot('l0-workspace-chat-ready');
     });
   });

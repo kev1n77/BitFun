@@ -2,6 +2,9 @@
 //!
 //! Provide unified error types and handling for the whole application
 
+use bitfun_core_types::errors::{
+    ai_error_detail_from_message, classify_ai_error_message, AiErrorDetail, ErrorCategory,
+};
 use serde::Serialize;
 use thiserror::Error;
 
@@ -38,8 +41,7 @@ pub enum BitFunError {
     Serialization(#[from] serde_json::Error),
 
     #[error("HTTP error: {0}")]
-    #[serde(serialize_with = "serialize_reqwest_error")]
-    Http(#[from] reqwest::Error),
+    Http(String),
 
     #[error("Other error: {0}")]
     #[serde(serialize_with = "serialize_anyhow_error")]
@@ -90,13 +92,6 @@ where
     serializer.serialize_str(&err.to_string())
 }
 
-fn serialize_reqwest_error<S>(err: &reqwest::Error, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    serializer.serialize_str(&err.to_string())
-}
-
 fn serialize_anyhow_error<S>(err: &anyhow::Error, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
@@ -129,6 +124,10 @@ impl BitFunError {
         Self::AIClient(msg.into())
     }
 
+    pub fn http<T: Into<String>>(msg: T) -> Self {
+        Self::Http(msg.into())
+    }
+
     pub fn parse<T: Into<String>>(msg: T) -> Self {
         Self::Deserialization(msg.into())
     }
@@ -138,10 +137,7 @@ impl BitFunError {
     }
 
     pub fn serialization<T: Into<String>>(msg: T) -> Self {
-        Self::Serialization(serde_json::Error::io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            msg.into(),
-        )))
+        Self::Serialization(serde_json::Error::io(std::io::Error::other(msg.into())))
     }
 
     pub fn session<T: Into<String>>(msg: T) -> Self {
@@ -149,11 +145,58 @@ impl BitFunError {
     }
 
     pub fn io<T: Into<String>>(msg: T) -> Self {
-        Self::Io(std::io::Error::new(std::io::ErrorKind::Other, msg.into()))
+        Self::Io(std::io::Error::other(msg.into()))
     }
 
     pub fn cancelled<T: Into<String>>(msg: T) -> Self {
         Self::Cancelled(msg.into())
+    }
+
+    /// Infer an error category from this error for frontend-friendly classification.
+    pub fn error_category(&self) -> ErrorCategory {
+        match self {
+            BitFunError::AIClient(msg) => classify_ai_error_message(msg),
+            BitFunError::Timeout(_) => ErrorCategory::Timeout,
+            BitFunError::Cancelled(_) => ErrorCategory::Unknown,
+            _ => ErrorCategory::Unknown,
+        }
+    }
+
+    /// Build a structured, provider-agnostic AI error detail for UI recovery.
+    pub fn error_detail(&self) -> AiErrorDetail {
+        let category = self.error_category();
+        let message = self.to_string();
+        ai_error_detail_from_message(&message, category)
+    }
+}
+
+impl From<bitfun_agent_stream::StreamProcessorError> for BitFunError {
+    fn from(error: bitfun_agent_stream::StreamProcessorError) -> Self {
+        match error {
+            bitfun_agent_stream::StreamProcessorError::AiClient(msg) => Self::AIClient(msg),
+            bitfun_agent_stream::StreamProcessorError::Cancelled(msg) => Self::Cancelled(msg),
+        }
+    }
+}
+
+impl From<bitfun_services_integrations::mcp::MCPRuntimeError> for BitFunError {
+    fn from(error: bitfun_services_integrations::mcp::MCPRuntimeError) -> Self {
+        use bitfun_services_integrations::mcp::MCPRuntimeErrorKind;
+
+        let message = error.message().to_string();
+        match error.kind() {
+            MCPRuntimeErrorKind::Configuration => Self::Configuration(message),
+            MCPRuntimeErrorKind::Validation => Self::Validation(message),
+            MCPRuntimeErrorKind::Io => Self::io(message),
+            MCPRuntimeErrorKind::Serialization => Self::serialization(message),
+            MCPRuntimeErrorKind::Deserialization => Self::Deserialization(message),
+            MCPRuntimeErrorKind::Process => Self::ProcessError(message),
+            MCPRuntimeErrorKind::MCP => Self::MCPError(message),
+            MCPRuntimeErrorKind::NotFound => Self::NotFound(message),
+            MCPRuntimeErrorKind::NotImplemented => Self::NotImplemented(message),
+            MCPRuntimeErrorKind::Timeout => Self::Timeout(message),
+            MCPRuntimeErrorKind::Other => Self::Other(anyhow::anyhow!(message)),
+        }
     }
 }
 
@@ -172,11 +215,5 @@ impl From<String> for BitFunError {
 impl From<&str> for BitFunError {
     fn from(error: &str) -> Self {
         BitFunError::Service(error.to_string())
-    }
-}
-
-impl From<tokio::sync::AcquireError> for BitFunError {
-    fn from(error: tokio::sync::AcquireError) -> Self {
-        BitFunError::Semaphore(error.to_string())
     }
 }

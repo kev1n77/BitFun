@@ -17,7 +17,6 @@ type LazyNavComponent = ReturnType<typeof lazy<ComponentType>>;
 const SCENE_NAV_REGISTRY: Partial<Record<SceneTabId, LazyNavComponent>> = {
   settings: lazy(() => import('./settings/SettingsNav')),
   'file-viewer': lazy(() => import('./file-viewer/FileViewerNav')),
-  'my-agent': lazy(() => import('./my-agent/MyAgentNav')),
   shell: lazy(() => import('./shell/ShellNav')),
   // terminal: lazy(() => import('./terminal/TerminalNav')),
 };

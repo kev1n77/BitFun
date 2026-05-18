@@ -16,6 +16,7 @@ interface ContextCompressionDisplayProps {
     session_id: string;
     compression_count: number;
     has_summary: boolean;
+    summary_source?: 'model' | 'local_fallback' | 'none';
     tokens_before?: number;
     tokens_after?: number;
     compression_ratio?: number;
@@ -41,6 +42,8 @@ export const ContextCompressionDisplay: React.FC<ContextCompressionDisplayProps>
     tokensAfter: toolItem.toolResult?.result?.tokens_after || compressionData?.tokens_after,
     compressionRatio: toolItem.toolResult?.result?.compression_ratio || compressionData?.compression_ratio,
     duration: toolItem.toolResult?.duration_ms || compressionData?.duration,
+    hasSummary: toolItem.toolResult?.result?.has_summary ?? compressionData?.has_summary,
+    summarySource: toolItem.toolResult?.result?.summary_source || compressionData?.summary_source,
     trigger: toolItem.toolCall?.input?.trigger || compressionData?.trigger,
     status: (toolItem.status === 'cancelled' || toolItem.status === 'analyzing') ? 'completed' : toolItem.status,
     error: toolItem.toolResult?.error
@@ -50,6 +53,8 @@ export const ContextCompressionDisplay: React.FC<ContextCompressionDisplayProps>
     tokensAfter: compressionData?.tokens_after,
     compressionRatio: compressionData?.compression_ratio,
     duration: compressionData?.duration,
+    hasSummary: compressionData?.has_summary,
+    summarySource: compressionData?.summary_source,
     trigger: compressionData?.trigger,
     status: 'completed' as const
   };
@@ -61,7 +66,7 @@ export const ContextCompressionDisplay: React.FC<ContextCompressionDisplayProps>
       case 'tool_batch':
         return t('toolCards.contextCompression.toolBatchComplete');
       case 'ai_response':
-        return 'After AI response';
+        return t('toolCards.contextCompression.afterAiResponse');
       case 'manual':
         return t('toolCards.contextCompression.manualTrigger');
       default:
@@ -75,6 +80,8 @@ export const ContextCompressionDisplay: React.FC<ContextCompressionDisplayProps>
   const isLoading = data.status === 'preparing' || data.status === 'streaming' || data.status === 'running';
 
   const isFailed = data.status === 'error';
+  const usedLocalFallback = data.summarySource === 'local_fallback';
+  const usedNoSummary = data.summarySource === 'none';
 
   const renderToolIcon = () => {
     return <Archive size={16} />;
@@ -87,26 +94,39 @@ export const ContextCompressionDisplay: React.FC<ContextCompressionDisplayProps>
     return null;
   };
 
+  const headerAction =
+    isFailed
+      ? t('toolCards.contextCompression.contextCompressionFailed')
+      : usedLocalFallback && data.status === 'completed'
+        ? t('toolCards.contextCompression.localFallbackHeader')
+        : t('toolCards.contextCompression.contextCompression');
+
   const renderHeader = () => (
     <ToolCardHeader
       icon={renderToolIcon()}
       iconClassName="compression-icon"
-      action={isFailed ? t('toolCards.contextCompression.contextCompressionFailed') : t('toolCards.contextCompression.contextCompression')}
+      action={headerAction}
       content={
         <span className="compression-info">
           {data.tokensBefore !== undefined && data.tokensAfter !== undefined ? (
             <>
               <span className="token-stat">
-                {data.tokensBefore.toLocaleString()} → {data.tokensAfter.toLocaleString()} tokens
+                {t('toolCards.contextCompression.tokenChange', {
+                  before: data.tokensBefore.toLocaleString(),
+                  after: data.tokensAfter.toLocaleString(),
+                })}
               </span>
               {savedTokens !== undefined && data.compressionRatio !== undefined && (
                 <span className="savings-tag">
-                  Saved {savedTokens.toLocaleString()} · Ratio {(data.compressionRatio * 100).toFixed(0)}%
+                  {t('toolCards.contextCompression.savingsTag', {
+                    saved: savedTokens.toLocaleString(),
+                    ratio: (data.compressionRatio * 100).toFixed(0),
+                  })}
                 </span>
               )}
             </>
           ) : (
-            <span className="processing-text">Compressing context...</span>
+            <span className="processing-text">{t('toolCards.contextCompression.compressingContext')}</span>
           )}
         </span>
       }
@@ -114,7 +134,7 @@ export const ContextCompressionDisplay: React.FC<ContextCompressionDisplayProps>
         <>
           {data.status === 'completed' && data.compressionCount && (
             <span className="compression-meta">
-              {getTriggerText(data.trigger)} · Compression #{data.compressionCount}
+              {getTriggerText(data.trigger)} · {t('toolCards.contextCompression.compressionCount', { count: data.compressionCount })}
             </span>
           )}
         </>
@@ -129,12 +149,27 @@ export const ContextCompressionDisplay: React.FC<ContextCompressionDisplayProps>
     </div>
   );
 
+  const renderExpandedContent = () => {
+    if (!usedNoSummary) {
+      return null;
+    }
+
+    return (
+      <div className="compression-detail-note">
+        {t('toolCards.contextCompression.noSummaryNotice', {
+          defaultValue: 'No additional summary was generated for this compaction pass.',
+        })}
+      </div>
+    );
+  };
+
   return (
     <BaseToolCard
       status={data.status}
-      isExpanded={false}
+      isExpanded={usedNoSummary}
       className="context-compression-display"
       header={renderHeader()}
+      expandedContent={renderExpandedContent()}
       errorContent={renderErrorContent()}
       isFailed={isFailed}
     />

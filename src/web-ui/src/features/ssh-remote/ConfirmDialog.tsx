@@ -46,20 +46,21 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
       size="small"
       showCloseButton
     >
-      <div className="confirm-dialog">
+      <div className="ssh-remote-confirm-dialog">
         {destructive && (
-          <div className="confirm-dialog__warning">
+          <div className="ssh-remote-confirm-dialog__warning">
             <AlertTriangle size={20} />
             <span>{title}</span>
           </div>
         )}
-        <p className="confirm-dialog__message">{message}</p>
-        <div className="confirm-dialog__actions">
-          <Button variant="secondary" onClick={onCancel}>
+        <p className="ssh-remote-confirm-dialog__message">{message}</p>
+        <div className="ssh-remote-confirm-dialog__actions">
+          <Button variant="secondary" size="small" onClick={onCancel}>
             {cancelText || t('actions.cancel')}
           </Button>
           <Button
             variant={destructive ? 'danger' : 'primary'}
+            size="small"
             onClick={handleConfirm}
           >
             {confirmText || t('actions.confirm')}

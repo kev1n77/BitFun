@@ -3,7 +3,7 @@
 .m-editor {
   display: flex;
   flex-direction: column;
-  border-radius: $size-radius-base;
+  border-radius: 0;
   overflow: hidden;
   
   &-toolbar {
@@ -17,6 +17,7 @@
     flex: 1;
     display: flex;
     overflow: hidden;
+    border-radius: 0;
   }
   
   &-edit-panel,
@@ -24,6 +25,7 @@
   &-ir-panel {
     flex: 1;
     overflow: hidden;
+    border-radius: 0;
   }
   
   &-mode-split {
@@ -70,13 +72,5 @@
       border-right-color: var(--border-base) !important;
     }
 
-    .mermaid-container {
-      border-color: var(--border-medium);
-    }
-
-    .m-editor-preview-loading {
-      border-color: var(--border-medium);
-    }
   }
 }
-

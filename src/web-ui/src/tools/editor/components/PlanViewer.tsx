@@ -13,6 +13,8 @@ import { workspaceAPI } from '@/infrastructure/api/service-api/WorkspaceAPI';
 import { flowChatManager } from '@/flow_chat/services/FlowChatManager';
 import { fileSystemService } from '@/tools/file-system/services/FileSystemService';
 import { planBuildStateService } from '@/shared/services/PlanBuildStateService';
+import { globalEventBus } from '@/infrastructure/event-bus';
+import { basenamePath, dirnameAbsolutePath } from '@/shared/utils/pathUtils';
 import './PlanViewer.scss';
 
 const log = createLogger('PlanViewer');
@@ -97,23 +99,23 @@ const PlanViewer: React.FC<PlanViewerProps> = ({
       return normalizedPath.substring(0, lastSlashIndex);
     }
     return undefined;
-  }, [filePath, t]);
+  }, [filePath]);
 
   const displayFileName = useMemo(() => {
     if (fileName) return fileName;
-    if (!filePath) return '';
-    const parts = filePath.replace(/\\/g, '/').split('/');
-    return parts[parts.length - 1] || '';
+    return basenamePath(filePath);
   }, [filePath, fileName]);
 
   const hasTodos = !!(planData?.todos && planData.todos.length > 0);
 
   useEffect(() => {
     isUnmountedRef.current = false;
+    const editor = editorRef.current;
+    const yamlEditor = yamlEditorRef.current;
     return () => {
       isUnmountedRef.current = true;
-      editorRef.current?.destroy();
-      yamlEditorRef.current?.destroy();
+      editor?.destroy();
+      yamlEditor?.destroy();
     };
   }, []);
 
@@ -175,7 +177,7 @@ const PlanViewer: React.FC<PlanViewerProps> = ({
         setLoading(false);
       }
     }
-  }, [filePath]);
+  }, [filePath, t]);
 
   useEffect(() => {
     loadFileContent();
@@ -185,9 +187,11 @@ const PlanViewer: React.FC<PlanViewerProps> = ({
     if (!filePath) return;
 
     const normalizedPlanPath = filePath.replace(/\\/g, '/');
-    const dirPath = filePath.substring(0, filePath.lastIndexOf('\\') >= 0 
-      ? filePath.lastIndexOf('\\') 
-      : filePath.lastIndexOf('/'));
+    const dirPath = dirnameAbsolutePath(filePath);
+
+    if (!dirPath) {
+      return;
+    }
 
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -282,6 +286,7 @@ const PlanViewer: React.FC<PlanViewerProps> = ({
       await workspaceAPI.writeFileContent(workspacePath || '', filePath, fullContent);
       setOriginalContent(planContent);
       setOriginalYamlContent(yamlContent);
+      globalEventBus.emit('file-tree:refresh');
       
       // Re-parse yaml to update planData
       if (yamlContent) {
@@ -413,6 +418,7 @@ const PlanViewer: React.FC<PlanViewerProps> = ({
       setYamlContent(nextYamlContent);
       setOriginalYamlContent(nextYamlContent);
       setOriginalContent(planContent);
+      globalEventBus.emit('file-tree:refresh');
     } catch (err) {
       log.error('Failed to save todo edit', err);
     }
@@ -479,7 +485,7 @@ const PlanViewer: React.FC<PlanViewerProps> = ({
       return;
     }
     setYamlEditorPlacement('inline');
-  }, [isInlineTodoEditing, isTodosExpanded, isTrailingTodoEditing, yamlEditorPlacement]);
+  }, []);
 
   const closeYamlEditor = useCallback(() => {
     setYamlEditorPlacement('none');
@@ -673,6 +679,7 @@ const PlanViewer: React.FC<PlanViewerProps> = ({
     trailingTodoDrafts,
     yamlContent,
     yamlEditorPlacement,
+    mEditorTheme,
   ]);
 
   // Build button click handler
@@ -711,7 +718,7 @@ ${JSON.stringify(simpleTodos, null, 2)}
   }, [filePath, buildStatus, planData, planContent, t]);
 
   // Get todo status icon
-  const getTodoIcon = (status?: string) => {
+  function getTodoIcon(status?: string) {
     switch (status) {
       case 'completed':
         return <Check size={14} className="todo-icon todo-icon--completed" />;
@@ -723,7 +730,7 @@ ${JSON.stringify(simpleTodos, null, 2)}
       default:
         return <Circle size={14} className="todo-icon todo-icon--pending" />;
     }
-  };
+  }
 
   // Render loading state
   if (loading) {

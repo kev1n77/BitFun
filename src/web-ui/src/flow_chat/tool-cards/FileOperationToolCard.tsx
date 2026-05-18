@@ -1,18 +1,41 @@
 /**
  * File operation tool card - refactored based on BaseToolCard
  * Supports Write/Edit/Delete file operations
+ *
+ * Height-stability contract:
+ * - Any state-driven height change must go through
+ *   `useToolCardHeightContract.applyExpandedState(...)`.
+ * - Any status/render-path change that removes expanded content without
+ *   toggling local expand state must dispatch
+ *   `flowchat:tool-card-collapse-intent` before the shrink happens.
+ * - If preview/result variants stop sharing roughly the same visual height in
+ *   the future, treat that as another shrink path and protect it explicitly
+ *   instead of relying on `VirtualMessageList` fallback compensation.
  */
 
-import React, { useEffect, useCallback, useMemo, useState, useRef } from 'react';
+import React, { useEffect, useCallback, useMemo, useState, useRef, useLayoutEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { XCircle, GitBranch, FileText, ChevronDown, ChevronUp, FileEdit, FilePlus, FileX2, Loader2, Clock, Check } from 'lucide-react';
-import { CubeLoading } from '../../component-library';
+import path from 'path-browserify';
+import {
+  XCircle,
+  GitBranch,
+  FileText,
+  FileEdit,
+  FilePlus,
+  FileX2,
+  ChevronRight,
+  Loader2,
+  Check,
+  X,
+} from 'lucide-react';
+import { CubeLoading, IconButton, ToolProcessingDots } from '../../component-library';
 import type { ToolCardProps } from '../types/flow-chat';
 import { BaseToolCard, ToolCardHeader } from './BaseToolCard';
 import { useSnapshotState } from '../../tools/snapshot_system/hooks/useSnapshotState';
 import { SnapshotEventBus, SNAPSHOT_EVENTS } from '../../tools/snapshot_system/core/SnapshotEventBus';
-import { useCurrentWorkspace } from '../../infrastructure/contexts/WorkspaceContext';
-import { createCodeEditorTab, createDiffEditorTab } from '../../shared/utils/tabUtils';
+import { useOptionalCurrentWorkspace } from '../../infrastructure/contexts/WorkspaceContext';
+import { createDiffEditorTab } from '../../shared/utils/tabUtils';
+import { fileTabManager } from '../../shared/services/FileTabManager';
 import { CodePreview } from '../components/CodePreview';
 import { InlineDiffPreview } from '../components/InlineDiffPreview';
 import { Tooltip } from '@/component-library';
@@ -20,14 +43,46 @@ import { diffLines } from 'diff';
 import { createLogger } from '@/shared/utils/logger';
 import { CompactToolCard, CompactToolCardHeader } from './CompactToolCard';
 import { useToolCardHeightContract } from './useToolCardHeightContract';
+import { hasNonFileUriScheme } from '@/shared/utils/pathUtils';
+import { notificationService } from '@/shared/notification-system';
+import { useGitState } from '@/tools/git/hooks/useGitState';
+import { ToolCardHeaderActions } from './ToolCardHeaderActions';
+import { hasAcpPermissionOptions } from './AcpPermissionActions.utils';
+import { AcpPermissionActions } from './AcpPermissionActions';
 import './FileOperationToolCard.scss';
 
 const log = createLogger('FileOperationToolCard');
-const FILE_OPERATION_PREVIEW_ROWS = 4;
-const FILE_OPERATION_PREVIEW_ROW_HEIGHT = 22;
-// Keep streaming and completed previews at the same height to avoid layout jumps.
-const FILE_OPERATION_PREVIEW_MAX_HEIGHT =
-  FILE_OPERATION_PREVIEW_ROWS * FILE_OPERATION_PREVIEW_ROW_HEIGHT;
+const FILE_OPERATION_STREAMING_MAX_HEIGHT = 4 * 22; // 88px – compact while streaming
+const FILE_OPERATION_DIFF_MAX_HEIGHT = 15 * 22;     // 330px – comfortable diff reading when expanded
+
+function stringPath(value: unknown): string {
+  return typeof value === 'string' && value.trim().length > 0 ? value : '';
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null ? value as Record<string, unknown> : null;
+}
+
+function firstStringValue(source: Record<string, unknown> | null | undefined, keys: string[]): string {
+  if (!source) return '';
+  for (const key of keys) {
+    const value = stringPath(source[key]);
+    if (value) return value;
+  }
+  return '';
+}
+
+function isWindowsAbsolutePath(filePath: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(filePath);
+}
+
+function resolveOpenFilePath(filePath: string, workspacePath?: string): string {
+  if (!filePath || hasNonFileUriScheme(filePath) || isWindowsAbsolutePath(filePath) || path.isAbsolute(filePath)) {
+    return filePath;
+  }
+
+  return workspacePath ? path.join(workspacePath, filePath) : filePath;
+}
 
 interface FileOperationToolCardProps extends ToolCardProps {
   sessionId?: string;
@@ -37,18 +92,34 @@ export const FileOperationToolCard: React.FC<FileOperationToolCardProps> = ({
   toolItem,
   config,
   sessionId,
-  onOpenInEditor
+  onOpenInEditor,
+  onConfirm,
+  onReject,
 }) => {
   const { t } = useTranslation('flow-chat');
-  const { toolCall, toolResult, status, isParamsStreaming, partialParams } = toolItem;
+  const {
+    toolCall,
+    toolResult,
+    status,
+    isParamsStreaming,
+    partialParams,
+    requiresConfirmation,
+    userConfirmed,
+  } = toolItem;
   const toolId = toolItem.id ?? toolCall?.id;
   
   const [isErrorExpanded, setIsErrorExpanded] = useState(false);
+  const [isContentExpanded, setIsContentExpanded] = useState(status !== 'completed');
   const [operationDiffStats, setOperationDiffStats] = useState<{ additions: number; deletions: number } | null>(null);
   
   const hasInitializedCompletionEffectRef = useRef(false);
   const previousCompletionEndTimeRef = useRef<number | null>(toolItem.endTime ?? null);
-  const { cardRootRef } = useToolCardHeightContract({
+  const previousStatusRef = useRef(status);
+  const lastStableExpandedHeightRef = useRef<number>(0);
+  const {
+    cardRootRef,
+    applyExpandedState: applyHeightContractExpandedState,
+  } = useToolCardHeightContract({
     toolId,
     toolName: toolItem.toolName,
   });
@@ -59,18 +130,41 @@ export const FileOperationToolCard: React.FC<FileOperationToolCardProps> = ({
     clearError
   } = useSnapshotState(sessionId);
   const eventBus = SnapshotEventBus.getInstance();
-  const { workspace: currentWorkspace } = useCurrentWorkspace();
+  const { workspace: currentWorkspace } = useOptionalCurrentWorkspace();
+  const { isRepository: workspaceIsGitRepo } = useGitState({
+    repositoryPath: currentWorkspace?.rootPath ?? '',
+    layers: ['basic'],
+    participateInWindowFocusRefresh: false,
+  });
 
   const getFilePath = useCallback((): string => {
-    const params = partialParams || toolCall?.input;
+    const result = toolResult?.result;
+    const resultPath = stringPath(result?.file_path) || stringPath(result?.filePath);
+    if (resultPath) {
+      return resultPath;
+    }
+
+    const params = objectValue(partialParams || toolCall?.input);
     if (!params) return '';
     
     if (Object.keys(params).length === 0) return '';
     
-    return params.file_path || params.target_file || params.path || params.filename || '';
-  }, [toolCall, partialParams]);
+    return firstStringValue(params, [
+      'file_path',
+      'filePath',
+      'filepath',
+      'target_file',
+      'targetFile',
+      'path',
+      'filename',
+    ]);
+  }, [toolCall, partialParams, toolResult]);
 
   const currentFilePath = getFilePath();
+  const openFilePath = useMemo(
+    () => resolveOpenFilePath(currentFilePath, currentWorkspace?.rootPath),
+    [currentFilePath, currentWorkspace?.rootPath],
+  );
 
   const getOldString = useCallback((): string => {
     const params = partialParams || toolCall?.input;
@@ -93,8 +187,25 @@ export const FileOperationToolCard: React.FC<FileOperationToolCardProps> = ({
   const oldStringContent = getOldString();
   const newStringContent = getNewString();
   const contentPreview = getContent();
+  const writeContentCharCount = toolItem.toolName === 'Write' ? contentPreview.length : 0;
+  const writeContentStatusText = useMemo(() => {
+    if (toolItem.toolName !== 'Write' || writeContentCharCount <= 0) return null;
+
+    const formattedCount = writeContentCharCount.toLocaleString();
+    if (status === 'completed') {
+      return `${formattedCount} chars written`;
+    }
+    return `${formattedCount} chars received`;
+  }, [status, toolItem.toolName, writeContentCharCount]);
   
   const isFailed = status === 'error' || (toolResult && 'success' in toolResult && !toolResult.success);
+  const showConfirmationActions = Boolean(
+    requiresConfirmation &&
+    !userConfirmed &&
+    status !== 'completed' &&
+    status !== 'cancelled' &&
+    status !== 'error'
+  );
   
   const fileName = currentFilePath ? 
     (currentFilePath.split(/[/\\]/).pop() || t('context.file')) : 
@@ -143,12 +254,58 @@ export const FileOperationToolCard: React.FC<FileOperationToolCardProps> = ({
 
   const toolDisplayInfo = getToolDisplayInfo();
 
+  const applyContentExpandedState = useCallback((
+    nextExpanded: boolean,
+    reason: 'manual' | 'auto',
+  ) => {
+    applyHeightContractExpandedState(
+      isContentExpanded,
+      nextExpanded,
+      setIsContentExpanded,
+      { reason },
+    );
+  }, [applyHeightContractExpandedState, isContentExpanded]);
+
+  const applyErrorExpandedState = useCallback((
+    nextExpanded: boolean,
+    reason: 'manual' | 'auto',
+  ) => {
+    applyHeightContractExpandedState(
+      isErrorExpanded,
+      nextExpanded,
+      setIsErrorExpanded,
+      { reason },
+    );
+  }, [applyHeightContractExpandedState, isErrorExpanded]);
+
   useEffect(() => {
     if (error) {
       log.error('File operation error', { filePath: currentFilePath, error });
       setTimeout(clearError, 3000);
     }
   }, [error, clearError, currentFilePath]);
+
+  useEffect(() => {
+    if (previousStatusRef.current !== status) {
+      if (status === 'completed' && !isFailed) {
+        applyContentExpandedState(false, 'auto');
+      } else if (status !== 'completed') {
+        applyContentExpandedState(true, 'auto');
+      }
+      previousStatusRef.current = status;
+    }
+  }, [
+    applyContentExpandedState,
+    cardRootRef,
+    contentPreview,
+    currentFilePath,
+    isContentExpanded,
+    isFailed,
+    oldStringContent,
+    status,
+    toolId,
+    toolItem.toolName,
+  ]);
 
   const localDiffStats = useMemo(() => {
     if (status !== 'completed' || isFailed) return null;
@@ -175,12 +332,32 @@ export const FileOperationToolCard: React.FC<FileOperationToolCardProps> = ({
     return operationDiffStats ?? localDiffStats ?? { additions: 0, deletions: 0 };
   }, [operationDiffStats, localDiffStats]);
 
+  const localDiffContent = useMemo(() => {
+    if (toolItem.toolName === 'Edit' && (oldStringContent || newStringContent)) {
+      return {
+        originalContent: oldStringContent,
+        modifiedContent: newStringContent,
+      };
+    }
+
+    if (toolItem.toolName === 'Write' && contentPreview) {
+      return {
+        originalContent: '',
+        modifiedContent: contentPreview,
+      };
+    }
+
+    return null;
+  }, [contentPreview, newStringContent, oldStringContent, toolItem.toolName]);
+
   useEffect(() => {
     if (!sessionId || !toolCall?.id || status !== 'completed' || isFailed) return;
     let cancelled = false;
 
     (async () => {
       try {
+        // TODO: Persist diff stats with the tool result so historical cards can
+        // read a static value instead of recomputing on every remount.
         const { snapshotAPI } = await import('../../infrastructure/api');
         const summary = await snapshotAPI.getOperationSummary(sessionId, toolCall.id);
         if (cancelled) return;
@@ -227,7 +404,49 @@ export const FileOperationToolCard: React.FC<FileOperationToolCardProps> = ({
     status,
     toolItem.toolName,
   ]);
-  
+
+  useLayoutEffect(() => {
+    const measuredHeight = cardRootRef.current?.getBoundingClientRect().height ?? 0;
+    if (!isFailed && isContentExpanded && measuredHeight > 0) {
+      lastStableExpandedHeightRef.current = measuredHeight;
+    }
+  }, [cardRootRef, isContentExpanded, isFailed, previewVariant, status]);
+
+  useLayoutEffect(() => {
+    const previousStatus = previousStatusRef.current;
+    const isNewFailure = previousStatus !== status && status === 'error';
+    if (!isNewFailure || !isContentExpanded) {
+      return;
+    }
+
+    const currentMeasuredHeight = cardRootRef.current?.getBoundingClientRect().height ?? 0;
+    const lastStableExpandedHeight = lastStableExpandedHeightRef.current;
+    const estimatedShrinkHeight = Math.max(lastStableExpandedHeight, currentMeasuredHeight);
+
+    if (estimatedShrinkHeight <= currentMeasuredHeight + 0.5) {
+      return;
+    }
+
+    window.dispatchEvent(new CustomEvent('flowchat:tool-card-collapse-intent', {
+      detail: {
+        toolId: toolId ?? null,
+        toolName: toolItem.toolName,
+        cardHeight: estimatedShrinkHeight,
+        filePath: currentFilePath || null,
+        reason: 'auto',
+      },
+    }));
+    window.dispatchEvent(new CustomEvent('tool-card-toggle'));
+  }, [
+    cardRootRef,
+    currentFilePath,
+    isContentExpanded,
+    previewVariant,
+    status,
+    toolId,
+    toolItem.toolName,
+  ]);
+
   const getErrorMessage = () => {
     if (toolResult && 'error' in toolResult) {
       return toolResult.error;
@@ -238,20 +457,32 @@ export const FileOperationToolCard: React.FC<FileOperationToolCardProps> = ({
     return t('error.unknown');
   };
 
+  const getSingleLineErrorMessage = () => {
+    return String(getErrorMessage()).replace(/\s+/g, ' ').trim();
+  };
+
   const handleOpenInCodeEditor = useCallback(async () => {
-    if (!sessionId || !currentFilePath) return;
+    if (!currentFilePath) return;
+
+    if (!sessionId || !openFilePath || hasNonFileUriScheme(openFilePath)) {
+      fileTabManager.openFile({
+        filePath: openFilePath,
+        fileName,
+        mode: 'agent',
+      });
+      return;
+    }
 
     try {
       const { snapshotAPI } = await import('../../infrastructure/api');
-      const diffData = await snapshotAPI.getOperationDiff(sessionId, currentFilePath, toolCall?.id);
+      const diffData = await snapshotAPI.getOperationDiff(sessionId, openFilePath, toolCall?.id);
       const jumpToLine = diffData.anchorLine ? Number(diffData.anchorLine) : undefined;
 
-      window.dispatchEvent(new CustomEvent('expand-right-panel'));
-
-      setTimeout(() => {
-        if (toolItem.toolName === 'Delete') {
+      if (toolItem.toolName === 'Delete') {
+        window.dispatchEvent(new CustomEvent('expand-right-panel'));
+        setTimeout(() => {
           createDiffEditorTab(
-            currentFilePath,
+            openFilePath,
             fileName,
             diffData.originalContent || '',
             diffData.modifiedContent || '',
@@ -260,100 +491,236 @@ export const FileOperationToolCard: React.FC<FileOperationToolCardProps> = ({
             undefined,
             jumpToLine
           );
-          return;
-        }
+        }, 250);
+        return;
+      }
 
-        createCodeEditorTab(
-          currentFilePath,
-          fileName,
-          {
-            readOnly: false,
-            showLineNumbers: true,
-            showMinimap: true,
-            theme: 'vs-dark',
-            jumpToLine
-          },
-          'agent'
-        );
-      }, 250);
+      fileTabManager.openFile({
+        filePath: openFilePath,
+        fileName,
+        jumpToLine,
+        mode: 'agent',
+      });
     } catch (error) {
-      log.error('Failed to open in CodeEditor', { sessionId, filePath: currentFilePath, error });
-      window.dispatchEvent(new CustomEvent('expand-right-panel'));
-      setTimeout(() => {
-        if (toolItem.toolName === 'Delete') {
+      log.error('Failed to open in CodeEditor', { sessionId, filePath: openFilePath, error });
+      if (toolItem.toolName === 'Delete') {
+        window.dispatchEvent(new CustomEvent('expand-right-panel'));
+        setTimeout(() => {
           createDiffEditorTab(
-            currentFilePath,
+            openFilePath,
             fileName,
             '',
             '',
             true,
             'agent'
           );
-          return;
-        }
+        }, 250);
+        return;
+      }
 
-        createCodeEditorTab(currentFilePath, fileName, { theme: 'vs-dark' }, 'agent');
-      }, 250);
+      fileTabManager.openFile({
+        filePath: openFilePath,
+        fileName,
+        mode: 'agent',
+      });
     }
-  }, [sessionId, currentFilePath, toolCall?.id, fileName, toolItem.toolName]);
+  }, [sessionId, currentFilePath, openFilePath, toolCall?.id, fileName, toolItem.toolName]);
+
+  const canOpenFullCode =
+    !isFailed &&
+    toolItem.toolName !== 'Delete' &&
+    status === 'completed' &&
+    Boolean(currentFilePath) &&
+    Boolean(sessionId || onOpenInEditor);
 
   const handleCardClick = useCallback((e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest('.compact-actions')) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (
+      (e.target as HTMLElement).closest(
+        '.file-op-diff-pill, .file-op-open-full-button, .tool-card-header-actions',
+      )
+    ) {
       return;
     }
     
     if (isFailed) {
-      setIsErrorExpanded(!isErrorExpanded);
+      applyErrorExpandedState(!isErrorExpanded, 'manual');
       return;
     }
 
     if (toolItem.toolName === 'Delete') {
       return;
     }
-    
-    if (currentFilePath && sessionId && status === 'completed') {
+
+    applyContentExpandedState(!isContentExpanded, 'manual');
+  }, [
+    applyContentExpandedState,
+    applyErrorExpandedState,
+    isContentExpanded,
+    isErrorExpanded,
+    isFailed,
+    toolItem.toolName,
+  ]);
+
+  const handleConfirmClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onConfirm?.(toolCall?.input);
+  }, [onConfirm, toolCall?.input]);
+
+  const handleRejectClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onReject?.();
+  }, [onReject]);
+
+  const handleOpenFullCodeClick = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (!canOpenFullCode || !currentFilePath) {
+      return;
+    }
+
+    if (sessionId) {
       handleOpenInCodeEditor();
       return;
     }
 
-    if (currentFilePath && onOpenInEditor) {
-      onOpenInEditor(currentFilePath);
-    }
-  }, [currentFilePath, onOpenInEditor, isFailed, sessionId, status, handleOpenInCodeEditor, toolItem.toolName]);
+    onOpenInEditor?.(currentFilePath);
+  }, [
+    canOpenFullCode,
+    currentFilePath,
+    handleOpenInCodeEditor,
+    onOpenInEditor,
+    sessionId,
+  ]);
 
   const handleOpenBaselineDiff = useCallback(async () => {
-    if (!currentFile || !currentWorkspace) {
-      log.warn('Cannot open Baseline Diff: missing required info', { hasFile: !!currentFile, hasWorkspace: !!currentWorkspace });
+    if (!currentFilePath) {
+      log.warn('Cannot open diff: missing required info', {
+        hasFilePath: !!currentFilePath,
+        hasWorkspace: !!currentWorkspace,
+        hasSessionId: !!sessionId
+      });
       return;
     }
 
-    const fileName = currentFile.filePath.split(/[/\\]/).pop() || currentFile.filePath;
+    const diffFilePath = currentFile?.filePath || currentFilePath;
+    const fileName = diffFilePath.split(/[/\\]/).pop() || diffFilePath;
 
-    try {
-      const { snapshotAPI } = await import('../../infrastructure/api');
-      
-      const diffData = await snapshotAPI.getBaselineSnapshotDiff(
-        currentFile.filePath,
-        currentWorkspace.rootPath
-      );
+    const openLocalDiff = () => {
+      if (!localDiffContent) return false;
+
+      if (localDiffContent.originalContent === localDiffContent.modifiedContent) {
+        notificationService.info(
+          `No changes to display for ${fileName}: original and modified content are identical.`
+        );
+        return true;
+      }
 
       window.dispatchEvent(new CustomEvent('expand-right-panel'));
 
       setTimeout(() => {
         createDiffEditorTab(
-          currentFile.filePath,
+          diffFilePath,
+          fileName,
+          localDiffContent.originalContent,
+          localDiffContent.modifiedContent,
+          false,
+          'agent',
+          currentWorkspace?.rootPath,
+          undefined,
+          false,
+          {
+            titleKind: 'diff',
+            duplicateKeyPrefix: 'diff'
+          }
+        );
+      }, 250);
+
+      return true;
+    };
+
+    if (!currentWorkspace || !sessionId) {
+      if (openLocalDiff()) return;
+
+      log.warn('Cannot open diff: no snapshot context and no local diff content', {
+        filePath: currentFilePath,
+        hasWorkspace: !!currentWorkspace,
+        hasSessionId: !!sessionId,
+      });
+      return;
+    }
+
+    try {
+      const { snapshotAPI } = await import('../../infrastructure/api');
+      
+      const diffData = await snapshotAPI.getOperationDiff(
+        sessionId,
+        diffFilePath,
+        toolCall?.id,
+        currentWorkspace.rootPath
+      );
+
+      const originalContent = diffData.originalContent || '';
+      const modifiedContent = diffData.modifiedContent || '';
+
+      if (originalContent === modifiedContent) {
+        if (
+          localDiffContent &&
+          localDiffContent.originalContent !== localDiffContent.modifiedContent
+        ) {
+          openLocalDiff();
+          return;
+        }
+
+        log.info('Baseline diff has no changes, skipping diff editor', {
+          filePath: diffFilePath,
+          originalLength: originalContent.length,
+          modifiedLength: modifiedContent.length,
+          operationId: toolCall?.id,
+          anchorLine: diffData.anchorLine,
+        });
+        notificationService.info(
+          `No changes to display for ${fileName}: baseline and current content are identical.`
+        );
+        return;
+      }
+
+      window.dispatchEvent(new CustomEvent('expand-right-panel'));
+
+      setTimeout(() => {
+        createDiffEditorTab(
+          diffFilePath,
           fileName,
           diffData.originalContent || '',
           diffData.modifiedContent || '',
           false,
           'agent',
-          currentWorkspace.rootPath
+          currentWorkspace.rootPath,
+          undefined,
+          false,
+          {
+            titleKind: 'diff',
+            duplicateKeyPrefix: 'diff'
+          }
         );
       }, 250);
     } catch (error) {
-      log.error('Failed to open Baseline Diff', { filePath: currentFile?.filePath, error });
+      if (openLocalDiff()) {
+        log.warn('Snapshot diff unavailable, opened local tool diff instead', {
+          filePath: currentFilePath,
+          error,
+        });
+        return;
+      }
+
+      log.error('Failed to open Baseline Diff', { filePath: currentFilePath, error });
     }
-  }, [currentFile, currentWorkspace]);
+  }, [currentFile, currentFilePath, currentWorkspace, localDiffContent, sessionId, toolCall?.id]);
 
   const getToolIconInfo = () => {
     const iconMap: Record<string, { icon: React.ReactNode; className: string }> = {
@@ -383,78 +750,6 @@ export const FileOperationToolCard: React.FC<FileOperationToolCardProps> = ({
     return null;
   };
 
-  const renderHeader = () => {
-    const { className: iconClassName } = getToolIconInfo();
-    const isDeleteTool = toolItem.toolName === 'Delete';
-    
-    const actionText = isDeleteTool 
-      ? '' 
-      : (isFailed ? `${toolDisplayInfo.name}${t('toolCards.file.failed')}` : `${toolDisplayInfo.name}:`);
-    
-    return (
-      <ToolCardHeader
-        icon={renderToolIcon()}
-        iconClassName={iconClassName}
-        action={actionText}
-      content={
-        <>
-          <Tooltip content={currentFilePath || fileName} placement="top">
-            <span className={`file-name ${isDeleteTool ? 'file-name--muted' : ''}`}>
-              {fileName}
-            </span>
-          </Tooltip>
-          {!isDeleteTool && !isParamsStreaming && !isFailed && !isLoading && (
-            (currentFileDiffStats.additions > 0 || currentFileDiffStats.deletions > 0)
-          ) && (
-            <span className="diff-preview-group">
-              {currentFileDiffStats.additions > 0 && (
-                <span className="additions">+{currentFileDiffStats.additions}</span>
-              )}
-              {currentFileDiffStats.deletions > 0 && (
-                <span className="deletions">-{currentFileDiffStats.deletions}</span>
-              )}
-            </span>
-          )}
-        </>
-      }
-      extra={
-        <>
-          {isParamsStreaming && (status === 'preparing' || status === 'streaming') && (
-            <span className="params-streaming-indicator">
-              {currentFilePath ? t('toolCards.file.receivingParams') : t('toolCards.file.analyzing')}
-            </span>
-          )}
-          
-          
-          {!isDeleteTool && !isFailed && !isLoading && status === 'completed' && (
-            <div className="compact-actions" onClick={(e) => e.stopPropagation()}>
-              <Tooltip content={t('toolCards.file.viewGitDiff')}>
-                <button
-                  className="compact-action-btn git-diff-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleOpenBaselineDiff();
-                  }}
-                  disabled={!currentFile || !currentWorkspace}
-                >
-                  <GitBranch size={12} />
-                </button>
-              </Tooltip>
-            </div>
-          )}
-          
-          {isFailed && (
-            <div className="error-expand-indicator">
-              {isErrorExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-            </div>
-          )}
-        </>
-      }
-      statusIcon={isDeleteTool ? null : renderStatusIcon()}
-    />
-    );
-  };
-
   const handleCodeLineClick = useCallback(async (lineNumber: number, filePath?: string) => {
     if (!filePath) return;
     
@@ -469,6 +764,10 @@ export const FileOperationToolCard: React.FC<FileOperationToolCardProps> = ({
   const renderExpandedContent = () => {
     if (isFailed) return null;
 
+    const previewMaxHeight = status === 'completed'
+      ? FILE_OPERATION_DIFF_MAX_HEIGHT
+      : FILE_OPERATION_STREAMING_MAX_HEIGHT;
+
     if (toolItem.toolName === 'Edit') {
       if (status !== 'completed' && newStringContent) {
         return (
@@ -478,8 +777,8 @@ export const FileOperationToolCard: React.FC<FileOperationToolCardProps> = ({
                 content={newStringContent}
                 filePath={currentFilePath}
                 isStreaming={isParamsStreaming}
-                showLineNumbers={false}
-                maxHeight={FILE_OPERATION_PREVIEW_MAX_HEIGHT}
+                showLineNumbers={isContentExpanded}
+                maxHeight={previewMaxHeight}
                 autoScrollToBottom={isParamsStreaming}
                 onLineClick={handleCodeLineClick}
               />
@@ -496,8 +795,8 @@ export const FileOperationToolCard: React.FC<FileOperationToolCardProps> = ({
                 originalContent={oldStringContent}
                 modifiedContent={newStringContent}
                 filePath={currentFilePath}
-                maxHeight={FILE_OPERATION_PREVIEW_MAX_HEIGHT}
-                showLineNumbers={false}
+                maxHeight={previewMaxHeight}
+                showLineNumbers={isContentExpanded}
                 lineNumberMode="dual"
                 showPrefix={false}
                 contextLines={-1}
@@ -517,8 +816,8 @@ export const FileOperationToolCard: React.FC<FileOperationToolCardProps> = ({
                 content={contentPreview}
                 filePath={currentFilePath}
                 isStreaming={isParamsStreaming}
-                showLineNumbers={false}
-                maxHeight={FILE_OPERATION_PREVIEW_MAX_HEIGHT}
+                showLineNumbers={isContentExpanded}
+                maxHeight={previewMaxHeight}
                 autoScrollToBottom={isParamsStreaming}
                 onLineClick={handleCodeLineClick}
               />
@@ -535,8 +834,8 @@ export const FileOperationToolCard: React.FC<FileOperationToolCardProps> = ({
                 originalContent=""
                 modifiedContent={contentPreview}
                 filePath={currentFilePath}
-                maxHeight={FILE_OPERATION_PREVIEW_MAX_HEIGHT}
-                showLineNumbers={false}
+                maxHeight={previewMaxHeight}
+                showLineNumbers={isContentExpanded}
                 lineNumberMode="single"
                 showPrefix={true}
                 contextLines={-1}
@@ -567,15 +866,15 @@ export const FileOperationToolCard: React.FC<FileOperationToolCardProps> = ({
       case 'running':
       case 'streaming':
       case 'preparing':
-        return <Loader2 className="animate-spin" size={12} />;
+        return <Loader2 className="animate-spin" size={16} />;
       case 'completed':
-        return <Check size={12} className="icon-check-done" />;
+        return <Check size={16} className="icon-check-done" />;
       case 'pending':
       case 'confirmed':
       case 'pending_confirmation':
       case 'analyzing':
       default:
-        return <Clock size={12} />;
+        return <ToolProcessingDots size={16} />;
     }
   };
 
@@ -584,6 +883,143 @@ export const FileOperationToolCard: React.FC<FileOperationToolCardProps> = ({
       return `${t('toolCards.file.delete')}${t('toolCards.file.failed')}: ${fileName}`;
     }
     return <>{t('toolCards.file.delete')}: <span className="delete-file-name">{fileName}</span></>;
+  };
+
+  const expandedContent = renderExpandedContent();
+  const hasExpandableContent =
+    !isFailed &&
+    Boolean(expandedContent);
+
+  const isCardContentExpanded =
+    !isFailed &&
+    !isDeleteTool &&
+    isContentExpanded;
+
+  const renderHeader = () => {
+    const { className: iconClassName } = getToolIconInfo();
+    const gitDiffDisabled =
+      !currentFilePath || (!localDiffContent && (!currentWorkspace || !sessionId));
+    const hasDiffStats =
+      currentFileDiffStats.additions > 0 || currentFileDiffStats.deletions > 0;
+
+    const actionText = isDeleteTool
+      ? ''
+      : (isFailed ? `${toolDisplayInfo.name}${t('toolCards.file.failed')}` : `${toolDisplayInfo.name}:`);
+
+    return (
+      <ToolCardHeader
+        icon={renderToolIcon()}
+        iconClassName={iconClassName}
+        headerExpanded={hasExpandableContent ? isContentExpanded : undefined}
+        onAffordanceClick={
+          hasExpandableContent
+            ? () => applyContentExpandedState(!isContentExpanded, 'manual')
+            : undefined
+        }
+        action={actionText}
+      content={
+        isFailed ? (
+          <span className="file-error-message-inline">
+            {getSingleLineErrorMessage()}
+          </span>
+        ) : (
+          <>
+            <Tooltip content={currentFilePath || fileName} placement="top">
+              <span className={`file-name ${isDeleteTool ? 'file-name--muted' : ''}`}>
+                {fileName}
+              </span>
+            </Tooltip>
+            {!isDeleteTool && !isParamsStreaming && !isLoading && hasDiffStats && (
+              <Tooltip content={t('toolCards.file.viewGitDiff')} placement="top">
+                <button
+                  type="button"
+                  className={`file-op-diff-pill${gitDiffDisabled ? ' file-op-diff-pill--disabled' : ''}`}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!gitDiffDisabled) {
+                      handleOpenBaselineDiff();
+                    }
+                  }}
+                  aria-label={t('toolCards.file.viewGitDiff')}
+                  title={t('toolCards.file.viewGitDiff')}
+                >
+                {currentFileDiffStats.additions > 0 && (
+                  <span className="additions">+{currentFileDiffStats.additions}</span>
+                )}
+                {currentFileDiffStats.deletions > 0 && (
+                  <span className="deletions">-{currentFileDiffStats.deletions}</span>
+                )}
+                  {workspaceIsGitRepo ? (
+                    <GitBranch size={12} strokeWidth={2} aria-hidden />
+                  ) : null}
+                </button>
+              </Tooltip>
+            )}
+          </>
+        )
+      }
+      extra={
+        <ToolCardHeaderActions className="file-op-header-actions">
+          {writeContentStatusText && (
+            <span className="params-streaming-indicator">
+              {writeContentStatusText}
+            </span>
+          )}
+          {isParamsStreaming && (status === 'preparing' || status === 'streaming') && !writeContentStatusText && (
+            <span className="params-streaming-indicator">
+              {currentFilePath ? t('toolCards.file.receivingParams') : t('toolCards.file.analyzing')}
+            </span>
+          )}
+          {showConfirmationActions && (
+            hasAcpPermissionOptions(toolItem) ? (
+              <AcpPermissionActions
+                toolItem={toolItem}
+                input={toolCall?.input}
+                buttonClassName="file-op-header-action"
+                onConfirm={onConfirm}
+                onReject={onReject}
+              />
+            ) : (
+              <>
+                <IconButton
+                  className="tool-card-header-action file-op-header-action file-op-confirm-btn"
+                  variant="success"
+                  size="xs"
+                  onClick={handleConfirmClick}
+                  tooltip={t('toolCards.mcp.confirmExecute')}
+                >
+                  <Check size={12} />
+                </IconButton>
+                <IconButton
+                  className="tool-card-header-action file-op-header-action file-op-reject-btn"
+                  variant="danger"
+                  size="xs"
+                  onClick={handleRejectClick}
+                  tooltip={t('toolCards.mcp.cancel')}
+                >
+                  <X size={12} />
+                </IconButton>
+              </>
+            )
+          )}
+          {canOpenFullCode && (
+            <Tooltip content={t('toolCards.file.openFullCodeHint')} placement="top">
+              <button
+                type="button"
+                className="file-op-open-full-button"
+                onClick={handleOpenFullCodeClick}
+                aria-label={t('toolCards.file.openFullCodeHint')}
+              >
+                <ChevronRight size={14} strokeWidth={2} absoluteStrokeWidth />
+              </button>
+            </Tooltip>
+          )}
+        </ToolCardHeaderActions>
+      }
+      statusIcon={isDeleteTool ? null : renderStatusIcon()}
+    />
+    );
   };
 
   if (isDeleteTool) {
@@ -595,8 +1031,42 @@ export const FileOperationToolCard: React.FC<FileOperationToolCardProps> = ({
         clickable={false}
         header={
           <CompactToolCardHeader
-            statusIcon={getDeleteStatusIcon()}
+            icon={getDeleteStatusIcon()}
             content={renderDeleteContent()}
+            extra={showConfirmationActions ? (
+              <ToolCardHeaderActions className="file-op-header-actions">
+                {hasAcpPermissionOptions(toolItem) ? (
+                  <AcpPermissionActions
+                    toolItem={toolItem}
+                    input={toolCall?.input}
+                    buttonClassName="file-op-header-action"
+                    onConfirm={onConfirm}
+                    onReject={onReject}
+                  />
+                ) : (
+                  <>
+                    <IconButton
+                      className="tool-card-header-action file-op-header-action file-op-confirm-btn"
+                      variant="success"
+                      size="xs"
+                      onClick={handleConfirmClick}
+                      tooltip={t('toolCards.mcp.confirmExecute')}
+                    >
+                      <Check size={12} />
+                    </IconButton>
+                    <IconButton
+                      className="tool-card-header-action file-op-header-action file-op-reject-btn"
+                      variant="danger"
+                      size="xs"
+                      onClick={handleRejectClick}
+                      tooltip={t('toolCards.mcp.cancel')}
+                    >
+                      <X size={12} />
+                    </IconButton>
+                  </>
+                )}
+              </ToolCardHeaderActions>
+            ) : undefined}
           />
         }
       />
@@ -607,13 +1077,16 @@ export const FileOperationToolCard: React.FC<FileOperationToolCardProps> = ({
     <div ref={cardRootRef} data-tool-card-id={toolId ?? ''}>
       <BaseToolCard
         status={status}
-        isExpanded={true}
+        isExpanded={isCardContentExpanded}
         onClick={handleCardClick}
         className={`file-operation-card ${isDeleteTool ? 'non-clickable' : ''}`}
         header={renderHeader()}
-        expandedContent={renderExpandedContent()}
+        expandedContent={expandedContent}
         errorContent={isFailed && isErrorExpanded ? renderErrorContent() : null}
         isFailed={isFailed}
+        requiresConfirmation={showConfirmationActions}
+        headerExpandAffordance={hasExpandableContent}
+        headerAffordanceKind="expand"
       />
     </div>
   );
