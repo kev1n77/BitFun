@@ -221,7 +221,7 @@ When returning pull request results to the user, include the provider web URL so
                 },
                 "remote_id": {
                     "type": "string",
-                    "description": "Review platform remote id. Omit for list/create/get to use the selected supported remote."
+                    "description": "Review platform remote id. Omit to use the only supported remote; provide it explicitly when the repository has multiple supported review-platform remotes."
                 },
                 "pull_request_id": {
                     "type": "string",
@@ -656,9 +656,10 @@ When returning pull request results to the user, include the provider web URL so
                 json!({ "action": action, "result": result })
             }
             ACTION_REPLY => {
+                let remote_id = Self::resolve_remote_id(&repository_path, input).await?;
                 let request = ReviewPlatformReplyToThreadRequest {
                     repository_path,
-                    remote_id: Self::string_field(input, "remote_id")?,
+                    remote_id,
                     pull_request_id: Self::string_field(input, "pull_request_id")?,
                     thread_id: Self::string_field(input, "thread_id")?,
                     body: Self::string_field(input, "body")?,
@@ -669,9 +670,10 @@ When returning pull request results to the user, include the provider web URL so
                 json!({ "action": action, "result": result })
             }
             ACTION_SUBMIT_REVIEW => {
+                let remote_id = Self::resolve_remote_id(&repository_path, input).await?;
                 let request = ReviewPlatformSubmitReviewRequest {
                     repository_path,
-                    remote_id: Self::string_field(input, "remote_id")?,
+                    remote_id,
                     pull_request_id: Self::string_field(input, "pull_request_id")?,
                     event: Self::submit_event(input)?,
                     body: Self::string_field(input, "body")?,
@@ -682,9 +684,10 @@ When returning pull request results to the user, include the provider web URL so
                 json!({ "action": action, "result": result })
             }
             ACTION_APPROVE => {
+                let remote_id = Self::resolve_remote_id(&repository_path, input).await?;
                 let request = ReviewPlatformApprovalRequest {
                     repository_path,
-                    remote_id: Self::string_field(input, "remote_id")?,
+                    remote_id,
                     pull_request_id: Self::string_field(input, "pull_request_id")?,
                     body: Self::optional_string_field(input, "body"),
                 };
@@ -694,9 +697,10 @@ When returning pull request results to the user, include the provider web URL so
                 json!({ "action": action, "result": result })
             }
             ACTION_REVOKE_APPROVAL => {
+                let remote_id = Self::resolve_remote_id(&repository_path, input).await?;
                 let request = ReviewPlatformApprovalRequest {
                     repository_path,
-                    remote_id: Self::string_field(input, "remote_id")?,
+                    remote_id,
                     pull_request_id: Self::string_field(input, "pull_request_id")?,
                     body: None,
                 };
@@ -706,9 +710,10 @@ When returning pull request results to the user, include the provider web URL so
                 json!({ "action": action, "result": result })
             }
             ACTION_REQUEST_CHANGES => {
+                let remote_id = Self::resolve_remote_id(&repository_path, input).await?;
                 let request = ReviewPlatformRequestChangesRequest {
                     repository_path,
-                    remote_id: Self::string_field(input, "remote_id")?,
+                    remote_id,
                     pull_request_id: Self::string_field(input, "pull_request_id")?,
                     body: Self::string_field(input, "body")?,
                 };
@@ -718,9 +723,10 @@ When returning pull request results to the user, include the provider web URL so
                 json!({ "action": action, "result": result })
             }
             ACTION_RESOLVE => {
+                let remote_id = Self::resolve_remote_id(&repository_path, input).await?;
                 let request = ReviewPlatformResolveThreadRequest {
                     repository_path,
-                    remote_id: Self::string_field(input, "remote_id")?,
+                    remote_id,
                     pull_request_id: Self::string_field(input, "pull_request_id")?,
                     thread_id: Self::string_field(input, "thread_id")?,
                     resolved: input

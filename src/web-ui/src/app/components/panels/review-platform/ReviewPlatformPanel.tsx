@@ -884,6 +884,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
       content: input.content,
       timestamp: Date.now(),
       sourceUrl: selectedPr?.webUrl || initialPullRequestUrl,
+      remoteId: selectedRemote?.id,
       repository: repository?.projectPath ?? selectedRemote?.projectPath,
       pullRequestNumber: selectedPr?.number,
       pullRequestTitle: selectedPr?.title,
@@ -891,7 +892,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
 
     useContextStore.getState().addContext(context);
     window.dispatchEvent(new CustomEvent('insert-context-tag', { detail: { context } }));
-  }, [initialPullRequestUrl, parentSession, repository?.projectPath, selectedPr, selectedRemote?.projectPath]);
+  }, [initialPullRequestUrl, parentSession, repository?.projectPath, selectedPr, selectedRemote?.id, selectedRemote?.projectPath]);
 
   const handleFillPrContext = useCallback(async () => {
     if (!selectedPr) return;
@@ -1227,9 +1228,17 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
             <div className="review-platform__detail-empty">
               <XCircle size={24} />
               <span>{detailError || error}</span>
-              <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleRetryDetail}>
-                Retry
-              </Button>
+              <div className="review-platform__detail-empty-actions">
+                <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleRetryDetail}>
+                  Retry
+                </Button>
+                {selectedRemote && selectedRemote.platform !== 'unknown' && (
+                  <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleOpenAuthModal} disabled={authSaving}>
+                    <KeyRound size={13} />
+                    {account?.authSource === 'stored' ? 'Update token' : 'Add token'}
+                  </Button>
+                )}
+              </div>
             </div>
           )}
 
@@ -1256,6 +1265,12 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
                   </div>
                 </div>
                 <div className="review-platform__detail-actions">
+                  {detailOnly && selectedRemote && selectedRemote.platform !== 'unknown' && (
+                    <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleOpenAuthModal} disabled={authSaving}>
+                      <KeyRound size={13} />
+                      {account?.authSource === 'stored' ? 'Update token' : 'Token'}
+                    </Button>
+                  )}
                   <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleFillPrContext} disabled={!selectedPr}>
                     <MessageSquareText size={13} />
                     Add context

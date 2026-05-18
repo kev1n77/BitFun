@@ -316,6 +316,14 @@
     text-align: center;
   }
 
+  &__detail-empty-actions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
   &__error-state {
     display: grid;
     justify-items: center;

@@ -64,6 +64,7 @@ export interface PullRequestContext extends BaseContext {
   section: 'overview' | 'file-diff' | 'commits' | 'reviews' | 'summary';
   content: string;
   sourceUrl?: string;
+  remoteId?: string;
   repository?: string;
   pullRequestNumber?: number;
   pullRequestTitle?: string;

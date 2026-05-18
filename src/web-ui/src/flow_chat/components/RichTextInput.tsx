@@ -88,6 +88,7 @@ function getContextFullPath(context: ContextItem): string {
     case 'pull-request':
       return [
         context.repository,
+        context.remoteId ? `remote:${context.remoteId}` : null,
         context.pullRequestNumber ? `PR #${context.pullRequestNumber}` : null,
         context.section,
         context.sourceUrl,
