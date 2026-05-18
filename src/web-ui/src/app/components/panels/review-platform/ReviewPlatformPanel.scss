@@ -296,6 +296,13 @@
     font-variant-numeric: tabular-nums;
   }
 
+  &__detail-pagination {
+    flex: 0 0 auto;
+    margin-top: 4px;
+    border: 1px solid var(--border-base);
+    border-radius: 7px;
+  }
+
   &__empty-state,
   &__error-state,
   &__detail-empty {

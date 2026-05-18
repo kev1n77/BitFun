@@ -235,6 +235,28 @@ pub struct ReviewPlatformPullRequestDetail {
     pub threads: Vec<ReviewPlatformThread>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewPlatformDetailSection {
+    Overview,
+    Files,
+    Commits,
+    Reviews,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewPlatformPullRequestDetailPage {
+    #[serde(flatten)]
+    pub pull_request: ReviewPlatformPullRequest,
+    pub body: String,
+    pub files: Vec<ReviewPlatformFile>,
+    pub commits: Vec<ReviewPlatformCommit>,
+    pub threads: Vec<ReviewPlatformThread>,
+    pub section: ReviewPlatformDetailSection,
+    pub pagination: ReviewPlatformPagination,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewPlatformCapabilities {
@@ -551,6 +573,25 @@ impl ReviewPlatformService {
             .await
     }
 
+    pub async fn pull_request_detail_page(
+        repository_path: &str,
+        remote_id: &str,
+        pull_request_id: &str,
+        section: ReviewPlatformDetailSection,
+        page: Option<u32>,
+        per_page: Option<u32>,
+    ) -> Result<ReviewPlatformPullRequestDetailPage, ReviewPlatformError> {
+        let ctx = Self::provider_context_for_repository(repository_path, Some(remote_id)).await?;
+        provider_for(ctx.remote.platform)
+            .pull_request_detail_page(
+                &ctx,
+                pull_request_id,
+                section,
+                PullRequestPagination::new(page, per_page),
+            )
+            .await
+    }
+
     pub async fn create_pull_request(
         request: ReviewPlatformCreatePullRequestRequest,
     ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
@@ -712,6 +753,50 @@ trait ReviewProvider: Sync {
         ctx: &ProviderContext,
         pull_request_id: &str,
     ) -> Result<ReviewPlatformPullRequestDetail, ReviewPlatformError>;
+
+    async fn pull_request_detail_page(
+        &self,
+        ctx: &ProviderContext,
+        pull_request_id: &str,
+        section: ReviewPlatformDetailSection,
+        pagination: PullRequestPagination,
+    ) -> Result<ReviewPlatformPullRequestDetailPage, ReviewPlatformError> {
+        let detail = self.pull_request_detail(ctx, pull_request_id).await?;
+        let file_total = detail.files.len();
+        let commit_total = detail.commits.len();
+        let thread_total = detail.threads.len();
+        let (files, commits, threads) = match section {
+            ReviewPlatformDetailSection::Overview => (Vec::new(), Vec::new(), Vec::new()),
+            ReviewPlatformDetailSection::Files => {
+                (slice_page(detail.files, pagination), Vec::new(), Vec::new())
+            }
+            ReviewPlatformDetailSection::Commits => (
+                Vec::new(),
+                slice_page(detail.commits, pagination),
+                Vec::new(),
+            ),
+            ReviewPlatformDetailSection::Reviews => (
+                Vec::new(),
+                Vec::new(),
+                slice_page(detail.threads, pagination),
+            ),
+        };
+        let total = match section {
+            ReviewPlatformDetailSection::Overview => 0,
+            ReviewPlatformDetailSection::Files => file_total,
+            ReviewPlatformDetailSection::Commits => commit_total,
+            ReviewPlatformDetailSection::Reviews => thread_total,
+        };
+        Ok(ReviewPlatformPullRequestDetailPage {
+            pull_request: detail.pull_request,
+            body: detail.body,
+            files,
+            commits,
+            threads,
+            section,
+            pagination: pagination_from_total(pagination, total),
+        })
+    }
 
     async fn create_pull_request(
         &self,
@@ -940,6 +1025,16 @@ impl ReviewProvider for GithubProvider {
         })
     }
 
+    async fn pull_request_detail_page(
+        &self,
+        ctx: &ProviderContext,
+        pull_request_id: &str,
+        section: ReviewPlatformDetailSection,
+        pagination: PullRequestPagination,
+    ) -> Result<ReviewPlatformPullRequestDetailPage, ReviewPlatformError> {
+        github_pull_request_detail_page(ctx, pull_request_id, section, pagination).await
+    }
+
     async fn create_pull_request(
         &self,
         ctx: &ProviderContext,
@@ -1080,6 +1175,119 @@ async fn github_submit_review(
     })
 }
 
+async fn github_pull_request_detail_page(
+    ctx: &ProviderContext,
+    pull_request_id: &str,
+    section: ReviewPlatformDetailSection,
+    pagination: PullRequestPagination,
+) -> Result<ReviewPlatformPullRequestDetailPage, ReviewPlatformError> {
+    let client = http_client()?;
+    let base = format!(
+        "{}/repos/{}/{}/pulls/{}",
+        ctx.api_base_url, ctx.remote.owner, ctx.remote.repository_name, pull_request_id
+    );
+    let detail = send_json(github_request(client.clone(), &base, ctx.token.as_deref())).await?;
+    let mut pull_request = github_pull_request_from_value(&detail);
+    pull_request.checks = github_checks(ctx, &client, &detail).await;
+
+    let mut files = Vec::new();
+    let mut commits = Vec::new();
+    let mut threads = Vec::new();
+    let mut section_pagination = empty_detail_pagination(section, pagination);
+
+    match section {
+        ReviewPlatformDetailSection::Overview => {}
+        ReviewPlatformDetailSection::Files => {
+            let response = fetch_array_page(
+                github_request(
+                    client.clone(),
+                    &format!("{}/files", base),
+                    ctx.token.as_deref(),
+                ),
+                pagination,
+            )
+            .await?;
+            section_pagination = pagination_from_response(&response, pagination);
+            files = array_items(&response.value)
+                .iter()
+                .map(github_file_from_value)
+                .collect();
+        }
+        ReviewPlatformDetailSection::Commits => {
+            let response = fetch_array_page(
+                github_request(
+                    client.clone(),
+                    &format!("{}/commits", base),
+                    ctx.token.as_deref(),
+                ),
+                pagination,
+            )
+            .await?;
+            section_pagination = pagination_from_response(&response, pagination);
+            commits = array_items(&response.value)
+                .iter()
+                .map(github_commit_from_value)
+                .collect();
+        }
+        ReviewPlatformDetailSection::Reviews => {
+            let reviews_url = format!("{}/reviews", base);
+            let reviews = fetch_array_page(
+                github_request(client.clone(), &reviews_url, ctx.token.as_deref()),
+                pagination,
+            )
+            .await?;
+            let review_comments = fetch_array_page(
+                github_request(
+                    client.clone(),
+                    &format!("{}/comments", base),
+                    ctx.token.as_deref(),
+                ),
+                pagination,
+            )
+            .await?;
+            let issue_comments = fetch_array_page(
+                github_request(
+                    client.clone(),
+                    &format!(
+                        "{}/repos/{}/{}/issues/{}/comments",
+                        ctx.api_base_url,
+                        ctx.remote.owner,
+                        ctx.remote.repository_name,
+                        pull_request_id
+                    ),
+                    ctx.token.as_deref(),
+                ),
+                pagination,
+            )
+            .await?;
+            pull_request.review_decision = github_review_decision(&reviews.value);
+            section_pagination = combine_page_pagination(
+                pagination,
+                &[
+                    pagination_from_response(&reviews, pagination),
+                    pagination_from_response(&review_comments, pagination),
+                    pagination_from_response(&issue_comments, pagination),
+                ],
+            );
+            threads = github_threads(
+                &reviews.value,
+                &review_comments.value,
+                &issue_comments.value,
+            );
+        }
+    }
+
+    Ok(ReviewPlatformPullRequestDetailPage {
+        pull_request,
+        body: value_string(&detail, "body"),
+        files,
+        commits,
+        threads,
+        section,
+        pagination: section_pagination,
+    })
+}
+
 #[async_trait::async_trait]
 impl ReviewProvider for GitlabProvider {
     async fn list_pull_requests(
@@ -1096,6 +1304,16 @@ impl ReviewProvider for GitlabProvider {
         pull_request_id: &str,
     ) -> Result<ReviewPlatformPullRequestDetail, ReviewPlatformError> {
         gitlab_pull_request_detail(ctx, pull_request_id).await
+    }
+
+    async fn pull_request_detail_page(
+        &self,
+        ctx: &ProviderContext,
+        pull_request_id: &str,
+        section: ReviewPlatformDetailSection,
+        pagination: PullRequestPagination,
+    ) -> Result<ReviewPlatformPullRequestDetailPage, ReviewPlatformError> {
+        gitlab_pull_request_detail_page(ctx, pull_request_id, section, pagination).await
     }
 
     async fn create_pull_request(
@@ -1175,6 +1393,16 @@ impl ReviewProvider for CodehubProvider {
         pull_request_id: &str,
     ) -> Result<ReviewPlatformPullRequestDetail, ReviewPlatformError> {
         gitlab_pull_request_detail(ctx, pull_request_id).await
+    }
+
+    async fn pull_request_detail_page(
+        &self,
+        ctx: &ProviderContext,
+        pull_request_id: &str,
+        section: ReviewPlatformDetailSection,
+        pagination: PullRequestPagination,
+    ) -> Result<ReviewPlatformPullRequestDetailPage, ReviewPlatformError> {
+        gitlab_pull_request_detail_page(ctx, pull_request_id, section, pagination).await
     }
 
     async fn create_pull_request(
@@ -1353,6 +1581,101 @@ async fn gitlab_pull_request_detail(
     })
 }
 
+async fn gitlab_pull_request_detail_page(
+    ctx: &ProviderContext,
+    pull_request_id: &str,
+    section: ReviewPlatformDetailSection,
+    pagination: PullRequestPagination,
+) -> Result<ReviewPlatformPullRequestDetailPage, ReviewPlatformError> {
+    let client = http_client()?;
+    let project = urlencoding::encode(&ctx.remote.project_path);
+    let base = format!(
+        "{}/projects/{}/merge_requests/{}",
+        ctx.api_base_url, project, pull_request_id
+    );
+    let detail = send_json(gitlab_request(client.clone(), &base, ctx.token.as_deref())).await?;
+    let mut pull_request = gitlab_pull_request_from_value(&detail);
+    let mut files = Vec::new();
+    let mut commits = Vec::new();
+    let mut threads = Vec::new();
+    let mut section_pagination = empty_detail_pagination(section, pagination);
+
+    match section {
+        ReviewPlatformDetailSection::Overview => {}
+        ReviewPlatformDetailSection::Files => {
+            let changes = send_json(gitlab_request(
+                client.clone(),
+                &format!("{}/changes", base),
+                ctx.token.as_deref(),
+            ))
+            .await?;
+            let all_files = gitlab_files(&changes);
+            pull_request.changed_files = all_files.len() as i32;
+            let (additions, deletions) = all_files.iter().fold((0, 0), |acc, file| {
+                (acc.0 + file.additions, acc.1 + file.deletions)
+            });
+            pull_request.additions = additions;
+            pull_request.deletions = deletions;
+            section_pagination = pagination_from_total(pagination, all_files.len());
+            files = slice_page(all_files, pagination);
+        }
+        ReviewPlatformDetailSection::Commits => {
+            let response = fetch_array_page(
+                gitlab_request(
+                    client.clone(),
+                    &format!("{}/commits", base),
+                    ctx.token.as_deref(),
+                ),
+                pagination,
+            )
+            .await?;
+            section_pagination = pagination_from_response(&response, pagination);
+            commits = array_items(&response.value)
+                .iter()
+                .map(gitlab_commit_from_value)
+                .collect();
+        }
+        ReviewPlatformDetailSection::Reviews => {
+            let discussions = fetch_array_page(
+                gitlab_request(
+                    client.clone(),
+                    &format!("{}/discussions", base),
+                    ctx.token.as_deref(),
+                ),
+                pagination,
+            )
+            .await?;
+            let notes = fetch_array_page(
+                gitlab_request(
+                    client.clone(),
+                    &format!("{}/notes", base),
+                    ctx.token.as_deref(),
+                ),
+                pagination,
+            )
+            .await?;
+            section_pagination = combine_page_pagination(
+                pagination,
+                &[
+                    pagination_from_response(&discussions, pagination),
+                    pagination_from_response(&notes, pagination),
+                ],
+            );
+            threads = gitlab_threads(&discussions.value, &notes.value);
+        }
+    }
+
+    Ok(ReviewPlatformPullRequestDetailPage {
+        pull_request,
+        body: value_string(&detail, "description"),
+        files,
+        commits,
+        threads,
+        section,
+        pagination: section_pagination,
+    })
+}
+
 async fn gitlab_create_pull_request(
     ctx: &ProviderContext,
     request: &ReviewPlatformCreatePullRequestRequest,
@@ -1434,13 +1757,8 @@ async fn gitlab_add_merge_request_note(
         gitlab_post_request(http_client()?, &url, Some(token)).json(&json!({ "body": body })),
     )
     .await?;
-    let thread = gitlab_thread_from_note(
-        &value,
-        None,
-        false,
-        ReviewPlatformThreadKind::Comment,
-        None,
-    );
+    let thread =
+        gitlab_thread_from_note(&value, None, false, ReviewPlatformThreadKind::Comment, None);
     Ok(ReviewPlatformActionResult {
         success: true,
         message: message.to_string(),
@@ -1566,6 +1884,92 @@ async fn gitcode_add_pull_request_comment(
     })
 }
 
+async fn gitcode_pull_request_detail_page(
+    ctx: &ProviderContext,
+    pull_request_id: &str,
+    section: ReviewPlatformDetailSection,
+    pagination: PullRequestPagination,
+) -> Result<ReviewPlatformPullRequestDetailPage, ReviewPlatformError> {
+    let client = http_client()?;
+    let base = format!(
+        "{}/repos/{}/{}/pulls/{}",
+        ctx.api_base_url, ctx.remote.owner, ctx.remote.repository_name, pull_request_id
+    );
+    let detail = send_json(gitcode_request(client.clone(), &base, ctx.token.as_deref())).await?;
+    let mut files = Vec::new();
+    let mut commits = Vec::new();
+    let mut threads = Vec::new();
+    let mut section_pagination = empty_detail_pagination(section, pagination);
+
+    match section {
+        ReviewPlatformDetailSection::Overview => {}
+        ReviewPlatformDetailSection::Files => {
+            if let Ok(response) = fetch_array_page(
+                gitcode_request(
+                    client.clone(),
+                    &format!("{}/files", base),
+                    ctx.token.as_deref(),
+                ),
+                pagination,
+            )
+            .await
+            {
+                section_pagination = pagination_from_response(&response, pagination);
+                files = array_items(&response.value)
+                    .iter()
+                    .map(gitcode_file_from_value)
+                    .collect();
+            }
+        }
+        ReviewPlatformDetailSection::Commits => {
+            if let Ok(response) = fetch_array_page(
+                gitcode_request(
+                    client.clone(),
+                    &format!("{}/commits", base),
+                    ctx.token.as_deref(),
+                ),
+                pagination,
+            )
+            .await
+            {
+                section_pagination = pagination_from_response(&response, pagination);
+                commits = array_items(&response.value)
+                    .iter()
+                    .map(gitcode_commit_from_value)
+                    .collect();
+            }
+        }
+        ReviewPlatformDetailSection::Reviews => {
+            if let Ok(response) = fetch_array_page(
+                gitcode_request(
+                    client.clone(),
+                    &format!("{}/comments", base),
+                    ctx.token.as_deref(),
+                ),
+                pagination,
+            )
+            .await
+            {
+                section_pagination = pagination_from_response(&response, pagination);
+                threads = gitcode_threads(&response.value);
+            }
+        }
+    }
+
+    Ok(ReviewPlatformPullRequestDetailPage {
+        body: first_non_empty(&[
+            value_string(&detail, "body"),
+            value_string(&detail, "description"),
+        ]),
+        pull_request: gitcode_pull_request_from_value(&detail),
+        files,
+        commits,
+        threads,
+        section,
+        pagination: section_pagination,
+    })
+}
+
 #[async_trait::async_trait]
 impl ReviewProvider for GitcodeProvider {
     async fn list_pull_requests(
@@ -1687,6 +2091,16 @@ impl ReviewProvider for GitcodeProvider {
                 .collect(),
             threads: gitcode_threads(&comments),
         })
+    }
+
+    async fn pull_request_detail_page(
+        &self,
+        ctx: &ProviderContext,
+        pull_request_id: &str,
+        section: ReviewPlatformDetailSection,
+        pagination: PullRequestPagination,
+    ) -> Result<ReviewPlatformPullRequestDetailPage, ReviewPlatformError> {
+        gitcode_pull_request_detail_page(ctx, pull_request_id, section, pagination).await
     }
 
     async fn create_pull_request(
@@ -1863,6 +2277,61 @@ where
     Ok(Value::Array(values))
 }
 
+async fn fetch_array_page(
+    request: reqwest::RequestBuilder,
+    pagination: PullRequestPagination,
+) -> Result<JsonResponse, ReviewPlatformError> {
+    let page = pagination.page.to_string();
+    let per_page = pagination.per_page.to_string();
+    let response =
+        send_json_response(request.query(&[("per_page", &per_page), ("page", &page)])).await?;
+    response.value.as_array().ok_or_else(|| {
+        ReviewPlatformError::Parse("Provider paginated response was not an array".to_string())
+    })?;
+    Ok(response)
+}
+
+fn pagination_from_response(
+    response: &JsonResponse,
+    pagination: PullRequestPagination,
+) -> ReviewPlatformPagination {
+    let item_count = response.value.as_array().map(Vec::len).unwrap_or(0);
+    let total = header_u64(&response.headers, "x-total")
+        .or_else(|| pagination_total_from_links(&response.headers, pagination, item_count));
+    ReviewPlatformPagination {
+        page: pagination.page,
+        per_page: pagination.per_page,
+        total,
+        has_next: link_header_has_rel(&response.headers, "next")
+            || header_string(&response.headers, "x-next-page")
+                .is_some_and(|value| !value.trim().is_empty())
+            || total
+                .map(|total| u64::from(pagination.page) * u64::from(pagination.per_page) < total)
+                .unwrap_or(false),
+    }
+}
+
+fn combine_page_pagination(
+    pagination: PullRequestPagination,
+    pages: &[ReviewPlatformPagination],
+) -> ReviewPlatformPagination {
+    let totals = if pages.iter().any(|page| page.has_next) {
+        None
+    } else {
+        pages
+            .iter()
+            .map(|page| page.total)
+            .collect::<Option<Vec<_>>>()
+            .map(|values| values.into_iter().sum())
+    };
+    ReviewPlatformPagination {
+        page: pagination.page,
+        per_page: pagination.per_page,
+        total: totals,
+        has_next: pages.iter().any(|page| page.has_next),
+    }
+}
+
 fn header_string(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get(name)
@@ -1923,6 +2392,48 @@ fn pagination_total_from_links(
         u64::from(pagination.page.saturating_sub(1)) * u64::from(pagination.per_page)
             + item_count as u64,
     )
+}
+
+fn pagination_from_total(
+    pagination: PullRequestPagination,
+    total: usize,
+) -> ReviewPlatformPagination {
+    ReviewPlatformPagination {
+        page: pagination.page,
+        per_page: pagination.per_page,
+        total: Some(total as u64),
+        has_next: usize::try_from(pagination.page)
+            .ok()
+            .is_some_and(|page| page * (pagination.per_page as usize) < total),
+    }
+}
+
+fn slice_page<T>(items: Vec<T>, pagination: PullRequestPagination) -> Vec<T> {
+    let start = pagination
+        .page
+        .saturating_sub(1)
+        .saturating_mul(pagination.per_page) as usize;
+    items
+        .into_iter()
+        .skip(start)
+        .take(pagination.per_page as usize)
+        .collect()
+}
+
+fn empty_detail_pagination(
+    section: ReviewPlatformDetailSection,
+    pagination: PullRequestPagination,
+) -> ReviewPlatformPagination {
+    ReviewPlatformPagination {
+        page: pagination.page,
+        per_page: pagination.per_page,
+        total: if section == ReviewPlatformDetailSection::Overview {
+            Some(0)
+        } else {
+            None
+        },
+        has_next: false,
+    }
 }
 
 fn github_next_page(headers: &HeaderMap, current_page: u32) -> Option<u32> {
@@ -3099,13 +3610,8 @@ fn gitlab_threads(discussions: &Value, notes: &Value) -> Vec<ReviewPlatformThrea
         }
     }
     for note in array_items(notes) {
-        let thread = gitlab_thread_from_note(
-            note,
-            None,
-            false,
-            ReviewPlatformThreadKind::Comment,
-            None,
-        );
+        let thread =
+            gitlab_thread_from_note(note, None, false, ReviewPlatformThreadKind::Comment, None);
         if let Some(comment_id) = thread.provider_comment_id.as_ref() {
             if seen_comment_ids.contains(comment_id) {
                 continue;

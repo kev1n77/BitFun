@@ -685,6 +685,7 @@ pub async fn run() {
             git_get_repository,
             review_platform_get_workspace_snapshot,
             review_platform_get_pull_request_detail,
+            review_platform_get_pull_request_detail_page,
             review_platform_update_auth_token,
             review_platform_clear_auth_token,
             git_get_status,

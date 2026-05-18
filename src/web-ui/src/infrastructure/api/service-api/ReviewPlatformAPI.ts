@@ -10,6 +10,7 @@ export type ReviewAuthSource = 'env' | 'stored' | 'none' | 'unsupported';
 export type ReviewItemState = 'open' | 'merged' | 'closed' | 'draft';
 export type ReviewDecision = 'approved' | 'changes_requested' | 'commented' | 'pending';
 export type ReviewFileStatus = 'added' | 'modified' | 'deleted' | 'renamed';
+export type ReviewPlatformDetailSection = 'overview' | 'files' | 'commits' | 'reviews';
 
 export interface ReviewPlatformAccount {
   id: string;
@@ -114,6 +115,11 @@ export interface ReviewPlatformPullRequestDetail extends ReviewPlatformPullReque
   threads: ReviewPlatformThread[];
 }
 
+export interface ReviewPlatformPullRequestDetailPage extends ReviewPlatformPullRequestDetail {
+  section: ReviewPlatformDetailSection;
+  pagination: ReviewPlatformPagination;
+}
+
 export interface ReviewPlatformCapabilities {
   canCreateReview: boolean;
   canCreatePullRequest: boolean;
@@ -155,6 +161,12 @@ export interface ReviewPlatformPullRequestDetailRequest {
   repositoryPath: string;
   remoteId: string;
   pullRequestId: string;
+}
+
+export interface ReviewPlatformPullRequestDetailPageRequest extends ReviewPlatformPullRequestDetailRequest {
+  section: ReviewPlatformDetailSection;
+  page?: number;
+  perPage?: number;
 }
 
 export interface ReviewPlatformUpdateAuthTokenRequest {
@@ -211,6 +223,27 @@ export class ReviewPlatformAPI {
         remoteId,
         pullRequestId,
       });
+    }
+  }
+
+  async getPullRequestDetailPage(
+    request: ReviewPlatformPullRequestDetailPageRequest,
+  ): Promise<ReviewPlatformPullRequestDetailPage> {
+    try {
+      return await api.invoke('review_platform_get_pull_request_detail_page', {
+        request,
+      });
+    } catch (error) {
+      log.error('Failed to load review platform pull request detail page', {
+        repositoryPath: request.repositoryPath,
+        remoteId: request.remoteId,
+        pullRequestId: request.pullRequestId,
+        section: request.section,
+        page: request.page,
+        perPage: request.perPage,
+        error,
+      });
+      throw createTauriCommandError('review_platform_get_pull_request_detail_page', error, request);
     }
   }
 

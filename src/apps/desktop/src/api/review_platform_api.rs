@@ -2,8 +2,8 @@
 
 use crate::api::app_state::AppState;
 use bitfun_core::service::review_platform::{
-    ReviewPlatformKind, ReviewPlatformPullRequestDetail, ReviewPlatformService,
-    ReviewPlatformWorkspaceSnapshot,
+    ReviewPlatformDetailSection, ReviewPlatformKind, ReviewPlatformPullRequestDetail,
+    ReviewPlatformPullRequestDetailPage, ReviewPlatformService, ReviewPlatformWorkspaceSnapshot,
 };
 use log::error;
 use serde::Deserialize;
@@ -24,6 +24,17 @@ pub struct ReviewPlatformPullRequestDetailRequest {
     pub repository_path: String,
     pub remote_id: String,
     pub pull_request_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewPlatformPullRequestDetailPageRequest {
+    pub repository_path: String,
+    pub remote_id: String,
+    pub pull_request_id: String,
+    pub section: ReviewPlatformDetailSection,
+    pub page: Option<u32>,
+    pub per_page: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,6 +96,38 @@ pub async fn review_platform_get_pull_request_detail(
             error
         );
         format!("Failed to get review platform pull request detail: {}", error)
+    })
+}
+
+#[tauri::command]
+pub async fn review_platform_get_pull_request_detail_page(
+    _state: State<'_, AppState>,
+    request: ReviewPlatformPullRequestDetailPageRequest,
+) -> Result<ReviewPlatformPullRequestDetailPage, String> {
+    ReviewPlatformService::pull_request_detail_page(
+        &request.repository_path,
+        &request.remote_id,
+        &request.pull_request_id,
+        request.section,
+        request.page,
+        request.per_page,
+    )
+    .await
+    .map_err(|error| {
+        error!(
+            "Failed to get review platform pull request detail page: path={}, remote_id={}, pull_request_id={}, section={:?}, page={:?}, per_page={:?}, error={}",
+            request.repository_path,
+            request.remote_id,
+            request.pull_request_id,
+            request.section,
+            request.page,
+            request.per_page,
+            error
+        );
+        format!(
+            "Failed to get review platform pull request detail page: {}",
+            error
+        )
     })
 }
 
