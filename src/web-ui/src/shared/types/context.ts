@@ -61,7 +61,7 @@ export interface CodeSnippetContext extends BaseContext {
 export interface PullRequestContext extends BaseContext {
   type: 'pull-request';
   label: string;
-  section: 'overview' | 'file-diff' | 'commits' | 'reviews' | 'summary';
+  section: 'overview' | 'ci' | 'file-diff' | 'commits' | 'reviews' | 'summary';
   content: string;
   sourceUrl?: string;
   remoteId?: string;

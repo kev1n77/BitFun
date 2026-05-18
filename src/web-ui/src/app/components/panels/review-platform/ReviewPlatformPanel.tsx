@@ -23,7 +23,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { Button, IconButton, Input, MarkdownRenderer, Modal, Select, Tabs, TabPane, Tooltip, type SelectOption } from '@/component-library';
-import { reviewPlatformAPI, systemAPI, type ReviewPlatformAccount, type ReviewPlatformCommit, type ReviewPlatformDetailSection, type ReviewPlatformFile, type ReviewPlatformPagination, type ReviewPlatformPullRequest, type ReviewPlatformPullRequestDetail, type ReviewPlatformPullRequestDetailPage, type ReviewPlatformRemote, type ReviewPlatformRepositoryRef, type ReviewPlatformThread, type ReviewPlatformWorkspaceSnapshot } from '@/infrastructure/api';
+import { reviewPlatformAPI, systemAPI, type ReviewPlatformAccount, type ReviewPlatformCiItem, type ReviewPlatformCiLog, type ReviewPlatformCommit, type ReviewPlatformDetailSection, type ReviewPlatformFile, type ReviewPlatformPagination, type ReviewPlatformPullRequest, type ReviewPlatformPullRequestDetail, type ReviewPlatformPullRequestDetailPage, type ReviewPlatformRemote, type ReviewPlatformRepositoryRef, type ReviewPlatformThread, type ReviewPlatformWorkspaceSnapshot } from '@/infrastructure/api';
 import { createLogger } from '@/shared/utils/logger';
 import { notificationService } from '@/shared/notification-system';
 import { openMainSession } from '@/flow_chat/services/openBtwSession';
@@ -45,11 +45,12 @@ interface ReviewPlatformPanelProps {
   detailOnly?: boolean;
 }
 
-type DetailTab = 'overview' | 'changes' | 'commits' | 'reviews';
+type DetailTab = 'overview' | 'ci' | 'changes' | 'commits' | 'reviews';
 type ListStateFilter = 'all' | 'open' | 'draft' | 'merged' | 'closed';
 type SnapshotCacheState = 'none' | 'cached' | 'refreshing';
 
 const PR_PAGE_SIZE = 10;
+const CI_PAGE_SIZE = 20;
 const CHANGE_PAGE_SIZE = 15;
 const COMMIT_PAGE_SIZE = 30;
 const REVIEW_PAGE_SIZE = 20;
@@ -168,6 +169,7 @@ function mergeDetailPage(
   return {
     ...base,
     ...page,
+    ci: page.section === 'ci' ? page.ci : base.ci,
     files: page.section === 'files' ? page.files : base.files,
     commits: page.section === 'commits' ? page.commits : base.commits,
     threads: page.section === 'reviews' ? page.threads : base.threads,
@@ -529,6 +531,65 @@ function buildPrReviewsContext(pr: ReviewPlatformPullRequest, threads: ReviewPla
   ].join('\n');
 }
 
+function ciItemTone(item: ReviewPlatformCiItem): 'passed' | 'failed' | 'pending' {
+  const raw = `${item.conclusion ?? item.status}`.trim().toLowerCase();
+  if (['success', 'neutral', 'skipped', 'passed', 'pass'].includes(raw)) return 'passed';
+  if (['failure', 'failed', 'error', 'timed_out', 'timed-out', 'cancelled', 'canceled', 'action_required'].includes(raw)) return 'failed';
+  return 'pending';
+}
+
+function ciItemStatusText(item: ReviewPlatformCiItem): string {
+  const status = item.status.trim();
+  const conclusion = item.conclusion?.trim();
+  if (!conclusion || conclusion.toLowerCase() === status.toLowerCase()) {
+    return status || 'unknown';
+  }
+  return `${status || 'unknown'} · ${conclusion}`;
+}
+
+function buildPrCiContext(pr: ReviewPlatformPullRequest, ciItems: ReviewPlatformCiItem[]): string {
+  if (!ciItems.length) {
+    return `Pull request CI: PR #${pr.number} ${pr.title}\n\nNo CI entries were returned by the provider.`;
+  }
+  return [
+    `Pull request CI page: PR #${pr.number} ${pr.title}`,
+    '',
+    `Checks: ${formatChecksText(pr)}`,
+    '',
+    ...ciItems.map(item => [
+      `- ${item.name}`,
+      `  Status: ${ciItemStatusText(item)}`,
+      item.stage ? `  Stage: ${item.stage}` : null,
+      item.detail ? `  Detail: ${item.detail}` : null,
+      item.webUrl ? `  URL: ${item.webUrl}` : null,
+      item.startedAt ? `  Started: ${formatAbsoluteTime(item.startedAt) || item.startedAt}` : null,
+      item.finishedAt ? `  Finished: ${formatAbsoluteTime(item.finishedAt) || item.finishedAt}` : null,
+    ].filter(Boolean).join('\n')),
+  ].join('\n');
+}
+
+function buildPrCiItemContext(pr: ReviewPlatformPullRequest, item: ReviewPlatformCiItem, ciLog?: ReviewPlatformCiLog | null): string {
+  return [
+    `Pull request CI result: PR #${pr.number} ${pr.title}`,
+    '',
+    `Checks: ${formatChecksText(pr)}`,
+    '',
+    `Name: ${item.name}`,
+    `Status: ${ciItemStatusText(item)}`,
+    item.conclusion ? `Conclusion: ${item.conclusion}` : null,
+    item.stage ? `Stage: ${item.stage}` : null,
+    item.detail ? `Detail: ${item.detail}` : null,
+    item.webUrl ? `URL: ${item.webUrl}` : null,
+    item.startedAt ? `Started: ${formatAbsoluteTime(item.startedAt) || item.startedAt}` : null,
+    item.finishedAt ? `Finished: ${formatAbsoluteTime(item.finishedAt) || item.finishedAt}` : null,
+    '',
+    'Error log excerpt:',
+    ciLog?.log
+      ? `${ciLog.truncated ? '[Truncated error excerpt]\n' : ''}${ciLog.log}`
+      : ciLog?.message || 'No error log excerpt has been loaded for this CI result.',
+  ].filter(Boolean).join('\n');
+}
+
 export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
   workspacePath,
   initialRemoteId,
@@ -552,13 +613,19 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
   const [query, setQuery] = useState('');
   const [stateFilter, setStateFilter] = useState<ListStateFilter>('all');
   const [pageIndex, setPageIndex] = useState(0);
+  const [ciPageIndex, setCiPageIndex] = useState(0);
   const [changePageIndex, setChangePageIndex] = useState(0);
   const [commitPageIndex, setCommitPageIndex] = useState(0);
   const [reviewPageIndex, setReviewPageIndex] = useState(0);
+  const [ciPagination, setCiPagination] = useState<ReviewPlatformPagination>(() => emptyPagination(1, CI_PAGE_SIZE));
   const [changePagination, setChangePagination] = useState<ReviewPlatformPagination>(() => emptyPagination(1, CHANGE_PAGE_SIZE));
   const [commitPagination, setCommitPagination] = useState<ReviewPlatformPagination>(() => emptyPagination(1, COMMIT_PAGE_SIZE));
   const [reviewPagination, setReviewPagination] = useState<ReviewPlatformPagination>(() => emptyPagination(1, REVIEW_PAGE_SIZE));
   const [expandedFileKeys, setExpandedFileKeys] = useState<Set<string>>(() => new Set());
+  const [expandedCiItemIds, setExpandedCiItemIds] = useState<Set<string>>(() => new Set());
+  const [ciLogById, setCiLogById] = useState<Record<string, ReviewPlatformCiLog>>({});
+  const [ciLogErrorById, setCiLogErrorById] = useState<Record<string, string>>({});
+  const [ciLogLoadingIds, setCiLogLoadingIds] = useState<Set<string>>(() => new Set());
   const [snapshotCacheState, setSnapshotCacheState] = useState<SnapshotCacheState>('none');
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authToken, setAuthToken] = useState('');
@@ -585,6 +652,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
     () => uniquePaths((detail?.files ?? []).map(file => file.path)),
     [detail?.files],
   );
+  const ciItems = useMemo(() => detail?.ci ?? [], [detail?.ci]);
   const changedFiles = useMemo(() => detail?.files ?? [], [detail?.files]);
   const commits = useMemo(() => detail?.commits ?? [], [detail?.commits]);
   const reviewThreads = useMemo(() => detail?.threads ?? EMPTY_REVIEW_THREADS, [detail?.threads]);
@@ -598,9 +666,11 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
   );
   const reviewItemCount = reviewPagination.total
     ?? (reviewThreads.length > 0 ? reviewThreads.length : (selectedPr?.comments ?? 0));
+  const ciPage = detailPageInfo(ciPagination, ciItems.length);
   const changePage = detailPageInfo(changePagination, changedFiles.length);
   const commitPage = detailPageInfo(commitPagination, commits.length);
   const reviewPage = detailPageInfo(reviewPagination, reviewThreads.length);
+  const pagedCiItems = ciItems;
   const pagedChangedFiles = changedFiles;
   const pagedCommits = commits;
   const pagedReviewThreads = reviewThreads;
@@ -736,7 +806,9 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
   }, [workspacePath]);
 
   const applySectionPagination = useCallback((section: Exclude<ReviewPlatformDetailSection, 'overview'>, pagination: ReviewPlatformPagination) => {
-    if (section === 'files') {
+    if (section === 'ci') {
+      setCiPagination(pagination);
+    } else if (section === 'files') {
       setChangePagination(pagination);
     } else if (section === 'commits') {
       setCommitPagination(pagination);
@@ -864,9 +936,15 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
 
   useEffect(() => {
     setExpandedFileKeys(new Set());
+    setExpandedCiItemIds(new Set());
+    setCiLogById({});
+    setCiLogErrorById({});
+    setCiLogLoadingIds(new Set());
+    setCiPageIndex(0);
     setChangePageIndex(0);
     setCommitPageIndex(0);
     setReviewPageIndex(0);
+    setCiPagination(emptyPagination(1, CI_PAGE_SIZE));
     setChangePagination(emptyPagination(1, CHANGE_PAGE_SIZE));
     setCommitPagination(emptyPagination(1, COMMIT_PAGE_SIZE));
     setReviewPagination(emptyPagination(1, REVIEW_PAGE_SIZE));
@@ -879,7 +957,9 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
 
   useEffect(() => {
     if (!hasDetail || !selectedRemoteId || !selectedPrId || (!repository && !workspacePath)) return;
-    if (activeTab === 'changes') {
+    if (activeTab === 'ci') {
+      void loadDetailSection(repository, selectedRemoteId, selectedPrId, 'ci', ciPageIndex, CI_PAGE_SIZE);
+    } else if (activeTab === 'changes') {
       void loadDetailSection(repository, selectedRemoteId, selectedPrId, 'files', changePageIndex, CHANGE_PAGE_SIZE);
     } else if (activeTab === 'commits') {
       void loadDetailSection(repository, selectedRemoteId, selectedPrId, 'commits', commitPageIndex, COMMIT_PAGE_SIZE);
@@ -888,6 +968,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
     }
   }, [
     activeTab,
+    ciPageIndex,
     changePageIndex,
     commitPageIndex,
     hasDetail,
@@ -1097,6 +1178,74 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
     }
   }, [initialPullRequestUrl, selectedPr?.webUrl]);
 
+  const handleOpenCiUrl = useCallback(async (webUrl?: string | null) => {
+    if (!webUrl) return;
+    try {
+      await systemAPI.openExternal(webUrl);
+    } catch (error) {
+      log.error('Failed to open CI URL', { error, webUrl });
+    }
+  }, []);
+
+  const loadCiLog = useCallback(async (item: ReviewPlatformCiItem): Promise<ReviewPlatformCiLog | null> => {
+    const cached = ciLogById[item.id];
+    if (cached) return cached;
+    if ((!repository && !workspacePath) || !selectedRemoteId || !selectedPrId) return null;
+
+    const repositoryPath = workspacePath || repository?.workspacePath || '';
+    setCiLogLoadingIds(prev => {
+      const next = new Set(prev);
+      next.add(item.id);
+      return next;
+    });
+    setCiLogErrorById(prev => {
+      const next = { ...prev };
+      delete next[item.id];
+      return next;
+    });
+
+    try {
+      const nextLog = await reviewPlatformAPI.getPullRequestCiLog({
+        repositoryPath,
+        remoteId: selectedRemoteId,
+        pullRequestId: selectedPrId,
+        ciItemId: item.id,
+        ciItemName: item.name,
+      });
+      setCiLogById(prev => ({ ...prev, [item.id]: nextLog }));
+      return nextLog;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to load CI error log.';
+      setCiLogErrorById(prev => ({ ...prev, [item.id]: message }));
+      log.error('Failed to load CI log', { itemId: item.id, error: err });
+      return null;
+    } finally {
+      setCiLogLoadingIds(prev => {
+        const next = new Set(prev);
+        next.delete(item.id);
+        return next;
+      });
+    }
+  }, [ciLogById, repository, selectedPrId, selectedRemoteId, workspacePath]);
+
+  const toggleCiExpanded = useCallback((item: ReviewPlatformCiItem) => {
+    if (expandedCiItemIds.has(item.id)) {
+      setExpandedCiItemIds(prev => {
+        const next = new Set(prev);
+        next.delete(item.id);
+        return next;
+      });
+      return;
+    }
+
+    setExpandedCiItemIds(prev => {
+      const next = new Set(prev);
+      next.add(item.id);
+      return next;
+    });
+    void loadCiLog(item);
+  }, [expandedCiItemIds, loadCiLog]);
+
   const handleOpenParentChat = useCallback(async () => {
     if (!parentSession) {
       notificationService.warning('Open or create a chat session before linking PR context.', { duration: 3500 });
@@ -1109,6 +1258,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
     label: string;
     section: PullRequestContext['section'];
     content: string;
+    metadata?: Record<string, unknown>;
   }) => {
     if (!parentSession) {
       notificationService.warning('Open or create a chat session before sending PR context.', { duration: 3500 });
@@ -1122,6 +1272,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
       label: input.label,
       section: input.section,
       content: input.content,
+      metadata: input.metadata,
       timestamp: Date.now(),
       sourceUrl: selectedPr?.webUrl || initialPullRequestUrl,
       remoteId: selectedRemote?.id,
@@ -1177,6 +1328,33 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
       content: buildPrReviewsContext(selectedPr, detail?.threads ?? []),
     });
   }, [addPullRequestContextToChat, detail?.threads, selectedPr]);
+
+  const handleAddCiPageContext = useCallback(async () => {
+    if (!selectedPr) return;
+    await addPullRequestContextToChat({
+      label: `PR #${selectedPr.number} CI page`,
+      section: 'ci',
+      content: buildPrCiContext(selectedPr, detail?.ci ?? []),
+    });
+  }, [addPullRequestContextToChat, detail?.ci, selectedPr]);
+
+  const handleAddCiItemContext = useCallback(async (item: ReviewPlatformCiItem) => {
+    if (!selectedPr) return;
+    const ciLog = ciLogById[item.id] ?? await loadCiLog(item);
+    await addPullRequestContextToChat({
+      label: `PR #${selectedPr.number} CI · ${item.name}`,
+      section: 'ci',
+      content: buildPrCiItemContext(selectedPr, item, ciLog),
+      metadata: {
+        ciItemId: item.id,
+        ciItemName: item.name,
+        ciItemStatus: item.status,
+        ciItemConclusion: item.conclusion,
+        ciItemStage: item.stage,
+        ciLogTruncated: ciLog?.truncated ?? false,
+      },
+    });
+  }, [addPullRequestContextToChat, ciLogById, loadCiLog, selectedPr]);
 
   const refreshAuthSnapshot = useCallback((remoteId: string | null) => {
     snapshotCache.clear();
@@ -1241,6 +1419,10 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
 
   const handleRetryDetail = useCallback(() => {
     if ((!repository && !workspacePath) || !selectedRemoteId || !selectedPrId) return;
+    if (activeTab === 'ci') {
+      void loadDetailSection(repository, selectedRemoteId, selectedPrId, 'ci', ciPageIndex, CI_PAGE_SIZE, { force: true });
+      return;
+    }
     if (activeTab === 'changes') {
       void loadDetailSection(repository, selectedRemoteId, selectedPrId, 'files', changePageIndex, CHANGE_PAGE_SIZE, { force: true });
       return;
@@ -1260,6 +1442,7 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
     commitPageIndex,
     loadDetail,
     loadDetailSection,
+    ciPageIndex,
     repository,
     reviewPageIndex,
     selectedPrId,
@@ -1269,8 +1452,12 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
 
   const handleRefreshDetail = useCallback(() => {
     if ((!repository && !workspacePath) || !selectedRemoteId || !selectedPrId) return;
+    if (activeTab === 'ci') {
+      void loadDetailSection(repository, selectedRemoteId, selectedPrId, 'ci', ciPageIndex, CI_PAGE_SIZE, { force: true });
+      return;
+    }
     void loadDetail(repository, selectedRemoteId, selectedPrId, { force: true });
-  }, [loadDetail, repository, selectedPrId, selectedRemoteId, workspacePath]);
+  }, [activeTab, ciPageIndex, loadDetail, loadDetailSection, repository, selectedPrId, selectedRemoteId, workspacePath]);
 
   const remoteStatus = selectedRemote
     ? `${providerLabel(selectedRemote)} · ${authLabel(account)}`
@@ -1649,6 +1836,124 @@ export const ReviewPlatformPanel: React.FC<ReviewPlatformPanelProps> = ({
                       <span><UserRound size={13} /> {displayPr?.author ?? selectedPr.author}</span>
                       <span><Clock3 size={13} /> {formatAbsoluteTime(displayPr?.updatedAt ?? selectedPr.updatedAt)}</span>
                     </div>
+                  </section>
+                </TabPane>
+
+                <TabPane tabKey="ci" label="CI">
+                  <section className="review-platform__tab-content review-platform__ci-list">
+                    <div className="review-platform__section-heading">
+                      <span>CI</span>
+                      <span className="review-platform__section-count">
+                        {ciItems.length ? `${ciItems.length} items · ${checksText}` : checksText}
+                      </span>
+                      <Button className="review-platform__panel-button" size="small" variant="ghost" onClick={handleAddCiPageContext} disabled={!selectedPr || !detail || detailLoading}>
+                        <MessageSquareText size={13} />
+                        Add page
+                      </Button>
+                    </div>
+                    {detailError && (
+                      <div className="review-platform__detail-error">
+                        <XCircle size={14} />
+                        <span>{detailError}</span>
+                        <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={handleRetryDetail}>
+                          Retry
+                        </Button>
+                      </div>
+                    )}
+                    {detailLoading && renderDetailLoading(pagedCiItems.length ? 'Refreshing CI...' : 'Loading CI...', pagedCiItems.length > 0)}
+                    {pagedCiItems.map(item => {
+                      const tone = ciItemTone(item);
+                      const isCiExpanded = expandedCiItemIds.has(item.id);
+                      const ciLog = ciLogById[item.id];
+                      const ciLogLoading = ciLogLoadingIds.has(item.id);
+                      const ciLogError = ciLogErrorById[item.id];
+                      return (
+                        <article key={item.id} className={`review-platform__ci-item review-platform__ci-item--${tone}`}>
+                          <div className="review-platform__ci-head">
+                            <div className="review-platform__ci-main">
+                              <strong>{item.name}</strong>
+                              <span>
+                                {[item.detail, item.stage].filter(Boolean).join(' · ') || (item.webUrl ? 'Provider details available' : 'No extra details provided')}
+                              </span>
+                            </div>
+                            <div className="review-platform__ci-actions">
+                              {ciLog && (
+                                <span className="review-platform__ci-log-chip">
+                                  {ciLog.log ? (ciLog.truncated ? 'Errors truncated' : 'Errors loaded') : 'No errors'}
+                                </span>
+                              )}
+                              <span className={`review-platform__ci-status review-platform__ci-status--${tone}`}>
+                                {ciItemStatusText(item)}
+                              </span>
+                              <IconButton
+                                className="review-platform__icon-button review-platform__ci-action"
+                                size="xs"
+                                variant="ghost"
+                                tooltip={isCiExpanded ? 'Hide error log' : 'Load error log'}
+                                onClick={() => toggleCiExpanded(item)}
+                                disabled={ciLogLoading}
+                                aria-busy={ciLogLoading}
+                              >
+                                {isCiExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                              </IconButton>
+                              <IconButton
+                                className="review-platform__icon-button review-platform__ci-action"
+                                size="xs"
+                                variant="ghost"
+                                tooltip="Add this result to chat"
+                                onClick={() => void handleAddCiItemContext(item)}
+                                disabled={!selectedPr}
+                              >
+                                <MessageSquareText size={13} />
+                              </IconButton>
+                              {item.webUrl && (
+                                <IconButton
+                                  className="review-platform__icon-button review-platform__ci-action"
+                                  size="xs"
+                                  variant="ghost"
+                                  tooltip="Open result in provider"
+                                  onClick={() => void handleOpenCiUrl(item.webUrl)}
+                                >
+                                  <Link2 size={12} />
+                                </IconButton>
+                              )}
+                            </div>
+                          </div>
+                          {(item.startedAt || item.finishedAt) && (
+                            <div className="review-platform__ci-meta">
+                              {item.startedAt && <span>Started: {formatAbsoluteTime(item.startedAt) || item.startedAt}</span>}
+                              {item.finishedAt && <span>Finished: {formatAbsoluteTime(item.finishedAt) || item.finishedAt}</span>}
+                            </div>
+                          )}
+                          {isCiExpanded && (
+                            <div className="review-platform__ci-log-panel">
+                              {ciLogLoading && renderDetailLoading('Loading error log...')}
+                              {!ciLogLoading && ciLogError && (
+                                <div className="review-platform__detail-error">
+                                  <XCircle size={14} />
+                                  <span>{ciLogError}</span>
+                                  <Button className="review-platform__panel-button" size="small" variant="secondary" onClick={() => void loadCiLog(item)}>
+                                    Retry
+                                  </Button>
+                                </div>
+                              )}
+                              {!ciLogLoading && !ciLogError && ciLog?.log && (
+                                <pre className="review-platform__ci-log-block">{ciLog.log}</pre>
+                              )}
+                              {!ciLogLoading && !ciLogError && ciLog && !ciLog.log && (
+                                <div className="review-platform__ci-log-empty">
+                                  {ciLog.message || 'No error lines were detected for this CI result.'}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </article>
+                      );
+                    })}
+                    {!detailLoading && detail && ciItems.length === 0 && (
+                      <div className="review-platform__empty-state">No CI entries were returned by this provider.</div>
+                    )}
+                    {renderDetailPagination('CI', ciPage, ciItems.length, setCiPageIndex)}
                   </section>
                 </TabPane>
 

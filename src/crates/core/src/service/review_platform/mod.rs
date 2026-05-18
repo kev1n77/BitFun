@@ -19,6 +19,7 @@ const DEFAULT_PR_PAGE: u32 = 1;
 const DEFAULT_PR_PAGE_SIZE: u32 = 10;
 const MAX_PR_PAGE_SIZE: u32 = 50;
 const PROVIDER_ENRICH_CONCURRENCY: usize = 4;
+const MAX_CI_LOG_CHARS: usize = 80_000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReviewPlatformError {
@@ -162,6 +163,22 @@ pub struct ReviewChecks {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ReviewPlatformCiItem {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub conclusion: Option<String>,
+    pub detail: Option<String>,
+    pub stage: Option<String>,
+    pub web_url: Option<String>,
+    pub log: Option<String>,
+    pub log_truncated: bool,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReviewPlatformPullRequest {
     pub id: String,
     pub number: i64,
@@ -230,6 +247,7 @@ pub struct ReviewPlatformPullRequestDetail {
     #[serde(flatten)]
     pub pull_request: ReviewPlatformPullRequest,
     pub body: String,
+    pub ci: Vec<ReviewPlatformCiItem>,
     pub files: Vec<ReviewPlatformFile>,
     pub commits: Vec<ReviewPlatformCommit>,
     pub threads: Vec<ReviewPlatformThread>,
@@ -239,6 +257,7 @@ pub struct ReviewPlatformPullRequestDetail {
 #[serde(rename_all = "snake_case")]
 pub enum ReviewPlatformDetailSection {
     Overview,
+    Ci,
     Files,
     Commits,
     Reviews,
@@ -250,11 +269,21 @@ pub struct ReviewPlatformPullRequestDetailPage {
     #[serde(flatten)]
     pub pull_request: ReviewPlatformPullRequest,
     pub body: String,
+    pub ci: Vec<ReviewPlatformCiItem>,
     pub files: Vec<ReviewPlatformFile>,
     pub commits: Vec<ReviewPlatformCommit>,
     pub threads: Vec<ReviewPlatformThread>,
     pub section: ReviewPlatformDetailSection,
     pub pagination: ReviewPlatformPagination,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewPlatformCiLog {
+    pub ci_item_id: String,
+    pub log: Option<String>,
+    pub truncated: bool,
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -592,6 +621,19 @@ impl ReviewPlatformService {
             .await
     }
 
+    pub async fn pull_request_ci_log(
+        repository_path: &str,
+        remote_id: &str,
+        pull_request_id: &str,
+        ci_item_id: &str,
+        ci_item_name: &str,
+    ) -> Result<ReviewPlatformCiLog, ReviewPlatformError> {
+        let ctx = Self::provider_context_for_repository(repository_path, Some(remote_id)).await?;
+        provider_for(ctx.remote.platform)
+            .pull_request_ci_log(&ctx, pull_request_id, ci_item_id, ci_item_name)
+            .await
+    }
+
     pub async fn create_pull_request(
         request: ReviewPlatformCreatePullRequestRequest,
     ) -> Result<ReviewPlatformActionResult, ReviewPlatformError> {
@@ -762,15 +804,28 @@ trait ReviewProvider: Sync {
         pagination: PullRequestPagination,
     ) -> Result<ReviewPlatformPullRequestDetailPage, ReviewPlatformError> {
         let detail = self.pull_request_detail(ctx, pull_request_id).await?;
+        let ci_total = detail.ci.len();
         let file_total = detail.files.len();
         let commit_total = detail.commits.len();
         let thread_total = detail.threads.len();
-        let (files, commits, threads) = match section {
-            ReviewPlatformDetailSection::Overview => (Vec::new(), Vec::new(), Vec::new()),
-            ReviewPlatformDetailSection::Files => {
-                (slice_page(detail.files, pagination), Vec::new(), Vec::new())
+        let (ci, files, commits, threads) = match section {
+            ReviewPlatformDetailSection::Overview => {
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new())
             }
+            ReviewPlatformDetailSection::Ci => (
+                slice_page(detail.ci, pagination),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
+            ReviewPlatformDetailSection::Files => (
+                Vec::new(),
+                slice_page(detail.files, pagination),
+                Vec::new(),
+                Vec::new(),
+            ),
             ReviewPlatformDetailSection::Commits => (
+                Vec::new(),
                 Vec::new(),
                 slice_page(detail.commits, pagination),
                 Vec::new(),
@@ -778,11 +833,13 @@ trait ReviewProvider: Sync {
             ReviewPlatformDetailSection::Reviews => (
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
                 slice_page(detail.threads, pagination),
             ),
         };
         let total = match section {
             ReviewPlatformDetailSection::Overview => 0,
+            ReviewPlatformDetailSection::Ci => ci_total,
             ReviewPlatformDetailSection::Files => file_total,
             ReviewPlatformDetailSection::Commits => commit_total,
             ReviewPlatformDetailSection::Reviews => thread_total,
@@ -790,12 +847,26 @@ trait ReviewProvider: Sync {
         Ok(ReviewPlatformPullRequestDetailPage {
             pull_request: detail.pull_request,
             body: detail.body,
+            ci,
             files,
             commits,
             threads,
             section,
             pagination: pagination_from_total(pagination, total),
         })
+    }
+
+    async fn pull_request_ci_log(
+        &self,
+        ctx: &ProviderContext,
+        _pull_request_id: &str,
+        _ci_item_id: &str,
+        _ci_item_name: &str,
+    ) -> Result<ReviewPlatformCiLog, ReviewPlatformError> {
+        Err(ReviewPlatformError::UnsupportedPlatform(format!(
+            "{} CI logs",
+            platform_label(ctx.remote.platform)
+        )))
     }
 
     async fn create_pull_request(
@@ -1008,11 +1079,13 @@ impl ReviewProvider for GithubProvider {
 
         let mut pull_request = github_pull_request_from_value(&detail);
         pull_request.review_decision = github_review_decision(&reviews);
-        pull_request.checks = github_checks(ctx, &client, &detail).await;
+        let (checks, ci) = github_checks_and_ci(ctx, &client, &detail).await;
+        pull_request.checks = checks;
 
         Ok(ReviewPlatformPullRequestDetail {
             body: value_string(&detail, "body"),
             pull_request,
+            ci,
             files: array_items(&files)
                 .iter()
                 .map(github_file_from_value)
@@ -1033,6 +1106,45 @@ impl ReviewProvider for GithubProvider {
         pagination: PullRequestPagination,
     ) -> Result<ReviewPlatformPullRequestDetailPage, ReviewPlatformError> {
         github_pull_request_detail_page(ctx, pull_request_id, section, pagination).await
+    }
+
+    async fn pull_request_ci_log(
+        &self,
+        ctx: &ProviderContext,
+        pull_request_id: &str,
+        ci_item_id: &str,
+        ci_item_name: &str,
+    ) -> Result<ReviewPlatformCiLog, ReviewPlatformError> {
+        if ci_item_id.starts_with("status-") {
+            return Ok(ReviewPlatformCiLog {
+                ci_item_id: ci_item_id.to_string(),
+                log: None,
+                truncated: false,
+                message: Some(
+                    "GitHub commit statuses do not expose logs; use the linked target URL instead."
+                        .to_string(),
+                ),
+            });
+        }
+
+        let client = http_client()?;
+        let base = format!(
+            "{}/repos/{}/{}/pulls/{}",
+            ctx.api_base_url, ctx.remote.owner, ctx.remote.repository_name, pull_request_id
+        );
+        let detail = send_json(github_request(client.clone(), &base, ctx.token.as_deref())).await?;
+        let sha = nested_string(&detail, &["head", "sha"]);
+        if sha.trim().is_empty() {
+            return Ok(ReviewPlatformCiLog {
+                ci_item_id: ci_item_id.to_string(),
+                log: None,
+                truncated: false,
+                message: Some("GitHub pull request head SHA was not available.".to_string()),
+            });
+        }
+
+        let check_run_id = ci_item_id.strip_prefix("check-run-").unwrap_or(ci_item_id);
+        github_actions_log_for_check_run_item(ctx, &client, check_run_id, ci_item_name, &sha).await
     }
 
     async fn create_pull_request(
@@ -1188,15 +1300,21 @@ async fn github_pull_request_detail_page(
     );
     let detail = send_json(github_request(client.clone(), &base, ctx.token.as_deref())).await?;
     let mut pull_request = github_pull_request_from_value(&detail);
-    pull_request.checks = github_checks(ctx, &client, &detail).await;
+    let (checks, ci_all) = github_checks_and_ci(ctx, &client, &detail).await;
+    pull_request.checks = checks;
 
     let mut files = Vec::new();
     let mut commits = Vec::new();
     let mut threads = Vec::new();
+    let mut ci = Vec::new();
     let mut section_pagination = empty_detail_pagination(section, pagination);
 
     match section {
         ReviewPlatformDetailSection::Overview => {}
+        ReviewPlatformDetailSection::Ci => {
+            section_pagination = pagination_from_total(pagination, ci_all.len());
+            ci = slice_page(ci_all, pagination);
+        }
         ReviewPlatformDetailSection::Files => {
             let response = fetch_array_page(
                 github_request(
@@ -1280,6 +1398,7 @@ async fn github_pull_request_detail_page(
     Ok(ReviewPlatformPullRequestDetailPage {
         pull_request,
         body: value_string(&detail, "body"),
+        ci,
         files,
         commits,
         threads,
@@ -1314,6 +1433,16 @@ impl ReviewProvider for GitlabProvider {
         pagination: PullRequestPagination,
     ) -> Result<ReviewPlatformPullRequestDetailPage, ReviewPlatformError> {
         gitlab_pull_request_detail_page(ctx, pull_request_id, section, pagination).await
+    }
+
+    async fn pull_request_ci_log(
+        &self,
+        ctx: &ProviderContext,
+        pull_request_id: &str,
+        ci_item_id: &str,
+        ci_item_name: &str,
+    ) -> Result<ReviewPlatformCiLog, ReviewPlatformError> {
+        gitlab_pull_request_ci_log(ctx, pull_request_id, ci_item_id, ci_item_name).await
     }
 
     async fn create_pull_request(
@@ -1403,6 +1532,16 @@ impl ReviewProvider for CodehubProvider {
         pagination: PullRequestPagination,
     ) -> Result<ReviewPlatformPullRequestDetailPage, ReviewPlatformError> {
         gitlab_pull_request_detail_page(ctx, pull_request_id, section, pagination).await
+    }
+
+    async fn pull_request_ci_log(
+        &self,
+        ctx: &ProviderContext,
+        pull_request_id: &str,
+        ci_item_id: &str,
+        ci_item_name: &str,
+    ) -> Result<ReviewPlatformCiLog, ReviewPlatformError> {
+        gitlab_pull_request_ci_log(ctx, pull_request_id, ci_item_id, ci_item_name).await
     }
 
     async fn create_pull_request(
@@ -1568,10 +1707,15 @@ async fn gitlab_pull_request_detail(
     });
     pull_request.additions = additions;
     pull_request.deletions = deletions;
+    let ci = gitlab_pipeline_summary_item(&detail)
+        .into_iter()
+        .collect::<Vec<_>>();
+    pull_request.checks = summarize_ci_items(&ci);
 
     Ok(ReviewPlatformPullRequestDetail {
         body: value_string(&detail, "description"),
         pull_request,
+        ci,
         files,
         commits: array_items(&commits)
             .iter()
@@ -1595,6 +1739,10 @@ async fn gitlab_pull_request_detail_page(
     );
     let detail = send_json(gitlab_request(client.clone(), &base, ctx.token.as_deref())).await?;
     let mut pull_request = gitlab_pull_request_from_value(&detail);
+    let mut ci = gitlab_pipeline_summary_item(&detail)
+        .into_iter()
+        .collect::<Vec<_>>();
+    pull_request.checks = summarize_ci_items(&ci);
     let mut files = Vec::new();
     let mut commits = Vec::new();
     let mut threads = Vec::new();
@@ -1602,6 +1750,35 @@ async fn gitlab_pull_request_detail_page(
 
     match section {
         ReviewPlatformDetailSection::Overview => {}
+        ReviewPlatformDetailSection::Ci => {
+            if let Some(pipeline_id) = detail
+                .get("head_pipeline")
+                .and_then(|value| value.get("id"))
+                .and_then(Value::as_i64)
+                .map(|id| id.to_string())
+                .or_else(|| {
+                    detail
+                        .get("head_pipeline")
+                        .and_then(|value| value.get("id"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+            {
+                let jobs = gitlab_pipeline_jobs(
+                    ctx,
+                    client.clone(),
+                    &urlencoding::encode(&ctx.remote.project_path),
+                    &pipeline_id,
+                )
+                .await;
+                if !jobs.is_empty() {
+                    ci = jobs;
+                    pull_request.checks = summarize_ci_items(&ci);
+                }
+            }
+            section_pagination = pagination_from_total(pagination, ci.len());
+            ci = slice_page(ci, pagination);
+        }
         ReviewPlatformDetailSection::Files => {
             let changes = send_json(gitlab_request(
                 client.clone(),
@@ -1668,6 +1845,7 @@ async fn gitlab_pull_request_detail_page(
     Ok(ReviewPlatformPullRequestDetailPage {
         pull_request,
         body: value_string(&detail, "description"),
+        ci,
         files,
         commits,
         threads,
@@ -1896,6 +2074,9 @@ async fn gitcode_pull_request_detail_page(
         ctx.api_base_url, ctx.remote.owner, ctx.remote.repository_name, pull_request_id
     );
     let detail = send_json(gitcode_request(client.clone(), &base, ctx.token.as_deref())).await?;
+    let mut ci = gitcode_ci_items(&detail);
+    let mut pull_request = gitcode_pull_request_from_value(&detail);
+    pull_request.checks = summarize_ci_items(&ci);
     let mut files = Vec::new();
     let mut commits = Vec::new();
     let mut threads = Vec::new();
@@ -1903,6 +2084,10 @@ async fn gitcode_pull_request_detail_page(
 
     match section {
         ReviewPlatformDetailSection::Overview => {}
+        ReviewPlatformDetailSection::Ci => {
+            section_pagination = pagination_from_total(pagination, ci.len());
+            ci = slice_page(ci, pagination);
+        }
         ReviewPlatformDetailSection::Files => {
             if let Ok(response) = fetch_array_page(
                 gitcode_request(
@@ -1961,7 +2146,8 @@ async fn gitcode_pull_request_detail_page(
             value_string(&detail, "body"),
             value_string(&detail, "description"),
         ]),
-        pull_request: gitcode_pull_request_from_value(&detail),
+        pull_request,
+        ci,
         files,
         commits,
         threads,
@@ -2074,13 +2260,17 @@ impl ReviewProvider for GitcodeProvider {
         )
         .await
         .unwrap_or(Value::Array(Vec::new()));
+        let ci = gitcode_ci_items(&detail);
+        let mut pull_request = gitcode_pull_request_from_value(&detail);
+        pull_request.checks = summarize_ci_items(&ci);
 
         Ok(ReviewPlatformPullRequestDetail {
             body: first_non_empty(&[
                 value_string(&detail, "body"),
                 value_string(&detail, "description"),
             ]),
-            pull_request: gitcode_pull_request_from_value(&detail),
+            pull_request,
+            ci,
             files: array_items(&files)
                 .iter()
                 .map(gitcode_file_from_value)
@@ -2101,6 +2291,23 @@ impl ReviewProvider for GitcodeProvider {
         pagination: PullRequestPagination,
     ) -> Result<ReviewPlatformPullRequestDetailPage, ReviewPlatformError> {
         gitcode_pull_request_detail_page(ctx, pull_request_id, section, pagination).await
+    }
+
+    async fn pull_request_ci_log(
+        &self,
+        _ctx: &ProviderContext,
+        _pull_request_id: &str,
+        ci_item_id: &str,
+        _ci_item_name: &str,
+    ) -> Result<ReviewPlatformCiLog, ReviewPlatformError> {
+        Ok(ReviewPlatformCiLog {
+            ci_item_id: ci_item_id.to_string(),
+            log: None,
+            truncated: false,
+            message: Some(
+                "GitCode CI log retrieval is not available through a documented API.".to_string(),
+            ),
+        })
     }
 
     async fn create_pull_request(
@@ -2249,6 +2456,31 @@ async fn send_json_response(
         .await
         .map_err(|error| ReviewPlatformError::Parse(error.to_string()))?;
     Ok(JsonResponse { value, headers })
+}
+
+async fn send_text(request: reqwest::RequestBuilder) -> Result<String, ReviewPlatformError> {
+    let response = request
+        .send()
+        .await
+        .map_err(|error| ReviewPlatformError::Network(error.to_string()))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|error| ReviewPlatformError::Network(error.to_string()))?;
+    if !status.is_success() {
+        let preview = text.chars().take(280).collect::<String>();
+        return Err(ReviewPlatformError::Api(format!(
+            "HTTP {}{}",
+            status,
+            if preview.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", preview)
+            }
+        )));
+    }
+    Ok(text)
 }
 
 async fn fetch_paginated_array<F>(
@@ -3015,17 +3247,179 @@ fn platform_label(platform: ReviewPlatformKind) -> &'static str {
     }
 }
 
-async fn github_checks(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CiOutcome {
+    Passed,
+    Failed,
+    Pending,
+}
+
+fn summarize_ci_items(items: &[ReviewPlatformCiItem]) -> ReviewChecks {
+    let mut checks = empty_checks();
+    for item in items {
+        match ci_item_outcome(item) {
+            CiOutcome::Passed => checks.passed += 1,
+            CiOutcome::Failed => checks.failed += 1,
+            CiOutcome::Pending => checks.pending += 1,
+        }
+    }
+    checks.total = checks.passed + checks.failed + checks.pending;
+    checks
+}
+
+fn ci_item_outcome(item: &ReviewPlatformCiItem) -> CiOutcome {
+    let status = item.status.trim().to_ascii_lowercase();
+    let conclusion = item
+        .conclusion
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+
+    match conclusion.as_str() {
+        "success" | "neutral" | "skipped" | "passed" => CiOutcome::Passed,
+        "failure" | "timed_out" | "timed-out" | "cancelled" | "canceled" | "action_required"
+        | "error" => CiOutcome::Failed,
+        "queued"
+        | "pending"
+        | "running"
+        | "in_progress"
+        | "in progress"
+        | "created"
+        | "manual"
+        | "scheduled"
+        | "waiting_for_resource"
+        | "preparing"
+        | "requested" => CiOutcome::Pending,
+        _ => match status.as_str() {
+            "success" | "passed" | "skipped" => CiOutcome::Passed,
+            "failure" | "failed" | "error" | "cancelled" | "canceled" => CiOutcome::Failed,
+            "pending"
+            | "queued"
+            | "running"
+            | "in_progress"
+            | "in progress"
+            | "created"
+            | "manual"
+            | "scheduled"
+            | "waiting_for_resource"
+            | "preparing"
+            | "requested"
+            | "completed" => CiOutcome::Pending,
+            _ => CiOutcome::Pending,
+        },
+    }
+}
+
+fn ci_log_value(text: String) -> (Option<String>, bool) {
+    let extracted = ci_error_excerpt(&text);
+    let Some(excerpt) = extracted else {
+        return (None, false);
+    };
+    let char_count = excerpt.chars().count();
+    if char_count <= MAX_CI_LOG_CHARS {
+        return (Some(excerpt), false);
+    }
+
+    (
+        Some(format!(
+            "[Error excerpt truncated: showing first {} of {} chars]\n{}",
+            MAX_CI_LOG_CHARS,
+            char_count,
+            excerpt.chars().take(MAX_CI_LOG_CHARS).collect::<String>()
+        )),
+        true,
+    )
+}
+
+fn empty_ci_log() -> (Option<String>, bool) {
+    (None, false)
+}
+
+fn ci_error_excerpt(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return None;
+    }
+
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if !is_ci_error_line(line) {
+            continue;
+        }
+
+        let start = index.saturating_sub(2);
+        let mut end = (index + 6).min(lines.len());
+        while end < lines.len() && lines[end].trim().is_empty() {
+            end += 1;
+        }
+        ranges.push((start, end));
+    }
+
+    if ranges.is_empty() {
+        return None;
+    }
+
+    ranges.sort_unstable_by_key(|range| range.0);
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in ranges {
+        if let Some(last) = merged.last_mut() {
+            if start <= last.1.saturating_add(1) {
+                last.1 = last.1.max(end);
+                continue;
+            }
+        }
+        merged.push((start, end));
+    }
+
+    let mut output = String::new();
+    for (index, (start, end)) in merged.iter().enumerate() {
+        if index > 0 {
+            output.push_str("\n...\n");
+        }
+        for line in &lines[*start..*end] {
+            output.push_str(line);
+            output.push('\n');
+        }
+    }
+
+    let output = output.trim_end_matches('\n').trim().to_string();
+    if output.is_empty() {
+        None
+    } else {
+        Some(output)
+    }
+}
+
+fn is_ci_error_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("##[error]")
+        || lower.contains("error:")
+        || lower.contains(" failed")
+        || lower.contains("failure")
+        || lower.contains("fatal")
+        || lower.contains("exception")
+        || lower.contains("traceback")
+        || lower.contains("panic")
+        || lower.contains("assertion failed")
+        || lower.contains("command failed")
+        || lower.contains("exited with code")
+        || lower.contains("return code")
+        || lower.contains("build failed")
+        || lower.contains("test failed")
+}
+
+async fn github_checks_and_ci(
     ctx: &ProviderContext,
     client: &reqwest::Client,
     pull_detail: &Value,
-) -> ReviewChecks {
+) -> (ReviewChecks, Vec<ReviewPlatformCiItem>) {
     let sha = nested_string(pull_detail, &["head", "sha"]);
     if sha.trim().is_empty() {
-        return empty_checks();
+        return (empty_checks(), Vec::new());
     }
 
-    let mut checks = empty_checks();
+    let mut ci_items = Vec::new();
     let status_url = format!(
         "{}/repos/{}/{}/commits/{}/status",
         ctx.api_base_url, ctx.remote.owner, ctx.remote.repository_name, sha
@@ -3042,12 +3436,27 @@ async fn github_checks(
             .and_then(Value::as_array)
             .map(|items| items.as_slice())
             .unwrap_or(&[]);
-        for item in statuses {
-            match value_string(item, "state").as_str() {
-                "success" => checks.passed += 1,
-                "failure" | "error" => checks.failed += 1,
-                _ => checks.pending += 1,
-            }
+        for (index, item) in statuses.iter().enumerate() {
+            ci_items.push(ReviewPlatformCiItem {
+                id: format!(
+                    "status-{}",
+                    first_non_empty(&[value_string(item, "id"), index.to_string()])
+                ),
+                name: first_non_empty(&[
+                    value_string(item, "context"),
+                    value_string(item, "description"),
+                    "Status".to_string(),
+                ]),
+                status: value_string(item, "state"),
+                conclusion: None,
+                detail: optional_string(item, "description"),
+                stage: None,
+                web_url: optional_string(item, "target_url"),
+                log: None,
+                log_truncated: false,
+                started_at: None,
+                finished_at: None,
+            });
         }
     }
 
@@ -3061,26 +3470,322 @@ async fn github_checks(
     )
     .await
     {
-        for item in check_runs
+        for (index, item) in check_runs
             .get("check_runs")
             .and_then(Value::as_array)
             .map(|items| items.as_slice())
             .unwrap_or(&[])
+            .iter()
+            .enumerate()
         {
-            if value_string(item, "status") != "completed" {
-                checks.pending += 1;
-                continue;
-            }
-            match value_string(item, "conclusion").as_str() {
-                "success" | "neutral" | "skipped" => checks.passed += 1,
-                "failure" | "timed_out" | "cancelled" | "action_required" => checks.failed += 1,
-                _ => checks.pending += 1,
-            }
+            ci_items.push(ReviewPlatformCiItem {
+                id: format!(
+                    "check-run-{}",
+                    first_non_empty(&[value_string(item, "id"), index.to_string()])
+                ),
+                name: first_non_empty(&[value_string(item, "name"), "Check run".to_string()]),
+                status: value_string(item, "status"),
+                conclusion: optional_string(item, "conclusion"),
+                detail: nested_optional_string(item, &["output", "summary"])
+                    .or_else(|| nested_optional_string(item, &["output", "text"]))
+                    .or_else(|| optional_string(item, "details_url")),
+                stage: None,
+                web_url: optional_string(item, "html_url")
+                    .or_else(|| optional_string(item, "details_url")),
+                log: None,
+                log_truncated: false,
+                started_at: optional_string(item, "started_at"),
+                finished_at: optional_string(item, "completed_at"),
+            });
         }
     }
 
-    checks.total = checks.passed + checks.failed + checks.pending;
-    checks
+    let checks = summarize_ci_items(&ci_items);
+    (checks, ci_items)
+}
+
+async fn github_actions_jobs_for_head_sha(
+    ctx: &ProviderContext,
+    client: &reqwest::Client,
+    sha: &str,
+) -> Vec<Value> {
+    let runs_url = format!(
+        "{}/repos/{}/{}/actions/runs",
+        ctx.api_base_url, ctx.remote.owner, ctx.remote.repository_name
+    );
+    let runs = match send_json(
+        github_request(client.clone(), &runs_url, ctx.token.as_deref())
+            .query(&[("head_sha", sha), ("per_page", "100")]),
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut jobs = Vec::new();
+    for run in runs
+        .get("workflow_runs")
+        .and_then(Value::as_array)
+        .map(|items| items.as_slice())
+        .unwrap_or(&[])
+    {
+        let run_id = value_string(run, "id");
+        if run_id.trim().is_empty() {
+            continue;
+        }
+        let jobs_url = format!(
+            "{}/repos/{}/{}/actions/runs/{}/jobs",
+            ctx.api_base_url, ctx.remote.owner, ctx.remote.repository_name, run_id
+        );
+        if let Ok(value) = send_json(
+            github_request(client.clone(), &jobs_url, ctx.token.as_deref())
+                .query(&[("per_page", "100")]),
+        )
+        .await
+        {
+            jobs.extend(
+                value
+                    .get("jobs")
+                    .and_then(Value::as_array)
+                    .map(|items| items.as_slice())
+                    .unwrap_or(&[])
+                    .iter()
+                    .cloned(),
+            );
+        }
+    }
+
+    jobs
+}
+
+async fn github_actions_log_for_check_run_item(
+    ctx: &ProviderContext,
+    client: &reqwest::Client,
+    check_run_id: &str,
+    check_run_name: &str,
+    head_sha: &str,
+) -> Result<ReviewPlatformCiLog, ReviewPlatformError> {
+    let action_jobs = github_actions_jobs_for_head_sha(ctx, client, head_sha).await;
+    let check_run = action_jobs
+        .iter()
+        .find(|job| {
+            let check_run_url = value_string(job, "check_run_url");
+            check_run_url.ends_with(&format!("/check-runs/{}", check_run_id))
+                || value_string(job, "name") == check_run_name
+        })
+        .cloned();
+
+    let Some(job) = check_run else {
+        return Ok(ReviewPlatformCiLog {
+            ci_item_id: format!("check-run-{}", check_run_id),
+            log: None,
+            truncated: false,
+            message: Some(
+                "No matching GitHub Actions job was found for this check run.".to_string(),
+            ),
+        });
+    };
+
+    let job_id = value_string(&job, "id");
+    if job_id.trim().is_empty() {
+        return Ok(ReviewPlatformCiLog {
+            ci_item_id: format!("check-run-{}", check_run_id),
+            log: None,
+            truncated: false,
+            message: Some("The matching GitHub Actions job does not expose a job id.".to_string()),
+        });
+    }
+
+    let logs_url = format!(
+        "{}/repos/{}/{}/actions/jobs/{}/logs",
+        ctx.api_base_url, ctx.remote.owner, ctx.remote.repository_name, job_id
+    );
+    let text = send_text(github_request(
+        client.clone(),
+        &logs_url,
+        ctx.token.as_deref(),
+    ))
+    .await?;
+    let (log, truncated) = ci_log_value(text);
+    let message = log
+        .as_ref()
+        .is_none()
+        .then_some("No error lines were detected in the GitHub Actions job log.".to_string());
+    Ok(ReviewPlatformCiLog {
+        ci_item_id: format!("check-run-{}", check_run_id),
+        log,
+        truncated,
+        message,
+    })
+}
+
+fn gitlab_pipeline_summary_item(detail: &Value) -> Option<ReviewPlatformCiItem> {
+    let pipeline = detail.get("head_pipeline")?;
+    let status = value_string(pipeline, "status");
+    if status.trim().is_empty() {
+        return None;
+    }
+    Some(ReviewPlatformCiItem {
+        id: first_non_empty(&[
+            value_string(pipeline, "id"),
+            value_string(pipeline, "iid"),
+            "head-pipeline".to_string(),
+        ]),
+        name: "Pipeline".to_string(),
+        status,
+        conclusion: None,
+        detail: nested_optional_string(pipeline, &["detailed_status", "text"])
+            .or_else(|| nested_optional_string(pipeline, &["detailed_status", "label"])),
+        stage: None,
+        web_url: optional_string(pipeline, "web_url"),
+        log: None,
+        log_truncated: false,
+        started_at: optional_string(pipeline, "started_at"),
+        finished_at: optional_string(pipeline, "finished_at"),
+    })
+}
+
+async fn gitlab_pipeline_jobs(
+    ctx: &ProviderContext,
+    client: reqwest::Client,
+    project: &str,
+    pipeline_id: &str,
+) -> Vec<ReviewPlatformCiItem> {
+    let jobs_url = format!(
+        "{}/projects/{}/pipelines/{}/jobs",
+        ctx.api_base_url, project, pipeline_id
+    );
+    if let Ok(response) = fetch_paginated_array(
+        |page| {
+            let page = page.to_string();
+            gitlab_request(client.clone(), &jobs_url, ctx.token.as_deref())
+                .query(&[("per_page", "100"), ("page", &page)])
+        },
+        gitlab_next_page,
+    )
+    .await
+    {
+        let mut jobs = Vec::new();
+        for (index, job) in array_items(&response).iter().enumerate() {
+            let provider_id = value_string(job, "id");
+            let id = first_non_empty(&[provider_id.clone(), index.to_string()]);
+            jobs.push(ReviewPlatformCiItem {
+                id,
+                name: first_non_empty(&[value_string(job, "name"), "Job".to_string()]),
+                status: value_string(job, "status"),
+                conclusion: None,
+                detail: optional_string(job, "failure_reason"),
+                stage: optional_string(job, "stage"),
+                web_url: optional_string(job, "web_url"),
+                log: None,
+                log_truncated: false,
+                started_at: optional_string(job, "started_at"),
+                finished_at: optional_string(job, "finished_at"),
+            });
+        }
+        return jobs;
+    }
+    Vec::new()
+}
+
+async fn gitlab_job_trace(
+    ctx: &ProviderContext,
+    client: reqwest::Client,
+    project: &str,
+    job_id: &str,
+) -> (Option<String>, bool) {
+    if job_id.trim().is_empty() {
+        return empty_ci_log();
+    }
+    let trace_url = format!(
+        "{}/projects/{}/jobs/{}/trace",
+        ctx.api_base_url, project, job_id
+    );
+    match send_text(gitlab_request(client, &trace_url, ctx.token.as_deref())).await {
+        Ok(text) => ci_log_value(text),
+        Err(_) => empty_ci_log(),
+    }
+}
+
+async fn gitlab_pull_request_ci_log(
+    ctx: &ProviderContext,
+    _pull_request_id: &str,
+    ci_item_id: &str,
+    _ci_item_name: &str,
+) -> Result<ReviewPlatformCiLog, ReviewPlatformError> {
+    if ci_item_id == "head-pipeline" || ci_item_id == "pipeline" {
+        return Ok(ReviewPlatformCiLog {
+            ci_item_id: ci_item_id.to_string(),
+            log: None,
+            truncated: false,
+            message: Some("Pipeline summaries do not expose a separate job trace.".to_string()),
+        });
+    }
+
+    let client = http_client()?;
+    let project = urlencoding::encode(&ctx.remote.project_path).to_string();
+    let (log, truncated) = gitlab_job_trace(ctx, client, &project, ci_item_id).await;
+    let message = log
+        .as_ref()
+        .is_none()
+        .then_some("No error lines were detected in the job trace.".to_string());
+    Ok(ReviewPlatformCiLog {
+        ci_item_id: ci_item_id.to_string(),
+        log,
+        truncated,
+        message,
+    })
+}
+
+fn gitcode_ci_items(detail: &Value) -> Vec<ReviewPlatformCiItem> {
+    let mut items = Vec::new();
+    let pipeline_status = first_non_empty(&[
+        value_string(detail, "pipeline_status"),
+        value_string(detail, "pipeline_status_with_code_quality"),
+    ]);
+    if !pipeline_status.trim().is_empty() {
+        items.push(ReviewPlatformCiItem {
+            id: first_non_empty(&[
+                value_string(detail, "head_pipeline_id"),
+                "pipeline".to_string(),
+            ]),
+            name: "Pipeline".to_string(),
+            status: pipeline_status,
+            conclusion: None,
+            detail: optional_string(detail, "pipeline_status_with_code_quality"),
+            stage: None,
+            web_url: optional_string(detail, "web_url")
+                .or_else(|| optional_string(detail, "html_url")),
+            log: None,
+            log_truncated: false,
+            started_at: None,
+            finished_at: None,
+        });
+    }
+
+    let codequality_status = value_string(detail, "codequality_status");
+    if !codequality_status.trim().is_empty() {
+        items.push(ReviewPlatformCiItem {
+            id: first_non_empty(&[
+                format!("{}-codequality", value_string(detail, "head_pipeline_id")),
+                "codequality".to_string(),
+            ]),
+            name: "Code quality".to_string(),
+            status: codequality_status,
+            conclusion: None,
+            detail: None,
+            stage: None,
+            web_url: optional_string(detail, "web_url")
+                .or_else(|| optional_string(detail, "html_url")),
+            log: None,
+            log_truncated: false,
+            started_at: None,
+            finished_at: None,
+        });
+    }
+
+    items
 }
 
 fn parse_remote(
@@ -4054,5 +4759,84 @@ mod tests {
             threads[1].reply_to_provider_comment_id.as_deref(),
             Some("300")
         );
+    }
+
+    #[test]
+    fn summarize_ci_items_counts_provider_outcomes() {
+        let items = vec![
+            ReviewPlatformCiItem {
+                id: "build".to_string(),
+                name: "Build".to_string(),
+                status: "completed".to_string(),
+                conclusion: Some("success".to_string()),
+                detail: None,
+                stage: Some("build".to_string()),
+                web_url: None,
+                log: None,
+                log_truncated: false,
+                started_at: None,
+                finished_at: None,
+            },
+            ReviewPlatformCiItem {
+                id: "test".to_string(),
+                name: "Test".to_string(),
+                status: "failed".to_string(),
+                conclusion: None,
+                detail: None,
+                stage: Some("test".to_string()),
+                web_url: None,
+                log: None,
+                log_truncated: false,
+                started_at: None,
+                finished_at: None,
+            },
+            ReviewPlatformCiItem {
+                id: "deploy".to_string(),
+                name: "Deploy".to_string(),
+                status: "running".to_string(),
+                conclusion: None,
+                detail: None,
+                stage: Some("deploy".to_string()),
+                web_url: None,
+                log: None,
+                log_truncated: false,
+                started_at: None,
+                finished_at: None,
+            },
+        ];
+
+        let checks = summarize_ci_items(&items);
+
+        assert_eq!(checks.total, 3);
+        assert_eq!(checks.passed, 1);
+        assert_eq!(checks.failed, 1);
+        assert_eq!(checks.pending, 1);
+    }
+
+    #[test]
+    fn ci_log_value_extracts_error_excerpt_only() {
+        let text = [
+            "running setup",
+            "downloading dependencies",
+            "cargo test failed with exit code 101",
+            "thread 'main' panicked at src/lib.rs:4",
+            "uploading artifacts",
+        ]
+        .join("\n");
+
+        let (log, truncated) = ci_log_value(text);
+
+        let log = log.expect("log should be present");
+        assert!(!truncated);
+        assert!(log.contains("cargo test failed"));
+        assert!(log.contains("panicked at src/lib.rs"));
+    }
+
+    #[test]
+    fn ci_log_value_reports_when_no_error_lines_match() {
+        let (log, truncated) = ci_log_value("all checks passed".to_string());
+
+        assert!(!truncated);
+        assert!(log.is_none());
     }
 }

@@ -56,10 +56,11 @@ pub use mcp::MCPService;
 pub use project_context::{ContextDocumentStatus, ProjectContextConfig, ProjectContextService};
 pub use review_platform::{
     ReviewAuthSource, ReviewAuthState, ReviewChecks, ReviewDecision, ReviewFileStatus,
-    ReviewItemState, ReviewPlatformAccount, ReviewPlatformCapabilities, ReviewPlatformCommit,
-    ReviewPlatformError, ReviewPlatformFile, ReviewPlatformKind, ReviewPlatformPullRequest,
-    ReviewPlatformPullRequestDetail, ReviewPlatformRemote, ReviewPlatformRepositoryRef,
-    ReviewPlatformService, ReviewPlatformThread, ReviewPlatformWorkspaceSnapshot,
+    ReviewItemState, ReviewPlatformAccount, ReviewPlatformCapabilities, ReviewPlatformCiLog,
+    ReviewPlatformCommit, ReviewPlatformError, ReviewPlatformFile, ReviewPlatformKind,
+    ReviewPlatformPullRequest, ReviewPlatformPullRequestDetail, ReviewPlatformRemote,
+    ReviewPlatformRepositoryRef, ReviewPlatformService, ReviewPlatformThread,
+    ReviewPlatformWorkspaceSnapshot,
 };
 pub use runtime::{ResolvedCommand, RuntimeCommandCapability, RuntimeManager, RuntimeSource};
 pub use search::{

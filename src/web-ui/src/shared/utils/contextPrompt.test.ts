@@ -25,4 +25,25 @@ describe('formatContextForPrompt', () => {
     expect(rendered).toContain('Pull Request: #42 Fix bug');
     expect(rendered).toContain('URL: https://example.com/owner/repo/pull/42');
   });
+
+  it('formats pull request CI contexts', () => {
+    const context: PullRequestContext = {
+      id: 'pr-ci-1',
+      type: 'pull-request',
+      label: 'PR #42 CI',
+      section: 'ci',
+      content: 'Checks: 2/3 passed, 1 failed, 0 pending',
+      remoteId: 'origin-github',
+      repository: 'owner/repo',
+      pullRequestNumber: 42,
+      pullRequestTitle: 'Fix bug',
+      timestamp: 123,
+    };
+
+    const rendered = formatContextForPrompt(context);
+
+    expect(rendered).toContain('[Pull Request Context: PR #42 CI]');
+    expect(rendered).toContain('Section: ci');
+    expect(rendered).toContain('Checks: 2/3 passed, 1 failed, 0 pending');
+  });
 });

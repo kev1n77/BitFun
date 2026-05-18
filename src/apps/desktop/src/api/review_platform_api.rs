@@ -2,8 +2,9 @@
 
 use crate::api::app_state::AppState;
 use bitfun_core::service::review_platform::{
-    ReviewPlatformDetailSection, ReviewPlatformKind, ReviewPlatformPullRequestDetail,
-    ReviewPlatformPullRequestDetailPage, ReviewPlatformService, ReviewPlatformWorkspaceSnapshot,
+    ReviewPlatformCiLog, ReviewPlatformDetailSection, ReviewPlatformKind,
+    ReviewPlatformPullRequestDetail, ReviewPlatformPullRequestDetailPage, ReviewPlatformService,
+    ReviewPlatformWorkspaceSnapshot,
 };
 use log::error;
 use serde::Deserialize;
@@ -35,6 +36,16 @@ pub struct ReviewPlatformPullRequestDetailPageRequest {
     pub section: ReviewPlatformDetailSection,
     pub page: Option<u32>,
     pub per_page: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewPlatformPullRequestCiLogRequest {
+    pub repository_path: String,
+    pub remote_id: String,
+    pub pull_request_id: String,
+    pub ci_item_id: String,
+    pub ci_item_name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,6 +139,32 @@ pub async fn review_platform_get_pull_request_detail_page(
             "Failed to get review platform pull request detail page: {}",
             error
         )
+    })
+}
+
+#[tauri::command]
+pub async fn review_platform_get_pull_request_ci_log(
+    _state: State<'_, AppState>,
+    request: ReviewPlatformPullRequestCiLogRequest,
+) -> Result<ReviewPlatformCiLog, String> {
+    ReviewPlatformService::pull_request_ci_log(
+        &request.repository_path,
+        &request.remote_id,
+        &request.pull_request_id,
+        &request.ci_item_id,
+        &request.ci_item_name,
+    )
+    .await
+    .map_err(|error| {
+        error!(
+            "Failed to get review platform CI log: path={}, remote_id={}, pull_request_id={}, ci_item_id={}, error={}",
+            request.repository_path,
+            request.remote_id,
+            request.pull_request_id,
+            request.ci_item_id,
+            error
+        );
+        format!("Failed to get review platform CI log: {}", error)
     })
 }
 

@@ -211,10 +211,9 @@
 
   &__loading-inline {
     color: var(--accent-primary);
-
-    svg {
-      animation: review-platform-spin 0.9s linear infinite;
-    }
+    display: inline-block;
+    animation: review-platform-spin 0.9s linear infinite;
+    transform-origin: center;
   }
 
   &__body {
@@ -1092,6 +1091,176 @@
       color: var(--color-text-secondary);
       font-size: 11px;
     }
+  }
+
+  &__ci-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  &__ci-item {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 11px;
+    border: 1px solid var(--border-base);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--color-bg-elevated) 72%, transparent);
+  }
+
+  &__ci-item--passed {
+    border-color: color-mix(in srgb, #3fb950 28%, var(--border-base));
+    background: color-mix(in srgb, #3fb950 8%, var(--color-bg-elevated));
+  }
+
+  &__ci-item--failed {
+    border-color: color-mix(in srgb, #f85149 30%, var(--border-base));
+    background: color-mix(in srgb, #f85149 8%, var(--color-bg-elevated));
+  }
+
+  &__ci-item--pending {
+    border-color: color-mix(in srgb, #d29922 24%, var(--border-base));
+    background: color-mix(in srgb, #d29922 7%, var(--color-bg-elevated));
+  }
+
+  &__ci-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  &__ci-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+
+    strong,
+    span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    strong {
+      color: var(--color-text-primary);
+      font-size: 12px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    span {
+      color: var(--color-text-secondary);
+      font-size: 11px;
+      line-height: 1.45;
+      white-space: normal;
+    }
+  }
+
+  &__ci-status {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    padding: 2px 6px;
+    border-radius: 5px;
+    font-size: 10px;
+    font-weight: 650;
+    line-height: 1.2;
+  }
+
+  &__ci-log-chip {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    padding: 2px 6px;
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 26%, var(--border-base));
+    border-radius: 5px;
+    color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 9%, transparent);
+    font-size: 10px;
+    font-weight: 650;
+    line-height: 1.2;
+  }
+
+  &__ci-actions {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  &__ci-action.icon-btn {
+    border-radius: 6px;
+  }
+
+  &__ci-status--passed {
+    color: #3fb950;
+    background: rgba(63, 185, 80, 0.12);
+  }
+
+  &__ci-status--failed {
+    color: #f85149;
+    background: rgba(248, 81, 73, 0.12);
+  }
+
+  &__ci-status--pending {
+    color: #d29922;
+    background: rgba(210, 153, 34, 0.13);
+  }
+
+  &__ci-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    line-height: 1.4;
+
+    span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  }
+
+  &__ci-log-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 8px;
+    border-top: 1px solid color-mix(in srgb, var(--border-base) 72%, transparent);
+  }
+
+  &__ci-log-block {
+    max-height: 320px;
+    min-height: 90px;
+    overflow: auto;
+    margin: 0;
+    padding: 10px;
+    border: 1px solid var(--border-base);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--color-bg-primary) 86%, transparent);
+    color: var(--color-text-primary);
+    font-family: var(--font-family-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+    font-size: 11px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  &__ci-log-empty {
+    padding: 8px 10px;
+    border: 1px dashed var(--border-base);
+    border-radius: 6px;
+    color: var(--color-text-secondary);
+    background: color-mix(in srgb, var(--element-bg-soft) 48%, transparent);
+    font-size: 11px;
+    line-height: 1.45;
   }
 
   &__thread {

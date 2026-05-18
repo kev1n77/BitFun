@@ -10,7 +10,7 @@ export type ReviewAuthSource = 'env' | 'stored' | 'none' | 'unsupported';
 export type ReviewItemState = 'open' | 'merged' | 'closed' | 'draft';
 export type ReviewDecision = 'approved' | 'changes_requested' | 'commented' | 'pending';
 export type ReviewFileStatus = 'added' | 'modified' | 'deleted' | 'renamed';
-export type ReviewPlatformDetailSection = 'overview' | 'files' | 'commits' | 'reviews';
+export type ReviewPlatformDetailSection = 'overview' | 'ci' | 'files' | 'commits' | 'reviews';
 
 export interface ReviewPlatformAccount {
   id: string;
@@ -57,6 +57,20 @@ export interface ReviewChecks {
   passed: number;
   failed: number;
   pending: number;
+}
+
+export interface ReviewPlatformCiItem {
+  id: string;
+  name: string;
+  status: string;
+  conclusion?: string | null;
+  detail?: string | null;
+  stage?: string | null;
+  webUrl?: string | null;
+  log?: string | null;
+  logTruncated: boolean;
+  startedAt?: string | null;
+  finishedAt?: string | null;
 }
 
 export interface ReviewPlatformPullRequest {
@@ -110,6 +124,7 @@ export interface ReviewPlatformThread {
 
 export interface ReviewPlatformPullRequestDetail extends ReviewPlatformPullRequest {
   body: string;
+  ci: ReviewPlatformCiItem[];
   files: ReviewPlatformFile[];
   commits: ReviewPlatformCommit[];
   threads: ReviewPlatformThread[];
@@ -118,6 +133,13 @@ export interface ReviewPlatformPullRequestDetail extends ReviewPlatformPullReque
 export interface ReviewPlatformPullRequestDetailPage extends ReviewPlatformPullRequestDetail {
   section: ReviewPlatformDetailSection;
   pagination: ReviewPlatformPagination;
+}
+
+export interface ReviewPlatformCiLog {
+  ciItemId: string;
+  log?: string | null;
+  truncated: boolean;
+  message?: string | null;
 }
 
 export interface ReviewPlatformCapabilities {
@@ -167,6 +189,11 @@ export interface ReviewPlatformPullRequestDetailPageRequest extends ReviewPlatfo
   section: ReviewPlatformDetailSection;
   page?: number;
   perPage?: number;
+}
+
+export interface ReviewPlatformPullRequestCiLogRequest extends ReviewPlatformPullRequestDetailRequest {
+  ciItemId: string;
+  ciItemName: string;
 }
 
 export interface ReviewPlatformUpdateAuthTokenRequest {
@@ -244,6 +271,25 @@ export class ReviewPlatformAPI {
         error,
       });
       throw createTauriCommandError('review_platform_get_pull_request_detail_page', error, request);
+    }
+  }
+
+  async getPullRequestCiLog(
+    request: ReviewPlatformPullRequestCiLogRequest,
+  ): Promise<ReviewPlatformCiLog> {
+    try {
+      return await api.invoke('review_platform_get_pull_request_ci_log', {
+        request,
+      });
+    } catch (error) {
+      log.error('Failed to load review platform CI log', {
+        repositoryPath: request.repositoryPath,
+        remoteId: request.remoteId,
+        pullRequestId: request.pullRequestId,
+        ciItemId: request.ciItemId,
+        error,
+      });
+      throw createTauriCommandError('review_platform_get_pull_request_ci_log', error, request);
     }
   }
 
