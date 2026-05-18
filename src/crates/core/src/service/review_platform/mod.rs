@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::fs;
 
-const USER_AGENT_VALUE: &str = "BitFun";
+const USER_AGENT_VALUE: &str = "ReviewPlatform";
 const DEFAULT_PR_PAGE: u32 = 1;
 const DEFAULT_PR_PAGE_SIZE: u32 = 10;
 const MAX_PR_PAGE_SIZE: u32 = 50;
