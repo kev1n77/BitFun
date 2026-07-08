@@ -59,6 +59,12 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             description: "Generate a usage report for the current session".into(),
             group: "Session".into(),
         },
+        PaletteItem {
+            id: "goal".into(),
+            label: "Thread goal".into(),
+            description: "Show or update the active thread goal".into(),
+            group: "Session".into(),
+        },
         // Prompt group
         PaletteItem {
             id: "skills".into(),
@@ -153,6 +159,12 @@ fn build_suggested_items() -> Vec<PaletteItem> {
             id: "usage".into(),
             label: "Usage report".into(),
             description: "Generate a usage report for the current session".into(),
+            group: "Suggested".into(),
+        },
+        PaletteItem {
+            id: "goal".into(),
+            label: "Thread goal".into(),
+            description: "Show or update the active thread goal".into(),
             group: "Suggested".into(),
         },
     ]

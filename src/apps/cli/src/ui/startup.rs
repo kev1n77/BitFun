@@ -1052,6 +1052,10 @@ impl StartupPage {
             "usage" => {
                 self.status = Some("No active session for /usage.".to_string());
             }
+            "goal" => {
+                self.status =
+                    Some("Start or continue a session, then use /goal <objective>.".to_string());
+            }
             // Prompt group
             "skills" => {
                 self.show_skill_selector();
@@ -1145,6 +1149,10 @@ impl StartupPage {
             }
             "/usage" => {
                 self.status = Some("No active session for /usage.".to_string());
+            }
+            "/goal" => {
+                self.status =
+                    Some("Start or continue a session, then use /goal <objective>.".to_string());
             }
             "/init" => match crate::prompts::get_cli_prompt("init") {
                 Some(prompt) => {

@@ -663,6 +663,17 @@ impl ChatMode {
                         tracing::error!("System error: {}", error);
                     }
 
+                    AgenticEvent::ThreadGoalUpdated { goal, .. } => {
+                        let message = goal
+                            .as_ref()
+                            .and_then(crate::goal::parse_goal_from_event_payload)
+                            .map(|goal| crate::goal::compact_goal_summary(&goal))
+                            .unwrap_or_else(|| "Goal cleared".to_string());
+                        chat_state.add_system_message(message);
+                        chat_view.invalidate_lines_cache();
+                        needs_redraw = true;
+                    }
+
                     // Other events we don't need to handle in the UI
                     _ => {}
                 }
@@ -1583,6 +1594,9 @@ impl ChatMode {
             "usage" => {
                 self.show_usage_report(chat_view, chat_state, rt_handle);
             }
+            "goal" => {
+                self.handle_goal_command(&[], chat_view, chat_state, rt_handle);
+            }
             // Prompt group
             "skills" => {
                 self.show_skill_selector(chat_view, chat_state, rt_handle);
@@ -1712,6 +1726,9 @@ impl ChatMode {
             "/usage" => {
                 self.show_usage_report(chat_view, chat_state, rt_handle);
             }
+            "/goal" => {
+                self.handle_goal_command(&parts[1..], chat_view, chat_state, rt_handle);
+            }
             "/init" => match crate::prompts::get_cli_prompt("init") {
                 Some(prompt) => {
                     self.send_message_to_agent(
@@ -1771,6 +1788,171 @@ impl ChatMode {
         }
 
         Ok(None)
+    }
+
+    fn handle_goal_command(
+        &self,
+        args: &[&str],
+        chat_view: &mut ChatView,
+        chat_state: &mut ChatState,
+        rt_handle: &tokio::runtime::Handle,
+    ) {
+        let session_id = chat_state.core_session_id.clone();
+        let workspace = chat_state
+            .workspace
+            .clone()
+            .or_else(|| self.workspace.clone())
+            .or_else(|| Some(self.agent.workspace_path_string()))
+            .unwrap_or_else(|| ".".to_string());
+        let coordinator = self.agent.coordinator().clone();
+        let active_turn_id = chat_state.current_turn_id().map(ToString::to_string);
+        let args: Vec<String> = args.iter().map(|part| (*part).to_string()).collect();
+
+        let result: Result<String> = tokio::task::block_in_place(|| {
+            rt_handle.block_on(async move {
+                let workspace = std::path::PathBuf::from(workspace);
+                if args.is_empty() || args[0] == "show" || args[0] == "status" {
+                    return match coordinator
+                        .get_thread_goal(&session_id, workspace.as_path())
+                        .await?
+                    {
+                        Some(goal) => Ok(crate::goal::format_goal_summary(&goal)),
+                        None => Ok("No thread goal for this session".to_string()),
+                    };
+                }
+
+                match args[0].as_str() {
+                    "clear" => {
+                        coordinator
+                            .clear_thread_goal(&session_id, workspace.as_path())
+                            .await?;
+                        Ok("Goal cleared".to_string())
+                    }
+                    "pause" => {
+                        let goal = coordinator
+                            .set_thread_goal_status(
+                                &session_id,
+                                workspace.as_path(),
+                                bitfun_core::runtime_ports::ThreadGoalStatus::Paused,
+                            )
+                            .await?;
+                        Ok(crate::goal::format_goal_summary(&goal))
+                    }
+                    "resume" => {
+                        let goal = coordinator
+                            .set_thread_goal_status(
+                                &session_id,
+                                workspace.as_path(),
+                                bitfun_core::runtime_ports::ThreadGoalStatus::Active,
+                            )
+                            .await?;
+                        Ok(crate::goal::format_goal_summary(&goal))
+                    }
+                    "complete" => {
+                        let goal = coordinator
+                            .update_thread_goal_status(
+                                &session_id,
+                                workspace.as_path(),
+                                bitfun_core::runtime_ports::ThreadGoalStatus::Complete,
+                                active_turn_id.as_deref(),
+                            )
+                            .await?;
+                        Ok(crate::goal::format_goal_summary(&goal))
+                    }
+                    "blocked" => {
+                        let goal = coordinator
+                            .update_thread_goal_status(
+                                &session_id,
+                                workspace.as_path(),
+                                bitfun_core::runtime_ports::ThreadGoalStatus::Blocked,
+                                active_turn_id.as_deref(),
+                            )
+                            .await?;
+                        Ok(crate::goal::format_goal_summary(&goal))
+                    }
+                    "edit" | "set" => {
+                        let objective = args[1..].join(" ");
+                        if objective.trim().is_empty() {
+                            anyhow::bail!("Usage: /goal {} <objective>", args[0]);
+                        }
+                        let goal = if args[0] == "edit" {
+                            coordinator
+                                .update_thread_goal_objective(
+                                    &session_id,
+                                    workspace.as_path(),
+                                    objective,
+                                )
+                                .await?
+                        } else {
+                            let existing = coordinator
+                                .get_thread_goal(&session_id, workspace.as_path())
+                                .await?;
+                            if existing.is_some() {
+                                coordinator
+                                    .set_thread_goal_objective(
+                                        &session_id,
+                                        workspace.as_path(),
+                                        objective,
+                                        true,
+                                    )
+                                    .await?
+                            } else {
+                                coordinator
+                                    .create_thread_goal(
+                                        &session_id,
+                                        workspace.as_path(),
+                                        objective,
+                                        None,
+                                    )
+                                    .await?
+                            }
+                        };
+                        Ok(crate::goal::format_goal_summary(&goal))
+                    }
+                    _ => {
+                        let objective = args.join(" ");
+                        if objective.trim().is_empty() {
+                            anyhow::bail!("Usage: /goal <objective>");
+                        }
+                        let existing = coordinator
+                            .get_thread_goal(&session_id, workspace.as_path())
+                            .await?;
+                        let goal = if existing.is_some() {
+                            coordinator
+                                .set_thread_goal_objective(
+                                    &session_id,
+                                    workspace.as_path(),
+                                    objective,
+                                    true,
+                                )
+                                .await?
+                        } else {
+                            coordinator
+                                .create_thread_goal(
+                                    &session_id,
+                                    workspace.as_path(),
+                                    objective,
+                                    None,
+                                )
+                                .await?
+                        };
+                        Ok(crate::goal::format_goal_summary(&goal))
+                    }
+                }
+            })
+        });
+
+        match result {
+            Ok(message) => {
+                chat_state.add_system_message(message);
+                chat_view.set_status(Some("Goal updated".to_string()));
+            }
+            Err(error) => {
+                chat_state.add_system_message(format!("Goal command failed: {}", error));
+                chat_view.set_status(Some("Goal command failed".to_string()));
+            }
+        }
+        chat_view.invalidate_lines_cache();
     }
 
     fn show_usage_report(

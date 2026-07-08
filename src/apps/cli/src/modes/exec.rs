@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bitfun_core::agentic::core::SessionState;
+use bitfun_core::runtime_ports::ThreadGoal;
 use bitfun_events::AgenticEvent;
 use tokio::time::{sleep, Instant};
 
@@ -29,11 +30,30 @@ pub enum ExecOutputFormat {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct ExecGoalOptions {
+    pub objective: Option<String>,
+    pub wait: bool,
+    pub token_budget: Option<i64>,
+    pub max_turns: u32,
+}
+
+impl ExecGoalOptions {
+    fn should_wait(&self) -> bool {
+        self.wait || self.objective.is_some()
+    }
+
+    fn max_turns(&self) -> u32 {
+        self.max_turns.max(1)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct ExecSessionOptions {
     pub resume: Option<String>,
     pub continue_last: bool,
     pub session_id: Option<String>,
     pub fork_session: bool,
+    pub goal: ExecGoalOptions,
 }
 
 pub struct ExecMode {
@@ -190,6 +210,19 @@ impl ExecMode {
         })?;
         tracing::info!(session_id = %session_id, "Session ready");
         let event_queue = self.agent.event_queue().clone();
+        let goal_wait_enabled = self.session_options.goal.should_wait();
+
+        if let Some(goal) = self.activate_exec_goal(&session_id).await? {
+            self.emit(json!({
+                "type": "goal_updated",
+                "session_id": session_id,
+                "goal": goal,
+            }))?;
+            self.print_text(|| {
+                println!("{}", crate::goal::format_goal_summary(&goal));
+                println!();
+            });
+        }
 
         self.emit(json!({
             "type": "session",
@@ -221,6 +254,9 @@ impl ExecMode {
         let mut total_tool_calls = 0usize;
         let mut subagent_parent_sessions: HashMap<String, String> = HashMap::new();
         let mut terminal_outcome: Option<Result<()>> = None;
+        let mut completed_turns = 0u32;
+        let mut latest_turn_id = turn_id.clone();
+        let mut terminal_goal: Option<ThreadGoal> = None;
 
         loop {
             // Wait for events (efficient, uses Notify internally)
@@ -327,6 +363,22 @@ impl ExecMode {
                 }
 
                 match event {
+                    AgenticEvent::DialogTurnStarted { turn_id, .. } => {
+                        latest_turn_id = turn_id.clone();
+                        if goal_wait_enabled {
+                            self.emit(json!({
+                                "type": "goal_turn_started",
+                                "session_id": session_id,
+                                "turn_id": turn_id,
+                            }))?;
+                            self.print_text(|| {
+                                if completed_turns > 0 {
+                                    println!("\nContinuing active goal...");
+                                }
+                            });
+                        }
+                    }
+
                     AgenticEvent::ModelRoundStarted {
                         model_id: Some(model_id),
                         ..
@@ -446,7 +498,108 @@ impl ExecMode {
                         }
                     }
 
-                    AgenticEvent::DialogTurnCompleted { .. } => {
+                    AgenticEvent::ThreadGoalUpdated { goal, .. } => {
+                        let updated_goal = goal
+                            .as_ref()
+                            .and_then(crate::goal::parse_goal_from_event_payload);
+                        self.emit(json!({
+                            "type": "goal_updated",
+                            "session_id": session_id,
+                            "goal": goal,
+                        }))?;
+                        if let Some(goal) = updated_goal.as_ref() {
+                            self.print_text(|| {
+                                println!("\n{}", crate::goal::compact_goal_summary(goal));
+                            });
+                            if crate::goal::goal_is_terminal(goal) {
+                                terminal_goal = Some(goal.clone());
+                            }
+                        } else {
+                            self.print_text(|| println!("\nGoal cleared"));
+                            terminal_goal = None;
+                        }
+                    }
+
+                    AgenticEvent::DialogTurnCompleted { turn_id, .. } => {
+                        completed_turns = completed_turns.saturating_add(1);
+                        latest_turn_id = turn_id.clone();
+
+                        if goal_wait_enabled {
+                            let current_goal = self.current_goal(&session_id).await?;
+                            if let Some(goal) = current_goal.as_ref() {
+                                if crate::goal::goal_is_terminal(&goal) {
+                                    terminal_goal = Some(goal.clone());
+                                }
+                            }
+
+                            if let Some(goal) = terminal_goal.as_ref() {
+                                self.emit(json!({
+                                    "type": "goal_done",
+                                    "session_id": session_id,
+                                    "status": goal.status.as_str(),
+                                    "goal": goal,
+                                    "tool_calls": total_tool_calls,
+                                    "turns": completed_turns,
+                                }))?;
+                                self.print_text(|| {
+                                    println!("\n");
+                                    println!("Goal finished: {}", goal.status.as_str());
+                                    if total_tool_calls > 0 {
+                                        println!(
+                                            "\nTool call statistics: {} tools invoked",
+                                            total_tool_calls
+                                        );
+                                    }
+                                });
+                                terminal_outcome = Some(Ok(()));
+                                break;
+                            }
+
+                            if current_goal.is_none() {
+                                self.emit(json!({
+                                    "type": "done",
+                                    "session_id": session_id,
+                                    "status": "goal_cleared",
+                                    "tool_calls": total_tool_calls,
+                                    "turns": completed_turns,
+                                }))?;
+                                self.print_text(|| {
+                                    println!("\n");
+                                    println!("Goal cleared");
+                                });
+                                terminal_outcome = Some(Ok(()));
+                                break;
+                            }
+
+                            if completed_turns >= self.session_options.goal.max_turns() {
+                                let message = format!(
+                                    "Goal did not finish within {} turns",
+                                    self.session_options.goal.max_turns()
+                                );
+                                self.emit(json!({
+                                    "type": "error",
+                                    "session_id": session_id,
+                                    "message": message,
+                                    "turns": completed_turns,
+                                }))?;
+                                self.print_text(|| eprintln!("\n{}", message));
+                                terminal_outcome = Some(Err(anyhow::anyhow!(message)));
+                                break;
+                            }
+
+                            self.emit(json!({
+                                "type": "goal_turn_completed",
+                                "session_id": session_id,
+                                "turn_id": turn_id,
+                                "turns": completed_turns,
+                                "tool_calls": total_tool_calls,
+                            }))?;
+                            self.print_text(|| {
+                                println!("\nWaiting for goal continuation...");
+                            });
+                            continue;
+                        }
+
                         self.emit(json!({
                             "type": "done",
                             "session_id": session_id,
@@ -521,9 +674,65 @@ impl ExecMode {
             }
         }
 
-        self.wait_for_turn_settlement(&session_id, &turn_id).await;
+        self.wait_for_turn_settlement(&session_id, &latest_turn_id)
+            .await;
         self.output_patch_if_needed();
         terminal_outcome.unwrap_or(Ok(()))
+    }
+
+    async fn activate_exec_goal(&self, session_id: &str) -> Result<Option<ThreadGoal>> {
+        let Some(objective) = self.session_options.goal.objective.as_ref() else {
+            return Ok(None);
+        };
+        if let Some(budget) = self.session_options.goal.token_budget {
+            if budget <= 0 {
+                anyhow::bail!("--goal-token-budget must be positive when provided");
+            }
+        }
+
+        let workspace = self
+            .workspace_path
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let existing = self
+            .agent
+            .coordinator()
+            .get_thread_goal(session_id, workspace.as_path())
+            .await?;
+        let goal = if existing.is_some() {
+            if self.session_options.goal.token_budget.is_some() {
+                eprintln!("Note: --goal-token-budget only applies when creating a new goal");
+            }
+            self.agent
+                .coordinator()
+                .set_thread_goal_objective(session_id, workspace.as_path(), objective.clone(), true)
+                .await?
+        } else {
+            self.agent
+                .coordinator()
+                .create_thread_goal(
+                    session_id,
+                    workspace.as_path(),
+                    objective.clone(),
+                    self.session_options.goal.token_budget,
+                )
+                .await?
+        };
+        Ok(Some(goal))
+    }
+
+    async fn current_goal(&self, session_id: &str) -> Result<Option<ThreadGoal>> {
+        let workspace = self
+            .workspace_path
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        self.agent
+            .coordinator()
+            .get_thread_goal(session_id, workspace.as_path())
+            .await
+            .map_err(Into::into)
     }
 
     async fn record_resolved_model_id(&self, session_id: &str, model_id: &str) {

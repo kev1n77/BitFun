@@ -6,9 +6,9 @@ use std::path::Path;
 use crate::{
     config::CliConfig,
     diagnostics::{emit_exit_diagnostic, ExitContext, ExitKind},
-    modes::exec::{ExecMode, ExecOutputFormat, ExecSessionOptions},
+    modes::exec::{ExecGoalOptions, ExecMode, ExecOutputFormat, ExecSessionOptions},
     ui::string_utils::truncate_str,
-    ConfigAction, SessionAction,
+    ConfigAction, GoalAction, SessionAction,
 };
 
 pub struct ExecCommandArgs {
@@ -22,6 +22,7 @@ pub struct ExecCommandArgs {
     pub output_format: ExecOutputFormat,
     pub output_patch: Option<String>,
     pub confirm: bool,
+    pub goal: ExecGoalOptions,
 }
 
 pub async fn handle_exec_command(config: CliConfig, args: ExecCommandArgs) -> Result<()> {
@@ -31,7 +32,7 @@ pub async fn handle_exec_command(config: CliConfig, args: ExecCommandArgs) -> Re
         tracing::info!("Workspace path set: {:?}", ws_path);
     }
 
-    let message = resolve_exec_message(args.message)?;
+    let message = resolve_exec_message(args.message, args.goal.objective.as_deref())?;
     let resume = match (args.resume, args.session) {
         (Some(_), Some(_)) => {
             anyhow::bail!("Use only one of --resume or --session");
@@ -76,6 +77,7 @@ pub async fn handle_exec_command(config: CliConfig, args: ExecCommandArgs) -> Re
             continue_last: args.continue_last,
             session_id: args.session_id,
             fork_session: args.fork_session,
+            goal: args.goal,
         },
     );
     let run_result = exec_mode.run().await;
@@ -86,12 +88,150 @@ pub async fn handle_exec_command(config: CliConfig, args: ExecCommandArgs) -> Re
     run_result
 }
 
-fn resolve_exec_message(message: Option<String>) -> Result<String> {
-    let mut combined = message.unwrap_or_default();
+pub async fn handle_goal_action(action: GoalAction) -> Result<()> {
+    use bitfun_core::runtime_ports::ThreadGoalStatus;
+
+    let agentic_system = crate::agent::agentic_system::init_agentic_system_for_cli().await?;
+    let coordinator = agentic_system.coordinator.clone();
+    let workspace_path = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    let session_arg = match &action {
+        GoalAction::Show { session }
+        | GoalAction::Set { session, .. }
+        | GoalAction::Edit { session, .. }
+        | GoalAction::Clear { session }
+        | GoalAction::Pause { session }
+        | GoalAction::Resume { session }
+        | GoalAction::Complete { session }
+        | GoalAction::Blocked { session } => session.as_deref(),
+    };
+    let resolved =
+        crate::goal::resolve_goal_session(&coordinator, &workspace_path, session_arg).await?;
+
+    match action {
+        GoalAction::Show { .. } => {
+            match coordinator
+                .get_thread_goal(&resolved.session_id, resolved.workspace_path.as_path())
+                .await?
+            {
+                Some(goal) => println!("{}", crate::goal::format_goal_summary(&goal)),
+                None => println!("No thread goal for session {}", resolved.session_id),
+            }
+        }
+        GoalAction::Set {
+            objective,
+            token_budget,
+            ..
+        } => {
+            let existing = coordinator
+                .get_thread_goal(&resolved.session_id, resolved.workspace_path.as_path())
+                .await?;
+            let goal = if existing.is_some() {
+                if token_budget.is_some() {
+                    eprintln!("Note: --token-budget only applies when creating a new goal");
+                }
+                coordinator
+                    .set_thread_goal_objective(
+                        &resolved.session_id,
+                        resolved.workspace_path.as_path(),
+                        objective,
+                        true,
+                    )
+                    .await?
+            } else {
+                coordinator
+                    .create_thread_goal(
+                        &resolved.session_id,
+                        resolved.workspace_path.as_path(),
+                        objective,
+                        token_budget,
+                    )
+                    .await?
+            };
+            println!("{}", crate::goal::format_goal_summary(&goal));
+        }
+        GoalAction::Edit { objective, .. } => {
+            let goal = coordinator
+                .update_thread_goal_objective(
+                    &resolved.session_id,
+                    resolved.workspace_path.as_path(),
+                    objective,
+                )
+                .await?;
+            println!("{}", crate::goal::format_goal_summary(&goal));
+        }
+        GoalAction::Clear { .. } => {
+            coordinator
+                .clear_thread_goal(&resolved.session_id, resolved.workspace_path.as_path())
+                .await?;
+            println!("Cleared thread goal for session {}", resolved.session_id);
+        }
+        GoalAction::Pause { .. } => {
+            let goal = coordinator
+                .set_thread_goal_status(
+                    &resolved.session_id,
+                    resolved.workspace_path.as_path(),
+                    ThreadGoalStatus::Paused,
+                )
+                .await?;
+            println!("{}", crate::goal::format_goal_summary(&goal));
+        }
+        GoalAction::Resume { .. } => {
+            let goal = coordinator
+                .set_thread_goal_status(
+                    &resolved.session_id,
+                    resolved.workspace_path.as_path(),
+                    ThreadGoalStatus::Active,
+                )
+                .await?;
+            println!("{}", crate::goal::format_goal_summary(&goal));
+        }
+        GoalAction::Complete { .. } => {
+            let goal = coordinator
+                .update_thread_goal_status(
+                    &resolved.session_id,
+                    resolved.workspace_path.as_path(),
+                    ThreadGoalStatus::Complete,
+                    None,
+                )
+                .await?;
+            println!("{}", crate::goal::format_goal_summary(&goal));
+        }
+        GoalAction::Blocked { .. } => {
+            let goal = coordinator
+                .update_thread_goal_status(
+                    &resolved.session_id,
+                    resolved.workspace_path.as_path(),
+                    ThreadGoalStatus::Blocked,
+                    None,
+                )
+                .await?;
+            println!("{}", crate::goal::format_goal_summary(&goal));
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_exec_message(message: Option<String>, goal_objective: Option<&str>) -> Result<String> {
+    let mut stdin_content = None;
     if !std::io::stdin().is_terminal() {
         use std::io::Read;
-        let mut stdin_content = String::new();
-        std::io::stdin().read_to_string(&mut stdin_content)?;
+        let mut content = String::new();
+        std::io::stdin().read_to_string(&mut content)?;
+        stdin_content = Some(content);
+    }
+
+    resolve_exec_message_parts(message, stdin_content, goal_objective)
+}
+
+fn resolve_exec_message_parts(
+    message: Option<String>,
+    stdin_content: Option<String>,
+    goal_objective: Option<&str>,
+) -> Result<String> {
+    let mut combined = message.unwrap_or_default();
+    if let Some(stdin_content) = stdin_content {
         let stdin_content = stdin_content.trim_end().to_string();
         if !stdin_content.is_empty() {
             if combined.is_empty() {
@@ -103,7 +243,12 @@ fn resolve_exec_message(message: Option<String>) -> Result<String> {
         }
     }
 
-    let message = combined.trim().to_string();
+    let mut message = combined.trim().to_string();
+    if message.is_empty() {
+        if let Some(goal_objective) = goal_objective {
+            message = goal_objective.trim().to_string();
+        }
+    }
     if message.is_empty() {
         anyhow::bail!("Prompt cannot be empty");
     }
@@ -367,4 +512,41 @@ pub async fn serve_acp_stdio() -> Result<()> {
 
     bitfun_acp::BitfunAcpRuntime::serve_stdio(agentic_system).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_exec_message_parts;
+
+    #[test]
+    fn exec_goal_objective_is_used_when_prompt_is_omitted() {
+        let message = resolve_exec_message_parts(None, None, Some("finish the goal"))
+            .expect("goal objective should be accepted as the exec prompt");
+
+        assert_eq!(message, "finish the goal");
+    }
+
+    #[test]
+    fn explicit_exec_prompt_takes_precedence_over_goal_objective() {
+        let message = resolve_exec_message_parts(
+            Some("inspect first".to_string()),
+            None,
+            Some("finish the goal"),
+        )
+        .expect("explicit prompt should be accepted");
+
+        assert_eq!(message, "inspect first");
+    }
+
+    #[test]
+    fn stdin_takes_precedence_over_goal_objective_when_prompt_is_omitted() {
+        let message = resolve_exec_message_parts(
+            None,
+            Some("inspect from stdin\n".to_string()),
+            Some("finish the goal"),
+        )
+        .expect("stdin prompt should be accepted");
+
+        assert_eq!(message, "inspect from stdin");
+    }
 }

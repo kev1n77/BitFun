@@ -11,6 +11,7 @@ mod chat_state;
 mod commands;
 mod config;
 mod diagnostics;
+mod goal;
 mod logging;
 mod management;
 mod modes;
@@ -26,7 +27,7 @@ use std::sync::OnceLock;
 
 use config::CliConfig;
 use modes::chat::ChatMode;
-use modes::exec::ExecOutputFormat;
+use modes::exec::{ExecGoalOptions, ExecOutputFormat};
 
 // ======================== Global MCP Service ========================
 
@@ -82,7 +83,7 @@ enum Commands {
 
     /// Execute single command
     Exec {
-        /// User message. If omitted, stdin is used when piped.
+        /// User message. If omitted, stdin is used when piped, otherwise --goal is used.
         message: Option<String>,
 
         /// Agent type
@@ -122,6 +123,28 @@ enum Commands {
         /// Tool execution requires confirmation (default: no confirmation to avoid blocking non-interactive mode)
         #[arg(long)]
         confirm: bool,
+
+        /// Create or update the active thread goal before executing. Used as the prompt when no message is provided.
+        #[arg(long)]
+        goal: Option<String>,
+
+        /// Continue consuming automatic goal turns until the goal reaches a terminal status
+        #[arg(long)]
+        wait_goal: bool,
+
+        /// Positive token budget for --goal
+        #[arg(long)]
+        goal_token_budget: Option<i64>,
+
+        /// Maximum dialog turns to consume while waiting for a goal
+        #[arg(long, default_value_t = 100)]
+        max_goal_turns: u32,
+    },
+
+    /// Thread goal management
+    Goal {
+        #[command(subcommand)]
+        action: GoalAction,
     },
 
     /// Session management
@@ -308,6 +331,65 @@ enum SessionAction {
         /// Print only the new session ID
         #[arg(long)]
         id_only: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum GoalAction {
+    /// Show the current thread goal
+    Show {
+        /// Session ID, or "last" for the most recent session
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Set the active thread goal objective
+    Set {
+        /// Goal objective
+        objective: String,
+        /// Session ID, or "last" for the most recent session
+        #[arg(long)]
+        session: Option<String>,
+        /// Positive token budget for the goal
+        #[arg(long)]
+        token_budget: Option<i64>,
+    },
+    /// Edit the existing goal objective
+    Edit {
+        /// New goal objective
+        objective: String,
+        /// Session ID, or "last" for the most recent session
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Clear the current thread goal
+    Clear {
+        /// Session ID, or "last" for the most recent session
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Pause the current thread goal
+    Pause {
+        /// Session ID, or "last" for the most recent session
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Resume the current thread goal
+    Resume {
+        /// Session ID, or "last" for the most recent session
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Mark the current thread goal complete
+    Complete {
+        /// Session ID, or "last" for the most recent session
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Mark the current thread goal blocked
+    Blocked {
+        /// Session ID, or "last" for the most recent session
+        #[arg(long)]
+        session: Option<String>,
     },
 }
 
@@ -575,6 +657,10 @@ async fn run_cli() -> Result<()> {
             output_format,
             output_patch,
             confirm,
+            goal,
+            wait_goal,
+            goal_token_budget,
+            max_goal_turns,
         }) => {
             root_handlers::handle_exec_command(
                 config,
@@ -589,9 +675,19 @@ async fn run_cli() -> Result<()> {
                     output_format,
                     output_patch,
                     confirm,
+                    goal: ExecGoalOptions {
+                        objective: goal,
+                        wait: wait_goal,
+                        token_budget: goal_token_budget,
+                        max_turns: max_goal_turns,
+                    },
                 },
             )
             .await?;
+        }
+
+        Some(Commands::Goal { action }) => {
+            root_handlers::handle_goal_action(action).await?;
         }
 
         Some(Commands::Sessions { action }) => {

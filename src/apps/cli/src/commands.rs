@@ -73,6 +73,10 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
         description: "Generate session usage report",
     },
     CommandSpec {
+        name: "/goal",
+        description: "Manage the active thread goal",
+    },
+    CommandSpec {
         name: "/exit",
         description: "Exit the app",
     },
@@ -127,6 +131,10 @@ pub const STARTUP_COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec {
         name: "/usage",
         description: "Generate session usage report",
+    },
+    CommandSpec {
+        name: "/goal",
+        description: "Manage the active thread goal",
     },
     CommandSpec {
         name: "/exit",
