@@ -217,7 +217,41 @@ try {
     # The Node test clicked the shipped frontend button, which downloads,
     # verifies and installs through the unmodified production Rust command.
     if (-not $app.WaitForExit(600000)) { throw 'The real application did not exit to install its update.' }
-    Start-Sleep -Seconds 10
+    # NSIS may relaunch through the Windows shell without inheriting the
+    # parent's test-only WebDriver environment. Observe the real installed
+    # version and new process first, independently of that test endpoint.
+    $restart = $null
+    for ($attempt = 0; $attempt -lt 90; $attempt++) {
+        $fileVersion = if (Test-Path -LiteralPath $installedExe) { (Get-Item -LiteralPath $installedExe).VersionInfo.ProductVersion } else { $null }
+        $processes = @(Get-Process -Name 'bitfun-desktop' -ErrorAction SilentlyContinue | ForEach-Object {
+            @{ id = $_.Id; path = $_.Path; title = $_.MainWindowTitle }
+        })
+        $restart = @{
+            installedPath = $installedExe; installedVersion = $fileVersion
+            previousProcessId = $app.Id; processes = $processes
+            observedAt = [DateTime]::UtcNow.ToString('o')
+        }
+        Write-Json (Join-Path $evidenceDir 'installer-relaunch.json') $restart
+        $restarted = @($processes | Where-Object { $_.path -eq $installedExe -and $_.id -ne $app.Id })
+        if ($fileVersion -match '^0\.2\.20(?:\.|$)' -and $restarted.Count -gt 0) { break }
+        Start-Sleep -Seconds 2
+    }
+    if ($restart.installedVersion -notmatch '^0\.2\.20(?:\.|$)' -or $restarted.Count -eq 0) {
+        throw 'The original installer did not produce a running 0.2.20 application; see installer-relaunch.json.'
+    }
+    $restart.automaticRelaunchObserved = $true
+    $restart.testDriverRestartRequired = $false
+    Start-Sleep -Seconds 5
+    try { Invoke-RestMethod 'http://127.0.0.1:4445/status' -TimeoutSec 5 | Out-Null }
+    catch {
+        $restart.testDriverRestartRequired = $true
+        # The actual automatic relaunch is already recorded above. Restart
+        # only that installed test process to reattach isolated E2E storage
+        # and WebDriver for the final native/DOM checks.
+        foreach ($process in $restarted) { Stop-Process -Id $process.id -ErrorAction SilentlyContinue }
+        $app = Start-BitFun
+    }
+    Write-Json (Join-Path $evidenceDir 'installer-relaunch.json') $restart
     Verify-Phase 'after'
     $productionAfter = Invoke-Gh @('api', "repos/$repo/releases/latest", '--jq', '.tag_name')
     if ($productionAfter -ne $productionBefore) { throw 'The existing Latest release changed.' }
@@ -227,7 +261,8 @@ try {
         receiverBeforePublication = (Get-Content (Join-Path $evidenceDir 'before.json') -Raw | ConvertFrom-Json)
         receiverAfterReleaseBeforeChannelPromotion = (Get-Content (Join-Path $evidenceDir 'isolated.json') -Raw | ConvertFrom-Json)
         originalNotificationDialog = (Get-Content (Join-Path $evidenceDir 'notification.json') -Raw | ConvertFrom-Json)
-        automaticallyRelaunched = (Get-Content (Join-Path $evidenceDir 'after.json') -Raw | ConvertFrom-Json)
+        installerRelaunch = $restart
+        installedApplication = (Get-Content (Join-Path $evidenceDir 'after.json') -Raw | ConvertFrom-Json)
         productionLatestBefore = $productionBefore; productionLatestAfter = $productionAfter
         runUrl = "https://github.com/$repo/actions/runs/$env:GITHUB_RUN_ID"
     }

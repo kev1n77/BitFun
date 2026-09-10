@@ -24,7 +24,10 @@ The test brings the installed window forward using the existing host command.
 It records window visibility, the auto-update setting, and the dialog trigger.
 If the startup dialog does not appear, it exercises About -> Check for updates
 and reports that manual trigger explicitly; it does not count that as proof of
-an automatic startup notification.
+an automatic startup notification. After installation, it independently records
+the installed executable version and automatically started process. If the
+Windows shell relaunch drops the test-only environment, the report explicitly
+records the additional restart needed to attach WebDriver for the final UI check.
 
 The two test Git tags are prepared from the authorized origin maintainer
 checkout before CI starts. CI checks them before compiling, then uses its
