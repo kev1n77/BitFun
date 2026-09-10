@@ -21,6 +21,13 @@ that 0.2.19 still sees no update until its channel is promoted. It then restarts
 button, and checks the automatically relaunched 0.2.20 executable and frontend.
 The 0.2.20 release contains the screenshots and validation report.
 
+The two test Git tags are prepared from the authorized origin maintainer
+checkout before CI starts. CI checks them before compiling, then uses its
+GITHUB_TOKEN to publish releases/assets for those existing tags. This avoids
+asking the workflow token to create tags across imported workflow history.
+A recovered signed package may be staged in a draft release; CI publishes it
+before running the installed application's public-feed checks.
+
 The visible release copy is owned by `update-notes.txt` and uses the intended
 production announcement wording, with the origin release as its download link.
 CI checks that exact text in the real native response and original dialog.

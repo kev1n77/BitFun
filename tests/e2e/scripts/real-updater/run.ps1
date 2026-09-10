@@ -152,7 +152,7 @@ CI: https://github.com/$repo/actions/runs/$env:GITHUB_RUN_ID
     [IO.File]::WriteAllText($notesFile, $notes, [Text.UTF8Encoding]::new($false))
     & gh release view $Package.Tag --repo $repo --json tagName 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) {
-        Invoke-Gh @('release', 'edit', $Package.Tag, '--repo', $repo, '--prerelease', '--latest=false', '--notes-file', $notesFile) | Out-Null
+        Invoke-Gh @('release', 'edit', $Package.Tag, '--repo', $repo, '--draft=false', '--prerelease', '--latest=false', '--notes-file', $notesFile) | Out-Null
     } else {
         Invoke-Gh @('release', 'create', $Package.Tag, '--repo', $repo, '--target', $env:GITHUB_SHA, '--prerelease', '--latest=false', '--title', "REAL BitFun $($Package.Version) - Windows updater test", '--notes-file', $notesFile) | Out-Null
     }
@@ -170,6 +170,12 @@ function Verify-Phase([string]$Phase) {
 }
 
 $productionBefore = Invoke-Gh @('api', "repos/$repo/releases/latest", '--jq', '.tag_name')
+# Tag creation across imported workflow history can exceed GITHUB_TOKEN's
+# capabilities. Tags are prepared using the authorized origin maintainer
+# checkout; the workflow token only publishes these existing test tags.
+foreach ($tag in @($receiverTag, $publisherTag)) {
+    Invoke-Gh @('api', "repos/$repo/git/ref/tags/$tag") | Out-Null
+}
 Push-Location $root
 try {
     $receiver = Get-Package '0.2.19'
