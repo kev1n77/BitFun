@@ -20,6 +20,11 @@ that 0.2.19 still sees no update until its channel is promoted. It then restarts
 0.2.19, captures the original notification dialog, clicks its actual install
 button, and checks the automatically relaunched 0.2.20 executable and frontend.
 The 0.2.20 release contains the screenshots and validation report.
+The test brings the installed window forward using the existing host command.
+It records window visibility, the auto-update setting, and the dialog trigger.
+If the startup dialog does not appear, it exercises About -> Check for updates
+and reports that manual trigger explicitly; it does not count that as proof of
+an automatic startup notification.
 
 The two test Git tags are prepared from the authorized origin maintainer
 checkout before CI starts. CI checks them before compiling, then uses its

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { UpdatePage } from './update-page.mjs';
 
 const [phase, outDir] = process.argv.slice(2);
 assert.ok(['before', 'isolated', 'notification', 'after'].includes(phase));
@@ -36,12 +37,12 @@ async function until(label, action, timeout = 120000) {
 
 const execute = (script, args = []) => request(`/session/${session}/execute/sync`, { script, args });
 
-async function invoke(command) {
+async function invoke(command, requestBody = {}) {
   return request(`/session/${session}/execute/async`, {
     script: `const done = arguments[arguments.length - 1];
-      window.__TAURI__.core.invoke(arguments[0], {request: {}})
+      window.__TAURI__.core.invoke(arguments[0], {request: arguments[1]})
         .then(value => done({value}), error => done({error: String(error)}));`,
-    args: [command],
+    args: [command, requestBody],
   }).then(result => {
     if (result.error) throw new Error(result.error);
     return result.value;
@@ -62,6 +63,9 @@ try {
   session = (await request('/session', { capabilities: { alwaysMatch: {} } })).sessionId;
   await request(`/session/${session}/timeouts`, { script: 120000 });
   await until('Real BitFun frontend', () => execute('return !!window.__TAURI__?.core?.invoke && document.body.innerText.length > 30;'));
+  const windowBeforeFocus = await execute('return {hidden: document.hidden, visibility: document.visibilityState, focused: document.hasFocus()};');
+  // Exercise the existing host command to bring the real test window forward.
+  await invoke('show_main_window');
   const version = await invoke('get_app_version');
   assert.equal(version, phase === 'after' ? '0.2.20' : '0.2.19');
   const update = await until('Published update channel', async () => {
@@ -69,15 +73,28 @@ try {
     return result.updateAvailable === (phase === 'notification') ? result : null;
   });
   assert.equal(update.currentVersion, version);
-  const evidence = { phase, nativeVersion: version, update, testedAt: new Date().toISOString() };
+  const evidence = { phase, nativeVersion: version, update, windowBeforeFocus, testedAt: new Date().toISOString() };
   if (phase === 'notification') {
     assert.equal(update.latestVersion, '0.2.20');
     assert.equal(update.releaseNotes.replaceAll('\r\n', '\n'), expectedNotes.replaceAll('\r\n', '\n'));
-    // This is the shipped DailyAppUpdateGate and UpdateAvailableDialog.
-    // Do not inject a replacement UI, fake update responses, or alter React state.
-    evidence.dialogText = await until('Original BitFun update dialog', () => execute(`
-      const root = document.querySelector('[data-bf-component="update"][data-bf-part="availableRoot"]');
-      return root && root.getBoundingClientRect().height > 0 && root.innerText.includes('OpenBitFun 1.0') ? root.innerText : null;`));
+    evidence.autoUpdate = await invoke('get_config', { path: 'app.auto_update' });
+    evidence.windowAfterFocus = await execute(`return {
+      hidden: document.hidden, visibility: document.visibilityState, focused: document.hasFocus(),
+      updateStorage: Object.fromEntries(Object.keys(localStorage).filter(key => key.startsWith('bitfun:update:')).map(key => [key, localStorage.getItem(key)]))
+    };`);
+    await writeFile(path.join(outDir, 'native-notification.json'), JSON.stringify(evidence, null, 2));
+    // Use only shipped UI paths, recording whether startup or About triggered it.
+    const page = new UpdatePage(execute, until);
+    try {
+      evidence.dialogText = await until('Automatic BitFun update dialog', () => page.dialogText(), 45000);
+      evidence.dialogTrigger = 'automatic-startup';
+    } catch (error) {
+      evidence.automaticDialogFailure = String(error);
+      await snapshot('automatic-dialog-absent');
+      await page.checkFromAbout();
+      evidence.dialogText = await until('Original About update dialog', () => page.dialogText());
+      evidence.dialogTrigger = 'manual-about-check';
+    }
     assert.ok(evidence.dialogText.includes('0.2.19'));
     assert.ok(evidence.dialogText.includes('0.2.20'));
     assert.ok(evidence.dialogText.includes('无法通过当前版本直接升级'));
