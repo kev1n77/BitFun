@@ -58,7 +58,7 @@ function Build-Package([string]$Version) {
     Copy-Item -LiteralPath "$source.sig" -Destination "$installer.sig"
     $tag = if ($Version -eq '0.2.19') { $receiverTag } else { $publisherTag }
     $notes = if ($Version -eq '0.2.20') {
-        "REAL_BITFUN_NOTIFICATION_TEST`n【通知测试】OpenBitFun 1.0.0 需要单独下载安装。`n演示下载地址：https://github.com/$repo/releases/tag/$publisherTag`n本次点击安装将升级为真实 BitFun 0.2.20 测试包，不会安装真正的 1.0.0。"
+        (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'update-notes.txt') -Raw).Trim()
     } else { 'Real BitFun 0.2.19 receiver baseline; no update is available yet.' }
     Write-Json (Join-Path $assets 'latest.json') @{
         version = $Version
@@ -92,8 +92,42 @@ function Build-Package([string]$Version) {
     return @{ Version = $Version; Assets = $assets; Installer = $installer; Tag = $tag; Metadata = $metadata }
 }
 
+function Get-Package([string]$Version) {
+    $tag = if ($Version -eq '0.2.19') { $receiverTag } else { $publisherTag }
+    if ($env:BITFUN_REUSE_TEST_PACKAGES -ne '1') { return Build-Package $Version }
+    & gh release view $tag --repo $repo --json tagName 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { return Build-Package $Version }
+    # Release notes are remote metadata. Reuse the already built real binaries
+    # only when all product source and packaging inputs are unchanged.
+    $assets = Join-Path $out $Version
+    New-Item -ItemType Directory -Path $assets -Force | Out-Null
+    $name = "BitFun_${Version}_windows-x86_64-updater-test-setup.exe"
+    Invoke-Gh @('release', 'download', $tag, '--repo', $repo, '--dir', $assets, '--clobber', '--pattern', $name, '--pattern', "$name.sig", '--pattern', 'build-metadata.json', '--pattern', 'latest.json', '--pattern', 'SHA256SUMS') | Out-Null
+    $metadata = Get-Content -LiteralPath (Join-Path $assets 'build-metadata.json') -Raw | ConvertFrom-Json
+    if ($metadata.baseSourceCommit -ne '1456c29092570a1174e8a880546793235a79eb0e' -or $metadata.version -ne $Version) { throw 'Unexpected existing package provenance.' }
+    & git diff --quiet $metadata.testCommit HEAD -- . ':!tests' ':!.github'
+    if ($LASTEXITCODE -ne 0) { return Build-Package $Version }
+    $installer = Join-Path $assets $name
+    $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+    $keyBytes = [Text.Encoding]::UTF8.GetBytes($env:TAURI_UPDATER_PUBKEY.Trim())
+    $keyHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($keyBytes)).ToLowerInvariant()
+    if ($metadata.packageSha256 -ne $hash -or $metadata.publicKeySha256 -ne $keyHash) { throw 'Existing package integrity or signing key mismatch.' }
+    if ($metadata.productName -ne 'BitFun' -or $metadata.identifier -ne 'com.bitfun.desktop') { throw 'Existing package is not the real BitFun application.' }
+    foreach ($endpoint in $metadata.endpoints) {
+        if ($endpoint -ne $env:TAURI_UPDATER_ENDPOINT) { throw 'Existing package uses a different channel.' }
+    }
+    Write-Host "Reusing the identical real BitFun $Version binary; publishing updated remote release notes."
+    return @{ Version = $Version; Assets = $assets; Installer = $installer; Tag = $tag; Metadata = $metadata }
+}
+
 function Publish-Package($Package) {
     if ($Package.Tag -notin @($receiverTag, $publisherTag)) { throw 'Unexpected test release tag.' }
+    $manifestPath = Join-Path $Package.Assets 'latest.json'
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    if ($Package.Version -eq '0.2.20') {
+        $manifest.notes = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'update-notes.txt') -Raw).Trim()
+    }
+    Write-Json $manifestPath $manifest
     $notesFile = Join-Path $Package.Assets 'release-notes.md'
     $notes = @"
 Complete real BitFun $($Package.Version) Windows updater test package.
@@ -138,7 +172,7 @@ function Verify-Phase([string]$Phase) {
 $productionBefore = Invoke-Gh @('api', "repos/$repo/releases/latest", '--jq', '.tag_name')
 Push-Location $root
 try {
-    $receiver = Build-Package '0.2.19'
+    $receiver = Get-Package '0.2.19'
     Copy-Item -LiteralPath (Join-Path $receiver.Assets 'latest.json') -Destination (Join-Path $receiver.Assets 'channel-legacy.json')
     Publish-Package $receiver
     Write-Host 'Installing the complete real 0.2.19 receiver on the clean runner.'
@@ -149,7 +183,7 @@ try {
     $app = Start-BitFun
     try { Verify-Phase 'before' } finally { Stop-Process -Id $app.Id -ErrorAction SilentlyContinue }
 
-    $publisher = Build-Package '0.2.20'
+    $publisher = Get-Package '0.2.20'
     if ($publisher.Metadata.publicKeySha256 -ne $receiver.Metadata.publicKeySha256) { throw 'Signing public keys differ.' }
     Publish-Package $publisher
     $promoted = Join-Path $out 'channel-legacy.json'

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const [phase, outDir] = process.argv.slice(2);
@@ -7,6 +7,7 @@ assert.ok(['before', 'notification', 'after'].includes(phase));
 assert.ok(outDir);
 await mkdir(outDir, { recursive: true });
 const base = 'http://127.0.0.1:4445';
+const expectedNotes = (await readFile(new URL('./update-notes.txt', import.meta.url), 'utf8')).trim();
 let session;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -71,15 +72,15 @@ try {
   const evidence = { phase, nativeVersion: version, update, testedAt: new Date().toISOString() };
   if (phase === 'notification') {
     assert.equal(update.latestVersion, '0.2.20');
-    assert.ok(update.releaseNotes.includes('REAL_BITFUN_NOTIFICATION_TEST'));
-    assert.ok(update.releaseNotes.includes('/updater-real-20260910-0.2.20'));
+    assert.equal(update.releaseNotes.replaceAll('\r\n', '\n'), expectedNotes.replaceAll('\r\n', '\n'));
     // This is the shipped DailyAppUpdateGate and UpdateAvailableDialog.
     // Do not inject a replacement UI, fake update responses, or alter React state.
     evidence.dialogText = await until('Original BitFun update dialog', () => execute(`
       const root = document.querySelector('[data-bf-component="update"][data-bf-part="availableRoot"]');
-      return root && root.getBoundingClientRect().height > 0 && root.innerText.includes('REAL_BITFUN_NOTIFICATION_TEST') ? root.innerText : null;`));
+      return root && root.getBoundingClientRect().height > 0 && root.innerText.includes('OpenBitFun 1.0') ? root.innerText : null;`));
     assert.ok(evidence.dialogText.includes('0.2.19'));
     assert.ok(evidence.dialogText.includes('0.2.20'));
+    assert.ok(evidence.dialogText.includes('无法通过当前版本直接升级'));
     await snapshot('real-bitfun-notification');
     await writeFile(path.join(outDir, `${phase}.json`), JSON.stringify(evidence, null, 2));
     // Click the real dialog's last action: background install. This invokes the

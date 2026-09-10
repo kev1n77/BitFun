@@ -20,6 +20,13 @@ It first installs 0.2.19 and proves no update, then publishes 0.2.20, restarts
 button, and checks the automatically relaunched 0.2.20 executable and frontend.
 The 0.2.20 release contains the screenshots and validation report.
 
+The visible release copy is owned by `update-notes.txt` and uses the intended
+production announcement wording, with the origin release as its download link.
+CI checks that exact text in the real native response and original dialog.
+When only test scripts or remote notes change, CI reuses the existing signed
+packages after checking product-source equality, package hash, key fingerprint,
+identity and channel. Set `BITFUN_REUSE_TEST_PACKAGES` to `0` to force a rebuild.
+
 Manual check: install the first release's NSIS `.exe`, launch BitFun, and wait
 for its usual update dialog (or use About -> Check for updates). The release
 notes carry a simulated 1.0.0 download notice. The original dialog renders that

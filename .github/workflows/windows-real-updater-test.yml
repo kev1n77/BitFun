@@ -25,6 +25,7 @@ jobs:
       BITFUN_TARGET_GC: '0'
       BITFUN_ENABLE_UPDATER_ARTIFACTS: 'true'
       BITFUN_RELEASE_CHANNEL: stable
+      BITFUN_REUSE_TEST_PACKAGES: '1'
       TAURI_UPDATER_ENDPOINT: https://github.com/kev1n77/BitFun/releases/download/updater-real-20260910-0.2.19/channel-legacy.json
       TAURI_UPDATER_FALLBACK_ENDPOINT: https://github.com/kev1n77/BitFun/releases/download/updater-real-20260910-0.2.19/channel-legacy.json
       TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
@@ -34,6 +35,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v5
       - uses: actions/setup-node@v5
         with:

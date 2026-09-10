@@ -1,0 +1,8 @@
+OpenBitFun 1.0 正式发布
+
+OpenBitFun 1.0 采用全新的应用架构，需要单独下载并安装，无法通过当前版本直接升级。
+
+下载 OpenBitFun 1.0：
+https://github.com/kev1n77/BitFun/releases/tag/updater-real-20260910-0.2.20
+
+当前 BitFun 可继续使用。完成本次更新后，如需使用 OpenBitFun 1.0，请通过上述地址下载新版本。
