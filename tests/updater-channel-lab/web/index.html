@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>OpenBitFun Updater Lab</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="adapter.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main>
+    <p>ISOLATED WINDOWS TEST</p>
+    <h1>OpenBitFun Updater Lab</h1>
+    <p>This small test app uses the real Tauri updater. It does not access BitFun workspaces or settings.</p>
+    <dl>
+      <dt>Installed version</dt><dd id="version">Checking…</dd>
+      <dt>Available version</dt><dd id="latest">—</dd>
+      <dt>Signing key fingerprint (SHA-256)</dt><dd id="key">—</dd>
+    </dl>
+    <label for="channel">Update channel</label>
+    <select id="channel">
+      <option value="legacy">Notification channel (advances to 0.2.20)</option>
+      <option value="control">Control channel (stays at 0.2.19)</option>
+    </select>
+    <p id="endpoint"></p>
+    <button id="check">Check for updates</button>
+    <p id="status" role="status">Starting…</p>
+    <section id="notice" hidden>
+      <h2>Update notification</h2>
+      <pre id="notes"></pre>
+      <button id="download-page">Open demonstration download page</button>
+      <button id="download">Download and verify 0.2.20</button>
+      <button id="install" disabled>Install test update and restart</button>
+    </section>
+    <p>The notice is the remote manifest's plain-text notes, as in BitFun 0.2.19.
+       This lab additionally provides a download-page button for easy inspection.</p>
+  </main>
+</body>
+</html>

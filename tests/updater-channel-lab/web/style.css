@@ -1,0 +1,13 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { margin: 0; background: Canvas; color: CanvasText; }
+main { max-width: 740px; margin: 28px auto; padding: 0 24px 28px; }
+h1 { font-size: 28px; margin: 12px 0; }
+h2 { font-size: 20px; }
+p { line-height: 1.5; }
+dl { display: grid; grid-template-columns: 180px 1fr; gap: 12px; }
+dt { font-weight: 600; }
+dd { margin: 0; overflow-wrap: anywhere; }
+button, select { font: inherit; padding: 9px 12px; margin: 5px 4px 5px 0; }
+pre { font: inherit; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+#endpoint { font-size: 12px; overflow-wrap: anywhere; }
+#status { border-block: 1px solid GrayText; padding: 12px 0; }

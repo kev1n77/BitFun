@@ -1,0 +1,62 @@
+name: Windows Updater Channel Lab
+
+# A branch push works without installing this workflow on the default branch.
+on:
+  push:
+    branches: [codex/updater-channel-windows-test]
+    paths:
+      - .github/workflows/windows-updater-channel-lab.yml
+      - tests/updater-channel-lab/**
+
+permissions:
+  contents: write
+
+concurrency:
+  group: updater-channel-lab-windows
+  cancel-in-progress: false
+
+jobs:
+  windows-lab:
+    if: github.repository == 'kev1n77/BitFun'
+    runs-on: windows-latest
+    timeout-minutes: 35
+    env:
+      LAB_TAG_PREFIX: updater-lab-20260910
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+      GH_TOKEN: ${{ github.token }}
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests/updater-channel-lab/src-tauri -> target
+          cache-on-failure: true
+      - name: Install only the Tauri CLI
+        run: npm install --global @tauri-apps/cli@2.10.0
+      - name: Verify lab configuration and Rust formatting
+        shell: pwsh
+        run: |
+          node --test tests/updater-channel-lab/configure.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo fmt --manifest-path tests/updater-channel-lab/src-tauri/Cargo.toml -- --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build, publish two test releases, and exercise the real Windows updater
+        shell: pwsh
+        run: ./tests/updater-channel-lab/run-ci.ps1
+      - name: Upload diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-updater-channel-lab-evidence
+          path: tests/updater-channel-lab/out/
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OpenBitFun Updater Lab",
+  "version": "0.2.19",
+  "identifier": "com.openbitfun.updaterlab.20260910",
+  "build": { "frontendDist": "../web" },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [{
+      "label": "main", "title": "OpenBitFun Updater Lab — isolated Windows test",
+      "width": 840, "height": 780, "visible": false
+    }],
+    "security": { "csp": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:" }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
+    "publisher": "OpenBitFun Updater Lab",
+    "icon": ["../../../src/apps/desktop/icons/icon.ico"],
+    "windows": {
+      "webviewInstallMode": { "type": "skip" },
+      "nsis": { "installMode": "currentUser" }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [], "pubkey": "",
+      "windows": { "installMode": "quiet" }
+    }
+  }
+}
