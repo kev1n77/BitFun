@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: real-bitfun-windows-updater-test
@@ -52,6 +53,14 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Verify CI configuration
         run: pnpm run check:github-config
+      - name: Recover the signed receiver from the first full build
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: real-bitfun-windows-updater-evidence
+          run-id: 34470093395
+          github-token: ${{ github.token }}
+          path: tests/e2e/.bitfun/recovered-first-build/
       - name: Build, publish and test two real BitFun installers
         shell: pwsh
         run: ./tests/e2e/scripts/real-updater/run.ps1

@@ -96,13 +96,21 @@ function Get-Package([string]$Version) {
     $tag = if ($Version -eq '0.2.19') { $receiverTag } else { $publisherTag }
     if ($env:BITFUN_REUSE_TEST_PACKAGES -ne '1') { return Build-Package $Version }
     & gh release view $tag --repo $repo --json tagName 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) { return Build-Package $Version }
+    $releaseExists = $LASTEXITCODE -eq 0
     # Release notes are remote metadata. Reuse the already built real binaries
     # only when all product source and packaging inputs are unchanged.
     $assets = Join-Path $out $Version
     New-Item -ItemType Directory -Path $assets -Force | Out-Null
     $name = "BitFun_${Version}_windows-x86_64-updater-test-setup.exe"
-    Invoke-Gh @('release', 'download', $tag, '--repo', $repo, '--dir', $assets, '--clobber', '--pattern', $name, '--pattern', "$name.sig", '--pattern', 'build-metadata.json', '--pattern', 'latest.json', '--pattern', 'SHA256SUMS') | Out-Null
+    if ($releaseExists) {
+        Invoke-Gh @('release', 'download', $tag, '--repo', $repo, '--dir', $assets, '--clobber', '--pattern', $name, '--pattern', "$name.sig", '--pattern', 'build-metadata.json', '--pattern', 'latest.json', '--pattern', 'SHA256SUMS') | Out-Null
+    } else {
+        $recovered = Join-Path $root "tests/e2e/.bitfun/recovered-first-build/$Version"
+        if (-not (Test-Path -LiteralPath (Join-Path $recovered 'build-metadata.json'))) { return Build-Package $Version }
+        foreach ($file in @($name, "$name.sig", 'build-metadata.json', 'latest.json', 'SHA256SUMS')) {
+            Copy-Item -LiteralPath (Join-Path $recovered $file) -Destination (Join-Path $assets $file)
+        }
+    }
     $metadata = Get-Content -LiteralPath (Join-Path $assets 'build-metadata.json') -Raw | ConvertFrom-Json
     if ($metadata.baseSourceCommit -ne '1456c29092570a1174e8a880546793235a79eb0e' -or $metadata.version -ne $Version) { throw 'Unexpected existing package provenance.' }
     & git diff --quiet $metadata.testCommit HEAD -- . ':!tests' ':!.github'
@@ -116,7 +124,7 @@ function Get-Package([string]$Version) {
     foreach ($endpoint in $metadata.endpoints) {
         if ($endpoint -ne $env:TAURI_UPDATER_ENDPOINT) { throw 'Existing package uses a different channel.' }
     }
-    Write-Host "Reusing the identical real BitFun $Version binary; publishing updated remote release notes."
+    Write-Host "Reusing the verified real BitFun $Version binary; publishing updated remote release notes."
     return @{ Version = $Version; Assets = $assets; Installer = $installer; Tag = $tag; Metadata = $metadata }
 }
 

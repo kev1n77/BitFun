@@ -27,6 +27,9 @@ GITHUB_TOKEN to publish releases/assets for those existing tags. This avoids
 asking the workflow token to create tags across imported workflow history.
 A recovered signed package may be staged in a draft release; CI publishes it
 before running the installed application's public-feed checks.
+The initial signed 0.2.19 build is also recovered from run 34470093395 while
+that diagnostic artifact is retained. Missing recovery artifacts fall back to
+the normal full build; package verification or UI failures remain fatal.
 
 The visible release copy is owned by `update-notes.txt` and uses the intended
 production announcement wording, with the origin release as its download link.
