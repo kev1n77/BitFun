@@ -1,0 +1,179 @@
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+if ($env:GITHUB_REPOSITORY -ne 'kev1n77/BitFun' -or $env:GITHUB_REF -ne 'refs/heads/codex/updater-real-windows-test') {
+    throw 'This experiment is restricted to its origin test branch.'
+}
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY -or -not $env:TAURI_UPDATER_PUBKEY) { throw 'Existing signing secrets are required.' }
+$root = (Resolve-Path (Join-Path $PSScriptRoot '../../../..')).Path
+$runtime = Join-Path $root 'tests/e2e/.bitfun/real-updater'
+$out = Join-Path $runtime 'out'
+$evidenceDir = Join-Path $out 'evidence'
+$installDir = Join-Path $env:RUNNER_TEMP 'real-bitfun-updater-install'
+$installedExe = Join-Path $installDir 'bitfun-desktop.exe'
+$repo = $env:GITHUB_REPOSITORY
+$receiverTag = 'updater-real-20260910-0.2.19'
+$publisherTag = 'updater-real-20260910-0.2.20'
+New-Item -ItemType Directory -Path $out, $evidenceDir -Force | Out-Null
+
+# The real product's existing E2E isolation; no product source is patched.
+$env:BITFUN_WEBDRIVER_PORT = '4445'
+$env:BITFUN_WEBDRIVER_LABEL = 'main'
+$env:BITFUN_E2E_STORAGE_GUARD = '1'
+$env:BITFUN_USER_ROOT = Join-Path $runtime 'user-root'
+$env:BITFUN_E2E_USER_ROOT = $env:BITFUN_USER_ROOT
+$env:BITFUN_HOME = Join-Path $runtime 'home'
+$env:BITFUN_E2E_HOME = $env:BITFUN_HOME
+$env:BITFUN_E2E_LOG_DIR = Join-Path $out 'logs'
+
+function Write-Json($Path, $Value) {
+    [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 20) + "`n", [Text.UTF8Encoding]::new($false))
+}
+
+function Invoke-Gh([string[]]$Arguments) {
+    $result = & gh @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "GitHub CLI failed: $($Arguments[0..1] -join ' ')" }
+    return $result
+}
+
+function Build-Package([string]$Version) {
+    Write-Host "Building the complete BitFun $Version desktop app and NSIS installer."
+    & node scripts/set-build-version.mjs --version $Version | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Version projection failed.' }
+    & node scripts/verify-release-version-sync.mjs --version $Version | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Version verification failed.' }
+    # Existing full-product entry point; only the build profile and bundle target
+    # are narrowed. All normal desktop features and frontend resources remain.
+    & pnpm run desktop:build:nsis:fast | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "Full BitFun $Version build failed." }
+    $bundleDir = Join-Path $root 'target/release-fast/bundle/nsis'
+    $installers = @(Get-ChildItem -LiteralPath $bundleDir -Filter "*_${Version}_*-setup.exe")
+    if ($installers.Count -ne 1) { throw "Expected one real $Version NSIS installer; found $($installers.Count)." }
+    $source = $installers[0].FullName
+    $assets = Join-Path $out $Version
+    New-Item -ItemType Directory -Path $assets -Force | Out-Null
+    $name = "BitFun_${Version}_windows-x86_64-updater-test-setup.exe"
+    $installer = Join-Path $assets $name
+    Copy-Item -LiteralPath $source -Destination $installer
+    Copy-Item -LiteralPath "$source.sig" -Destination "$installer.sig"
+    $tag = if ($Version -eq '0.2.19') { $receiverTag } else { $publisherTag }
+    $notes = if ($Version -eq '0.2.20') {
+        "REAL_BITFUN_NOTIFICATION_TEST`n【通知测试】OpenBitFun 1.0.0 需要单独下载安装。`n演示下载地址：https://github.com/$repo/releases/tag/$publisherTag`n本次点击安装将升级为真实 BitFun 0.2.20 测试包，不会安装真正的 1.0.0。"
+    } else { 'Real BitFun 0.2.19 receiver baseline; no update is available yet.' }
+    Write-Json (Join-Path $assets 'latest.json') @{
+        version = $Version
+        notes = $notes
+        pub_date = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        platforms = @{
+            'windows-x86_64' = @{
+                url = "https://github.com/$repo/releases/download/$tag/$name"
+                signature = [IO.File]::ReadAllText("$source.sig").Trim()
+            }
+        }
+    }
+    $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+    [IO.File]::WriteAllText((Join-Path $assets 'SHA256SUMS'), "$hash  $name`n")
+    $generatedConfigs = @(Get-ChildItem (Join-Path $root 'src/apps/desktop/gen') -Filter 'tauri.*.generated.conf.json')
+    if ($generatedConfigs.Count -ne 1) { throw 'Expected exactly one generated real desktop configuration.' }
+    $config = Get-Content -LiteralPath $generatedConfigs[0].FullName -Raw | ConvertFrom-Json
+    if ($config.productName -ne 'BitFun' -or $config.identifier -ne 'com.bitfun.desktop') { throw 'The build changed the real BitFun identity.' }
+    foreach ($endpoint in $config.plugins.updater.endpoints) {
+        if ($endpoint -ne $env:TAURI_UPDATER_ENDPOINT) { throw 'An updater endpoint escaped the dedicated test channel.' }
+    }
+    $keyBytes = [Text.Encoding]::UTF8.GetBytes($config.plugins.updater.pubkey.Trim())
+    $keyHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($keyBytes)).ToLowerInvariant()
+    $metadata = @{
+        version = $Version; packageSha256 = $hash; publicKeySha256 = $keyHash
+        baseSourceCommit = '1456c29092570a1174e8a880546793235a79eb0e'
+        testCommit = $env:GITHUB_SHA; profile = 'release-fast'; productName = $config.productName
+        identifier = $config.identifier; endpoints = $config.plugins.updater.endpoints
+    }
+    Write-Json (Join-Path $assets 'build-metadata.json') $metadata
+    return @{ Version = $Version; Assets = $assets; Installer = $installer; Tag = $tag; Metadata = $metadata }
+}
+
+function Publish-Package($Package) {
+    if ($Package.Tag -notin @($receiverTag, $publisherTag)) { throw 'Unexpected test release tag.' }
+    $notesFile = Join-Path $Package.Assets 'release-notes.md'
+    $notes = @"
+Complete real BitFun $($Package.Version) Windows updater test package.
+
+Built from the real v0.2.19 product source, using the existing release-fast NSIS
+build. All original frontend, backend, update dialog and update commands remain.
+The 0.2.20 build projects the version forward for this controlled experiment.
+Both builds use the existing repository signing key and an isolated test feed.
+
+Install the 0.2.19 receiver and wait for the original BitFun update dialog, or
+use About -> Check for updates. The notes contain a simulated 1.0.0 notice.
+The URL is plain text, as in the original application. The normal install button
+updates to this experiment's real 0.2.20 BitFun package.
+
+This retains the normal BitFun installation/profile identity. For manual tests,
+use a Windows test account or VM if an existing BitFun install must be preserved.
+CI uses a clean runner with isolated E2E data. This is not a production release.
+
+Source and test instructions: https://github.com/$repo/tree/codex/updater-real-windows-test/tests/e2e/scripts/real-updater
+CI: https://github.com/$repo/actions/runs/$env:GITHUB_RUN_ID
+"@
+    [IO.File]::WriteAllText($notesFile, $notes, [Text.UTF8Encoding]::new($false))
+    & gh release view $Package.Tag --repo $repo --json tagName 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Invoke-Gh @('release', 'edit', $Package.Tag, '--repo', $repo, '--prerelease', '--latest=false', '--notes-file', $notesFile) | Out-Null
+    } else {
+        Invoke-Gh @('release', 'create', $Package.Tag, '--repo', $repo, '--target', $env:GITHUB_SHA, '--prerelease', '--latest=false', '--title', "REAL BitFun $($Package.Version) - Windows updater test", '--notes-file', $notesFile) | Out-Null
+    }
+    $uploads = @(Get-ChildItem -LiteralPath $Package.Assets -File | Where-Object { $_.Name -ne 'release-notes.md' } | ForEach-Object FullName)
+    Invoke-Gh (@('release', 'upload', $Package.Tag, '--repo', $repo, '--clobber') + $uploads) | Out-Null
+}
+
+function Start-BitFun {
+    return Start-Process -FilePath $installedExe -WindowStyle Hidden -PassThru
+}
+
+function Verify-Phase([string]$Phase) {
+    & node (Join-Path $PSScriptRoot 'verify.mjs') $Phase $evidenceDir | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "Real BitFun $Phase verification failed." }
+}
+
+$productionBefore = Invoke-Gh @('api', "repos/$repo/releases/latest", '--jq', '.tag_name')
+Push-Location $root
+try {
+    $receiver = Build-Package '0.2.19'
+    Copy-Item -LiteralPath (Join-Path $receiver.Assets 'latest.json') -Destination (Join-Path $receiver.Assets 'channel-legacy.json')
+    Publish-Package $receiver
+    Write-Host 'Installing the complete real 0.2.19 receiver on the clean runner.'
+    $installer = Start-Process -FilePath $receiver.Installer -ArgumentList @('/S', "/D=$installDir") -WindowStyle Hidden -PassThru
+    if (-not $installer.WaitForExit(300000)) { Stop-Process -Id $installer.Id; throw 'Real receiver installation timed out.' }
+    $installer.Refresh()
+    if ($installer.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $installedExe)) { throw 'Real receiver installation failed.' }
+    $app = Start-BitFun
+    try { Verify-Phase 'before' } finally { Stop-Process -Id $app.Id -ErrorAction SilentlyContinue }
+
+    $publisher = Build-Package '0.2.20'
+    if ($publisher.Metadata.publicKeySha256 -ne $receiver.Metadata.publicKeySha256) { throw 'Signing public keys differ.' }
+    Publish-Package $publisher
+    $promoted = Join-Path $out 'channel-legacy.json'
+    Copy-Item -LiteralPath (Join-Path $publisher.Assets 'latest.json') -Destination $promoted
+    Invoke-Gh @('release', 'upload', $receiverTag, '--repo', $repo, '--clobber', $promoted) | Out-Null
+
+    $app = Start-BitFun
+    Verify-Phase 'notification'
+    # The Node test clicked the shipped frontend button, which downloads,
+    # verifies and installs through the unmodified production Rust command.
+    if (-not $app.WaitForExit(600000)) { throw 'The real application did not exit to install its update.' }
+    Start-Sleep -Seconds 10
+    Verify-Phase 'after'
+    $productionAfter = Invoke-Gh @('api', "repos/$repo/releases/latest", '--jq', '.tag_name')
+    if ($productionAfter -ne $productionBefore) { throw 'The existing Latest release changed.' }
+    Write-Json (Join-Path $out 'validation.json') @{
+        result = 'passed'; application = 'real BitFun desktop'; originalUpdaterCodeUnmodified = $true
+        receiverBuild = $receiver.Metadata; publisherBuild = $publisher.Metadata
+        receiverBeforePublication = (Get-Content (Join-Path $evidenceDir 'before.json') -Raw | ConvertFrom-Json)
+        originalNotificationDialog = (Get-Content (Join-Path $evidenceDir 'notification.json') -Raw | ConvertFrom-Json)
+        automaticallyRelaunched = (Get-Content (Join-Path $evidenceDir 'after.json') -Raw | ConvertFrom-Json)
+        productionLatestBefore = $productionBefore; productionLatestAfter = $productionAfter
+        runUrl = "https://github.com/$repo/actions/runs/$env:GITHUB_RUN_ID"
+    }
+    Invoke-Gh @('release', 'upload', $publisherTag, '--repo', $repo, '--clobber', (Join-Path $out 'validation.json'), (Join-Path $evidenceDir 'real-bitfun-notification.png'), (Join-Path $evidenceDir 'real-bitfun-after.png')) | Out-Null
+    Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "Real BitFun 0.2.19 -> original notification dialog -> original install button -> automatically relaunched BitFun 0.2.20: PASSED. Existing Latest: $productionAfter."
+} finally { Pop-Location }

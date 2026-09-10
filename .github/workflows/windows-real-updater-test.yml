@@ -1,0 +1,62 @@
+name: Real BitFun Windows Updater Test
+
+on:
+  push:
+    branches: [codex/updater-real-windows-test]
+    paths:
+      - .github/workflows/windows-real-updater-test.yml
+      - tests/e2e/scripts/real-updater/**
+
+permissions:
+  contents: write
+
+concurrency:
+  group: real-bitfun-windows-updater-test
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    if: github.repository == 'kev1n77/BitFun'
+    runs-on: windows-latest
+    timeout-minutes: 180
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+      CARGO_TERM_COLOR: never
+      BITFUN_TARGET_GC: '0'
+      BITFUN_ENABLE_UPDATER_ARTIFACTS: 'true'
+      BITFUN_RELEASE_CHANNEL: stable
+      TAURI_UPDATER_ENDPOINT: https://github.com/kev1n77/BitFun/releases/download/updater-real-20260910-0.2.19/channel-legacy.json
+      TAURI_UPDATER_FALLBACK_ENDPOINT: https://github.com/kev1n77/BitFun/releases/download/updater-real-20260910-0.2.19/channel-legacy.json
+      TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+      BITFUN_RELEASE_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: real-updater-v019-windows
+          cache-on-failure: true
+          cache-bin: false
+      - name: Install the full product dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify CI configuration
+        run: pnpm run check:github-config
+      - name: Build, publish and test two real BitFun installers
+        shell: pwsh
+        run: ./tests/e2e/scripts/real-updater/run.ps1
+      - name: Upload real application evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: real-bitfun-windows-updater-evidence
+          path: tests/e2e/.bitfun/real-updater/out/
+          retention-days: 14
+          if-no-files-found: warn
