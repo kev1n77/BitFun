@@ -59,6 +59,17 @@ uses a clean runner and the repository's existing isolated E2E storage.
 No AI model is invoked. Remote workspace, remote control, peer mode, detached
 dispatch, Linux/macOS, and migration to a real 1.x release are not exercised.
 
+Verified on 2026-09-10 in [run 34485336504](https://github.com/kev1n77/BitFun/actions/runs/34485336504):
+the frozen feed kept 0.2.19 unchanged; after promotion settled, the original
+startup dialog displayed the exact announcement automatically. Its original
+install button upgraded the installed executable to 0.2.20 and a new BitFun
+process started automatically. The shell-started process did not expose the
+test WebDriver endpoint, so the verifier restarted that installed application
+with the E2E environment for its final native-version and frontend checks.
+The release's `validation.json` records both observations separately. Temporary
+IPC diagnostic instrumentation was removed after this run; it produced no
+usable trace and was not part of the pass assertions.
+
 Focused verification (the runner must first have the corresponding real app open):
 
 ```powershell
