@@ -212,6 +212,10 @@ try {
     Copy-Item -LiteralPath (Join-Path $publisher.Assets 'latest.json') -Destination $promoted
     Invoke-Gh @('release', 'upload', $receiverTag, '--repo', $repo, '--clobber', $promoted) | Out-Null
 
+    # Let the actual updater observe the promoted remote asset consistently
+    # before testing its one-shot startup UI in a fresh process.
+    $app = Start-BitFun
+    try { Verify-Phase 'channel-ready' } finally { Stop-Process -Id $app.Id -ErrorAction SilentlyContinue }
     $app = Start-BitFun
     Verify-Phase 'notification'
     # The Node test clicked the shipped frontend button, which downloads,

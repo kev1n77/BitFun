@@ -4,7 +4,7 @@ import path from 'node:path';
 import { UpdatePage } from './update-page.mjs';
 
 const [phase, outDir] = process.argv.slice(2);
-assert.ok(['before', 'isolated', 'notification', 'after'].includes(phase));
+assert.ok(['before', 'isolated', 'channel-ready', 'notification', 'after'].includes(phase));
 assert.ok(outDir);
 await mkdir(outDir, { recursive: true });
 const base = 'http://127.0.0.1:4445';
@@ -63,6 +63,22 @@ try {
   session = (await request('/session', { capabilities: { alwaysMatch: {} } })).sessionId;
   await request(`/session/${session}/timeouts`, { script: 120000 });
   await until('Real BitFun frontend', () => execute('return !!window.__TAURI__?.core?.invoke && document.body.innerText.length > 30;'));
+  // Observe actual IPC results, including checks initiated by the shipped UI.
+  // Preserve the exact return value and rejection; never supply test responses.
+  await execute(`
+    window.__updaterTestTrace = [];
+    const internals = window.__TAURI_INTERNALS__;
+    const original = internals.invoke;
+    internals.invoke = function(command, ...args) {
+      const result = Reflect.apply(original, this, [command, ...args]);
+      if (command === 'check_for_updates' || command === 'install_update') {
+        const entry = {command, startedAt: new Date().toISOString()};
+        window.__updaterTestTrace.push(entry);
+        Promise.resolve(result).then(value => {entry.value = value; entry.completedAt = new Date().toISOString();},
+          error => {entry.error = String(error); entry.completedAt = new Date().toISOString();});
+      }
+      return result;
+    };`);
   const windowBeforeFocus = await execute('return {hidden: document.hidden, visibility: document.visibilityState, focused: document.hasFocus()};');
   // Exercise the existing host command to bring the real test window forward.
   await invoke('show_main_window');
@@ -70,10 +86,19 @@ try {
   assert.equal(version, phase === 'after' ? '0.2.20' : '0.2.19');
   const update = await until('Published update channel', async () => {
     const result = await invoke('check_for_updates');
-    return result.updateAvailable === (phase === 'notification') ? result : null;
+    return result.updateAvailable === (phase === 'notification' || phase === 'channel-ready') ? result : null;
   });
   assert.equal(update.currentVersion, version);
   const evidence = { phase, nativeVersion: version, update, windowBeforeFocus, testedAt: new Date().toISOString() };
+  if (phase === 'channel-ready') {
+    evidence.stableChecks = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await sleep(2000);
+      const stable = await invoke('check_for_updates');
+      assert.equal(stable.latestVersion, '0.2.20');
+      evidence.stableChecks.push(stable);
+    }
+  }
   if (phase === 'notification') {
     assert.equal(update.latestVersion, '0.2.20');
     assert.equal(update.releaseNotes.replaceAll('\r\n', '\n'), expectedNotes.replaceAll('\r\n', '\n'));
@@ -101,6 +126,7 @@ try {
     evidence.dialogNotes = await execute(`return document.querySelector('[data-bf-component="update"][data-bf-part="notesBody"]').textContent;`);
     assert.equal(evidence.dialogNotes.replaceAll('\r\n', '\n'), expectedNotes.replaceAll('\r\n', '\n'));
     await snapshot('real-bitfun-notification');
+    evidence.ipcTrace = await execute('return window.__updaterTestTrace;');
     await writeFile(path.join(outDir, `${phase}.json`), JSON.stringify(evidence, null, 2));
     // Click the real dialog's last action: background install. This invokes the
     // production update store, IPC command, minisign check and NSIS installer.
@@ -119,6 +145,7 @@ try {
 } catch (error) {
   if (session) {
     try { await snapshot(`failure-${phase}`); } catch {}
+    try { await writeFile(path.join(outDir, `ipc-${phase}.json`), JSON.stringify(await execute('return window.__updaterTestTrace;'), null, 2)); } catch {}
   }
   await writeFile(path.join(outDir, `failure-${phase}.json`), JSON.stringify({ error: String(error), stack: error.stack }, null, 2));
   throw error;
