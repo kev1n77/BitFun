@@ -40,6 +40,11 @@ function Build-Package([string]$Version) {
     Write-Host "Building the complete BitFun $Version desktop app and NSIS installer."
     & node scripts/set-build-version.mjs --version $Version | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Version projection failed.' }
+    # Frontend API generation uses Cargo --locked before the desktop compile.
+    # Synchronize the projected workspace package versions first, preserving
+    # the already locked third-party dependency versions.
+    & cargo update --workspace | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Workspace lockfile version projection failed.' }
     & node scripts/verify-release-version-sync.mjs --version $Version | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Version verification failed.' }
     # Existing full-product entry point; only the build profile and bundle target

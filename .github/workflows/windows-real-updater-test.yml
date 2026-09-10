@@ -72,3 +72,11 @@ jobs:
           path: tests/e2e/.bitfun/real-updater/out/
           retention-days: 14
           if-no-files-found: warn
+      - name: Upload focused screenshots and reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: real-bitfun-updater-screenshots
+          path: tests/e2e/.bitfun/real-updater/out/evidence/
+          retention-days: 14
+          if-no-files-found: warn
