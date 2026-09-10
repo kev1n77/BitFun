@@ -186,6 +186,9 @@ try {
     $publisher = Get-Package '0.2.20'
     if ($publisher.Metadata.publicKeySha256 -ne $receiver.Metadata.publicKeySha256) { throw 'Signing public keys differ.' }
     Publish-Package $publisher
+    # A newer signed release alone must not move a client on a frozen feed.
+    $app = Start-BitFun
+    try { Verify-Phase 'isolated' } finally { Stop-Process -Id $app.Id -ErrorAction SilentlyContinue }
     $promoted = Join-Path $out 'channel-legacy.json'
     Copy-Item -LiteralPath (Join-Path $publisher.Assets 'latest.json') -Destination $promoted
     Invoke-Gh @('release', 'upload', $receiverTag, '--repo', $repo, '--clobber', $promoted) | Out-Null
@@ -203,6 +206,7 @@ try {
         result = 'passed'; application = 'real BitFun desktop'; originalUpdaterCodeUnmodified = $true
         receiverBuild = $receiver.Metadata; publisherBuild = $publisher.Metadata
         receiverBeforePublication = (Get-Content (Join-Path $evidenceDir 'before.json') -Raw | ConvertFrom-Json)
+        receiverAfterReleaseBeforeChannelPromotion = (Get-Content (Join-Path $evidenceDir 'isolated.json') -Raw | ConvertFrom-Json)
         originalNotificationDialog = (Get-Content (Join-Path $evidenceDir 'notification.json') -Raw | ConvertFrom-Json)
         automaticallyRelaunched = (Get-Content (Join-Path $evidenceDir 'after.json') -Raw | ConvertFrom-Json)
         productionLatestBefore = $productionBefore; productionLatestAfter = $productionAfter

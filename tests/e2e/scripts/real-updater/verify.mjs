@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const [phase, outDir] = process.argv.slice(2);
-assert.ok(['before', 'notification', 'after'].includes(phase));
+assert.ok(['before', 'isolated', 'notification', 'after'].includes(phase));
 assert.ok(outDir);
 await mkdir(outDir, { recursive: true });
 const base = 'http://127.0.0.1:4445';
@@ -81,6 +81,8 @@ try {
     assert.ok(evidence.dialogText.includes('0.2.19'));
     assert.ok(evidence.dialogText.includes('0.2.20'));
     assert.ok(evidence.dialogText.includes('无法通过当前版本直接升级'));
+    evidence.dialogNotes = await execute(`return document.querySelector('[data-bf-component="update"][data-bf-part="notesBody"]').textContent;`);
+    assert.equal(evidence.dialogNotes.replaceAll('\r\n', '\n'), expectedNotes.replaceAll('\r\n', '\n'));
     await snapshot('real-bitfun-notification');
     await writeFile(path.join(outDir, `${phase}.json`), JSON.stringify(evidence, null, 2));
     // Click the real dialog's last action: background install. This invokes the

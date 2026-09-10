@@ -15,7 +15,8 @@ the test environment explicitly supplies a loopback port.
 Push this directory or its workflow on `codex/updater-real-windows-test` to run.
 The CI creates two prereleases, `updater-real-20260910-0.2.19` and
 `updater-real-20260910-0.2.20`, and preserves the existing Latest release.
-It first installs 0.2.19 and proves no update, then publishes 0.2.20, restarts
+It first installs 0.2.19 and proves no update, then publishes 0.2.20 and proves
+that 0.2.19 still sees no update until its channel is promoted. It then restarts
 0.2.19, captures the original notification dialog, clicks its actual install
 button, and checks the automatically relaunched 0.2.20 executable and frontend.
 The 0.2.20 release contains the screenshots and validation report.
