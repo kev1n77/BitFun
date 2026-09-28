@@ -1,0 +1,237 @@
+name: Upstream Daily Windows Package
+
+on:
+  schedule:
+    # Daily at 03:00 UTC. Scheduled workflows run from the default branch.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Build even when upstream/main has not changed."
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-daily-windows
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: GCWing/OpenBitFun
+  DAILY_BRANCH: fmy/release/daily
+  NIGHTLY_TAG: nightly
+
+jobs:
+  check-upstream:
+    name: Check upstream/main
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.resolve.outputs.should_build }}
+      upstream_sha: ${{ steps.resolve.outputs.upstream_sha }}
+      previous_sha: ${{ steps.resolve.outputs.previous_sha }}
+    steps:
+      - name: Checkout origin
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Resolve upstream revision
+        id: resolve
+        shell: bash
+        env:
+          FORCE_BUILD: ${{ inputs.force }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          upstream_sha="$(git ls-remote "https://github.com/${UPSTREAM_REPOSITORY}.git" refs/heads/main | awk '{print $1}')"
+          if [[ ! "${upstream_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not resolve upstream/main." >&2
+            exit 1
+          fi
+
+          previous_sha="$(git ls-remote "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "refs/heads/${DAILY_BRANCH}" | awk '{print $1}')"
+          if [[ -z "${previous_sha}" ]]; then
+            previous_sha="none"
+          fi
+
+          should_build=false
+          if [[ "${FORCE_BUILD}" == "true" || "${upstream_sha}" != "${previous_sha}" ]]; then
+            should_build=true
+          fi
+
+          echo "upstream_sha=${upstream_sha}" >>"${GITHUB_OUTPUT}"
+          echo "previous_sha=${previous_sha}" >>"${GITHUB_OUTPUT}"
+          echo "should_build=${should_build}" >>"${GITHUB_OUTPUT}"
+          echo "upstream/main: ${upstream_sha}"
+          echo "origin/${DAILY_BRANCH}: ${previous_sha}"
+          echo "build required: ${should_build}"
+
+  sync-daily-branch:
+    name: Sync daily branch
+    needs: check-upstream
+    if: needs.check-upstream.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout origin
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Update origin daily branch
+        shell: bash
+        env:
+          UPSTREAM_SHA: ${{ needs.check-upstream.outputs.upstream_sha }}
+          PREVIOUS_SHA: ${{ needs.check-upstream.outputs.previous_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags "https://github.com/${UPSTREAM_REPOSITORY}.git" \
+            +refs/heads/main:refs/remotes/upstream/main
+          test "$(git rev-parse refs/remotes/upstream/main)" = "${UPSTREAM_SHA}"
+          git branch --force daily-source "${UPSTREAM_SHA}"
+
+          if [[ "${PREVIOUS_SHA}" == "none" ]]; then
+            git push --force origin "daily-source:refs/heads/${DAILY_BRANCH}"
+          else
+            git push --force-with-lease="refs/heads/${DAILY_BRANCH}:${PREVIOUS_SHA}" \
+              origin "daily-source:refs/heads/${DAILY_BRANCH}"
+          fi
+
+  package-windows:
+    name: Package Windows (unsigned)
+    needs: [check-upstream, sync-daily-branch]
+    if: needs.check-upstream.outputs.should_build == 'true'
+    runs-on: windows-latest
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+      PACKAGE_TARGET: x86_64-pc-windows-msvc
+      # Deliberately do not set Tauri/Authenticode signing variables here.
+    steps:
+      - name: Checkout upstream revision
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: ${{ needs.check-upstream.outputs.upstream_sha }}
+          fetch-depth: 1
+
+      - name: Setup OpenSSL
+        shell: pwsh
+        run: ./scripts/ci/setup-openssl-windows.ps1
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install nsis -y --no-progress
+          Add-Content $env:GITHUB_PATH "${env:ProgramFiles(x86)}\NSIS"
+          Add-Content $env:GITHUB_PATH "${env:ProgramFiles(x86)}\NSIS\Bin"
+
+      - name: Verify NSIS
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          where.exe makensis
+          makensis /VERSION
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.PACKAGE_TARGET }}
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          shared-key: upstream-daily-windows
+          cache-bin: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check Web UI
+        run: pnpm run type-check:web
+
+      - name: Build desktop executable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          node scripts/desktop-tauri-build.mjs --no-bundle --target $env:PACKAGE_TARGET --verbose
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Bundle Desktop NSIS installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          node scripts/desktop-tauri-build.mjs --bundle-only --target $env:PACKAGE_TARGET --bundles nsis --verbose
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build custom OpenBitFun Installer
+        shell: pwsh
+        env:
+          OPENBITFUN_INSTALLER_APP_EXE: target/x86_64-pc-windows-msvc/release/openbitfun-desktop.exe
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pnpm run installer:build:only
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify unsigned package outputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $nsis = @(Get-ChildItem 'target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe' -File)
+          if ($nsis.Count -eq 0) { throw 'No Desktop NSIS installer was produced.' }
+          $installer = 'OpenBitFun-Installer/src-tauri/target/release/openbitfun-installer.exe'
+          if (-not (Test-Path $installer)) { throw 'Custom OpenBitFun Installer was not produced.' }
+          $nsis | ForEach-Object { Write-Host "NSIS: $($_.FullName)" }
+          Write-Host "Custom installer: $installer"
+
+      - name: Upload Windows packages
+        uses: actions/upload-artifact@v6
+        with:
+          name: openbitfun-daily-windows-${{ needs.check-upstream.outputs.upstream_sha }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            OpenBitFun-Installer/src-tauri/target/release/openbitfun-installer.exe
+
+  publish-nightly:
+    name: Publish nightly Windows package
+    needs: [check-upstream, package-windows]
+    if: needs.check-upstream.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows packages
+        uses: actions/download-artifact@v7
+        with:
+          name: openbitfun-daily-windows-${{ needs.check-upstream.outputs.upstream_sha }}
+          path: release-assets
+
+      - name: Publish origin nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.check-upstream.outputs.upstream_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          find release-assets -type f -size +0c -print
+          gh release delete "${NIGHTLY_TAG}" --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "${NIGHTLY_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${SOURCE_SHA}" \
+            --prerelease \
+            --title "Nightly Windows Build (${SOURCE_SHA:0:7})" \
+            --notes "Unsigned Windows packages built from upstream/main at ${SOURCE_SHA}." \
+            $(find release-assets -type f -name '*.exe' -size +0c -print)
