@@ -156,6 +156,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Generate Web API bindings
+        run: pnpm --dir src/web-ui run gen:types
+
       - name: Type-check Web UI
         run: pnpm run type-check:web
 
