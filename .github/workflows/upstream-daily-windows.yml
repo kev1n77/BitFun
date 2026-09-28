@@ -118,10 +118,6 @@ jobs:
           ref: ${{ needs.check-upstream.outputs.upstream_sha }}
           fetch-depth: 1
 
-      - name: Setup OpenSSL
-        shell: pwsh
-        run: ./scripts/ci/setup-openssl-windows.ps1
-
       - name: Install NSIS
         shell: pwsh
         run: |
