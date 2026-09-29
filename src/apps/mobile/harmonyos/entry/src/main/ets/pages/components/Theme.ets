@@ -1,4 +1,5 @@
 export const PAGE_BG: ResourceColor = $r('app.color.page_bg');
+export const WELCOME_PAGE_BG: ResourceColor = $r('app.color.welcome_page_bg');
 /** PAGE_BG at zero alpha, per theme — the transparent end of a fade-out. */
 export const PAGE_BG_FADE: ResourceColor = $r('app.color.page_bg_fade');
 /**

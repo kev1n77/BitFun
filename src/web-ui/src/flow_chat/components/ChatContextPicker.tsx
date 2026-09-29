@@ -154,6 +154,8 @@ export const ChatContextPicker: React.FC<ChatContextPickerProps> = ({
   onAddImage,
 }) => {
   const { t } = useTranslation('flow-chat');
+  const skillScanFailures = skillDiagnostics.filter(item => !item.unsupportedField);
+  const unsupportedSkills = skillDiagnostics.filter(item => item.unsupportedField);
   const [results, setResults] = useState<FileItem[]>([]);
   const [sessionResults, setSessionResults] = useState<SessionReferenceCandidate[]>([]);
   const [workspaceReferences, setWorkspaceReferences] = useState<WorkspaceReferenceEntry[]>([]);
@@ -975,9 +977,23 @@ export const ChatContextPicker: React.FC<ChatContextPickerProps> = ({
         </Listbox>
       </div>
       {(view === 'skills' || isSearchMode) && !skillsLoading && !skillsLoadFailed && (
-        skillDiagnostics.length > 0 ? <Disclosure presentation="native" className="chat-context-picker__diagnostics" summary={t('contextPicker.skillsIncomplete')}>
-          {skillDiagnostics.map((item, index) => <p key={index}>{item.path}: {item.message}</p>)}
-        </Disclosure> : !skillDiagnosticsAvailable && <p role="status">{t('contextPicker.skillsDiagnosticsUnavailable')}</p>
+        <>
+          {skillScanFailures.length > 0 && (
+            <Disclosure presentation="native" className="chat-context-picker__diagnostics" summary={t('contextPicker.skillsIncomplete')}>
+              {skillScanFailures.map((item, index) => <p key={index}>{item.path}: {item.message}</p>)}
+            </Disclosure>
+          )}
+          {unsupportedSkills.length > 0 && (
+            <Disclosure presentation="native" className="chat-context-picker__diagnostics" summary={t('contextPicker.skillsUnsupported')}>
+              {unsupportedSkills.map((item, index) => (
+                <p key={index}>{item.path}: {t('contextPicker.skillsUnsupportedField', { field: item.unsupportedField })}</p>
+              ))}
+            </Disclosure>
+          )}
+          {skillDiagnostics.length === 0 && !skillDiagnosticsAvailable && (
+            <p role="status">{t('contextPicker.skillsDiagnosticsUnavailable')}</p>
+          )}
+        </>
       )}
       <div data-openbitfun-component="chat-context-picker" data-openbitfun-part="footer" className="chat-context-picker__footer">
         <span><KeyHint>↑</KeyHint><KeyHint>↓</KeyHint> {t('contextPicker.navHint')}</span>

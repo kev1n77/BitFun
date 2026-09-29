@@ -199,7 +199,7 @@ const CORE_TOKIO_AGGREGATES = new Set([
   'tools-mcp',
 ]);
 const AGENT_RUNTIME_TOKIO_FEATURES = new Map([
-  ['native-hook-runtime', ['io-util', 'macros', 'process', 'rt', 'time']],
+  ['native-hook-runtime', ['io-util', 'macros', 'process', 'rt', 'sync', 'time']],
   ['agent-runtime', ['io-util', 'macros', 'process', 'rt', 'sync', 'time']],
 ]);
 

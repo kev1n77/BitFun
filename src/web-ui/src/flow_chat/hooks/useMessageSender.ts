@@ -267,6 +267,7 @@ export function useMessageSender(props: UseMessageSenderProps): UseMessageSender
             contexts: [...contexts],
             pendingLargePastes: { ...(options?.composerDraft?.pendingLargePastes ?? {}) },
           },
+          foregroundSubmission: true,
           ...(userMessageMetadata ? { userMessageMetadata } : {}),
           ...(options?.execution ? { execution: options.execution } : {}),
           onSessionConflictRetryStart: () => {

@@ -45,6 +45,7 @@ import { sessionWorktreeMaterializationPlan } from '../../utils/sessionWorktree'
 import { cleanupSaveState, updateSessionMetadata } from '../../services/flow-chat-manager/PersistenceModule';
 import { cleanupSessionBuffers } from '../../services/flow-chat-manager/TextChunkModule';
 import { addSubmittedDialogTurn, applyGeneratingTitlePlaceholder } from '../shared';
+import { finishSubmittedMessagePreview, getSubmittedMessagePreview } from '../../services/submittedMessagePresentation';
 import { initializeSessionTitleMetadata } from '../../services/sessionTitleMetadata';
 import { inheritReviewPermissionMode } from '../../services/inheritReviewPermissionMode';
 
@@ -397,13 +398,17 @@ export const localSessionDriver: SessionDriver = {
         { composerDraft: options?.pendingQueueDraft, imageContexts: options?.imageContexts, imageDisplayData: options?.imageDisplayData }, options?.turnId);
       tracker.hostAcceptedTurn = true;
       surfaceScope.assertCurrent('accept host message');
+      if (options?.turnId && accepted.receipt?.turnId && accepted.receipt.turnId !== options.turnId) {
+        // An existing outbox record can deduplicate the request under its older Turn id.
+        finishSubmittedMessagePreview(surfaceScope, sessionId, options.turnId);
+      }
       if (options?.sendImmediately) {
         await promoteAcceptedHostMessage(queue, accepted);
         surfaceScope.assertCurrent('accept immediate host message');
       }
       context.flowChatStore.updateSessionLastSubmittedMode(sessionId, currentAgentType);
       if (isFirstMessage) await updateSessionMetadata(context, sessionId, ['titleMetadata']);
-      return 'completed';
+      return accepted.receipt?.status === 'started' ? 'completed' : 'queued';
     }
 
     const dialogTurnId = options?.turnId?.trim() ||
@@ -429,7 +434,7 @@ export const localSessionDriver: SessionDriver = {
       sessionId: sessionId,
       agentType: currentAgentType,
       userMessage: {
-        id: `user_${Date.now()}`,
+        id: getSubmittedMessagePreview(sessionId, dialogTurnId)?.message.id ?? `user_${Date.now()}`,
         content: displayMessage || message,
         timestamp: Date.now(),
         hasImages,

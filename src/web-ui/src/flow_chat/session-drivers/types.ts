@@ -38,6 +38,8 @@ export interface SendMessageOptions {
    * submission. Session drivers must not interpret it as transport input.
    */
   pendingQueueDraft?: QueuedComposerDraft;
+  /** Only an active composer submission may show the temporary user-message shell. */
+  foregroundSubmission?: boolean;
   /**
    * When true, bypass the pending-queue check. Used by the queue drain path
    * to actually start a new dialog turn after the previous one finished.
@@ -121,7 +123,7 @@ export interface TurnTracker {
  * `detached` means the message was steered into (or continued) target-owned
  * work and the shared epilogue must be skipped.
  */
-export type StartTurnResult = 'completed' | 'detached';
+export type StartTurnResult = 'completed' | 'detached' | 'queued';
 
 /** Localized strings the usage-report flow surfaces; supplied by the caller. */
 export interface UsageReportUiParams {

@@ -64,6 +64,7 @@ export interface PreferredCloudTarget {
 /** Owns the authenticated account and remote device selection. */
 export class SettingsController {
   private readonly cloud?: CloudAccountSettingsDependencies;
+  private cloudInitialization?: Promise<void>;
   private cloudSession?: CloudAccountSession;
   private cloudRelayUrl: string = '';
   private selectedRelayUrl: string = DEFAULT_CLOUD_RELAY_URL;
@@ -89,6 +90,13 @@ export class SettingsController {
   }
 
   async initializeCloudAccount(context: Context): Promise<void> {
+    if (!this.cloudInitialization) {
+      this.cloudInitialization = this.initializeCloudAccountInternal(context);
+    }
+    await this.cloudInitialization;
+  }
+
+  private async initializeCloudAccountInternal(context: Context): Promise<void> {
     const cloud = this.requireCloud();
     await cloud.sessionStore.init(context);
     await this.restoreCloudAccountSession();
@@ -160,8 +168,17 @@ export class SettingsController {
     const relayUrl = this.selectedRelayUrl;
     const generation = ++this.accountLoginVersion;
     const cloud = this.requireCloud();
+    if (this.cloudInitialization) {
+      await this.cloudInitialization;
+    }
     RemoteLogger.info('cloud account UI login requested');
-    const deviceSecret = await cloud.sessionStore.deviceSecret();
+    let deviceSecret: Uint8Array;
+    try {
+      deviceSecret = await cloud.sessionStore.deviceSecret();
+    } catch (err) {
+      RemoteLogger.error(`cloud account device identity failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw err instanceof Error ? err : new Error(String(err));
+    }
     if (generation !== this.accountLoginVersion) { deviceSecret.fill(0); throw new Error('Account login cancelled'); }
     let session: CloudAccountSession;
     try {

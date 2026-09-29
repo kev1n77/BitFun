@@ -5123,6 +5123,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn editing_a_paused_goal_puts_it_back_to_work() {
+        let (scheduler, sessions, _, root) = test_scheduler_with_persistence(true);
+        let session = "goal-edit";
+        mark_session_processing(&sessions, &root, session, "goal-turn").await;
+        let storage = sessions
+            .effective_session_storage_path(session)
+            .await
+            .unwrap();
+        scheduler
+            .coordinator
+            .create_thread_goal(session, &storage, "finish the work".into(), None)
+            .await
+            .unwrap();
+
+        // Saving the objective the goal already carries is a restart too: the user
+        // opened the edit dialog to put the goal back to work, so it must not come
+        // back as active-with-nothing-running.
+        scheduler
+            .coordinator
+            .set_thread_goal_status(session, &storage, ThreadGoalStatus::Paused)
+            .await
+            .unwrap();
+        let unchanged = scheduler
+            .coordinator
+            .update_thread_goal_objective(session, &storage, "finish the work".into())
+            .await
+            .unwrap();
+        assert_eq!(unchanged.status, ThreadGoalStatus::Active);
+
+        // A rewritten objective keeps the goal running instead of inheriting the
+        // pause it was edited from.
+        scheduler
+            .coordinator
+            .set_thread_goal_status(session, &storage, ThreadGoalStatus::Paused)
+            .await
+            .unwrap();
+        let edited = scheduler
+            .coordinator
+            .update_thread_goal_objective(session, &storage, "finish the rest".into())
+            .await
+            .unwrap();
+        assert_eq!(edited.status, ThreadGoalStatus::Active);
+        assert_eq!(edited.objective, "finish the rest");
+    }
+
+    #[tokio::test]
     async fn thread_goal_plain_prompt_steering_activates_without_an_extra_turn() {
         let (scheduler, session_manager, _, root) = test_scheduler_with_persistence(true);
         let session_id = "goal-steering-session";

@@ -25,7 +25,7 @@
   width: fit-content;
   max-width: var(--openbitfun-control-flow-chat-user-message-max-width);
   padding: var(--openbitfun-control-flow-chat-user-message-padding-block) var(--_user-message-padding-inline);
-  background: var(--openbitfun-color-action-quiet-hover);
+  background: transparent;
   border: none;
   border-radius: var(--_user-message-radius);
   margin-block: 0;
@@ -38,6 +38,53 @@
    * it changes only paint on the contents, never this row's measured layout.
    */
   position: relative;
+}
+
+.user-message-item__surface {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--openbitfun-color-action-quiet-hover);
+  pointer-events: none;
+  transform-origin: right center;
+}
+
+.user-message-item--editing .user-message-item__surface {
+  display: none;
+}
+
+.user-message-item--forming .user-message-item__surface::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--openbitfun-color-action-quiet-hover);
+  pointer-events: none;
+  animation: user-message-forming-fill 3.4s ease-in-out 260ms infinite;
+}
+
+@keyframes user-message-forming-fill {
+  0%, 100% { opacity: 0.08; }
+  50% { opacity: 0.16; }
+}
+
+.user-message-item__submission-error {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--openbitfun-control-flow-chat-inline-gap);
+  width: fit-content;
+  max-width: var(--openbitfun-control-flow-chat-user-message-max-width);
+  margin-block-start: var(--openbitfun-space-1);
+  margin-inline: auto 0;
+  color: var(--openbitfun-color-status-danger-content);
+  font-size: var(--openbitfun-type-flow-meta-font-size);
+  line-height: var(--openbitfun-type-flow-meta-line-height);
+}
+
+.user-message-item__submission-error-icon {
+  flex: none;
 }
 
 .user-message-item--editing {
@@ -82,6 +129,7 @@
 }
 
 .user-message-item__main {
+  position: relative;
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -156,6 +204,12 @@
 .user-message-item--expanded {
   max-height: 60vh;
   overflow-y: auto;
+}
+
+.user-message-item--expanded:not(.user-message-item--editing) {
+  background: var(--openbitfun-color-action-quiet-hover);
+
+  .user-message-item__surface { display: none; }
 }
 
 // Failed messages keep the message fill and mark the failed state through text styling.
@@ -395,6 +449,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .user-message-item--forming .user-message-item__surface::after {
+    animation: none;
+    opacity: 0.08;
+  }
   .user-message-item,
   .user-message-item__timestamp,
   .user-message-item__actions,

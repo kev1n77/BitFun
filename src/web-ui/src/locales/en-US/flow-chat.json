@@ -188,7 +188,9 @@
       "minutes": "{{value}}m",
       "minutesSeconds": "{{minutes}}m {{seconds}}s",
       "hours": "{{value}}h",
-      "hoursMinutes": "{{hours}}h {{minutes}}m"
+      "hoursMinutes": "{{hours}}h {{minutes}}m",
+      "days": "{{value}}d",
+      "daysHours": "{{days}}d {{hours}}h"
     },
     "actions": {
       "copyMarkdown": "Copy Markdown",
@@ -415,6 +417,8 @@
   "threadGoal": {
     "replaceConfirmTitle": "Replace thread goal?",
     "replaceConfirmMessage": "Replace the current goal?\n\nCurrent: {{existing}}\n\nNew: {{next}}",
+    "clearConfirmTitle": "Clear thread goal?",
+    "clearConfirmMessage": "Clear this goal?\n\nGoal: {{objective}}",
     "menuTitle": "Thread goal",
     "objectiveLabel": "Objective",
     "updatedUserMessage": "Thread goal updated: {{objective}}",
@@ -454,8 +458,17 @@
     "stripTooltipWithGoal": "{{status}}: {{objective}}",
     "stripOpenEmpty": "Open thread goal",
     "stripOpenWithGoal": "Open thread goal menu",
+    "stripPauseGoal": "Pause goal",
+    "stripResumeGoal": "Resume goal",
+    "stripClearGoal": "Clear goal",
     "usageTokens": "{{used}} / {{budget}} tokens",
-    "usageTime": "{{seconds}}s elapsed",
+    "usageTime": "{{duration}} elapsed",
+    "duration": {
+      "seconds": "{{seconds}}s",
+      "minutesSeconds": "{{minutes}}m {{seconds}}s",
+      "hoursMinutesSeconds": "{{hours}}h {{minutes}}m {{seconds}}s",
+      "daysHoursMinutesSeconds": "{{days}}d {{hours}}h {{minutes}}m {{seconds}}s"
+    },
     "status": {
       "active": "Active",
       "paused": "Paused",
@@ -565,6 +578,7 @@
     "clickToExpand": "Click to expand",
     "clickToCollapse": "Click to collapse",
     "fillToInput": "Fill to input",
+    "continueEditing": "Continue editing",
     "cannotRollback": "Cannot rollback",
     "rollbackDisabledBusy": "Wait until the session is idle before rolling back.",
     "rollbackDisabledRemote": "Remote workspaces do not support complete rollback because remote file snapshots are not recorded. No files or messages will be changed.",
@@ -935,6 +949,7 @@
       "openDefaultSettings": "Open permission settings"
     },
     "boostSectionContext": "Context",
+    "boostThreadGoal": "Set thread goal",
     "boostStartBtw": "Start side question",
     "boostNewSession": "New session",
     "boostAddContext": "Reference file or folder",
@@ -1089,6 +1104,8 @@
       "unsupportedHost": "This host does not support MCP selection. Update the host to use it."
     },
     "skillsIncomplete": "Some skills could not be scanned. Available skills are still listed.",
+    "skillsUnsupported": "Some skills require unsupported capabilities and were not loaded.",
+    "skillsUnsupportedField": "This host does not support the skill's {{field}} declaration. The skill was not loaded.",
     "skillsDiagnosticsUnavailable": "This host does not report skill scan diagnostics.",
     "menuTitle": "Choose context",
     "searchResults": "Search Results",

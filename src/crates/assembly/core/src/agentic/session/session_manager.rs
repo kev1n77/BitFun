@@ -5016,6 +5016,7 @@ impl SessionManager {
             }
         }
 
+        crate::native_hooks::clear_session_hook_state(session_id);
         self.active_turn_permission_modes.remove(session_id);
         clear_session_runtime_stores(
             session_id,

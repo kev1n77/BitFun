@@ -1,8 +1,9 @@
 import { RemoteI18n } from '../../i18n/RemoteI18n';
 import { MobileDesignTypography, MobileDesignGeometry as G } from '../../generated/MobileDesignTokens';
 import { MotionPreference } from '../../services/MotionPreference';
+import { WindowSystemBarService } from '../../services/WindowSystemBarService';
 import { WelcomeBrandFlow } from './WelcomeBrandFlow';
-import { INK, PAGE_BG, MUTED, TRANSPARENT } from './Theme';
+import { INK, PAGE_BG, WELCOME_PAGE_BG, MUTED, TRANSPARENT } from './Theme';
 
 /** A welcome composition with the C staggered-slide phrase timeline. */
 @ComponentV2
@@ -13,10 +14,22 @@ export struct WelcomeHome {
   @Local elapsed: number = 0;
   @Local pageHeight: number = 700;
   @Local pageWidth: number = 390;
+  @Local topInset: number = 0;
   private timer: number = -1;
   private started: number = 0;
+  private immersiveCompact: boolean = false;
 
-  aboutToDisappear(): void { this.stop(); }
+  aboutToDisappear(): void {
+    this.stop();
+    if (this.immersiveCompact) {
+      const context = this.getUIContext().getHostContext();
+      if (context) {
+        void WindowSystemBarService.setLayoutFullScreen(context, false);
+      }
+      this.immersiveCompact = false;
+      this.topInset = 0;
+    }
+  }
   private stop(): void { if (this.timer >= 0) clearInterval(this.timer); this.timer = -1; }
   private play(): void {
     this.stop();
@@ -57,7 +70,6 @@ export struct WelcomeHome {
   private landscape(): boolean {
     return this.pageWidth >= 840 && this.pageWidth / Math.max(1, this.pageHeight) >= 1.2;
   }
-
   build() {
     Scroll() {
       Column() {
@@ -80,19 +92,50 @@ export struct WelcomeHome {
           }.width('100%').constraintSize({ minHeight: Math.max(540, this.pageHeight - G.welcomeHeaderHeight) })
             .justifyContent(FlexAlign.Center).padding({ bottom: 64 })
         } else {
-          Column() { this.Hero() }
-            .justifyContent(FlexAlign.Center).width('100%')
-            .height(Math.max(300, this.pageHeight - G.welcomeHeaderHeight - 228))
-            .padding({ bottom: 24 })
-          this.Actions()
+          Column() {
+            Column() { this.Hero() }
+              .justifyContent(FlexAlign.Center).width('100%')
+              .layoutWeight(1)
+              .constraintSize({ minHeight: 300 })
+              .padding({ bottom: 24 })
+            this.Actions()
+          }.width('100%').height(Math.max(0,
+            this.pageHeight - this.topInset - G.welcomeHeaderHeight))
         }
       }.width('100%')
-    }.width('100%').height('100%').scrollBar(BarState.Off).backgroundColor(PAGE_BG)
+    }.width('100%').height('100%').scrollBar(BarState.Off).backgroundColor(WELCOME_PAGE_BG)
+      .padding({ top: this.topInset })
       .onSizeChange((_old: SizeOptions, size: SizeOptions) => {
         this.pageHeight = Number(size.height);
         this.pageWidth = Number(size.width);
+        this.updateWindowLayout();
       })
       .onVisibleAreaChange([0], (visible: boolean) => { if (visible) this.play(); else this.stop(); })
+  }
+
+  private updateWindowLayout(): void {
+    const compact = this.pageWidth < 600;
+    if (compact === this.immersiveCompact) {
+      return;
+    }
+    const context = this.getUIContext().getHostContext();
+    if (!context) {
+      return;
+    }
+    this.immersiveCompact = compact;
+    if (!compact) {
+      this.topInset = 0;
+      void WindowSystemBarService.setLayoutFullScreen(context, false);
+      return;
+    }
+    void WindowSystemBarService.setLayoutFullScreen(context, true).then(async (): Promise<void> => {
+      if (this.immersiveCompact) {
+        const topInsetPx: number = await WindowSystemBarService.topSystemInsetPx(context);
+        if (this.immersiveCompact) {
+          this.topInset = this.getUIContext().px2vp(topInsetPx);
+        }
+      }
+    });
   }
 
   @Builder
@@ -126,6 +169,7 @@ export struct WelcomeHome {
       .padding({ left: G.welcomeGutter, right: G.welcomeGutter, top: this.wide() ? 0 : G.welcomeGutter,
         bottom: this.wide() ? 0 : G.welcomeDockBottom })
       .backgroundColor(this.wide() ? TRANSPARENT : $r('app.color.welcome_dock'))
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
       .borderRadius({ topLeft: G.welcomeDockRadius, topRight: G.welcomeDockRadius })
   }
   @Builder

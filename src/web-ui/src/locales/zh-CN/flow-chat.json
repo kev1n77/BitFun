@@ -188,7 +188,9 @@
       "minutes": "{{value}}分钟",
       "minutesSeconds": "{{minutes}}分{{seconds}}秒",
       "hours": "{{value}}小时",
-      "hoursMinutes": "{{hours}}小时{{minutes}}分钟"
+      "hoursMinutes": "{{hours}}小时{{minutes}}分钟",
+      "days": "{{value}}天",
+      "daysHours": "{{days}}天{{hours}}小时"
     },
     "actions": {
       "copyMarkdown": "复制 Markdown",
@@ -415,6 +417,8 @@
   "threadGoal": {
     "replaceConfirmTitle": "替换线程目标？",
     "replaceConfirmMessage": "是否替换当前目标？\n\n当前：{{existing}}\n\n新目标：{{next}}",
+    "clearConfirmTitle": "清除线程目标？",
+    "clearConfirmMessage": "是否清除当前目标？\n\n目标：{{objective}}",
     "menuTitle": "线程目标",
     "objectiveLabel": "目标描述",
     "updatedUserMessage": "线程目标已更新：{{objective}}",
@@ -454,8 +458,17 @@
     "stripTooltipWithGoal": "{{status}}：{{objective}}",
     "stripOpenEmpty": "打开线程目标",
     "stripOpenWithGoal": "打开线程目标菜单",
+    "stripPauseGoal": "暂停目标",
+    "stripResumeGoal": "恢复目标",
+    "stripClearGoal": "清除目标",
     "usageTokens": "Token {{used}} / {{budget}}",
-    "usageTime": "已用 {{seconds}} 秒",
+    "usageTime": "已用 {{duration}}",
+    "duration": {
+      "seconds": "{{seconds}} 秒",
+      "minutesSeconds": "{{minutes}} 分 {{seconds}} 秒",
+      "hoursMinutesSeconds": "{{hours}} 小时 {{minutes}} 分 {{seconds}} 秒",
+      "daysHoursMinutesSeconds": "{{days}} 天 {{hours}} 小时 {{minutes}} 分 {{seconds}} 秒"
+    },
     "status": {
       "active": "进行中",
       "paused": "已暂停",
@@ -565,6 +578,7 @@
     "clickToExpand": "点击展开",
     "clickToCollapse": "点击收起",
     "fillToInput": "填充到输入框",
+    "continueEditing": "继续编辑",
     "cannotRollback": "无法回滚",
     "rollbackDisabledBusy": "请等待会话空闲后再回滚。",
     "rollbackDisabledRemote": "远程工作区未记录文件快照，暂不支持文件与消息一致回滚；不会更改任何文件或消息。",
@@ -935,6 +949,7 @@
       "openDefaultSettings": "打开权限设置"
     },
     "boostSectionContext": "上下文",
+    "boostThreadGoal": "设置线程目标",
     "boostStartBtw": "发起侧问",
     "boostNewSession": "新建会话",
     "boostAddContext": "引用文件或文件夹",
@@ -1089,6 +1104,8 @@
       "unsupportedHost": "当前主机不支持选择 MCP，请更新主机版本。"
     },
     "skillsIncomplete": "部分技能扫描失败，已成功读取的技能仍可使用。",
+    "skillsUnsupported": "部分技能依赖暂不支持的能力，未加载。",
+    "skillsUnsupportedField": "当前主机暂不支持技能内的 {{field}} 声明，该技能未加载。",
     "skillsDiagnosticsUnavailable": "当前主机不提供技能扫描诊断。",
     "menuTitle": "选择上下文",
     "searchResults": "搜索结果",
@@ -2024,7 +2041,7 @@
       "copyCommandFailed": "复制命令失败",
       "cancel": "取消",
       "interrupt": "中断命令执行",
-      "openInPanel": "在右侧面板打开Terminal",
+      "openInPanel": "在面板中打开终端",
       "expandOutput": "展开输出",
       "collapseOutput": "收起输出",
       "rejected": "已拒绝",

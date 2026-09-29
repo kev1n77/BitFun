@@ -4,7 +4,7 @@ import { requireSessionOwningWorkspaceId } from '../../utils/sessionOrdering';
  * Uses virtual scrolling with Zustand and syncs legacy store state.
  */
 
-import React, { useMemo, useCallback, useRef, useEffect, useLayoutEffect, useState } from 'react';
+import React, { useMemo, useCallback, useRef, useEffect, useLayoutEffect, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useShortcut } from '@/infrastructure/hooks/useShortcut';
 import { FlowChatManager } from '@/flow_chat/services/FlowChatManager';
@@ -43,6 +43,7 @@ import {
   useVirtualItems,
   useActiveSession,
   useVisibleTurnInfo,
+  type VirtualItem,
   type VisibleTurnInfo,
 } from '../../store/modernFlowChatStore';
 import type { Session, SessionHistoryPresentation } from '../../types/flow-chat';
@@ -124,6 +125,7 @@ import {
 } from '../../utils/flowChatTurnIdentity';
 import type { FlowChatViewportSnapshot } from './flowChatViewportSnapshot';
 import { peekConversationViewTransfer, registerConversationReader, takeConversationViewTransfer } from './flowChatViewHandoff';
+import { getSubmittedMessagePreviews, subscribeSubmittedMessagePreviews } from '../../services/submittedMessagePresentation';
 
 const log = createLogger('ModernFlowChatContainer');
 
@@ -305,6 +307,12 @@ export const ModernFlowChatContainer: React.FC<ModernFlowChatContainerProps> = (
   const { t } = useTranslation('flow-chat');
   const canonicalVirtualItems = useVirtualItems();
   const activeSession = useActiveSession();
+  const surfaceScope = getActiveSurfaceScope();
+  const submittedPreviews = useSyncExternalStore(
+    subscribeSubmittedMessagePreviews,
+    () => getSubmittedMessagePreviews(surfaceScope, activeSession?.sessionId ?? ''),
+    () => getSubmittedMessagePreviews(surfaceScope, ''),
+  );
   const [historyPresentation, setHistoryPresentation] = useState<FlowChatHistoryPresentationState | null>(null);
   const [viewportIntent, setViewportIntent] = useState<FlowChatViewportIntent | null>(null);
   const [continuousProjectionSessionId, setContinuousProjectionSessionId] = useState<string | null>(null);
@@ -447,25 +455,43 @@ export const ModernFlowChatContainer: React.FC<ModernFlowChatContainerProps> = (
     isReadingTurnViewport && !renderedTranscriptReachesLatestTurn
   );
   const virtualItems = useMemo(() => {
+    let items: VirtualItem[];
     if (!activeSession || !renderedHistoryPresentation) {
-      return canonicalVirtualItems;
-    }
-    if (
+      items = canonicalVirtualItems;
+    } else if (
       isRenderingContinuousHistoryProjection
       && continuousHistoryVirtualItems
     ) {
-      return continuousHistoryVirtualItems;
+      items = continuousHistoryVirtualItems;
+    } else {
+      items = sessionToVirtualItems({
+        ...activeSession,
+        dialogTurns: renderedHistoryPresentation.turns,
+      });
     }
-    return sessionToVirtualItems({
-      ...activeSession,
-      dialogTurns: renderedHistoryPresentation.turns,
-    });
+    if (!activeSession || isViewportDetachedFromLiveTail || submittedPreviews.length === 0) return items;
+    const projectedTurnIds = new Set(activeSession.dialogTurns.map(turn => turn.id));
+    const pendingItems = submittedPreviews
+      .filter(preview => !projectedTurnIds.has(preview.turnId))
+      .map((preview, index) => ({
+        type: 'user-message' as const,
+        data: preview.message,
+        turnId: preview.turnId,
+        absoluteTurnIndex: activeSessionKnownTurnCount + index + 1,
+        turnStatus: 'pending' as const,
+        submissionPhase: preview.phase,
+        submissionError: preview.error,
+      }));
+    return pendingItems.length ? [...items, ...pendingItems] : items;
   }, [
     activeSession,
+    activeSessionKnownTurnCount,
     canonicalVirtualItems,
     continuousHistoryVirtualItems,
     isRenderingContinuousHistoryProjection,
+    isViewportDetachedFromLiveTail,
     renderedHistoryPresentation,
+    submittedPreviews,
   ]);
 
   // The transcript reads the pending list to mark the tool cards that are
@@ -492,7 +518,6 @@ export const ModernFlowChatContainer: React.FC<ModernFlowChatContainerProps> = (
   const activeSessionIdRef = useRef<string | null>(null);
   const sessionViewportStateRef = useRef<Map<string, SessionViewportState>>(new Map());
   const viewScope = useConversationViewScope();
-  const surfaceScope = getActiveSurfaceScope();
   const transferredRevision = useRef(0);
   const incomingViewTransfer = activeSession?.sessionId && isViewportActive
     ? peekConversationViewTransfer({ surfaceId: surfaceScope.surfaceId, sessionId: activeSession.sessionId }, viewScope ? 'dock' : 'main')

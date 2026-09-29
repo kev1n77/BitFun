@@ -188,7 +188,9 @@
       "minutes": "{{value}}分鐘",
       "minutesSeconds": "{{minutes}}分{{seconds}}秒",
       "hours": "{{value}}小時",
-      "hoursMinutes": "{{hours}}小時{{minutes}}分鐘"
+      "hoursMinutes": "{{hours}}小時{{minutes}}分鐘",
+      "days": "{{value}}天",
+      "daysHours": "{{days}}天{{hours}}小時"
     },
     "actions": {
       "copyMarkdown": "複製 Markdown",
@@ -415,6 +417,8 @@
   "threadGoal": {
     "replaceConfirmTitle": "替換執行緒目標？",
     "replaceConfirmMessage": "是否替換當前目標？\n\n當前：{{existing}}\n\n新目標：{{next}}",
+    "clearConfirmTitle": "清除執行緒目標？",
+    "clearConfirmMessage": "是否清除當前目標？\n\n目標：{{objective}}",
     "menuTitle": "執行緒目標",
     "objectiveLabel": "目標描述",
     "updatedUserMessage": "執行緒目標已更新：{{objective}}",
@@ -454,8 +458,17 @@
     "stripTooltipWithGoal": "{{status}}：{{objective}}",
     "stripOpenEmpty": "開啟執行緒目標",
     "stripOpenWithGoal": "開啟執行緒目標選單",
+    "stripPauseGoal": "暫停目標",
+    "stripResumeGoal": "恢復目標",
+    "stripClearGoal": "清除目標",
     "usageTokens": "Token {{used}} / {{budget}}",
-    "usageTime": "已耗時 {{seconds}} 秒",
+    "usageTime": "已耗時 {{duration}}",
+    "duration": {
+      "seconds": "{{seconds}} 秒",
+      "minutesSeconds": "{{minutes}} 分鐘 {{seconds}} 秒",
+      "hoursMinutesSeconds": "{{hours}} 小時 {{minutes}} 分鐘 {{seconds}} 秒",
+      "daysHoursMinutesSeconds": "{{days}} 天 {{hours}} 小時 {{minutes}} 分鐘 {{seconds}} 秒"
+    },
     "status": {
       "active": "進行中",
       "paused": "已暫停",
@@ -565,6 +578,7 @@
     "clickToExpand": "點擊展開",
     "clickToCollapse": "點擊收起",
     "fillToInput": "填充到輸入框",
+    "continueEditing": "繼續編輯",
     "cannotRollback": "無法回滾",
     "rollbackDisabledBusy": "請等待會話閒置後再回滾。",
     "rollbackDisabledRemote": "遠端工作區未記錄檔案快照，暫不支援檔案與訊息一致回滾；不會變更任何檔案或訊息。",
@@ -935,6 +949,7 @@
       "openDefaultSettings": "開啟權限設定"
     },
     "boostSectionContext": "上下文",
+    "boostThreadGoal": "設定執行緒目標",
     "boostStartBtw": "發起側問",
     "boostNewSession": "新建會話",
     "boostAddContext": "引用檔案或資料夾",
@@ -1089,6 +1104,8 @@
       "unsupportedHost": "目前主機不支援選擇 MCP，請更新主機版本。"
     },
     "skillsIncomplete": "部分技能掃描失敗，已成功讀取的技能仍可使用。",
+    "skillsUnsupported": "部分技能依賴暫不支援的能力，未載入。",
+    "skillsUnsupportedField": "目前主機暫不支援技能內的 {{field}} 宣告，該技能未載入。",
     "skillsDiagnosticsUnavailable": "目前主機不提供技能掃描診斷。",
     "menuTitle": "選擇上下文",
     "searchResults": "搜尋結果",
@@ -2024,7 +2041,7 @@
       "copyCommandFailed": "複製命令失敗",
       "cancel": "取消",
       "interrupt": "中斷命令執行",
-      "openInPanel": "在右側面板開啟Terminal",
+      "openInPanel": "在面板中開啟終端機",
       "expandOutput": "展開輸出",
       "collapseOutput": "收起輸出",
       "rejected": "已拒絕",

@@ -1,15 +1,35 @@
 import type { DialogTurn, ModelRound, FlowToolItem, FlowUserSteeringItem, TokenUsage } from './flow-chat';
-import type { ExploreGroupData, ModelRoundItemGroup } from '../grouping/types';
+import type { ExploreGroupData, FlowGroupData, ModelRoundItemGroup } from '../grouping/types';
 import type { TurnCompletionNotice } from '../utils/turnCompletionNotice';
 
 /** Render units preserve existing virtual keys independently of semantic grouping. */
-export type VirtualItem =
+export interface TimelineBlock {
+  key: string;
+  sourceIndex: number;
+  kind: 'content' | 'group-header' | 'group-members' | 'round-header' | 'round-footer';
+  memberIds: string[];
+  group?: FlowGroupData;
+  expanded?: boolean;
+  first?: boolean;
+  last?: boolean;
+  memberOrdinal?: number;
+  revealThinkingIds?: string[];
+  /** Bounded, stable sibling grid; native rows wrap without reparenting cards. */
+  layout?: 'agent-cards';
+}
+
+export type VirtualItem = VirtualContent & { timeline?: TimelineBlock };
+
+type VirtualContent =
   | {
       type: 'user-message';
       data: DialogTurn['userMessage'];
       turnId: string;
       absoluteTurnIndex?: number;
       turnStatus?: DialogTurn['status'];
+      /** Display-only state for a foreground send before its Turn is projected. */
+      submissionPhase?: 'forming' | 'failed';
+      submissionError?: string;
     }
   | {
       type: 'user-steering-message';

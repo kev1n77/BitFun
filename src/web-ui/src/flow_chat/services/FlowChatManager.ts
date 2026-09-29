@@ -83,6 +83,7 @@ type FlowChatSendMessageOptions = Pick<
   | 'imageContexts'
   | 'imageDisplayData'
   | 'pendingQueueDraft'
+  | 'foregroundSubmission'
   | 'sendImmediately'
   | 'userMessageMetadata'
   | 'execution'

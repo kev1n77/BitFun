@@ -468,6 +468,8 @@ export interface SkillScanDiagnostic {
   path: string;
   sourceId: string;
   message: string;
+  /** Required declaration this host cannot honor; absent on older hosts. */
+  unsupportedField?: string | null;
 }
 
 export interface SkillScanReport<T = SkillInfo> {

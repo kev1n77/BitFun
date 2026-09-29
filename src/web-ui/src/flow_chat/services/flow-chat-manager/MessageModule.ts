@@ -39,6 +39,13 @@ import { submitSteeringMessage } from '../steeringSubmission';
 import { promoteAcceptedHostMessage } from '../hostQueueSubmission';
 import { isAcpFlowSession } from '../../utils/acpSession';
 import { updateSessionDraft } from '../sessionDraftService';
+import {
+  beginSubmittedMessagePreview,
+  failSubmittedMessagePreview,
+  finishSubmittedMessagePreview,
+} from '../submittedMessagePresentation';
+import { finishSubmittedMessageScrollIntent, peekSubmittedMessageScrollIntent } from '../submittedMessageScrollIntent';
+import { FLOWCHAT_MESSAGE_SUBMITTED_EVENT } from '../../events/flowchatNavigation';
 
 export { syncSessionModelSelection } from '../../utils/modelSync';
 export { markCurrentTurnItemsAsCancelled } from '../../utils/turnCancellation';
@@ -381,6 +388,7 @@ export async function sendMessage(
   const surfaceGenerationAtSend = context.flowChatStore.getSurfaceGeneration();
   const surfaceIdAtSend = surfaceScopeAtSend.surfaceId;
   const draftSubmissionKey = session.draft ? surfaceScopeAtSend.key('draft-submit', sessionId) : undefined;
+  let previewTurnId: string | undefined;
   if (draftSubmissionKey) {
     if (draftSubmissions.has(draftSubmissionKey)) throw new Error('Draft submission is already in progress');
     draftSubmissions.add(draftSubmissionKey);
@@ -420,6 +428,27 @@ export async function sendMessage(
       )
     ) {
       throw new Error('Session history is still restoring, please retry once loading finishes');
+    }
+
+    if (options?.foregroundSubmission
+      && !options.bypassPendingQueue
+      && context.flowChatStore.getState().activeSessionId === sessionId) {
+      previewTurnId = refreshedSession.draft?.turnId || options.turnId?.trim()
+        || `dialog_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+      const messageId = `user_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+      options = { ...options, turnId: previewTurnId };
+      // A locally submitted Turn gives up a detached history window at the send boundary.
+      window.dispatchEvent(new CustomEvent(FLOWCHAT_MESSAGE_SUBMITTED_EVENT, {
+        detail: { sessionId },
+      }));
+      beginSubmittedMessagePreview(surfaceScopeAtSend, sessionId, previewTurnId, {
+        id: messageId,
+        content: displayMessage || message,
+        timestamp: Date.now(),
+        hasImages: (options.imageDisplayData?.length ?? 0) > 0,
+        images: options.imageDisplayData,
+        metadata: options.userMessageMetadata,
+      });
     }
 
     if (!acpClientId) {
@@ -463,9 +492,15 @@ export async function sendMessage(
       turnTracker,
     );
     if (outcome === 'detached') {
+      if (previewTurnId) finishSubmittedMessagePreview(surfaceScopeAtSend, sessionId, previewTurnId);
       // The message steered or continued target-owned work; the shared
       // post-submission bookkeeping does not apply.
       return;
+    }
+    if (outcome === 'queued' && previewTurnId) {
+      finishSubmittedMessagePreview(surfaceScopeAtSend, sessionId, previewTurnId);
+      const intent = peekSubmittedMessageScrollIntent(surfaceScopeAtSend, sessionId, previewTurnId);
+      if (intent) finishSubmittedMessageScrollIntent(intent);
     }
 
     if (readySession.draft && turnTracker.hostAcceptedTurn) {
@@ -504,6 +539,7 @@ export async function sendMessage(
       isSurfaceChangedError(error)
       || context.flowChatStore.getSurfaceGeneration() !== surfaceGenerationAtSend
     ) {
+      if (previewTurnId) finishSubmittedMessagePreview(surfaceScopeAtSend, sessionId, previewTurnId);
       recoverSubmissionAfterSurfaceSwitch(context, surfaceIdAtSend, sessionId, turnTracker, {
         message,
         displayMessage,
@@ -523,6 +559,11 @@ export async function sendMessage(
       if (draft?.phase === 'submitting') updateSessionDraft(context, sessionId, { phase: 'ready' });
     }
     const errorMessage = error instanceof Error ? error.message : 'Failed to send message';
+    if (previewTurnId) {
+      failSubmittedMessagePreview(surfaceScopeAtSend, sessionId, previewTurnId, errorMessage);
+      const intent = peekSubmittedMessageScrollIntent(surfaceScopeAtSend, sessionId, previewTurnId);
+      if (intent) finishSubmittedMessageScrollIntent(intent);
+    }
 
     const currentState = stateMachineManager.getCurrentState(sessionId);
     const activeDialogTurnId = stateMachineManager

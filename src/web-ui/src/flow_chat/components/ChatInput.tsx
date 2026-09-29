@@ -11,7 +11,7 @@ import { withConversationExcerpts } from '../utils/composerPresentation';
 import React, { useRef, useCallback, useEffect, useReducer, useState, useMemo, useSyncExternalStore } from 'react';
 import path from 'path-browserify';
 import { useTranslation } from 'react-i18next';
-import { RotateCcw, Loader2, Play } from 'lucide-react';
+import { RotateCcw, Loader2, Play, Goal } from 'lucide-react';
 import { ContextDropZone, useContextStore, useContextStoreApi } from '../../shared/context-system';
 import { useConversationViewScope } from '../contexts/conversationViewScope';
 import { useActiveSessionState } from '@/flow_chat/hooks';
@@ -5642,6 +5642,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     window.setTimeout(() => richTextInputRef.current?.focus(), 0);
   }, [dispatchInput, getRichTextTriggerController, inlineTriggerState.isActive, inputState.value, setQueuedInput]);
 
+  const handleBoostOpenThreadGoal = useCallback(
+    (e: React.SyntheticEvent) => {
+      e.stopPropagation();
+      dispatchMode({ type: 'CLOSE_DROPDOWN' });
+      void threadGoalController.openGoalEntry();
+    },
+    [dispatchMode, threadGoalController]
+  );
+
   const handleBoostStartBtw = useCallback(
     (e: React.SyntheticEvent) => {
       e.stopPropagation();
@@ -6265,6 +6274,18 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       executionTarget={effectiveTargetSession?.config.executionTarget}
       dispatchControl={dispatchControl}
       worktreeControl={worktreeControl}
+      threadGoal={canUseThreadGoal && threadGoalController.goal
+        ? {
+            goal: threadGoalController.goal,
+            actions: threadGoalController.availableActions,
+            onOpen: () => {
+              void threadGoalController.openGoalEntry();
+            },
+            onAction: action => {
+              void threadGoalController.runUiAction(action);
+            },
+          }
+        : undefined}
       deferPassiveGitRefresh={deferChatStripPassiveGitRefresh}
       permissionControl={showPermissionModeControl
         ? caps.sessionScopedApproval
@@ -6961,6 +6982,22 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                               {t('chatInput.openSkillsLibrary')}
                             </MenuItem>
                           </ChatInputBoostSubmenu>
+                        )}
+
+                        {canUseThreadGoal && !!effectiveTargetSession?.workspacePath && (
+                          <>
+                            <MenuSeparator data-openbitfun-component="chat-input" data-openbitfun-part="boostDivider" />
+                            <MenuItem
+                              data-openbitfun-component="chat-input"
+                              data-openbitfun-part="boostItem"
+                              data-openbitfun-boost-item-kind="thread-goal"
+                              data-testid="chat-input-boost-thread-goal"
+                              leading={<Icon glyph={Goal} size="sm" aria-hidden />}
+                              onClick={handleBoostOpenThreadGoal}
+                            >
+                              {t('chatInput.boostThreadGoal')}
+                            </MenuItem>
+                          </>
                         )}
 
                         {!!currentSessionId && !isBtwSession && (

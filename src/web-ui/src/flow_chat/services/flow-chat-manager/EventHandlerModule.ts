@@ -4,6 +4,8 @@
  */
 
 import { projectUserQuestionTiming } from '../../utils/userQuestionTiming';
+import { bindSubmittedMessageScrollIntent } from '../submittedMessageScrollIntent';
+import { finishSubmittedMessagePreview, getSubmittedMessagePreview } from '../submittedMessagePresentation';
 import { FlowChatStore, mergeModelRoundAttemptDiagnostics } from '../../store/FlowChatStore';
 import { initializeAcpPlanState } from '../acpPlanState';
 import { isSessionTurnRetired } from '../../store/sessionMutationStore';
@@ -1870,6 +1872,7 @@ function handleDialogTurnStarted(context: FlowChatContext, event: any): void {
     userMessageMetadata?.kind === 'manual_compaction' ? 'manual_compaction' : 'user_dialog';
 
   const freshSession = store.getState().sessions.get(sessionId);
+  const submittedPreview = getSubmittedMessagePreview(sessionId, turnId);
   let dialogTurn = freshSession?.dialogTurns.find((turn: DialogTurn) => turn.id === turnId);
   let projectedNewTurn = false;
 
@@ -1927,7 +1930,7 @@ function handleDialogTurnStarted(context: FlowChatContext, event: any): void {
       sessionId,
       kind: turnKind,
       userMessage: {
-        id: `user_remote_${Date.now()}`,
+        id: submittedPreview?.message.id ?? `user_remote_${Date.now()}`,
         content: displayContent,
         timestamp: Date.now(),
         hasImages,
@@ -1940,6 +1943,7 @@ function handleDialogTurnStarted(context: FlowChatContext, event: any): void {
       storageTurnIndex: typeof turnIndex === 'number' ? turnIndex : undefined,
       backendTurnIndex: typeof turnIndex === 'number' ? turnIndex : undefined,
     };
+    bindSubmittedMessageScrollIntent(sessionId, turnId, newTurn.userMessage.id);
     const replacedTempTurn = tempTurnId
       ? store.replaceOptimisticDialogTurn(sessionId, tempTurnId, newTurn)
       : false;
@@ -1947,6 +1951,10 @@ function handleDialogTurnStarted(context: FlowChatContext, event: any): void {
       store.addDialogTurn(sessionId, newTurn);
     }
     projectedNewTurn = true;
+  }
+
+  if (submittedPreview && (projectedNewTurn || dialogTurn?.userMessage.id === submittedPreview.message.id)) {
+    finishSubmittedMessagePreview(submittedPreview.scope, sessionId, turnId);
   }
 
   if (projectedNewTurn) {
