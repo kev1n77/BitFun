@@ -585,8 +585,6 @@ pub struct AIExperienceConfig {
     pub enable_session_title_generation: bool,
     /// Whether to enable AI analysis of work status on the FlowChat welcome page.
     pub enable_welcome_panel_ai_analysis: bool,
-    /// Whether to enable visual mode.
-    pub enable_visual_mode: bool,
     /// Whether to show the desktop Agent companion.
     pub enable_agent_companion: bool,
     /// Optional Petdex-compatible companion package selected by the user.
@@ -602,6 +600,9 @@ pub struct AIExperienceConfig {
     /// User-defined quick actions (post-coding menu); persisted for the web UI.
     #[serde(default = "default_quick_actions")]
     pub quick_actions: Vec<AiExperienceQuickAction>,
+    /// Whether built-in commit workflows add OpenBitFun as a Git co-author.
+    #[serde(default = "default_true")]
+    pub enable_git_commit_coauthor: bool,
 }
 
 fn default_quick_actions() -> Vec<AiExperienceQuickAction> {
@@ -1930,12 +1931,12 @@ impl Default for AIExperienceConfig {
         Self {
             enable_session_title_generation: true,
             enable_welcome_panel_ai_analysis: false,
-            enable_visual_mode: false,
             enable_agent_companion: true,
             agent_companion_pet: default_agent_companion_pet(),
             enable_workspace_search: false,
             voice_input: VoiceInputConfig::default(),
             quick_actions: default_quick_actions(),
+            enable_git_commit_coauthor: true,
         }
     }
 }
@@ -2217,6 +2218,30 @@ impl AIModelConfig {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn git_commit_coauthor_defaults_for_legacy_settings_and_preserves_opt_out() {
+        let legacy = serde_json::json!({
+            "enable_visual_mode": true,
+            "quick_actions": [{
+                "id": "custom", "label": "Review", "prompt": "Review changes", "enabled": false
+            }]
+        });
+        let settings: super::AIExperienceConfig = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(settings.enable_git_commit_coauthor);
+
+        let mut persisted = serde_json::to_value(settings).unwrap();
+        assert!(
+            persisted.get("enable_visual_mode").is_none(),
+            "retired visual mode setting should not be serialized"
+        );
+        assert_eq!(persisted["quick_actions"], legacy["quick_actions"]);
+        persisted["enable_git_commit_coauthor"] = serde_json::json!(false);
+        let opted_out: super::AIExperienceConfig =
+            serde_json::from_value(persisted.clone()).unwrap();
+        assert!(!opted_out.enable_git_commit_coauthor);
+        assert_eq!(serde_json::to_value(opted_out).unwrap(), persisted);
+    }
+
     #[test]
     fn global_skill_settings_keep_legacy_values_and_project_scope_on_round_trip() {
         let legacy = r#"{"globally_disabled_user_skills":["user::home.agents::review"]}"#;
@@ -2761,7 +2786,6 @@ mod tests {
         let config: AIExperienceConfig = serde_json::from_value(serde_json::json!({
             "enable_session_title_generation": true,
             "enable_welcome_panel_ai_analysis": false,
-            "enable_visual_mode": false,
             "enable_agent_companion": true,
             "agent_companion_pet": {
                 "id": "boxcat",
@@ -2830,7 +2854,6 @@ mod tests {
                     "ai_experience": {
                         "enable_session_title_generation": true,
                         "enable_welcome_panel_ai_analysis": false,
-                        "enable_visual_mode": false,
                         "enable_agent_companion": true,
                         "enable_workspace_search": false,
                         "quick_actions": [
