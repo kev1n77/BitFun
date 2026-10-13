@@ -200,10 +200,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git tag --force "${NIGHTLY_TAG}" "${SOURCE_SHA}"
           previous_sha="$(git ls-remote origin "refs/tags/${NIGHTLY_TAG}" | cut -f1)"
-          git push --force-with-lease="refs/tags/${NIGHTLY_TAG}:${previous_sha}" \
-            origin "refs/tags/${NIGHTLY_TAG}"
+          if [[ "${previous_sha}" != "${SOURCE_SHA}" ]]; then
+            git tag --force "${NIGHTLY_TAG}" "${SOURCE_SHA}"
+            if ! git push --force-with-lease="refs/tags/${NIGHTLY_TAG}:${previous_sha}" \
+              origin "refs/tags/${NIGHTLY_TAG}"; then
+              echo "Could not update nightly. Historical workflow revisions may require pre-pushing the source tag with an authenticated client that has workflow permissions." >&2
+              exit 1
+            fi
+          fi
 
           cat > nightly-release-notes.md <<EOF
           Windows nightly package from main.
@@ -214,20 +219,28 @@ jobs:
 
           The Windows installer is accompanied by its SHA-256 checksum and detached minisign signatures.
           EOF
-          status="$(curl -sS --retry 3 --output nightly-release-state.json --write-out '%{http_code}' \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H 'Accept: application/vnd.github+json' \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${NIGHTLY_TAG}")"
-          case "${status}" in
-            200) gh release edit "${NIGHTLY_TAG}" --repo "${GITHUB_REPOSITORY}" --draft ;;
-            404) gh release create "${NIGHTLY_TAG}" --repo "${GITHUB_REPOSITORY}" \
+          # The tag lookup endpoint omits draft releases. Include drafts so a
+          # retry resumes the same release after staging or a partial upload.
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --paginate --slurp > nightly-release-pages.json
+          release_count="$(node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const releases = JSON.parse(readFileSync("nightly-release-pages.json", "utf8")).flat();
+            console.log(releases.filter(release => release.tag_name === process.env.NIGHTLY_TAG).length);
+          ')"
+          case "${release_count}" in
+            1) gh release edit "${NIGHTLY_TAG}" --repo "${GITHUB_REPOSITORY}" --draft ;;
+            0) gh release create "${NIGHTLY_TAG}" --repo "${GITHUB_REPOSITORY}" \
                    --verify-tag --draft --title "Nightly Windows Build (${NIGHTLY_VERSION})" \
                    --notes-file nightly-release-notes.md ;;
-            *) echo "Could not inspect nightly release (HTTP ${status})." >&2; exit 1 ;;
+            *) echo "Expected at most one release for nightly." >&2; exit 1 ;;
           esac
           gh release upload "${NIGHTLY_TAG}" --repo "${GITHUB_REPOSITORY}" \
             --clobber release-manual-assets/*
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${NIGHTLY_TAG}" > nightly-release-state.json
+          release_id="$(gh release view "${NIGHTLY_TAG}" --repo "${GITHUB_REPOSITORY}" \
+            --json uploadUrl --jq '.uploadUrl | split("/")[-2]')"
+          [[ "${release_id}" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" > nightly-release-state.json
           node --input-type=module -e '
             import { readFileSync, readdirSync } from "node:fs";
             const expected = new Set(readdirSync("release-manual-assets"));

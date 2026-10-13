@@ -1061,6 +1061,61 @@ test('nightly publishes only Windows assets and pins a reused artifact to its or
   assert.equal(canPublish({ buildOnly: true }), false);
 });
 
+test('Windows nightly publication resumes drafts and removes obsolete assets only after uploading', (t) => {
+  const workflow = yaml.parse(readFileSync(path.join(repoRoot, '.github/workflows/nightly.yml'), 'utf8'));
+  const step = workflow.jobs['publish-nightly'].steps.find(entry => entry.name === 'Publish Windows nightly release');
+  const root = mkdtempSync(path.join(tmpdir(), 'openbitfun-nightly-publish-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const scenario of ['published', 'draft', 'new', 'list-error', 'upload-error']) {
+    const cwd = path.join(root, scenario);
+    mkdirSync(cwd);
+    mkdirSync(path.join(cwd, 'release-manual-assets'));
+    writeFileSync(path.join(cwd, 'release-manual-assets', 'windows-installer.exe'), 'fixture');
+    writeFileSync(path.join(cwd, 'pages.json'), JSON.stringify([
+      scenario === 'new' ? [] : [{ id: 42, tag_name: 'nightly', draft: scenario === 'draft' }],
+    ]));
+    writeFileSync(path.join(cwd, 'release.json'), JSON.stringify({ assets: [
+      { id: 1, name: 'previous-linux-package.tar.gz' },
+      { id: 2, name: 'windows-installer.exe' },
+    ] }));
+    const result = spawnSync('bash', ['-c', `
+      git() { printf '%s\\trefs/tags/nightly\\n' "$SOURCE_SHA"; }
+      gh() {
+        printf '%s\\n' "$*" >> calls
+        case "$1 $2" in
+          "api repos/test/repo/releases?per_page=100")
+            [[ "$SCENARIO" != list-error ]] || return 1
+            cat pages.json ;;
+          "api repos/test/repo/releases/42") cat release.json ;;
+          "api --method") return 0 ;;
+          "release view") printf '42' ;;
+          "release upload") [[ "$SCENARIO" != upload-error ]] ;;
+          "release create" | "release edit") return 0 ;;
+          *) echo "Unexpected GitHub request: $*" >&2; return 1 ;;
+        esac
+      }
+      ${step.run}
+    `], { cwd, encoding: 'utf8', windowsHide: true, env: { ...process.env,
+      SCENARIO: scenario, GH_TOKEN: 'fixture', GITHUB_REPOSITORY: 'test/repo',
+      NIGHTLY_TAG: 'nightly', NIGHTLY_VERSION: '1.0.5-nightly.20261013+abcdef0',
+      SOURCE_SHA: 'abcdef0' + '1'.repeat(33), SOURCE_RUN_ID: '123' } });
+    const calls = readFileSync(path.join(cwd, 'calls'), 'utf8');
+    assert.doesNotMatch(calls, /releases\/tags\//, 'drafts must be inspected by release ID');
+    if (scenario.endsWith('-error')) {
+      assert.notEqual(result.status, 0, scenario);
+      assert.doesNotMatch(calls, /--method DELETE|--draft=false/);
+      continue;
+    }
+    assert.equal(result.status, 0, `${scenario}: ${result.stderr}`);
+    assert.equal(calls.includes('release create'), scenario === 'new');
+    assert.match(calls, /api repos\/test\/repo\/releases\/42/);
+    assert.match(calls, /DELETE repos\/test\/repo\/releases\/assets\/1/);
+    assert.doesNotMatch(calls, /DELETE repos\/test\/repo\/releases\/assets\/2/);
+    assert.ok(calls.indexOf('release upload') < calls.indexOf('--method DELETE'));
+    assert.ok(calls.indexOf('--method DELETE') < calls.indexOf('--draft=false'));
+  }
+});
+
 test('passes the verification key when signing the versioned Windows installer', () => {
   const workflow = yaml.parse(
     readFileSync(

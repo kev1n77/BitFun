@@ -153,6 +153,13 @@ nightly from the same repository and one unexpired Windows bundle. It downloads
 that exact artifact ID and skips the build job. Publication uses the source
 version and commit rather than the newer workflow revision.
 
+GitHub's built-in Actions token can reject moving a tag to a historical commit
+whose workflow files differ from `main`. For that case, prepare the tag from an
+authenticated checkout with workflow permission before dispatching the reuse
+run, using `git push --force-with-lease=refs/tags/nightly:<current-tag-sha> origin
+<source-sha>:refs/tags/nightly`. The publisher accepts a tag already pointing to
+the source commit and still verifies its final destination after uploading.
+
 ## Mirror
 
 The mirror script defaults to stable. Run a separate beta sync with:
