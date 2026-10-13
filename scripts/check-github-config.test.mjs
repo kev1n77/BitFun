@@ -876,18 +876,15 @@ test('nightly orchestrates the shared build before the separately privileged pub
   assert.equal(build.uses, './.github/workflows/nightly-artifacts.yml');
   assert.deepEqual(build.permissions, { contents: 'read' });
   assert.deepEqual(build.with, {
-    checkout_ref: '${{ github.sha }}',
+    checkout_ref: '${{ needs.check-changes.outputs.source_sha }}',
     version: '${{ needs.check-changes.outputs.nightly_version }}',
     artifact_prefix: 'nightly',
     artifact_retention_days:
       "${{ fromJSON(inputs.artifact_retention_days || '7') }}",
     build_desktop_packages: true,
-    desktop_platforms:
-      "${{ inputs.desktop_platforms || '[\"linux-x64\",\"linux-arm64\",\"macos-arm64\",\"macos-x64\",\"windows-x64\"]' }}",
-    build_linux_binaries:
-      "${{ github.event_name != 'workflow_dispatch' || inputs.build_linux_binaries }}",
-    build_relay_image:
-      "${{ github.event_name != 'workflow_dispatch' || inputs.build_relay_image }}",
+    desktop_platforms: '["windows-x64"]',
+    build_linux_binaries: false,
+    build_relay_image: false,
     upload_artifacts: true,
     cache_write: "${{ github.repository_owner == 'GCWing' }}",
   });
@@ -895,7 +892,7 @@ test('nightly orchestrates the shared build before the separately privileged pub
   assert.match(publish.if, /inputs\.build_only != true/);
   assert.deepEqual(publish.permissions, {
     contents: 'write',
-    packages: 'write',
+    actions: 'read',
   });
 });
 
@@ -1004,52 +1001,64 @@ test('PR-capable release builds cannot save repository caches or upload CI packa
   assert.equal(node.with['package-manager-cache'], false);
 });
 
-test('nightly publishes and verifies the Relay image in the current repository owner scope', () => {
-  const workflow = yaml.parse(
-    readFileSync(path.join(repoRoot, '.github/workflows/nightly.yml'), 'utf8'),
-  );
-  const steps = workflow.jobs['publish-nightly'].steps;
-  const metadata = steps.find(
-    (step) => step.name === 'Resolve nightly image metadata',
-  );
-  const publish = steps.find(
-    (step) => step.name === 'Build and push multi-platform Relay image',
-  );
-  const smoke = steps.find(
-    (step) => step.name === 'Smoke-test published Relay image on both platforms',
-  );
-  const manifest = steps.find(
-    (step) => step.name === 'Generate Linux binaries manifest',
-  );
-  const verifyDescriptor = steps.find(
-    (step) => step.name === 'Verify published Relay image descriptor',
-  );
-  const verifyMacCli = steps.find(
-    (step) => step.name === 'Verify published macOS CLI assets',
-  );
-  const image = '${{ steps.nightly-image-meta.outputs.image }}';
+test('nightly publishes only Windows assets and pins a reused artifact to its original run', () => {
+  const workflow = yaml.parse(readFileSync(path.join(repoRoot, '.github/workflows/nightly.yml'), 'utf8'));
+  const check = workflow.jobs['check-changes'];
+  const build = workflow.jobs['build-artifacts'];
+  const publish = workflow.jobs['publish-nightly'];
+  const steps = publish.steps;
+  assert.equal(workflow.on.workflow_dispatch.inputs.reuse_run_id.type, 'string');
+  assert.equal(workflow.on.workflow_dispatch.inputs.reuse_version.type, 'string');
+  assert.match(build.if, /artifact_id == ''/);
+  assert.deepEqual(check.permissions, { contents: 'read', actions: 'read' });
+  assert.match(check.steps.find(step => step.id === 'check').run, /git merge-base --is-ancestor "\${source_sha}" origin\/main/);
+  assert.match(check.steps.find(step => step.id === 'check').run, /resolve-reused-windows-nightly\.mjs/);
+  const reused = steps.find(step => step.name === 'Download validated Windows artifact from the successful run');
+  assert.equal(reused.with['artifact-ids'], '${{ needs.check-changes.outputs.artifact_id }}');
+  assert.equal(reused.with['run-id'], '${{ needs.check-changes.outputs.source_run_id }}');
+  assert.equal(reused.with['github-token'], '${{ github.token }}');
+  assert.equal(steps.find(step => step.name === 'Download Windows artifact from this run').with.name,
+    'openbitfun-nightly-windows-x64-bundle');
+  assert.equal(publish.env.SOURCE_SHA, '${{ needs.check-changes.outputs.source_sha }}');
+  assert.equal(publish.env.SOURCE_RUN_ID, '${{ needs.check-changes.outputs.source_run_id }}');
+  const signing = steps.find(step => step.name === 'Sign installer packages');
+  assert.match(signing.run, /sign-release-assets\.sh release-manual-assets\/\*\.exe/);
+  assert.ok(signing.env.OPENBITFUN_SIGNING_PUBKEY);
+  const upload = steps.find(step => step.name === 'Publish Windows nightly release');
+  assert.match(upload.run, /--clobber release-manual-assets\/\*/);
+  assert.match(upload.run, /--notes-file nightly-release-notes\.md/);
+  assert.match(upload.run, /--latest=false/);
+  assert.match(upload.run, /nightly-obsolete-asset-ids/);
+  assert.doesNotMatch(JSON.stringify(steps), /linux-release-assets|relay-image|apple-darwin|docker\//);
+  const verification = steps.find(step => step.name === 'Verify published Windows installer and signatures');
+  assert.match(verification.run, /sha256sum --check/);
+  assert.match(verification.run, /minisign -Vm/);
+  assert.match(verification.run, /cmp/);
 
-  assert.match(
-    metadata?.run ?? '',
-    /image=ghcr\.io\/\$\{GITHUB_REPOSITORY_OWNER,,\}\/openbitfun-relay-server/,
-  );
-  assert.equal(
-    publish?.with?.tags,
-    `${image}:${'${{ env.NIGHTLY_TAG }}'}\n${image}:${'${{ steps.nightly-image-meta.outputs.asset_version }}'}\n`,
-  );
-  assert.equal(
-    smoke?.run,
-    `bash scripts/relay/smoke-image.sh \\\n  "${image}@\${IMAGE_DIGEST}"\n`,
-  );
-  assert.match(manifest?.run ?? '', /--repo "\$\{\{ github\.repository \}\}"/);
-  assert.match(
-    verifyDescriptor?.run ?? '',
-    /\$\{GITHUB_SERVER_URL\}\/\$\{GITHUB_REPOSITORY\}\/releases\/download/,
-  );
-  assert.match(
-    verifyMacCli?.run ?? '',
-    /\$\{GITHUB_SERVER_URL\}\/\$\{GITHUB_REPOSITORY\}\/releases\/download/,
-  );
+  const canPublish = ({ source = 'success', buildResult = 'success', changed = 'true',
+    artifactId = '', buildOnly = false, cancelled = false } = {}) => {
+    const replacements = {
+      'always()': 'true',
+      'cancelled()': String(cancelled),
+      'needs.check-changes.result': JSON.stringify(source),
+      'needs.check-changes.outputs.should_build': JSON.stringify(changed),
+      'needs.check-changes.outputs.artifact_id': JSON.stringify(artifactId),
+      'needs.build-artifacts.result': JSON.stringify(buildResult),
+      'inputs.build_only': String(buildOnly),
+    };
+    let expression = publish.if;
+    for (const [key, value] of Object.entries(replacements)) expression = expression.replaceAll(key, value);
+    return Function('return (' + expression + ')')();
+  };
+  assert.equal(canPublish(), true, 'fresh successful Windows builds publish');
+  assert.equal(canPublish({ buildResult: 'skipped', artifactId: '456' }), true,
+    'validated artifact reuse publishes even though the build job was skipped');
+  assert.equal(canPublish({ buildResult: 'skipped' }), false);
+  assert.equal(canPublish({ buildResult: 'failure', artifactId: '456' }), false);
+  assert.equal(canPublish({ source: 'failure', artifactId: '456' }), false);
+  assert.equal(canPublish({ cancelled: true, artifactId: '456' }), false);
+  assert.equal(canPublish({ changed: 'false' }), false);
+  assert.equal(canPublish({ buildOnly: true }), false);
 });
 
 test('passes the verification key when signing the versioned Windows installer', () => {

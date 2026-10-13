@@ -136,6 +136,23 @@ than the current beta. This lets beta users move from `1.0.1-beta.N` to
 Beta and stable currently share the same bundle identity and data directories.
 Installing beta replaces stable; side-by-side installation is not supported.
 
+## Windows nightly in this fork
+
+The fork's `Nightly Build` workflow builds and publishes only the Windows custom
+installer. `build_only=true` retains the bundle as an Actions artifact; the
+default publishes a prerelease under `nightly`, with SHA-256 checksums, detached
+minisign signatures, and the public key. The release tag and notes identify the
+original build commit, and publication removes assets from the previous nightly.
+Stable and beta packaging retain their own platform contracts.
+
+To publish an existing successful Windows build without compiling again, dispatch
+`nightly.yml` on `main` with `reuse_run_id` set to its run ID and `reuse_version`
+set to its original full version, for example
+`1.0.5-nightly.20261013+3a76a4cfc`. The workflow requires a successful main-branch
+nightly from the same repository and one unexpired Windows bundle. It downloads
+that exact artifact ID and skips the build job. Publication uses the source
+version and commit rather than the newer workflow revision.
+
 ## Mirror
 
 The mirror script defaults to stable. Run a separate beta sync with:
