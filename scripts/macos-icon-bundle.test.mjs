@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import sharp from 'sharp';
 import { COMPOSER_ICON, ROOT, macosSourceDigest, readMacosFallback } from './macos-icon-assets.mjs';
@@ -24,6 +24,49 @@ test('macOS uses a full-bleed Composer source and a current independent legacy e
   assert.equal(mark.hasAlpha, true);
   assert.ok(readMacosFallback().length > 0);
   assert.equal(json(join(ROOT, 'assets/brand/macos/generated.json')).sourceSha256, macosSourceDigest());
+});
+
+test('Windows checkout preserves the macOS export hashes and rejects changed assets', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'openbitfun-icon-checkout-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const source = join(directory, 'source');
+  const checkout = join(directory, 'checkout');
+  const files = [
+    '.gitattributes',
+    'scripts/macos-icon-assets.mjs',
+    'assets/brand/macos/generated.json',
+    'assets/brand/macos/legacy-canvas.json',
+    'assets/brand/macos/openbitfun.icon/icon.json',
+    'assets/brand/macos/openbitfun.icon/Assets/Mark.png',
+    'assets/brand/exports/openbitfun-app-icon.icns',
+  ];
+  for (const file of files) {
+    const target = join(source, file);
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(join(ROOT, file), target);
+  }
+  writeFileSync(join(source, 'control.json'), '{"control":true}\n');
+  run('git', ['init', '--quiet'], { cwd: source });
+  run('git', ['config', 'core.autocrlf', 'true'], { cwd: source });
+  run('git', ['add', '--', ...files, 'control.json'], { cwd: source });
+  mkdirSync(checkout);
+  run('git', ['checkout-index', '--all', `--prefix=${checkout.replaceAll('\\', '/')}/`], { cwd: source });
+  assert.match(readFileSync(join(checkout, 'control.json'), 'utf8'), /\r\n/);
+  for (const file of files.filter(file => file.endsWith('.json'))) {
+    assert.doesNotMatch(readFileSync(join(checkout, file), 'utf8'), /\r/);
+  }
+  const verify = () => run(process.execPath, [
+    '--input-type=module', '-e',
+    "import { readMacosFallback } from './scripts/macos-icon-assets.mjs'; readMacosFallback();",
+  ], { cwd: checkout, stdio: ['ignore', 'pipe', 'pipe'] });
+  verify();
+  const compositionPath = join(checkout, 'assets/brand/macos/openbitfun.icon/icon.json');
+  const composition = readFileSync(compositionPath);
+  writeFileSync(compositionPath, `${composition.toString('utf8')}\n`);
+  assert.throws(verify, /macOS icon export is stale/);
+  writeFileSync(compositionPath, composition);
+  writeFileSync(join(checkout, 'assets/brand/exports/openbitfun-app-icon.icns'), 'changed export');
+  assert.throws(verify, /macOS icon export is stale/);
 });
 
 test('CLI is locked and macOS overlays preserve the same dev/legacy icon', () => {
