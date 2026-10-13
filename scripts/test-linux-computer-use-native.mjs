@@ -33,6 +33,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10"
+sha2 = "0.10"
+tempfile = "3"
+libc = "0.2"
 screenshots = "0.8"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
@@ -45,6 +48,8 @@ extern crate self as openbitfun_agent_tools;
 pub mod computer_use_contract;
 #[path = ${source('src/crates/execution/tool-contracts/src/computer_use_control.rs')}]
 pub mod computer_use_control;
+#[path = ${source('src/crates/execution/tool-contracts/src/computer_use_permissions.rs')}]
+pub mod computer_use_permissions;
 pub mod agentic { pub mod tools { pub mod computer_use_host {
     pub use crate::computer_use_contract::*;
     ${lease}
@@ -52,18 +57,14 @@ pub mod agentic { pub mod tools { pub mod computer_use_host {
 pub mod util { pub mod errors {
     pub use crate::computer_use_contract::{ComputerUseContractError as OpenBitFunError, ComputerUseContractResult as OpenBitFunResult};
 }}
-#[path = ${source('src/apps/desktop/src/computer_use/control_session.rs')}]
-mod control_session;
-#[path = ${source('src/apps/desktop/src/computer_use/linux_control.rs')}]
-mod linux_control;
-#[path = ${source('src/apps/desktop/src/computer_use/linux_control_ax.rs')}]
-mod linux_control_ax;
-#[path = ${source('src/apps/desktop/src/computer_use/linux_ax_ui.rs')}]
-mod linux_ax_ui;
-#[path = ${source('src/apps/desktop/src/computer_use/ui_locate_common.rs')}]
-mod ui_locate_common;
-#[path = ${source('src/apps/desktop/src/computer_use/ax_snapshot_digest.rs')}]
-mod ax_snapshot_digest;
+mod computer_use {
+  ${['control_session', 'process_identity', 'grants', 'permissions', 'linux_control', 'linux_control_ax', 'linux_ax_ui', 'ui_locate_common', 'ax_snapshot_digest'].map(name => `#[path = ${source(`src/apps/desktop/src/computer_use/${name}.rs`)}] mod ${name};`).join('\n  ')}
+  mod desktop_host {
+    use crate::util::errors::{OpenBitFunError, OpenBitFunResult};
+    #[path = ${source('src/apps/desktop/src/computer_use/desktop_host/background_guard.rs')}] mod background_guard;
+  }
+}
+
 `);
   const code = await new Promise((resolveExit, reject) => {
     const child = spawn('cargo', ['test', '--offline', '--manifest-path', join(dir, 'Cargo.toml'), '--lib', ...process.argv.slice(2)], {

@@ -8,6 +8,7 @@ import type {
 } from '@/infrastructure/api/service-api/AIApi';
 import {
   ConfigActionBar,
+  ConfigLoadingState,
   ConfigCollectionItem,
   ConfigEmptyState,
   ConfigPageContent,
@@ -41,6 +42,7 @@ import {
   type SubscriptionLoginOperation,
 } from '@/infrastructure/config/components/subscriptionLoginCoordinator';
 import { resolveProviderTemplates } from '@/infrastructure/config/services/builtinProviderCatalog';
+import { useConfigSeed } from '@/infrastructure/config/hooks/useConfigSeed';
 import { configManager } from '@/infrastructure/config/services/ConfigManager';
 import { getCapabilitiesByCategory, getEffectiveModelCapabilities, resolveModelCategory } from '@/infrastructure/config/services/modelCategory';
 import { getModelTags, getModelUserTags, preserveModelAnnotations } from '@/infrastructure/config/services/modelTags';
@@ -86,6 +88,7 @@ import { translateConnectionTestMessage } from '@/shared/utils/aiConnectionTestM
 import { createLogger } from '@/shared/utils/logger';
 import {
   Button,
+  Capsule,
   Card,
   CardFooter,
   CardHeader,
@@ -405,8 +408,14 @@ const ModelSettingsPage: React.FC = () => {
   const modelDiscoverySurface = peerDevice?.peerMode.active ? peerDevice.peerMode.deviceId : 'local';
   const connectionTestSupported = !peerDevice?.peerMode.active
     || peerDevice.currentPeerCapabilities?.hostKind !== 'cli';
-  const [aiModels, setAiModels] = useState<AIModelConfigType[]>([]);
-  const [poolDefaults, setPoolDefaults] = useState<DefaultModelsConfig>({});
+  const modelSeed = useConfigSeed(['ai.models', 'ai.default_models']);
+  const proxySeed = useConfigSeed(['ai.proxy']);
+  const timeoutSeed = useConfigSeed(['ai.stream_idle_timeout_secs', 'ai.stream_ttft_timeout_secs']);
+  const initialProxy = proxySeed.get<ProxyConfig | null>('ai.proxy', null) ?? { enabled: false, url: '', username: '', password: '' };
+  const initialIdle = timeoutSeed.get<number | null>('ai.stream_idle_timeout_secs', null);
+  const initialTtft = timeoutSeed.get<number | null>('ai.stream_ttft_timeout_secs', null);
+  const [aiModels, setAiModels] = useState<AIModelConfigType[]>(modelSeed.get<AIModelConfigType[] | null>('ai.models', null) ?? []);
+  const [poolDefaults, setPoolDefaults] = useState<DefaultModelsConfig>(modelSeed.get<DefaultModelsConfig | null>('ai.default_models', null) ?? {});
   const [poolQuery, setPoolQuery] = useState('');
   const [poolCapability, setPoolCapability] = useState<ModelCapability | ''>('');
   const [poolProvider, setPoolProvider] = useState('');
@@ -414,10 +423,10 @@ const ModelSettingsPage: React.FC = () => {
   const [showSubscriptionManager, setShowSubscriptionManager] = useState(false);
   const [showProviderManager, setShowProviderManager] = useState(false);
   const [subscriptionLoadError, setSubscriptionLoadError] = useState(false);
-  const [isConfigLoading, setIsConfigLoading] = useState(true);
+  const [isConfigLoading, setIsConfigLoading] = useState(!modelSeed.loaded);
   const [configLoadError, setConfigLoadError] = useState(false);
-  const [proxyLoadState, setProxyLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
-  const [streamTimeoutLoadState, setStreamTimeoutLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [proxyLoadState, setProxyLoadState] = useState<'loading' | 'ready' | 'error'>(proxySeed.loaded ? 'ready' : 'loading');
+  const [streamTimeoutLoadState, setStreamTimeoutLoadState] = useState<'loading' | 'ready' | 'error'>(timeoutSeed.loaded ? 'ready' : 'loading');
   const modelConfigReady = !isConfigLoading && !configLoadError;
   const [modelCatalog, setModelCatalog] = useState<Awaited<ReturnType<typeof aiApi.getModelCatalog>> | null>(null);
   const [modelsDevStatus, setModelsDevStatus] = useState<Awaited<ReturnType<typeof aiApi.getModelsDevCatalogStatus>> | null>(null);
@@ -444,21 +453,11 @@ const ModelSettingsPage: React.FC = () => {
   const [showAllProviders, setShowAllProviders] = useState(false);
 
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
-  const [proxyConfig, setProxyConfig] = useState<ProxyConfig>({
-    enabled: false,
-    url: '',
-    username: '',
-    password: ''
-  });
-  const [savedProxyConfig, setSavedProxyConfig] = useState<ProxyConfig>({
-    enabled: false,
-    url: '',
-    username: '',
-    password: ''
-  });
-  const [streamIdleTimeoutInput, setStreamIdleTimeoutInput] = useState('');
-  const [streamTtftTimeoutInput, setStreamTtftTimeoutInput] = useState('');
-  const [savedStreamTimeouts, setSavedStreamTimeouts] = useState({ idle: '', ttft: '' });
+  const [proxyConfig, setProxyConfig] = useState<ProxyConfig>(initialProxy);
+  const [savedProxyConfig, setSavedProxyConfig] = useState<ProxyConfig>(initialProxy);
+  const [streamIdleTimeoutInput, setStreamIdleTimeoutInput] = useState(initialIdle == null ? '' : String(initialIdle));
+  const [streamTtftTimeoutInput, setStreamTtftTimeoutInput] = useState(initialTtft == null ? '' : String(initialTtft));
+  const [savedStreamTimeouts, setSavedStreamTimeouts] = useState({ idle: initialIdle == null ? '' : String(initialIdle), ttft: initialTtft == null ? '' : String(initialTtft) });
   const [isStreamTimeoutSaving, setIsStreamTimeoutSaving] = useState(false);
   const [isProxySaving, setIsProxySaving] = useState(false);
   const [streamTimeoutSaveError, setStreamTimeoutSaveError] = useState<string | null>(null);
@@ -746,13 +745,13 @@ const ModelSettingsPage: React.FC = () => {
       void loadModelsDevStatus();
     });
     // Independent sections become usable as soon as their own data is ready.
-    void loadConfig();
-    void loadProxyConfig();
-    void loadStreamTimeouts();
+    if (!modelSeed.loaded) void loadConfig();
+    if (!proxySeed.loaded) void loadProxyConfig();
+    if (!timeoutSeed.loaded) void loadStreamTimeouts();
     void loadModelCatalog();
     void loadModelsDevStatus();
     return unsubscribeCatalog;
-  }, [loadConfig, loadProxyConfig, loadStreamTimeouts, loadModelCatalog, loadModelsDevStatus, modelDiscoverySurface]);
+  }, [loadConfig, loadProxyConfig, loadStreamTimeouts, loadModelCatalog, loadModelsDevStatus, modelDiscoverySurface, modelSeed, proxySeed, timeoutSeed]);
 
   const refreshSubscriptionAccounts = useCallback(async () => {
     const scope = getActiveSurfaceScope();
@@ -2880,7 +2879,8 @@ const ModelSettingsPage: React.FC = () => {
             </small>
           )}
           {selectedModelDrafts.map(draft => (
-            <div
+            <Capsule
+              size="xs"
               key={draft.key}
               className="openbitfun-model-settings__model-capsule"
               data-testid="settings-model-selected-row"
@@ -2888,6 +2888,23 @@ const ModelSettingsPage: React.FC = () => {
               data-model-name={draft.modelName}
               data-selected="true"
               data-unsaved={modelDraftHasUnsavedChanges(draft, aiModels) ? 'true' : 'false'}
+              action={(
+                <Tooltip content={t('providerSelection.removeModel')}>
+                  <IconButton
+                    className="openbitfun-model-settings__model-capsule-dismiss"
+                    aria-label={t('providerSelection.removeModelByName', { name: draft.modelName })}
+                    data-testid="settings-model-selected-remove-btn"
+                    data-model-id={draft.modelName}
+                    data-model-name={draft.modelName}
+                    size="xs"
+                    shape="circle"
+                    variant="quiet"
+                    onClick={() => removeSelectedModelDraft(draft.modelName)}
+                    disabled={isEditorSaving}
+                    icon={<Icon name="xmark" size="xs" />}
+                  />
+                </Tooltip>
+              )}
             >
               <Button
                 ref={element => {
@@ -2904,22 +2921,7 @@ const ModelSettingsPage: React.FC = () => {
               >
                 {draft.modelName}
               </Button>
-              <Tooltip content={t('providerSelection.removeModel')}>
-                <IconButton
-                  className="openbitfun-model-settings__model-capsule-dismiss"
-                  aria-label={t('providerSelection.removeModelByName', { name: draft.modelName })}
-                  data-testid="settings-model-selected-remove-btn"
-                  data-model-id={draft.modelName}
-                  data-model-name={draft.modelName}
-                  size="xs"
-                  shape="circle"
-                  variant="quiet"
-                  onClick={() => removeSelectedModelDraft(draft.modelName)}
-                  disabled={isEditorSaving}
-                  icon={<Icon name="xmark" size="xs" />}
-                />
-              </Tooltip>
-            </div>
+            </Capsule>
           ))}
           {isAddingCustomModel && (
             <Input
@@ -4022,7 +4024,7 @@ const ModelSettingsPage: React.FC = () => {
   );
   const renderSectionLoadState = (state: 'loading' | 'ready' | 'error', onRetry: () => Promise<void>) => (
     state === 'loading' ? (
-      <div className="openbitfun-model-settings__loading" role="status">{t('messages.loading')}</div>
+      <ConfigLoadingState label={t('messages.loading')} variant="list" />
     ) : state === 'error' ? (
       <ConfigRetryState message={t('messages.loadFailedLocked')} retryLabel={t('messages.retry')}
         onRetry={() => void onRetry()} />
@@ -4068,13 +4070,28 @@ const ModelSettingsPage: React.FC = () => {
               <ul className="openbitfun-model-settings__import-summary" aria-label={t('acquisition.api')}>
                 {apiProviderGroups.map(group => (
                   <li key={group.key} className="openbitfun-model-settings__import-item">
-                    <Tooltip content={group.models[0].base_url} trigger="hover-focus">
-                      <Button size="sm" variant="outline" className="openbitfun-model-settings__source-pill"
-                        aria-label={t('acquisition.configureProvider', { provider: group.providerName })}
-                        onClick={() => handleEditProvider(group.models[0])}>
-                        {group.providerName}
-                      </Button>
-                    </Tooltip>
+                    <Capsule size="sm" action={(
+                      <Tooltip content={t('actions.deleteProvider')} trigger="hover-focus">
+                        <IconButton
+                          className="openbitfun-model-settings__source-pill-delete"
+                          aria-label={`${t('actions.deleteProvider')}: ${group.providerName}`}
+                          size="xs"
+                          shape="circle"
+                          variant="quiet"
+                          tone="danger"
+                          onClick={() => void requestProviderDelete(group)}
+                          icon={<Icon name="delete" size="xs" />}
+                        />
+                      </Tooltip>
+                    )}>
+                      <Tooltip content={group.models[0].base_url} trigger="hover-focus">
+                        <Button size="sm" variant="outline" className="openbitfun-model-settings__source-pill"
+                          aria-label={t('acquisition.configureProvider', { provider: group.providerName })}
+                          onClick={() => handleEditProvider(group.models[0])}>
+                          {group.providerName}
+                        </Button>
+                      </Tooltip>
+                    </Capsule>
                   </li>
                 ))}
               </ul>
@@ -4104,11 +4121,26 @@ const ModelSettingsPage: React.FC = () => {
               <ul className="openbitfun-model-settings__import-summary" aria-label={t('acquisition.subscriptions')}>
                 {subscriptionProviderGroups.map(group => (
                   <li key={group.key} className="openbitfun-model-settings__import-item">
-                    <Button size="sm" variant="outline" className="openbitfun-model-settings__source-pill"
-                      aria-label={t('acquisition.configureProvider', { provider: group.providerName })}
-                      onClick={() => handleEditProvider(group.models[0])}>
-                      {group.providerName}
-                    </Button>
+                    <Capsule size="sm" action={(
+                      <Tooltip content={t('actions.deleteProvider')} trigger="hover-focus">
+                        <IconButton
+                          className="openbitfun-model-settings__source-pill-delete"
+                          aria-label={`${t('actions.deleteProvider')}: ${group.providerName}`}
+                          size="xs"
+                          shape="circle"
+                          variant="quiet"
+                          tone="danger"
+                          onClick={() => void requestProviderDelete(group)}
+                          icon={<Icon name="delete" size="xs" />}
+                        />
+                      </Tooltip>
+                    )}>
+                      <Button size="sm" variant="outline" className="openbitfun-model-settings__source-pill"
+                        aria-label={t('acquisition.configureProvider', { provider: group.providerName })}
+                        onClick={() => handleEditProvider(group.models[0])}>
+                        {group.providerName}
+                      </Button>
+                    </Capsule>
                   </li>
                 ))}
               </ul>

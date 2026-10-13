@@ -125,7 +125,6 @@ unsafe extern "C" {
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
-    fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
     fn CGEventCreate(source: *const c_void) -> *const c_void;
     fn CGEventGetLocation(event: *const c_void) -> CGPoint;
@@ -150,10 +149,6 @@ pub(super) fn ax_trusted() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
 
-pub(super) fn screen_capture_preflight() -> bool {
-    unsafe { CGPreflightScreenCaptureAccess() }
-}
-
 pub(super) fn request_ax_prompt() {
     let key = CFString::new("AXTrustedCheckOptionPrompt");
     let val = CFBoolean::true_value();
@@ -167,28 +162,16 @@ pub(super) fn request_screen_capture() -> bool {
     unsafe { CGRequestScreenCaptureAccess() }
 }
 
-/// Shared AX-first desktop guard: `get_app_state_inner` and
-/// `get_app_shortcuts_inner` both silently degrade (truncated tree / empty
-/// menu bar) instead of erroring when Accessibility trust is missing, which
-/// looks like "nothing here" rather than "OpenBitFun lacks permission". Fail
-/// fast with a structured `[PERMISSION_DENIED]` error and re-trigger the
-/// system prompt so the user has a way back to the dialog without digging
-/// through System Settings manually.
-///
-/// `retry_hint` is the caller-specific closing sentence (e.g. `"After
-/// granting, retry \`desktop.get_app_state\` and the AX tree will include
-/// all WebView subtree nodes."`), so each call site keeps its own precise
-/// guidance while the shared boilerplate (check + prompt + explanation)
-/// cannot drift between call sites.
+/// Observation never invokes consent prompts. The user's permission action
+/// owns the explicit request and the OS owns its outcome.
 pub(super) fn require_ax_trust_for(retry_hint: &str) -> OpenBitFunResult<()> {
     if ax_trusted() {
         return Ok(());
     }
-    request_ax_prompt();
     Err(OpenBitFunError::tool(format!(
         "[PERMISSION_DENIED] macOS Accessibility permission not granted to OpenBitFun. \
-         The system has been asked to surface the permission dialog (System Settings → \
-         Privacy & Security → Accessibility → enable OpenBitFun). {}",
+         Use Computer Use permissions to request access, or open System Settings → \
+         Privacy & Security → Accessibility → enable OpenBitFun. {}",
         retry_hint
     )))
 }

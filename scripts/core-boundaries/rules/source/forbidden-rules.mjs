@@ -3942,23 +3942,6 @@ export const forbiddenContentRules = [
     ],
   },
   {
-    path: 'src/crates/assembly/core/src/service/announcement/state_store.rs',
-    patterns: [
-      {
-        regex: /\btokio::fs\b/,
-        message: 'core announcement state store facade must not own filesystem persistence; use the integrations state store',
-      },
-      {
-        regex: /\bserde_json::to_string_pretty\b/,
-        message: 'core announcement state store facade must not own state serialization; use the integrations state store',
-      },
-      {
-        regex: /\bserde_json::from_str\b/,
-        message: 'core announcement state store facade must not own state deserialization; use the integrations state store',
-      },
-    ],
-  },
-  {
     path: 'src/apps/server/src/bootstrap.rs',
     reason:
       'Server must not assemble a second Agent Runtime beside the canonical Core owner',

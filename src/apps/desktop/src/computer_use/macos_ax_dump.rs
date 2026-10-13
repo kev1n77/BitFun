@@ -104,6 +104,7 @@ impl AxRef {
 // `AX_NODE_STALE`.
 
 struct CachedSnapshot {
+    scope: openbitfun_agent_tools::computer_use_control::ObservationScope,
     digest: String,
     refs: Vec<AxRef>,
 }
@@ -122,24 +123,46 @@ fn snapshot_cache() -> &'static Mutex<HashMap<i32, CachedSnapshot>> {
     SNAPSHOT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Resolve `(pid, idx)` to a live AX ref. Caller must NOT release it; the
-/// cache owns the retain. Returns `None` if the snapshot has been replaced
-/// (i.e. the digest no longer matches) or the idx is out of range.
-pub(crate) fn cached_ref(pid: i32, expected_digest: Option<&str>, idx: u32) -> Option<AxRef> {
+pub(super) fn clear_observations() {
+    if let Ok(mut cache) = snapshot_cache().lock() {
+        cache.clear();
+    }
+}
+
+/// Resolve and retain `(pid, idx)` while the cache is locked. Stop or a new
+/// observation can clear the cache immediately after this lookup; the caller's
+/// reference stays alive until its guard is dropped.
+pub(crate) fn cached_ref(
+    pid: i32,
+    expected_digest: Option<&str>,
+    idx: u32,
+) -> Option<RetainedCachedTarget> {
     let cache = snapshot_cache().lock().ok()?;
     let snap = cache.get(&pid)?;
+    if snap.scope
+        != openbitfun_agent_tools::computer_use_control::ObservationScope::from_control(
+            &super::control_session::snapshot(),
+        )
+    {
+        return None;
+    }
     if let Some(want) = expected_digest {
         if snap.digest != want {
             return None;
         }
     }
-    snap.refs.get(idx as usize).copied()
+    let reference = *snap.refs.get(idx as usize)?;
+    if reference.0.is_null() {
+        return None;
+    }
+    unsafe { CFRetain(reference.0 as CFTypeRef) };
+    Some(RetainedCachedTarget(reference))
 }
 
 /// Like `cached_ref` but does not require a digest match. Used for
 /// best-effort follow-up actions where the caller did not have a chance to
 /// re-snapshot (e.g. `app_wait_for` polling).
-pub(crate) fn cached_ref_loose(pid: i32, idx: u32) -> Option<AxRef> {
+pub(crate) fn cached_ref_loose(pid: i32, idx: u32) -> Option<RetainedCachedTarget> {
     cached_ref(pid, None, idx)
 }
 
@@ -192,15 +215,7 @@ impl Drop for RetainedCachedTarget {
 }
 
 pub(crate) fn retained_cached_target(pid: i32, idx: u32) -> Option<RetainedCachedTarget> {
-    let cache = snapshot_cache().lock().ok()?;
-    let reference = *cache.get(&pid)?.refs.get(idx as usize)?;
-    if reference.0.is_null() {
-        return None;
-    }
-    unsafe {
-        CFRetain(reference.0 as CFTypeRef);
-    }
-    Some(RetainedCachedTarget(reference))
+    cached_ref(pid, None, idx)
 }
 
 pub(crate) fn validate_bound_target(pid: i32, target: AxRef) -> OpenBitFunResult<()> {
@@ -688,6 +703,9 @@ fn is_closed_menu_container(role: &str, frame: Option<(f64, f64, f64, f64)>) -> 
 }
 
 pub(super) fn dump_app_ax(pid: i32, opts: DumpOpts) -> OpenBitFunResult<AppStateSnapshot> {
+    let scope = openbitfun_agent_tools::computer_use_control::ObservationScope::from_control(
+        &super::control_session::snapshot(),
+    );
     let app = unsafe { AXUIElementCreateApplication(pid) };
     if app.is_null() {
         return Err(OpenBitFunError::tool(format!(
@@ -903,9 +921,11 @@ equivalents, or AXPress the menu first.\n",
         let mut cache = snapshot_cache()
             .lock()
             .map_err(|_| OpenBitFunError::tool("AX snapshot cache poisoned".to_string()))?;
+        cache.clear();
         cache.insert(
             pid,
             CachedSnapshot {
+                scope,
                 digest: digest.clone(),
                 refs,
             },
@@ -913,6 +933,7 @@ equivalents, or AXPress the menu first.\n",
     }
 
     Ok(AppStateSnapshot {
+        observation_id: None,
         app: openbitfun_core::agentic::tools::computer_use_host::AppInfo {
             name: window_title.clone().unwrap_or_default(),
             bundle_id: None,
@@ -1156,14 +1177,17 @@ mod tests {
             .find(|node| node.title.as_deref() == Some("Save report"))
             .unwrap();
         let retained = retained_cached_target(pid, save.idx).expect("observed target retained");
+        let located =
+            cached_ref(pid, Some(&snapshot.digest), save.idx).expect("located target retained");
         let frame = retained.frame_global().expect("observed target frame");
-        snapshot_cache().lock().unwrap().remove(&pid);
+        clear_observations();
         assert!(cached_ref_loose(pid, save.idx).is_none());
         assert_eq!(
             retained.frame_global(),
             Some(frame),
             "cache replacement must not release an in-flight target reference"
         );
+        assert_eq!(located.frame_global(), Some(frame));
         dump_app_ax(pid, DumpOpts::default()).expect("restore fixture observation cache");
 
         let elements = crate::computer_use::interactive_filter::build_interactive_elements(

@@ -4,8 +4,6 @@
 //! isolated. High-coupling runtime services stay here until their port
 //! contracts and equivalence tests are explicit.
 
-#[cfg(feature = "announcement")]
-pub mod announcement; // Announcement / feature-demo / tips system
 #[cfg(feature = "workspace-runtime")]
 pub(crate) mod bootstrap; // Workspace persona bootstrap helpers
 #[cfg(feature = "canvas-runtime")]
@@ -66,8 +64,6 @@ pub mod worktree; // Managed Git worktree lifecycle and session bindings
 pub use terminal_core as terminal;
 
 // Re-export main components.
-#[cfg(feature = "announcement")]
-pub use announcement::{AnnouncementCard, AnnouncementScheduler, AnnouncementSchedulerRef};
 #[cfg(feature = "workspace-runtime")]
 pub use bootstrap::reset_workspace_persona_files_to_default;
 #[cfg(feature = "canvas-runtime")]

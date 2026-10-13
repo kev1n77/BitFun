@@ -6,7 +6,7 @@
 use super::macos;
 use super::DesktopComputerUseHost;
 use image::codecs::jpeg::JpegEncoder;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use image::DynamicImage;
 use image::RgbImage;
 use openbitfun_core::agentic::tools::computer_use_host::{
@@ -28,177 +28,53 @@ fn bound_window_identity(target: &str) -> OpenBitFunResult<(i32, isize)> {
     })
 }
 
-/// macOS: map JPEG/bitmap pixels to/from **CoreGraphics global display coordinates** (same as
-/// `CGDisplayBounds` / `CGEventGetLocation`): origin at the **top-left of the main display**, Y
-/// increases **downward**. Not AppKit bottom-left / Y-up.
-#[cfg(target_os = "macos")]
+/// One validated image-to-surface transform shared by all native backends.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct MacPointerGeo {
-    pub(super) disp_ox: f64,
-    pub(super) disp_oy: f64,
-    pub(super) disp_w: f64,
-    pub(super) disp_h: f64,
-    pub(super) full_px_w: u32,
-    pub(super) full_px_h: u32,
-    crop_x0: u32,
-    crop_y0: u32,
-}
-
-#[cfg(target_os = "macos")]
-impl MacPointerGeo {
-    /// Map **continuous** framebuffer pixel center `(cx, cy)` (0.5 = middle of left/top pixel) to CG global.
-    fn full_pixel_center_to_global_f64(&self, cx: f64, cy: f64) -> OpenBitFunResult<(f64, f64)> {
-        if self.disp_w <= 0.0 || self.disp_h <= 0.0 || self.full_px_w == 0 || self.full_px_h == 0 {
-            return Err(OpenBitFunError::tool(
-                "Invalid macOS pointer geometry.".to_string(),
-            ));
-        }
-        let px_w = self.full_px_w as f64;
-        let px_h = self.full_px_h as f64;
-        let max_cx = (self.full_px_w.saturating_sub(1) as f64) + 0.5;
-        let max_cy = (self.full_px_h.saturating_sub(1) as f64) + 0.5;
-        let cx = cx.clamp(0.5, max_cx);
-        let cy = cy.clamp(0.5, max_cy);
-        let gx = self.disp_ox + (cx / px_w) * self.disp_w;
-        let gy = self.disp_oy + (cy / px_h) * self.disp_h;
-        Ok((gx, gy))
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct PointerMap {
-    /// Screenshot JPEG width/height (same as capture when there is no frame padding).
-    pub(super) image_w: u32,
-    pub(super) image_h: u32,
-    /// Top-left of capture inside the JPEG (0 when there is no padding).
-    content_origin_x: u32,
-    content_origin_y: u32,
-    /// Native capture pixel size (the cropped/visible bitmap).
-    content_w: u32,
-    content_h: u32,
-    pub(super) native_w: u32,
-    pub(super) native_h: u32,
-    pub(super) origin_x: i32,
-    pub(super) origin_y: i32,
-    #[cfg(target_os = "macos")]
-    pub(super) macos_geo: Option<MacPointerGeo>,
-}
+pub(super) struct PointerMap(openbitfun_agent_tools::computer_use_geometry::CaptureGeometry);
 
 impl PointerMap {
-    /// Relative image-pixel displacement uses the same scale as the captured
-    /// image, without clamping a delta to an absolute image location.
+    fn from_screenshot(shot: &ComputerScreenshot) -> OpenBitFunResult<Self> {
+        let content = shot.image_content_rect.as_ref().ok_or_else(|| {
+            OpenBitFunError::tool("[INVALID_GEOMETRY] Capture content rectangle unavailable")
+        })?;
+        let bounds = shot.image_global_bounds.as_ref().ok_or_else(|| {
+            OpenBitFunError::tool(
+                "[COORDINATES_UNAVAILABLE] Capture has no authoritative surface bounds",
+            )
+        })?;
+        openbitfun_agent_tools::computer_use_geometry::CaptureGeometry::new(
+            shot.image_width,
+            shot.image_height,
+            content,
+            bounds,
+        )
+        .map(Self)
+        .map_err(OpenBitFunError::tool)
+    }
     #[cfg(target_os = "macos")]
     pub(super) fn image_delta_to_global(&self, dx: i32, dy: i32) -> OpenBitFunResult<(f64, f64)> {
-        if self.content_w == 0 || self.content_h == 0 || self.native_w == 0 || self.native_h == 0 {
-            return Err(OpenBitFunError::tool(
-                "Invalid screenshot coordinate map (zero dimension)",
-            ));
-        }
-        let mut sx = self.native_w as f64 / self.content_w as f64;
-        let mut sy = self.native_h as f64 / self.content_h as f64;
-        if let Some(geo) = self.macos_geo {
-            if geo.full_px_w == 0
-                || geo.full_px_h == 0
-                || !geo.disp_w.is_finite()
-                || !geo.disp_h.is_finite()
-                || geo.disp_w <= 0.0
-                || geo.disp_h <= 0.0
-            {
-                return Err(OpenBitFunError::tool("Invalid macOS pointer geometry"));
-            }
-            sx *= geo.disp_w / geo.full_px_w as f64;
-            sy *= geo.disp_h / geo.full_px_h as f64;
-        }
-        Ok((dx as f64 * sx, dy as f64 * sy))
+        Ok(self.0.image_delta_to_global(dx, dy))
     }
-
-    /// Window-local pixels survive a translation, but not resizing or a change
-    /// in padding/scaling. Compare every mapping field except the global origin.
     pub(super) fn same_window_projection(&self, other: &Self) -> bool {
-        let mut translated = *self;
-        translated.origin_x = other.origin_x;
-        translated.origin_y = other.origin_y;
-        translated == *other
+        self.0.same_projection(&other.0)
     }
-
-    pub(super) fn at_window_bounds(mut self, bounds: [f64; 4]) -> OpenBitFunResult<Self> {
-        if bounds.iter().any(|v| !v.is_finite())
-            || (bounds[2] - self.native_w as f64).abs() > 1.0
-            || (bounds[3] - self.native_h as f64).abs() > 1.0
-        {
-            return Err(OpenBitFunError::tool(
-                "[STALE_CAPTURE] Target resized; observe again before coordinate input",
-            ));
-        }
-        self.origin_x = bounds[0].round() as i32;
-        self.origin_y = bounds[1].round() as i32;
-        Ok(self)
+    pub(super) fn at_window_bounds(self, bounds: [f64; 4]) -> OpenBitFunResult<Self> {
+        self.0
+            .at_bounds(bounds)
+            .map(Self)
+            .map_err(OpenBitFunError::tool)
     }
-
-    /// Continuous mapping: **composed JPEG** pixel `(x,y)` -> global (macOS CG).
     pub(super) fn map_image_to_global_f64(&self, x: i32, y: i32) -> OpenBitFunResult<(f64, f64)> {
-        if self.image_w == 0
-            || self.image_h == 0
-            || self.content_w == 0
-            || self.content_h == 0
-            || self.native_w == 0
-            || self.native_h == 0
-        {
-            return Err(OpenBitFunError::tool(
-                "Invalid screenshot coordinate map (zero dimension).".to_string(),
-            ));
-        }
-        let ox = self.content_origin_x as i32;
-        let oy = self.content_origin_y as i32;
-        let cx_img = x - ox;
-        let cy_img = y - oy;
-        let max_cx = self.content_w.saturating_sub(1) as i32;
-        let max_cy = self.content_h.saturating_sub(1) as i32;
-        let cx_img = cx_img.clamp(0, max_cx) as f64;
-        let cy_img = cy_img.clamp(0, max_cy) as f64;
-        let cw = self.content_w as f64;
-        let ch = self.content_h as f64;
-        let nw = self.native_w as f64;
-        let nh = self.native_h as f64;
-
-        #[cfg(target_os = "macos")]
-        if let Some(g) = self.macos_geo {
-            let cx = g.crop_x0 as f64 + (cx_img + 0.5) * nw / cw;
-            let cy = g.crop_y0 as f64 + (cy_img + 0.5) * nh / ch;
-            return g.full_pixel_center_to_global_f64(cx, cy);
-        }
-
-        let center_full_x = self.origin_x as f64 + (cx_img + 0.5) * nw / cw;
-        let center_full_y = self.origin_y as f64 + (cy_img + 0.5) * nh / ch;
-        Ok((center_full_x, center_full_y))
+        self.0.image_to_global(x, y).map_err(OpenBitFunError::tool)
     }
-
-    /// Normalized 0..=1000 maps to the **capture** bitmap.
     pub(super) fn map_normalized_to_global_f64(
         &self,
         x: i32,
         y: i32,
     ) -> OpenBitFunResult<(f64, f64)> {
-        if self.native_w == 0 || self.native_h == 0 {
-            return Err(OpenBitFunError::tool(
-                "Invalid screenshot coordinate map (zero native dimension).".to_string(),
-            ));
-        }
-        let nw = self.native_w as f64;
-        let nh = self.native_h as f64;
-        let tx = (x.clamp(0, 1000) as f64) / 1000.0;
-        let ty = (y.clamp(0, 1000) as f64) / 1000.0;
-
-        #[cfg(target_os = "macos")]
-        if let Some(g) = self.macos_geo {
-            let cx = g.crop_x0 as f64 + tx * (nw - 1.0).max(0.0) + 0.5;
-            let cy = g.crop_y0 as f64 + ty * (nh - 1.0).max(0.0) + 0.5;
-            return g.full_pixel_center_to_global_f64(cx, cy);
-        }
-
-        let gx = self.origin_x as f64 + tx * (nw - 1.0).max(0.0) + 0.5;
-        let gy = self.origin_y as f64 + ty * (nh - 1.0).max(0.0) + 0.5;
-        Ok((gx, gy))
+        self.0
+            .normalized_to_global(x, y)
+            .map_err(OpenBitFunError::tool)
     }
 }
 
@@ -335,9 +211,16 @@ impl DesktopComputerUseHost {
         pid: i32,
         update_navigation: bool,
     ) -> OpenBitFunResult<ComputerScreenshot> {
-        let cap = crate::computer_use::control_session::spawn_blocking(move || {
-            crate::computer_use::macos_capture::capture_frame(pid, None)
-                .map_err(OpenBitFunError::tool)
+        let (cap, scope) = crate::computer_use::control_session::spawn_blocking(move || {
+            crate::computer_use::macos_capture::ensure_capture(pid, None)
+                .map_err(OpenBitFunError::tool)?;
+            let scope = crate::computer_use::control_session::observation_scope()
+                .map_err(OpenBitFunError::tool)?;
+            let cap = crate::computer_use::macos_capture::capture_frame(pid, None)
+                .map_err(OpenBitFunError::tool)?;
+            crate::computer_use::control_session::validate_observation_scope(&scope)
+                .map_err(OpenBitFunError::tool)?;
+            Ok::<_, OpenBitFunError>((cap, scope))
         })
         .await
         .map_err(|e| OpenBitFunError::tool(e.to_string()))??;
@@ -349,35 +232,24 @@ impl DesktopComputerUseHost {
         let logical_w = cap.bounds[2].round() as u32;
         let logical_h = cap.bounds[3].round() as u32;
         let mut shot = Self::raw_shot_from_rgb_crop(rgb, origin_x, origin_y, logical_w, logical_h)?;
+        shot.image_global_bounds = Some(ComputerUseImageGlobalBounds {
+            left: cap.bounds[0],
+            top: cap.bounds[1],
+            width: cap.bounds[2],
+            height: cap.bounds[3],
+        });
         shot.quadrant_navigation_click_ready = true;
-        let map = PointerMap {
-            image_w: shot.image_width,
-            image_h: shot.image_height,
-            content_origin_x: 0,
-            content_origin_y: 0,
-            content_w: shot.image_width,
-            content_h: shot.image_height,
-            native_w: logical_w,
-            native_h: logical_h,
-            origin_x,
-            origin_y,
-            macos_geo: None,
-        };
+        crate::computer_use::control_session::validate_observation_scope(&scope)
+            .map_err(OpenBitFunError::tool)?;
+        let map = PointerMap::from_screenshot(&shot)?;
         if !update_navigation {
             return Ok(shot);
         }
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|e| OpenBitFunError::tool(format!("lock: {e}")))?;
-        state.transition_after_screenshot(map);
-        state.app_pointer_maps.insert(pid, map);
-        let target = format!("pid:{pid}/window:{}", cap.window_id);
-        state.app_pointer_targets.insert(pid, target.clone());
-        if let Some(id) = shot.screenshot_id.clone() {
-            state.screenshot_targets.insert(id.clone(), target);
-            state.screenshot_pointer_maps.insert(id, map);
-        }
+        let mut state = self.state_for_scope(&scope)?;
+        state.transition_after_screenshot(
+            shot.screenshot_id.clone().expect("capture identity"),
+            map,
+        );
         Ok(shot)
     }
 
@@ -408,6 +280,8 @@ impl DesktopComputerUseHost {
     ) -> OpenBitFunResult<ComputerScreenshot> {
         use windows::Win32::Foundation::HWND;
 
+        let scope = crate::computer_use::control_session::observation_scope()
+            .map_err(OpenBitFunError::tool)?;
         let cap = crate::computer_use::control_session::spawn_blocking(move || {
             let hwnd = HWND(hwnd_raw as *mut std::ffi::c_void);
             crate::computer_use::windows_capture::screenshot_window_capture(hwnd)
@@ -415,9 +289,9 @@ impl DesktopComputerUseHost {
         .await
         .map_err(|e| OpenBitFunError::tool(e.to_string()))??;
 
-        let img = image::load_from_memory(&cap.png)
-            .map_err(|e| OpenBitFunError::tool(format!("decode window capture PNG: {}", e)))?;
-        let rgb = img.to_rgb8();
+        let rgba = image::RgbaImage::from_raw(cap.width, cap.height, cap.rgba)
+            .ok_or_else(|| OpenBitFunError::tool("[CAPTURE_INVALID_FRAME] Invalid RGBA buffer"))?;
+        let rgb = DynamicImage::ImageRgba8(rgba).to_rgb8();
         let native_w = rgb.width();
         let native_h = rgb.height();
 
@@ -427,31 +301,14 @@ impl DesktopComputerUseHost {
         // Image pixels map 1:1 to the captured window rectangle (no downscale),
         // so content == image == native and the screen origin is the window's
         // (DWM-frame-adjusted) top-left.
-        let map = PointerMap {
-            image_w: shot.image_width,
-            image_h: shot.image_height,
-            content_origin_x: 0,
-            content_origin_y: 0,
-            content_w: shot.image_width,
-            content_h: shot.image_height,
-            native_w,
-            native_h,
-            origin_x: cap.origin_x,
-            origin_y: cap.origin_y,
-        };
+        let map = PointerMap::from_screenshot(&shot)?;
+        crate::computer_use::control_session::validate_observation_scope(&scope)
+            .map_err(OpenBitFunError::tool)?;
         if update_navigation {
-            let mut s = self
-                .state
-                .lock()
-                .map_err(|e| OpenBitFunError::tool(format!("lock: {}", e)))?;
-            s.transition_after_screenshot(map);
-            s.app_pointer_maps.insert(pid, map);
-            let target = format!("pid:{pid}/window:{hwnd_raw}");
-            s.app_pointer_targets.insert(pid, target.clone());
-            if let Some(id) = shot.screenshot_id.clone() {
-                s.screenshot_targets.insert(id.clone(), target);
-                s.screenshot_pointer_maps.insert(id, map);
-            }
+            self.state_for_scope(&scope)?.transition_after_screenshot(
+                shot.screenshot_id.clone().expect("capture identity"),
+                map,
+            );
         }
         Ok(shot)
     }
@@ -466,7 +323,11 @@ impl DesktopComputerUseHost {
         session: &crate::computer_use::linux_control::LinuxControlSession,
         update_navigation: bool,
     ) -> OpenBitFunResult<ComputerScreenshot> {
+        let scope = crate::computer_use::control_session::observation_scope()
+            .map_err(OpenBitFunError::tool)?;
         let jpeg = session.capture().await.map_err(OpenBitFunError::tool)?;
+        crate::computer_use::control_session::validate_observation_scope(&scope)
+            .map_err(OpenBitFunError::tool)?;
         let rgb = image::load_from_memory(&jpeg)
             .map_err(|e| OpenBitFunError::tool(format!("[CAPTURE_INVALID_FRAME] {e}")))?
             .to_rgb8();
@@ -481,33 +342,20 @@ impl DesktopComputerUseHost {
         if size.is_none() {
             shot.image_global_bounds = None;
         }
-        let map = PointerMap {
-            image_w: shot.image_width,
-            image_h: shot.image_height,
-            content_origin_x: 0,
-            content_origin_y: 0,
-            content_w: shot.image_width,
-            content_h: shot.image_height,
-            native_w: logical_w,
-            native_h: logical_h,
-            origin_x: 0,
-            origin_y: 0,
-        };
-        if update_navigation {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|e| OpenBitFunError::tool(format!("lock: {e}")))?;
-            state.transition_after_screenshot(map);
-            if let Some(id) = shot.screenshot_id.clone() {
-                state.screenshot_pointer_maps.insert(id, map);
-            }
+        if update_navigation && shot.image_global_bounds.is_none() {
+            self.state_for_scope(&scope)?.observations.clear_images();
         }
-        let target = session.target_identity();
-        crate::computer_use::control_session::publish_jpeg_generation(
-            session.generation(),
-            &target,
+        if update_navigation && shot.image_global_bounds.is_some() {
+            let map = PointerMap::from_screenshot(&shot)?;
+            self.state_for_scope(&scope)?.transition_after_screenshot(
+                shot.screenshot_id.clone().expect("capture identity"),
+                map,
+            );
+        }
+        crate::computer_use::control_session::publish_jpeg(
+            &scope,
             &shot.bytes,
+            [shot.image_width, shot.image_height],
             [0.0, 0.0, logical_w as f64, logical_h as f64],
         );
         Ok(shot)
@@ -737,20 +585,25 @@ mod window_projection_tests {
     }
 
     fn capture_map() -> PointerMap {
-        PointerMap {
-            image_w: 900,
-            image_h: 600,
-            content_origin_x: 0,
-            content_origin_y: 0,
-            content_w: 900,
-            content_h: 600,
-            native_w: 1800,
-            native_h: 1200,
-            origin_x: 139,
-            origin_y: 40,
-            #[cfg(target_os = "macos")]
-            macos_geo: None,
-        }
+        PointerMap(
+            openbitfun_agent_tools::computer_use_geometry::CaptureGeometry::new(
+                900,
+                600,
+                &super::ComputerUseImageContentRect {
+                    left: 0,
+                    top: 0,
+                    width: 900,
+                    height: 600,
+                },
+                &super::ComputerUseImageGlobalBounds {
+                    left: 139.0,
+                    top: 40.0,
+                    width: 1800.0,
+                    height: 1200.0,
+                },
+            )
+            .unwrap(),
+        )
     }
 
     #[cfg(target_os = "macos")]
@@ -758,13 +611,19 @@ mod window_projection_tests {
     fn relative_movement_after_capture_uses_geometry_without_ocr_navigation_gate() {
         let host = DesktopComputerUseHost::new();
         let map = capture_map();
-        host.state.lock().unwrap().transition_after_screenshot(map);
-        let retained = host.state.lock().unwrap().pointer_map.unwrap();
+        host.state
+            .lock()
+            .unwrap()
+            .transition_after_screenshot("fixture".into(), map);
+        let retained = host
+            .state
+            .lock()
+            .unwrap()
+            .observations
+            .latest_image()
+            .unwrap();
         assert_eq!(retained.image_delta_to_global(4, -3).unwrap(), (8.0, -6.0));
         assert!(host.last_screenshot_refinement().is_none());
-        let mut invalid = retained;
-        invalid.content_w = 0;
-        assert!(invalid.image_delta_to_global(4, -3).is_err());
         // Absolute coordinates still use the existing validated map; this
         // delta helper does not waive target binding, leases or OS authority.
         assert_eq!(retained, map);
@@ -791,12 +650,25 @@ mod window_projection_tests {
         assert!(observed
             .at_window_bounds([f64::NAN, 40.0, 1800.0, 1200.0])
             .is_err());
-        let mut resampled = observed;
-        resampled.image_w /= 2;
-        resampled.content_w /= 2;
+        let resampled = PointerMap(
+            openbitfun_agent_tools::computer_use_geometry::CaptureGeometry::new(
+                450,
+                300,
+                &super::ComputerUseImageContentRect {
+                    left: 0,
+                    top: 0,
+                    width: 450,
+                    height: 300,
+                },
+                &super::ComputerUseImageGlobalBounds {
+                    left: 139.0,
+                    top: 40.0,
+                    width: 1800.0,
+                    height: 1200.0,
+                },
+            )
+            .unwrap(),
+        );
         assert!(!observed.same_window_projection(&resampled));
-        let mut padded = observed;
-        padded.content_origin_x = 10;
-        assert!(!observed.same_window_projection(&padded));
     }
 }

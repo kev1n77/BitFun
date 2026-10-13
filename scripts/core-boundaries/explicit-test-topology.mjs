@@ -51,7 +51,6 @@ export const servicesCoreIntegrationTestTargets = [
 
 export const servicesIntegrationsIntegrationTestTargets = [
   { name: 'script_tool_runtime', path: 'tests/script_tool_runtime.rs' },
-  { name: 'announcement_contracts', path: 'tests/announcement_contracts.rs' },
   { name: 'file_watch_contracts', path: 'tests/file_watch_contracts.rs' },
   { name: 'function_agent_contracts', path: 'tests/function_agent_contracts.rs' },
   { name: 'git_contracts', path: 'tests/git_contracts.rs' },

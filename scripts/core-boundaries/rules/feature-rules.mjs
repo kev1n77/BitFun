@@ -2,7 +2,6 @@
 
 export const servicesReqwestOwnerFeatures = [
   'account-identity',
-  'announcement',
   'browser-control',
   'mcp',
   'miniapp-market',
@@ -194,7 +193,6 @@ export const optionalDependencyFeatureOwnerRules = [
       {
         depName: 'openbitfun-services-integrations',
         ownerFeatures: [
-          'announcement',
           'canvas-runtime',
           'browser-control',
           'deep-research',
@@ -291,7 +289,6 @@ export const optionalDependencyFeatureOwnerRules = [
         depName: 'openbitfun-services-core',
         ownerFeatures: [
           'account-identity',
-          'announcement',
           'browser-control',
           'git',
           'hook-import',
@@ -736,7 +733,6 @@ export const coreProductFullFeatureAssemblyRule = {
     'tools-pages',
     'web-tools',
     'workspace-search',
-    'announcement',
     'canvas-runtime',
     'dispatch-store',
     'file-watch',
@@ -1703,13 +1699,6 @@ export const coreClosedFeatureProfileRules = [
   },
   {
     manifestPath: 'src/crates/assembly/core/Cargo.toml',
-    featureName: 'announcement',
-    requiredFeatureRefs: ['openbitfun-services-integrations/announcement'],
-    exact: true,
-    reason: 'openbitfun-core announcement must select only the announcement owner capability',
-  },
-  {
-    manifestPath: 'src/crates/assembly/core/Cargo.toml',
     featureName: 'file-watch',
     requiredFeatureRefs: ['openbitfun-services-integrations/file-watch'],
     exact: true,
@@ -1733,7 +1722,7 @@ export const coreClosedFeatureProfileRules = [
   {
     manifestPath: 'src/crates/assembly/core/Cargo.toml',
     featureName: 'service-integrations',
-    requiredFeatureRefs: ['announcement', 'file-watch', 'git', 'review-platform'],
+    requiredFeatureRefs: ['file-watch', 'git', 'review-platform'],
     exact: true,
     reason:
       'openbitfun-core service-integrations is a compatibility facade group, not a product capability umbrella',
@@ -1786,7 +1775,6 @@ export const ownerCrateFeatureAssemblyRules = [
       'script-tool-runtime',
     ],
     requiredProductFullFeatures: [
-      'announcement',
       'browser-control',
       'canvas-runtime',
       'deep-research',

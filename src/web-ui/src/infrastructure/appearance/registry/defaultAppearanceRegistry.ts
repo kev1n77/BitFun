@@ -51,7 +51,6 @@ import { fontPreferenceAppearanceDescriptor } from '@/infrastructure/font-prefer
 import { languageSelectorAppearanceDescriptor } from '@/infrastructure/i18n/appearance';
 import { peerDeviceAppearanceDescriptor } from '@/infrastructure/peer-device/appearance';
 import { updateAppearanceDescriptor } from '@/infrastructure/update/appearance';
-import { announcementAppearanceDescriptor } from '@/shared/announcement-system/appearance';
 import { contextMenuAppearanceDescriptor } from '@/shared/context-menu-system/appearance';
 import { contextListAppearanceDescriptor } from '@/shared/context-system/appearance';
 import { notificationAppearanceDescriptor } from '@/shared/notification-system/appearance';
@@ -312,7 +311,6 @@ export function createDefaultAppearanceRegistry(): AppearanceRegistry {
     .registerComponent(sessionNavigationAppearanceDescriptor)
     .registerComponent(harnessProfileStepAppearanceDescriptor)
     .registerComponent(subagentAvatarAppearanceDescriptor)
-    .registerComponent(announcementAppearanceDescriptor)
     .registerComponent(contextMenuAppearanceDescriptor)
     .registerComponent(contextListAppearanceDescriptor)
     .registerComponent(notificationAppearanceDescriptor)

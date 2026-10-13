@@ -148,3 +148,15 @@ it('removes the old target pointer while waiting for the new target preview', as
   expect(container.querySelector('[data-openbitfun-part="pointer"]')).toBeNull();
   expect(container.querySelector('img')).toBeNull();
 });
+
+it('discards a preview from an earlier visit to the same target', async () => {
+  mocks.status.mockResolvedValue({ ...active('Window A'), target_revision: 3 });
+  mocks.preview.mockResolvedValue({ generation: 4, target: 'Window A', target_revision: 1,
+    image_base64: 'AA==', mime_type: 'image/png', width: 100, height: 100,
+    origin_x: 0, origin_y: 0, span_width: 100, span_height: 100 });
+  await act(async () => root.render(<ComputerUseControlCard />));
+  await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === 'computerControl.showPreview')!.click());
+  await act(async () => vi.advanceTimersByTime(1000));
+  expect(container.querySelector('img')).toBeNull();
+  expect(container.textContent).toContain('computerControl.previewUnavailable');
+});

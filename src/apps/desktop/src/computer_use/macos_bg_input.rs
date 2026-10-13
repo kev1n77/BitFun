@@ -1796,7 +1796,7 @@ mod tests {
                 super::super::macos_ax_dump::cached_ref_loose(pid, foreign.idx).unwrap();
             assert!(
                 matches!(
-                    super::super::macos_ax_write::try_ax_press(foreign_ref),
+                    super::super::macos_ax_write::try_ax_press(foreign_ref.reference()),
                     super::super::macos_ax_write::AxWriteOutcome::Unavailable(_)
                 ),
                 "same-pid foreign-window write must be rejected"

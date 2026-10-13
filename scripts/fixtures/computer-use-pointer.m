@@ -2,7 +2,7 @@
 #import "../../src/apps/desktop/src/computer_use/macos_capture.m"
 #include <assert.h>
 
-void obf_control_native_stopped(uint64_t generation, int32_t pid, uint32_t windowID, const char *reason) {
+void obf_control_native_stopped(uint64_t generation, uint64_t revision, int32_t pid, uint32_t windowID, const char *reason) {
     (void)generation; (void)pid; (void)windowID; (void)reason;
 }
 

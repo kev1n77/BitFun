@@ -10,7 +10,7 @@
 
 #[cfg(target_os = "macos")]
 use super::macos;
-use super::DesktopComputerUseHost;
+use super::{DesktopComputerUseHost, PointerMap};
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use log::debug;
 #[cfg(target_os = "windows")]
@@ -293,6 +293,75 @@ impl DesktopComputerUseHost {
         Ok(())
     }
 
+    /// Resolve image/normalized input against the observation scope and live
+    /// native bounds, including legacy foreground actions.
+    pub(super) fn observed_pointer_map(
+        &self,
+        expected_pid: Option<i32>,
+        screenshot_id: Option<&str>,
+    ) -> OpenBitFunResult<PointerMap> {
+        let scope = crate::computer_use::control_session::observation_scope()
+            .map_err(OpenBitFunError::tool)?;
+        if expected_pid.is_some_and(|pid| {
+            !scope
+                .target
+                .as_deref()
+                .is_some_and(|target| target.starts_with(&format!("pid:{pid}/window:")))
+        }) {
+            return Err(OpenBitFunError::tool(
+                "[STALE_CAPTURE] Target window changed; observe it again",
+            ));
+        }
+        let map = {
+            let state = self.state_for_scope(&scope)?;
+            let selected = state
+                .observations
+                .image(screenshot_id)
+                .map_err(OpenBitFunError::tool)?;
+            if !state
+                .observations
+                .latest_image()
+                .is_some_and(|current| current.same_window_projection(&selected))
+            {
+                return Err(OpenBitFunError::tool(
+                    "[STALE_CAPTURE] Screenshot does not match the target's current geometry",
+                ));
+            }
+            selected
+        };
+        #[cfg(target_os = "macos")]
+        let map = {
+            let pid = scope
+                .target
+                .as_deref()
+                .and_then(|target| target.strip_prefix("pid:"))
+                .and_then(|target| target.split('/').next())
+                .and_then(|id| id.parse::<i32>().ok())
+                .ok_or_else(|| OpenBitFunError::tool("[STALE_CAPTURE] Missing process identity"))?;
+            let window = crate::computer_use::macos_capture::bound_window_id(pid)
+                .map_err(OpenBitFunError::tool)?;
+            map.at_window_bounds(
+                crate::computer_use::macos_capture::window_bounds(pid, window)
+                    .map_err(OpenBitFunError::tool)?,
+            )?
+        };
+        #[cfg(target_os = "windows")]
+        let map = {
+            let hwnd = scope
+                .target
+                .as_deref()
+                .and_then(|target| target.split("/window:").nth(1))
+                .and_then(|id| id.parse::<isize>().ok())
+                .ok_or_else(|| OpenBitFunError::tool("[STALE_CAPTURE] Missing window identity"))?;
+            map.at_window_bounds(crate::computer_use::windows_capture::window_bounds(
+                windows::Win32::Foundation::HWND(hwnd as *mut _),
+            )?)?
+        };
+        crate::computer_use::control_session::validate_observation_scope(&scope)
+            .map_err(OpenBitFunError::tool)?;
+        Ok(map)
+    }
+
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub(super) fn map_app_image_coords_to_pointer_f64(
         &self,
@@ -301,73 +370,8 @@ impl DesktopComputerUseHost {
         y: i32,
         screenshot_id: Option<&str>,
     ) -> OpenBitFunResult<(f64, f64)> {
-        let map = {
-            let s = self
-                .state
-                .lock()
-                .map_err(|e| OpenBitFunError::tool(format!("lock: {}", e)))?;
-            let control = crate::computer_use::control_session::snapshot();
-            if s.app_pointer_targets.get(&pid) != control.target.as_ref()
-                || control.target.is_none()
-            {
-                return Err(OpenBitFunError::tool(
-                    "[STALE_CAPTURE] Target window changed; observe it again",
-                ));
-            }
-            let current = s.app_pointer_maps.get(&pid).copied();
-            match screenshot_id {
-                Some(id) => {
-                    if s.screenshot_targets.get(id) != control.target.as_ref() {
-                        return Err(OpenBitFunError::tool(
-                            "[STALE_CAPTURE] Screenshot belongs to another target or expired",
-                        ));
-                    }
-                    let selected = s.screenshot_pointer_maps.get(id).copied().ok_or_else(|| {
-                        OpenBitFunError::tool(
-                            "[STALE_CAPTURE] Unknown screenshot_id; observe the target again",
-                        )
-                    })?;
-                    if !current.is_some_and(|current| current.same_window_projection(&selected)) {
-                        return Err(OpenBitFunError::tool("[STALE_CAPTURE] Screenshot does not match the target's current geometry"));
-                    }
-                    Some(selected)
-                }
-                None => current,
-            }
-        };
-        let Some(mut map) = map else {
-            return Err(OpenBitFunError::tool(
-                "No screenshot coordinate map is available for this app. Call desktop.get_app_state for the target app first, then use app_click image_xy/image_grid against that returned screenshot_id.".to_string(),
-            ));
-        };
-        if x < 0 || y < 0 || x as u32 >= map.image_w || y as u32 >= map.image_h {
-            return Err(OpenBitFunError::tool(
-                "[INVALID_COORDINATES] Point is outside the target image",
-            ));
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let window = crate::computer_use::macos_capture::bound_window_id(pid)
-                .map_err(OpenBitFunError::tool)?;
-            let bounds = crate::computer_use::macos_capture::window_bounds(pid, window)
-                .map_err(OpenBitFunError::tool)?;
-            map = map.at_window_bounds(bounds)?;
-        }
-        #[cfg(target_os = "windows")]
-        {
-            let control = crate::computer_use::control_session::snapshot();
-            if let Ok(Some(preview)) =
-                crate::computer_use::control_session::preview(control.generation)
-            {
-                map = map.at_window_bounds([
-                    preview.origin_x,
-                    preview.origin_y,
-                    preview.span_width,
-                    preview.span_height,
-                ])?;
-            }
-        }
-        map.map_image_to_global_f64(x, y)
+        self.observed_pointer_map(Some(pid), screenshot_id)?
+            .map_image_to_global_f64(x, y)
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -452,6 +456,14 @@ impl DesktopComputerUseHost {
                 return Err(OpenBitFunError::tool("[TARGET_WINDOW_UNAVAILABLE] The bound window closed; select a new target explicitly"));
             }
             return Ok((pid, window));
+        }
+        if crate::computer_use::control_session::snapshot()
+            .sharing
+            .is_some()
+        {
+            return Err(OpenBitFunError::tool(
+                "[SHARED_TARGET_ONLY] Application was not shared by the user",
+            ));
         }
         let hwnd = crate::computer_use::windows_list_apps::find_top_window_for_pid(pid as u32)
             .ok_or_else(|| OpenBitFunError::tool("[TARGET_UNAVAILABLE] Target has no window"))?;
@@ -584,16 +596,8 @@ impl DesktopComputerUseHost {
         x: i32,
         y: i32,
     ) -> OpenBitFunResult<(f64, f64)> {
-        let s = self
-            .state
-            .lock()
-            .map_err(|e| OpenBitFunError::tool(format!("lock: {}", e)))?;
-        let Some(map) = s.pointer_map else {
-            return Err(OpenBitFunError::tool(
-                "No screenshot yet in this session: run action screenshot first, then use x,y in the screenshot image pixel grid (image_width x image_height), or set use_screen_coordinates true with global screen pixels.".to_string(),
-            ));
-        };
-        map.map_image_to_global_f64(x, y)
+        self.observed_pointer_map(None, None)?
+            .map_image_to_global_f64(x, y)
     }
 
     pub(super) fn map_normalized_coords_to_pointer_f64_impl(
@@ -601,16 +605,8 @@ impl DesktopComputerUseHost {
         x: i32,
         y: i32,
     ) -> OpenBitFunResult<(f64, f64)> {
-        let s = self
-            .state
-            .lock()
-            .map_err(|e| OpenBitFunError::tool(format!("lock: {}", e)))?;
-        let Some(map) = s.pointer_map else {
-            return Err(OpenBitFunError::tool(
-                "No screenshot yet: run screenshot first. For coordinate_mode \"normalized\", use x and y each in 0..=1000.".to_string(),
-            ));
-        };
-        map.map_normalized_to_global_f64(x, y)
+        self.observed_pointer_map(None, None)?
+            .map_normalized_to_global_f64(x, y)
     }
 
     pub(super) async fn mouse_move_global_f64_impl(
@@ -675,14 +671,9 @@ impl DesktopComputerUseHost {
             // enigo `Coordinate::Rel` uses `location()` on macOS, which mixes NSEvent + main-display
             // pixel height — not the same space as `CGEvent` / our screenshot mapping. Use Quartz
             // position + scale from the last capture (display points per screenshot pixel).
-            let (dpt_x, dpt_y) = {
-                let state = self
-                    .state
-                    .lock()
-                    .map_err(|e| OpenBitFunError::tool(format!("lock: {e}")))?;
-                let map = state.pointer_map.ok_or_else(|| OpenBitFunError::tool("CAPTURE_REQUIRED: Observe the authorized target before converting image-pixel deltas"))?;
-                map.image_delta_to_global(dx, dy)?
-            };
+            let (dpt_x, dpt_y) = self
+                .observed_pointer_map(None, None)?
+                .image_delta_to_global(dx, dy)?;
 
             crate::computer_use::control_session::spawn_blocking(move || {
                 Self::run_enigo_job(|e| {

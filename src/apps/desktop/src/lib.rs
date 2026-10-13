@@ -29,6 +29,8 @@ mod embedded_relay_host;
 pub mod frontend_workbench;
 pub mod logging;
 pub mod macos_menubar;
+#[cfg(target_os = "macos")]
+mod macos_window_chrome;
 mod openbitfun_control_host;
 pub mod runtime;
 pub mod sleep_prevention;
@@ -1448,6 +1450,15 @@ pub async fn run() {
             computer_use_control_stop,
             computer_use_control_preview,
             computer_use_request_permissions,
+            computer_use_request_permission,
+            computer_use_share_targets,
+            computer_use_share_observe,
+            computer_use_share_input,
+            computer_use_share_start,
+            computer_use_share_control,
+            computer_use_share_request,
+            computer_use_share_grants,
+            computer_use_share_forget_grant,
             computer_use_open_system_settings,
             set_config,
             save_cloud_speech_config,
@@ -1932,13 +1943,6 @@ pub async fn run() {
             api::dispatch_api::dispatch_load_transcript,
             api::dispatch_api::dispatch_save_transcript,
             // Relay self-deploy API
-            // Announcement / feature-demo / tips API
-            api::announcement_api::get_pending_announcements,
-            api::announcement_api::mark_announcement_seen,
-            api::announcement_api::dismiss_announcement,
-            api::announcement_api::never_show_announcement,
-            api::announcement_api::trigger_announcement,
-            api::announcement_api::get_announcement_tips,
             // Debug API (no-op stubs in release builds)
             api::debug_api::debug_devtools_available,
             api::debug_api::debug_element_picked,

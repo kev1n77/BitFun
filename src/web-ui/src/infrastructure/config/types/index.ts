@@ -117,6 +117,7 @@ export interface AppLoggingConfig {
 }
 
 export interface AppFlowChatConfig {
+  send_during_turn?: 'immediate' | 'queue';
   default_mode_strategy?: 'follow_last' | 'fixed' | null;
   default_mode_id?: string | null;
   last_mode_id?: string | null;
@@ -142,8 +143,6 @@ export interface NotificationConfig {
   dialog_completion_notify: boolean;
   /** Whether to show a toast when an approval request arrives while the window is not focused. */
   permission_request_notify: boolean;
-  /** Whether to show built-in tip cards on each startup. Defaults to true. */
-  enable_startup_tips: boolean;
 }
 
 export interface AIExperienceConfig {
@@ -598,6 +597,9 @@ export interface WorkspaceConfig {
 }
 
 export interface IConfigManager {
+  /** Trusted snapshots for synchronous UI seeding, scoped to the active device. */
+  hasCachedConfig(path: string): boolean;
+  getCachedConfig<T>(path: string): T | undefined;
   getConfig<T = any>(path?: string): Promise<T>;
   getOptionalConfig<T = any>(path: string): Promise<T | undefined>;
   getConfigs(paths: string[]): Promise<Record<string, unknown>>;
@@ -674,6 +676,7 @@ export type ConfigPath =
   | 'app.flow_chat.last_mode_id'
   | 'app.flow_chat.show_permission_mode_control'
   | 'app.flow_chat.auto_show_selection_toolbar'
+  | 'app.flow_chat.send_during_turn'
   | 'app.sidebar'
   | 'app.sidebar.width'
   | 'app.sidebar.collapsed'

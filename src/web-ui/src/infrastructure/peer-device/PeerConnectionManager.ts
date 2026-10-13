@@ -50,6 +50,7 @@ export interface PeerHostCapabilities {
   /** MiniApp Agent runs accept immutable virtual context-file snapshots. */
   readonly miniAppAgentContextFilesV1: boolean;
   readonly wslWorkspacesV1?: boolean;
+  readonly computerUseSharingV1?: boolean;
   /** Typed ProductControl HostInvoke, including shared config read-back. */
   readonly productControlV1?: boolean;
   /**
@@ -174,6 +175,7 @@ const NO_CAPABILITIES: PeerHostCapabilities = {
   tokenUsageStatistics: false,
   miniAppAgentContextFilesV1: false,
   wslWorkspacesV1: false,
+  computerUseSharingV1: false,
   productControlV1: false,
   productControlNativeV1: false,
   productControlPresentationV1: false,
@@ -427,6 +429,7 @@ export class PeerConnectionManager {
       supportsTokenUsageStatistics: entry.capabilities.tokenUsageStatistics,
       supportsMiniAppAgentContextFilesV1: entry.capabilities.miniAppAgentContextFilesV1,
       supportsWslWorkspacesV1: entry.capabilities.wslWorkspacesV1,
+      supportsComputerUseSharingV1: entry.capabilities.computerUseSharingV1,
       supportsProductControlV1: entry.capabilities.productControlV1,
     });
     entry.health = 'ready';
@@ -512,6 +515,7 @@ export class PeerConnectionManager {
       tokenUsageStatistics: caps?.token_usage_statistics === true,
       miniAppAgentContextFilesV1: caps?.miniapp_agent_context_files_v1 === true,
       wslWorkspacesV1: caps?.wsl_workspaces_v1 === true,
+      computerUseSharingV1: caps?.computer_use_sharing_v1 === true,
       productControlV1: caps?.product_control_v1 === true,
       productControlNativeV1: caps?.product_control_native_v1 === true,
       productControlPresentationV1:
@@ -607,6 +611,7 @@ export class PeerConnectionManager {
         supportsTokenUsageStatistics: capabilities.tokenUsageStatistics,
         supportsMiniAppAgentContextFilesV1: capabilities.miniAppAgentContextFilesV1,
         supportsWslWorkspacesV1: capabilities.wslWorkspacesV1,
+        supportsComputerUseSharingV1: capabilities.computerUseSharingV1,
         supportsProductControlV1: capabilities.productControlV1,
       });
       entry.consecutiveFailures = 0;
@@ -750,6 +755,7 @@ function capabilitiesEqual(
     a.tokenUsageStatistics === b.tokenUsageStatistics &&
     a.miniAppAgentContextFilesV1 === b.miniAppAgentContextFilesV1 &&
     a.wslWorkspacesV1 === b.wslWorkspacesV1 &&
+    a.computerUseSharingV1 === b.computerUseSharingV1 &&
     a.cancelTool === b.cancelTool &&
     a.toolCatalog === b.toolCatalog &&
     a.chatMcpCatalogV1 === b.chatMcpCatalogV1 &&

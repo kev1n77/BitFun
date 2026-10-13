@@ -572,6 +572,8 @@
     "copyFailed": "已复制!",
     "regenerate": "重新生成",
     "edit": "编辑消息",
+    "editAndRollback": "编辑和回滚",
+    "rollbackBeforeTurn": "回滚到此轮之前",
     "delete": "删除消息",
     "retry": "重试",
     "sentAt": "发送于 {{time}}",
@@ -1116,6 +1118,7 @@
     "emptyDirectory": "空目录",
     "rootDirectory": "根目录",
     "goBack": "返回上一级",
+    "openDirectory": "进入目录",
     "navHint": "导航",
     "enterHint": "进入",
     "backHint": "返回",
@@ -1133,7 +1136,7 @@
     "unknownTool": "未知工具"
   },
   "transcriptExport": {
-    "copyFull": "复制完整过程",
+    "copyFull": "复制全部",
     "copyResult": "复制结果",
     "copyEmpty": "该对话没有可复制的内容",
     "exportEmpty": "该会话没有可导出的内容",
@@ -3330,6 +3333,7 @@
     "acpMode": "模式",
     "acpModeLocked": "会话已经开始，模式不能再改。",
     "acpModeFailed": "切换模式失败",
+    "defaultSaveFailed": "模型已切换，但未能保存后续会话的默认选择。",
     "switchFailed": "切换模型失败",
     "modelNotConfigured": "未配置",
     "openModelSettings": "前往模型设置",
@@ -3505,6 +3509,7 @@
   "steering": {
     "title": "立即引导",
     "injectedAt": "已在第 {{round}} 轮前插入",
+    "statusNotApplied": "未生效，请在消息队列中重试",
     "statusPending": "等待触发",
     "statusInjected": "已触发"
   },

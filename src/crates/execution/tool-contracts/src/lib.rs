@@ -9,6 +9,10 @@ pub mod acp_tool_bridge;
 pub mod computer_use;
 #[cfg(feature = "computer-use-contract")]
 pub mod computer_use_control;
+#[cfg(feature = "computer-use-contract")]
+pub mod computer_use_geometry;
+#[cfg(feature = "computer-use-contract")]
+pub mod computer_use_permissions;
 pub mod deferred_tool;
 #[cfg(feature = "element-token")]
 pub mod element_token;

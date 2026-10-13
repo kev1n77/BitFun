@@ -760,6 +760,20 @@ pub(super) fn stop_session() {
 }
 
 /// None means an untouched legacy X11 host. A revoked portal never falls back.
+pub(super) fn session_is_active() -> bool {
+    SESSION
+        .lock()
+        .ok()
+        .is_some_and(|slot| slot.as_ref().is_some_and(|session| session.is_active()))
+}
+
+pub(super) fn session_has_input_consent() -> bool {
+    SESSION.lock().ok().is_some_and(|slot| {
+        slot.as_ref()
+            .is_some_and(|session| session.is_active() && session.input_devices & 3 == 3)
+    })
+}
+
 pub(super) fn session() -> Result<Option<Arc<LinuxControlSession>>, String> {
     let current = SESSION
         .lock()

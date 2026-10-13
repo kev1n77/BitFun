@@ -197,11 +197,58 @@ fn observed_node_center(
 }
 
 impl DesktopComputerUseHost {
+    async fn dispatch_app_click_impl(&self, params: AppClickParams) -> OpenBitFunResult<()> {
+        super::background_guard::run(self.dispatch_app_click_native(params)).await
+    }
+    async fn dispatch_app_type_text_impl(
+        &self,
+        app: AppSelector,
+        text: &str,
+        focus: Option<ClickTarget>,
+    ) -> OpenBitFunResult<()> {
+        super::background_guard::run(self.dispatch_app_type_text_native(app, text, focus)).await
+    }
+    async fn dispatch_app_scroll_impl(
+        &self,
+        app: AppSelector,
+        focus: Option<ClickTarget>,
+        dx: i32,
+        dy: i32,
+    ) -> OpenBitFunResult<()> {
+        super::background_guard::run(self.dispatch_app_scroll_native(app, focus, dx, dy)).await
+    }
+    async fn dispatch_app_key_chord_impl(
+        &self,
+        app: AppSelector,
+        keys: Vec<String>,
+        focus_idx: Option<u32>,
+    ) -> OpenBitFunResult<()> {
+        super::background_guard::run(self.dispatch_app_key_chord_native(app, keys, focus_idx)).await
+    }
+    async fn dispatch_app_drag_impl(
+        &self,
+        app: AppSelector,
+        from: ClickTarget,
+        to: ClickTarget,
+        button: String,
+        duration_ms: u64,
+    ) -> OpenBitFunResult<()> {
+        super::background_guard::run(self.dispatch_app_drag_native(
+            app,
+            from,
+            to,
+            button,
+            duration_ms,
+        ))
+        .await
+    }
+
     pub(super) async fn dispatch_app_input_impl(
         &self,
         app: AppSelector,
         action: AppInputAction,
     ) -> OpenBitFunResult<()> {
+        action.validate().map_err(OpenBitFunError::tool)?;
         crate::computer_use::control_session::input_allowed().map_err(OpenBitFunError::tool)?;
         match action {
             AppInputAction::Click {
@@ -243,7 +290,7 @@ impl DesktopComputerUseHost {
         }
     }
 
-    async fn dispatch_app_drag_impl(
+    async fn dispatch_app_drag_native(
         &self,
         app: AppSelector,
         from: ClickTarget,
@@ -344,7 +391,7 @@ impl DesktopComputerUseHost {
         })
     }
 
-    async fn dispatch_app_click_impl(&self, params: AppClickParams) -> OpenBitFunResult<()> {
+    async fn dispatch_app_click_native(&self, params: AppClickParams) -> OpenBitFunResult<()> {
         #[cfg(target_os = "macos")]
         {
             let pid = resolve_pid_macos(self, &params.app).await?;
@@ -640,7 +687,7 @@ impl DesktopComputerUseHost {
         })).await.map_err(|error| OpenBitFunError::tool(error.to_string()))?
     }
 
-    async fn dispatch_app_type_text_impl(
+    async fn dispatch_app_type_text_native(
         &self,
         app: AppSelector,
         text: &str,
@@ -853,7 +900,7 @@ impl DesktopComputerUseHost {
         self.observe_after_app_input(app).await
     }
 
-    async fn dispatch_app_scroll_impl(
+    async fn dispatch_app_scroll_native(
         &self,
         app: AppSelector,
         focus: Option<ClickTarget>,
@@ -926,7 +973,7 @@ impl DesktopComputerUseHost {
         self.observe_after_app_input(app).await
     }
 
-    async fn dispatch_app_key_chord_impl(
+    async fn dispatch_app_key_chord_native(
         &self,
         app: AppSelector,
         keys: Vec<String>,
@@ -1111,6 +1158,7 @@ impl DesktopComputerUseHost {
                 .unwrap_or_default();
 
             let view = InteractiveView {
+                observation_id: snap.observation_id.clone(),
                 app: snap.app.clone(),
                 window_title: snap.window_title.clone(),
                 elements: elements.clone(),
@@ -1303,6 +1351,7 @@ impl DesktopComputerUseHost {
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or_default();
             let view = VisualMarkView {
+                observation_id: snap.observation_id.clone(),
                 app: snap.app.clone(),
                 window_title: snap.window_title.clone(),
                 marks: marks.clone(),

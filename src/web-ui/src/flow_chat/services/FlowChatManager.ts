@@ -17,7 +17,6 @@ import { EventBatcher } from './EventBatcher';
 import { createLogger } from '@/shared/utils/logger';
 import { installSessionNavStatusService, sessionNavStatusService } from './sessionNavStatusService';
 import {
-  getActiveSurfaceId,
   getActiveSurfaceScope,
   isSurfaceChangedError,
   onSurfaceActivated,
@@ -51,6 +50,7 @@ import {
   renameChatSessionTitle as renameChatSessionTitleModule,
   reloadSessionTitle as reloadSessionTitleModule,
   forkChatSession as forkChatSessionModule,
+  duplicateChatSession as duplicateChatSessionModule,
   cleanupSaveState,
   cleanupSessionBuffers,
   sendMessage as sendMessageModule,
@@ -187,7 +187,8 @@ export class FlowChatManager {
       return false;
     }
 
-    const requestKey = JSON.stringify([getActiveSurfaceId(), workspace.id, preferredMode ?? '']);
+    const scope = getActiveSurfaceScope();
+    const requestKey = scope.key(scope.epoch, workspace.id, preferredMode ?? '');
     const existingRequest = this.initializationRequests.get(requestKey);
     this.latestInitializationRequestKey = requestKey;
     if (existingRequest) {
@@ -220,6 +221,8 @@ export class FlowChatManager {
       if (this.disposed) {
         return false;
       }
+
+      scope.assertCurrent('initialize workspace listeners');
 
       const initialMetadataPage = await this.context.flowChatStore.loadSessionMetadataPage(
         workspaceId, 5, undefined,
@@ -742,6 +745,12 @@ export class FlowChatManager {
 
   async forkChatSession(sourceSessionId: string, sourceTurnId: string): Promise<string> {
     return forkChatSessionModule(this.context, sourceSessionId, sourceTurnId);
+  }
+
+  async duplicateChatSession(
+    sourceSessionId: string,
+  ): Promise<{ sessionId: string; sessionName: string }> {
+    return duplicateChatSessionModule(this.context, sourceSessionId);
   }
 
   async resetWorkspaceSessions(

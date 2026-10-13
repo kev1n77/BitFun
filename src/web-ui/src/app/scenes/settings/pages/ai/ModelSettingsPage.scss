@@ -51,6 +51,7 @@
   }
 
   &__import-item {
+    display: inline-flex;
     min-width: 0;
     max-inline-size: 100%;
   }
@@ -1597,40 +1598,12 @@
   }
 
   &__model-capsule {
-    position: relative;
-    display: inline-flex;
-    flex: 0 1 auto;
-    align-items: center;
     width: auto;
-    min-width: 0;
-    max-width: 100%;
-
-    &:hover,
-    &:focus-within {
-      .openbitfun-model-settings__model-capsule-dismiss {
-        opacity: 1;
-        pointer-events: auto;
-      }
-
-      .openbitfun-model-settings__model-capsule-edit > [data-openbitfun-part='content'] {
-        clip-path: inset(0 calc(var(--openbitfun-control-icon-button-xs-size) - var(--openbitfun-control-button-xs-padding-inline)) 0 0);
-      }
-    }
   }
 
   &__model-capsule-edit {
     flex: 1 1 auto;
     min-width: 0;
-  }
-
-  &__model-capsule-dismiss {
-    position: absolute;
-    inset-block-start: 50%;
-    inset-inline-end: var(--openbitfun-border-width-default);
-    transform: translateY(-50%);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
   }
 
   &__selected-model-tags {
@@ -2556,7 +2529,6 @@
   }
 
   .openbitfun-model-settings__model-actions,
-  .openbitfun-model-settings__tag-editor .openbitfun-model-settings__model-capsule-dismiss,
   .openbitfun-model-settings__pool-card-controls,
   .openbitfun-model-settings__provider-group-list .openbitfun-collection-item__details-toggle {
     transition: none;
@@ -2564,17 +2536,6 @@
 }
 
 @media (hover: none), (pointer: coarse) {
-  .openbitfun-model-settings__tag-editor .openbitfun-model-settings__model-capsule-dismiss {
-    position: static;
-    transform: none;
-    opacity: 1;
-    pointer-events: auto;
-  }
-
-  .openbitfun-model-settings__tag-editor .openbitfun-model-settings__model-capsule-edit > [data-openbitfun-part='content'] {
-    clip-path: none;
-  }
-
   .openbitfun-model-settings__pool-card-controls {
     opacity: 1;
     pointer-events: auto;

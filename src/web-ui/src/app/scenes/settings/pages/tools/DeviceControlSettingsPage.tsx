@@ -1,4 +1,8 @@
 import '@/app/scenes/settings/pages/shared/RuntimeSettings.scss';
+import { ComputerUsePermissions } from '@/app/components/ComputerUsePermissions';
+import { computerUseControlAPI } from '@/infrastructure/api/service-api/ComputerUseControlAPI';
+import { useI18n } from '@/infrastructure/i18n';
+import '@/app/components/ComputerUseControlCard.scss';
 import { api } from '@/infrastructure/api/service-api/ApiClient';
 import { systemAPI } from '@/infrastructure/api/service-api/SystemAPI';
 import {
@@ -47,6 +51,7 @@ type ComputerUseStatusPayload = {
   accessibilityGranted: boolean;
   screenCaptureGranted: boolean;
   platformNote: string | null;
+  permissions?: unknown;
 };
 
 type BrowserControlLaunchResponse = {
@@ -80,6 +85,7 @@ const DEFAULT_BROWSER_CONTROL_BROWSER = 'default';
 
 const DeviceControlSettingsPage: React.FC = () => {
   const { t } = useTranslation('settings/runtime');
+  const { t: tCommon } = useI18n('common');
 
   const { t: tTools } = useTranslation('settings/agentic-tools');
 
@@ -98,6 +104,7 @@ const DeviceControlSettingsPage: React.FC = () => {
   const [peerBrowserControlUnsupported, setPeerBrowserControlUnsupported] = useState(false);
 
   const [computerUseAccess, setComputerUseAccess] = useState(false);
+  const [hasDetailedPermissions, setHasDetailedPermissions] = useState(false);
 
   const [computerUseScreen, setComputerUseScreen] = useState(false);
 
@@ -150,6 +157,7 @@ const DeviceControlSettingsPage: React.FC = () => {
       setPeerBrowserControlUnsupported(false);
       setComputerUseEnabled(s.computerUseEnabled);
       setComputerUseAccess(s.accessibilityGranted);
+      setHasDetailedPermissions(!!s.permissions);
       setComputerUseScreen(s.screenCaptureGranted);
       setComputerUsePlatformNote(s.platformNote);
       return true;
@@ -224,16 +232,6 @@ const DeviceControlSettingsPage: React.FC = () => {
         checked ? t('messages.saveSuccess') : t('messages.saveSuccess'),
         { duration: 2000 }
       );
-      if (checked) {
-        // Proactively surface the OS permission prompt (macOS Accessibility /
-        // Screen Recording) the moment the user opts in, instead of waiting
-        // for the first agent tool call to fail with a permission error.
-        try {
-          await api.invoke('computer_use_request_permissions');
-        } catch (permError) {
-          log.warn('computer_use_request_permissions failed', permError);
-        }
-      }
       await refreshComputerUseStatus();
     } catch (error) {
       log.error('Failed to save computer_use_enabled', error);
@@ -543,6 +541,7 @@ const DeviceControlSettingsPage: React.FC = () => {
                     />
                   </div>
                 </ConfigPageRow>
+                {!hasDetailedPermissions && <>
                 <ConfigPageRow
                   label={t('computerUse.accessibility')}
                   description={t('computerUse.accessibilityDesc')}
@@ -603,6 +602,16 @@ const DeviceControlSettingsPage: React.FC = () => {
                     )}
                   </div>
                 </ConfigPageRow>
+                </>}
+                {computerUseEnabled && hasDetailedPermissions && <>
+                  <ConfigPageRow label={tCommon('computerSharing.title')} description={tCommon('computerSharing.selectDescription')} align="center">
+                    <Button size="sm" variant="outline" onClick={() => void computerUseControlAPI.requestShare().catch(error => {
+                      log.error('Failed to request application sharing', error);
+                      notificationService.error(String(error));
+                    })}>{tCommon('computerSharing.startSharing')}</Button>
+                  </ConfigPageRow>
+                </>}
+                {hasDetailedPermissions && <ComputerUsePermissions showGrants />}
                 {computerUsePlatformMessage && (
                   <div
                     className="openbitfun-runtime-settings__platform-note"

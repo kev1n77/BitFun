@@ -15,7 +15,7 @@ use std::{
 
 #[derive(Clone)]
 struct CachedNode {
-    generation: u64,
+    scope: openbitfun_agent_tools::computer_use_control::ObservationScope,
     pid: i32,
     object: ObjectRefOwned,
     role: String,
@@ -24,6 +24,11 @@ struct CachedNode {
 static CACHE: OnceLock<Mutex<HashMap<i32, Vec<CachedNode>>>> = OnceLock::new();
 fn cache() -> &'static Mutex<HashMap<i32, Vec<CachedNode>>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+pub(super) fn clear_observations() {
+    if let Ok(mut entries) = cache().lock() {
+        entries.clear();
+    }
 }
 fn error(message: impl std::fmt::Display) -> OpenBitFunError {
     OpenBitFunError::tool(format!("[AT_SPI] {message}"))
@@ -148,18 +153,36 @@ pub(super) async fn snapshot(
     max_depth: u32,
     focus_only: bool,
 ) -> OpenBitFunResult<AppStateSnapshot> {
+    snapshot_impl(selector, max_depth, focus_only, true).await
+}
+
+/// The human's semantic preview must not replace indices held by the Agent's
+/// last observation. Only the Agent observation path publishes actionable nodes.
+pub(super) async fn preview_snapshot(
+    selector: AppSelector,
+    max_depth: u32,
+) -> OpenBitFunResult<AppStateSnapshot> {
+    snapshot_impl(selector, max_depth, false, false).await
+}
+
+async fn snapshot_impl(
+    selector: AppSelector,
+    max_depth: u32,
+    focus_only: bool,
+    publish_nodes: bool,
+) -> OpenBitFunResult<AppStateSnapshot> {
     let selector = if selector.is_empty() {
         bound_app_selector()?
     } else {
         selector
     };
-    let generation = super::control_session::snapshot().generation;
     let connection = AccessibilityConnection::new().await.map_err(error)?;
     let (app, root) = resolve(&connection, &selector).await?;
     let pid = app
         .pid
         .ok_or_else(|| error("[APP_IDENTITY_UNAVAILABLE] Missing PID"))?;
     super::control_session::bind_target(format!("atspi:{pid}")).map_err(error)?;
+    let scope = super::control_session::observation_scope().map_err(error)?;
     let selected_window = if focus_only {
         let accessible = connection
             .object_as_accessible(&root)
@@ -265,7 +288,7 @@ pub(super) async fn snapshot(
             actions
         ));
         cached.push(CachedNode {
-            generation,
+            scope: scope.clone(),
             pid,
             object: object.clone(),
             role: role.clone(),
@@ -310,8 +333,14 @@ pub(super) async fn snapshot(
     let pid = app
         .pid
         .ok_or_else(|| error("[APP_IDENTITY_UNAVAILABLE] AT-SPI application PID unavailable"))?;
-    cache().lock().map_err(error)?.insert(pid, cached);
+    super::control_session::validate_observation_scope(&scope).map_err(error)?;
+    if publish_nodes {
+        let mut entries = cache().lock().map_err(error)?;
+        entries.clear();
+        entries.insert(pid, cached);
+    }
     Ok(AppStateSnapshot {
+        observation_id: None,
         app,
         window_title,
         tree_text: tree,
@@ -342,7 +371,7 @@ async fn cached_target(
         .and_then(|nodes| nodes.get(index as usize))
         .cloned()
         .ok_or_else(|| error("[STALE_NODE] Read get_app_state before acting on a node index."))?;
-    if target.generation != super::control_session::snapshot().generation {
+    if super::control_session::validate_observation_scope(&target.scope).is_err() {
         return Err(error(
             "[STALE_NODE] Control session changed; read a fresh application snapshot.",
         ));

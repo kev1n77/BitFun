@@ -7,6 +7,62 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 const OWNER: &str = "native-control-roundtrip-fixture";
+async fn select_and_grant_fixture(host: &DesktopComputerUseHost, pid: i32, window: Option<u64>) {
+    let pending = host.control_snapshot();
+    assert_eq!(pending.state, "awaiting_share");
+    assert!(crate::computer_use::control_session::acquire(OWNER, "app_click").is_err());
+    let target = crate::computer_use::share_targets()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|target| {
+            target.pid == Some(pid)
+                && window.map_or(target.title == "Computer Use Roundtrip Fixture", |id| {
+                    target.window_id == Some(id)
+                })
+        })
+        .expect("fixture sharing choice");
+    let shared = host
+        .share_selected_target(
+            pending.generation,
+            &target.selection_id,
+            openbitfun_agent_tools::computer_use_control::ControlMode::Background,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        shared.mode,
+        openbitfun_agent_tools::computer_use_control::ControlMode::Observe
+    );
+    assert!(crate::computer_use::control_session::acquire(OWNER, "app_click").is_err());
+    use crate::computer_use::shared_preview::{self, SharedInputRequest, SharedPreviewRequest};
+    let preview_scope = || SharedPreviewRequest {
+        generation: shared.generation,
+        target_revision: shared.target_revision,
+        authorization_revision: shared.sharing.as_ref().unwrap().authorization_revision,
+    };
+    let preview = shared_preview::observe(preview_scope()).await.unwrap();
+    assert!(preview.frame.as_ref().is_some_and(|frame| frame.width > 0
+        && frame.height > 0
+        && !frame.screenshot_id.is_empty()));
+    let denied = shared_preview::input(SharedInputRequest {
+        scope: preview_scope(),
+        input: openbitfun_core::agentic::tools::computer_use_host::AppInputAction::KeyChord {
+            keys: vec!["escape".into()],
+            focus_idx: None,
+        },
+    })
+    .await
+    .unwrap_err();
+    assert!(denied.contains("CONTROL_OBSERVE_ONLY"), "{denied}");
+    crate::computer_use::control_session::set_share_control(
+        shared.generation,
+        shared.target_revision,
+        shared.sharing.as_ref().unwrap().authorization_revision,
+        true,
+    )
+    .unwrap();
+}
 struct StopOnExit;
 impl Drop for StopOnExit {
     fn drop(&mut self) {
@@ -60,6 +116,29 @@ fn assert_session(
         "tool pipeline changed the foreground application; human switching also invalidates this assertion");
 }
 
+async fn wait_for_observer(path: &str) -> Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let ready = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|data| serde_json::from_str::<Value>(&data).ok());
+        if let Some(state) = ready.filter(|state| {
+            state["ready"] == true
+                && state["active"] == true
+                && state["key_window"] == true
+                && state["pid"].as_i64().map(|pid| pid as i32)
+                    == crate::computer_use::macos_bg_input::frontmost_pid_macos()
+        }) {
+            return state;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "foreground observer failed to establish the startup baseline"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 pub(crate) async fn run() {
     if std::env::var_os("OPENBITFUN_INPUT_FIXTURE_PID").is_some() {
         run_covered_semantic().await;
@@ -78,6 +157,9 @@ pub(crate) async fn run() {
         .parse()
         .unwrap();
     let result_path = std::env::var("OPENBITFUN_ROUNDTRIP_FIXTURE_RESULT").unwrap();
+    if let Ok(observer_path) = std::env::var("OPENBITFUN_INPUT_OBSERVER_RESULT") {
+        wait_for_observer(&observer_path).await;
+    }
     let foreground = crate::computer_use::macos_bg_input::frontmost_pid_macos();
     assert_ne!(
         foreground,
@@ -99,6 +181,7 @@ pub(crate) async fn run() {
     )
     .await;
     let generation = start["generation"].as_u64().expect("control generation");
+    select_and_grant_fixture(&host, pid, None).await;
     let apps = call(&tool, &context, json!({"action":"list_apps"})).await;
     assert!(
         apps.to_string().contains(&pid.to_string()),
@@ -110,6 +193,29 @@ pub(crate) async fn run() {
         json!({"action":"get_app_state", "app":{"pid":pid}}),
     )
     .await;
+    let old_observation_id = observation["app_state"]["observation_id"]
+        .as_str()
+        .expect("scoped observation identity")
+        .to_owned();
+    let observation = call(
+        &tool,
+        &context,
+        json!({"action":"get_app_state", "app":{"pid":pid}}),
+    )
+    .await;
+    let observation_id = observation["app_state"]["observation_id"].as_str().unwrap();
+    assert_ne!(
+        old_observation_id, observation_id,
+        "identical trees still have different reference lifetimes"
+    );
+    let stale = tool
+        .call_impl(
+            &json!({"action":"app_click", "app":{"pid":pid}, "observation_id":old_observation_id,
+        "target":{"kind":"node_idx","idx":0}}),
+            &context,
+        )
+        .await;
+    assert!(stale.unwrap_err().to_string().contains("STALE_OBSERVATION"));
     let target = host
         .control_snapshot()
         .target
@@ -134,7 +240,7 @@ pub(crate) async fn run() {
     call(
         &tool,
         &context,
-        json!({"action":"app_click", "app":{"pid":pid},
+        json!({"action":"app_click", "app":{"pid":pid}, "observation_id":observation_id,
         "target":{"kind":"node_idx", "idx":button_idx}}),
     )
     .await;
@@ -222,26 +328,7 @@ async fn run_covered_semantic() {
     let read = |path: &str| -> Value {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        let ready = std::fs::read_to_string(&observer_path)
-            .ok()
-            .and_then(|data| serde_json::from_str::<Value>(&data).ok());
-        if ready.as_ref().is_some_and(|state| {
-            state["ready"] == true
-                && state["active"] == true
-                && state["key_window"] == true
-                && state["pid"].as_i64().map(|pid| pid as i32)
-                    == crate::computer_use::macos_bg_input::frontmost_pid_macos()
-        }) {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "foreground observer failed to establish the startup baseline"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    wait_for_observer(&observer_path).await;
     let initial = read(&path);
     let initial_observer = read(&observer_path);
     assert_eq!(initial["bundle_id"], "dev.openbitfun.input-fixture.target");
@@ -271,6 +358,7 @@ async fn run_covered_semantic() {
         json!({"action":"start_control","mode":"background"}),
     )
     .await;
+    select_and_grant_fixture(&host, pid, initial["window_id"].as_u64()).await;
     let observation = call(
         &tool,
         &context,
@@ -452,9 +540,56 @@ async fn run_covered_semantic() {
     eprintln!(
         "PASS non-AX canvas receives one unmodified click and text without foreground change"
     );
+    // Human preview input uses a separate host instance but the same native
+    // sharing resource, lease and background guard as the Agent.
+    use crate::computer_use::shared_preview::{self, SharedInputRequest, SharedPreviewRequest};
+    let shared = host.control_snapshot();
+    let scope = || SharedPreviewRequest {
+        generation: shared.generation,
+        target_revision: shared.target_revision,
+        authorization_revision: shared.sharing.as_ref().unwrap().authorization_revision,
+    };
+    shared_preview::observe(scope()).await.unwrap();
+    shared_preview::input(SharedInputRequest {
+        scope: scope(),
+        input: openbitfun_core::agentic::tools::computer_use_host::AppInputAction::KeyChord {
+            keys: vec!["escape".into()],
+            focus_idx: None,
+        },
+    })
+    .await
+    .unwrap();
+    shared_preview::observe(scope()).await.unwrap();
+    assert_eq!(read(&path)["canvas_escape_presses"], 1);
+    crate::computer_use::control_session::set_share_control(
+        shared.generation,
+        shared.target_revision,
+        shared.sharing.as_ref().unwrap().authorization_revision,
+        false,
+    )
+    .unwrap();
+    assert!(shared_preview::input(SharedInputRequest {
+        scope: scope(),
+        input: openbitfun_core::agentic::tools::computer_use_host::AppInputAction::KeyChord {
+            keys: vec!["escape".into()],
+            focus_idx: None,
+        },
+    })
+    .await
+    .unwrap_err()
+    .contains("CONTROL_STALE"));
+    assert!(!host.control_snapshot().sharing.unwrap().control_enabled);
+    eprintln!(
+        "PASS native preview input shares the Agent lease; revocation rejects stale preview work"
+    );
     call(&tool, &context, json!({"action":"stop_control"})).await;
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
     let final_observer = read(&observer_path);
+    assert_eq!(
+        read(&path)["canvas_escape_presses"],
+        1,
+        "revoked preview input must not be delivered"
+    );
     assert_eq!(
         read(&path)["active"],
         false,

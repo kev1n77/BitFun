@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <stdatomic.h>
 #include <string.h>
-extern void obf_control_native_stopped(uint64_t generation, int32_t pid, uint32_t windowID, const char *reason);
+extern void obf_control_native_stopped(uint64_t generation, uint64_t revision, int32_t pid, uint32_t windowID, const char *reason);
 
 // Zero means the main-thread observer is not installed yet. Consumers must
 // not cache focus preparation against that uninitialized value. Installation
@@ -50,6 +50,7 @@ uint64_t obf_capture_activation_epoch(void) {
 @property(nonatomic) CGRect bounds;
 @property(nonatomic) uint64_t sequence;
 @property(nonatomic) uint64_t generation;
+@property(atomic) uint64_t targetRevision;
 @property(nonatomic) CMTime lastObservedSample;
 @property(nonatomic) CMTime inputBarrier;
 @property(nonatomic) uint64_t receivedFrames;
@@ -77,13 +78,13 @@ uint64_t obf_capture_activation_epoch(void) {
 }
 - (void)stream:(SCStream *)stream didStopWithError:(NSError *)error {
     [self fail:[NSString stringWithFormat:@"CAPTURE_STOPPED: %@", error.localizedDescription]];
-    obf_control_native_stopped(self.generation, self.pid, self.windowID, self.failure.UTF8String);
+    obf_control_native_stopped(self.generation, self.targetRevision, self.pid, self.windowID, self.failure.UTF8String);
 }
 // macOS 15.2+: a closed target must immediately revoke input, even if the
 // framework keeps the stream available for a later reopened window.
 - (void)streamDidBecomeInactive:(SCStream *)stream {
     [self fail:@"TARGET_WINDOW_UNAVAILABLE: Shared window became inactive"];
-    obf_control_native_stopped(self.generation, self.pid, self.windowID, self.failure.UTF8String);
+    obf_control_native_stopped(self.generation, self.targetRevision, self.pid, self.windowID, self.failure.UTF8String);
     [stream stopCaptureWithCompletionHandler:^(NSError *error) { (void)error; }];
 }
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sample ofType:(SCStreamOutputType)type {
@@ -234,6 +235,7 @@ void *obf_capture_start(int32_t pid, uint32_t requestedWindow, uint64_t generati
             OBFWindowCapture *session = [[OBFWindowCapture alloc] init];
             session.pid = pid;
             session.generation = generation;
+            session.targetRevision = UINT64_MAX;
             [SCShareableContent getShareableContentExcludingDesktopWindows:YES onScreenWindowsOnly:NO
                 completionHandler:^(SCShareableContent *content, NSError *contentError) {
                 if (contentError) { [session fail:contentError.localizedDescription]; return; }
@@ -303,7 +305,7 @@ int obf_capture_status(void *handle, char *error, size_t capacity) {
     OBFWindowCapture *session = (__bridge OBFWindowCapture *)handle;
     if (obf_session_locked()) {
         [session fail:@"SESSION_LOCKED: Execution host screen is locked; start control again after unlocking"];
-        obf_control_native_stopped(session.generation, session.pid, session.windowID, session.failure.UTF8String);
+        obf_control_native_stopped(session.generation, session.targetRevision, session.pid, session.windowID, session.failure.UTF8String);
         [session.stream stopCaptureWithCompletionHandler:^(NSError *e) { (void)e; }];
         obf_error(error, capacity, session.failure);
         return 0;
@@ -320,7 +322,7 @@ int obf_capture_status(void *handle, char *error, size_t capacity) {
     [session.condition unlock];
     if (!wasStopped && !valid) {
         [session fail:@"TARGET_WINDOW_UNAVAILABLE: Original target window is no longer capturable (closed or hidden)"];
-        obf_control_native_stopped(session.generation, session.pid, session.windowID, session.failure.UTF8String);
+        obf_control_native_stopped(session.generation, session.targetRevision, session.pid, session.windowID, session.failure.UTF8String);
         [session.stream stopCaptureWithCompletionHandler:^(NSError *e) { (void)e; }];
     }
     [session.condition lock];
@@ -354,6 +356,11 @@ int obf_capture_bounds(void *handle, double *bounds, char *error, size_t capacit
 
 // Establish a presentation-time barrier after input. A queued pre-input frame
 // cannot satisfy the next observation merely because it arrives late.
+void obf_capture_bind_revision(void *handle, uint64_t revision) {
+    OBFWindowCapture *session = (__bridge OBFWindowCapture *)handle;
+    session.targetRevision = revision;
+}
+
 void obf_capture_mark_input(void *handle) {
     OBFWindowCapture *session = (__bridge OBFWindowCapture *)handle;
     [session.condition lock];

@@ -29,7 +29,8 @@ fn number(dictionary: &Dictionary, key: &str) -> Option<f64> {
     unsafe { CFNumber::wrap_under_get_rule(value.cast()) }.to_f64()
 }
 
-fn window_owners() -> OpenBitFunResult<HashSet<i32>> {
+pub(super) fn list_share_targets(
+) -> OpenBitFunResult<Vec<openbitfun_agent_tools::computer_use_control::ShareTarget>> {
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
         fn CGWindowListCopyWindowInfo(
@@ -46,7 +47,7 @@ fn window_owners() -> OpenBitFunResult<HashSet<i32>> {
         ));
     }
     let windows: CFArray<CFTypeRef> = unsafe { CFArray::wrap_under_create_rule(raw) };
-    let mut owners = HashSet::new();
+    let mut targets = Vec::new();
     for window in windows.iter() {
         if unsafe { CFGetTypeID(*window) } != Dictionary::type_id() {
             continue;
@@ -68,10 +69,38 @@ fn window_owners() -> OpenBitFunResult<HashSet<i32>> {
             continue;
         }
         if let Some(pid) = number(&window, "kCGWindowOwnerPID").filter(|pid| *pid > 0.0) {
-            owners.insert(pid as i32);
+            let Some(id) = number(&window, "kCGWindowNumber").filter(|id| *id > 0.0) else {
+                continue;
+            };
+            let string = |key: &str| {
+                value(&window, key)
+                    .filter(|value| unsafe { CFGetTypeID(*value) } == CFString::type_id())
+                    .map(|value| unsafe { CFString::wrap_under_get_rule(value.cast()) }.to_string())
+            };
+            targets.push(openbitfun_agent_tools::computer_use_control::ShareTarget {
+                selection_id: String::new(),
+                unavailable_reason: None,
+                id: format!("pid:{}/window:{}", pid as i32, id as u64),
+                pid: Some(pid as i32),
+                window_id: Some(id as u64),
+                application: string("kCGWindowOwnerName")
+                    .unwrap_or_else(|| format!("Application {}", pid as i32)),
+                title: string("kCGWindowName").unwrap_or_default(),
+                bundle_id: None,
+                background_pointer: true,
+                background_semantic: true,
+                selection_required: false,
+            });
         }
     }
-    Ok(owners)
+    Ok(targets)
+}
+
+fn window_owners() -> OpenBitFunResult<HashSet<i32>> {
+    Ok(list_share_targets()?
+        .into_iter()
+        .filter_map(|window| window.pid)
+        .collect())
 }
 
 fn include_application(
@@ -126,9 +155,6 @@ pub(super) fn list_running_apps(include_hidden: bool) -> OpenBitFunResult<Vec<Ap
     });
     Ok(apps)
 }
-
-/// Compatibility for launch/quit call sites. Discovery is always fresh now.
-pub(super) fn invalidate_cache() {}
 
 #[cfg(test)]
 mod tests {

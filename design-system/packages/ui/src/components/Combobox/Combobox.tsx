@@ -22,6 +22,7 @@ import { Portal } from "../../overlay/Portal";
 import { useDesignSystem } from "../../overlay/useDesignSystem";
 import { useDismissibleLayer } from "../../overlay/useDismissibleLayer";
 import { IconButton } from "../IconButton";
+import { Capsule } from "../Capsule";
 import {
   Listbox,
   ListboxEmpty,
@@ -656,8 +657,7 @@ const CollectionPicker = forwardRef<HTMLDivElement, PickerProps>(function Collec
         {showTags && (
           <span className={styles.tags} data-openbitfun-part="tags">
             {selectedOptions.slice(0, Math.max(1, maxVisibleTags)).map((option) => (
-              <span className={styles.tag} data-openbitfun-part="tag" key={`${typeof option.value}:${option.value}`}>
-                <OverflowText>{option.label}</OverflowText>
+              <Capsule size="xs" data-openbitfun-part="tag" key={`${typeof option.value}:${option.value}`} action={(
                 <IconButton
                   aria-label={`${designSystem.messages.clearSelection}: ${option.label}`}
                   disabled={disabled}
@@ -672,7 +672,9 @@ const CollectionPicker = forwardRef<HTMLDivElement, PickerProps>(function Collec
                   tabIndex={resolvedOpen ? -1 : undefined}
                   variant="quiet"
                 />
-              </span>
+              )}>
+                <span className={styles.tag}><OverflowText>{option.label}</OverflowText></span>
+              </Capsule>
             ))}
             {selectedOptions.length > Math.max(1, maxVisibleTags) && (
               <span className={styles.tag}>+{selectedOptions.length - Math.max(1, maxVisibleTags)}</span>

@@ -18,6 +18,31 @@ export function Example() {
 
 The package owns component anatomy, behavior, accessibility, and stable variants. It does not own theme selection persistence, product state, routes, locale resources, or platform APIs.
 
+## Pane layouts
+
+`SplitView` retains its primary and secondary content hosts across placement,
+visibility and `layout="split" | "overlay"` changes. Split layout is the default:
+`rightSize` controls the physical right slot. In overlay layout, `rightSize`
+controls the secondary pane on `secondarySide`, while the primary pane fills the
+container. `minLeftSize` reserves uncovered space in overlay layout; use zero
+when the secondary pane may cover the full width. The resize handle follows the
+secondary pane's inner edge and keeps keyboard and pointer directions aligned.
+
+This is a persistent, non-modal pane layout inside the component's isolated
+stacking context. It does not add a backdrop, focus trap or outside-click
+dismissal. Floating menus and dialogs within either pane continue to use the
+document overlay coordinator. Owners control visibility with `mode` and persist
+split and overlay sizes independently when those preferences differ.
+
+Place `SplitViewPrimaryDock` inside the primary content's positioned container
+for an absolute input or toolbar that must avoid the secondary overlay. Its
+width and placement follow the displayed pane size, including pointer drags and
+container clamping, without resizing the primary pane. The dock passes pointer
+events through; interactive children must enable pointer events. Keep
+`minLeftSize` large enough for the dock's controls; on narrow containers this
+reservation shrinks to half the available width. Dock contents stay mounted
+when visibility or placement changes.
+
 Floating dialog/sheet overlays, menu popovers, select/combobox popups and tooltips declare
 `data-openbitfun-native-webview-occlusion` on their rendered floating surface.
 Native hosts use its visible bounds to temporarily hide overlapping child views;
@@ -108,7 +133,9 @@ by the component that needs them.
 ## Icons
 
 Use `Icon` for shared size, tone and accessible labels. General-purpose symbols
-use Lucide. Automatic reasoning uses the authored `reasoning-auto` SVG mark with
+use Lucide. The named `edit` icon uses the simple `Pen` outline without Pencil's
+cap divider, keeping compact action groups visually light.
+Automatic reasoning uses the authored `reasoning-auto` SVG mark with
 a `currentColor` mask so it follows the active theme. Manual reasoning levels use
 the product slider and text labels.
 Product consumers own capability filtering, translated names and
@@ -330,7 +357,14 @@ routing, and device or session operations stay in the consuming application.
 
 `Checkbox appearance="native"` uses the visible browser checkbox, retaining its
 native focus, disabled, checked, indeterminate, and form semantics. The default
-`custom` presentation remains unchanged. Both presentations share sm/md/lg
+`custom` presentation uses `color.control.highlight.background` for checked and
+indeterminate boxes and reuses `color.control.switch.thumb` for their marks.
+This matches the Switch's filled highlight and indicator pairing: white marks
+in ordinary light/dark themes, with a dark mark on the high-contrast dark theme's
+light highlight. `color.control.highlight.content` belongs to content on a
+highlighted surface and has a dark value in ordinary themes. Select and Combobox
+instead use the highlight color for a standalone check on a neutral surface.
+Forced colors use the system Highlight/HighlightText pair. Both presentations share sm/md/lg
 sizing and the same label and description slots; native colors belong to the
 browser, with optional consumer `accent-color` styling.
 
@@ -366,6 +400,41 @@ pressed states use shared action feedback, and keyboard focus keeps a visible
 focus ring. Use it for toolbar, dialog, and row utilities. `fill` and `primary`
 keep an opaque backing surface for persistent emphasis. Disabled quiet actions
 remain transparent and do not show hover or pressed feedback.
+
+`IconButton variant="glass"` is a translucent, blurred action over existing
+content. It uses a low-opacity tint of the shared raised surface, a softened
+subtle border and subtle blur, without an outer shadow. Hover and pressed states
+retain translucency. Unsupported blur, increased contrast and reduced transparency
+use a solid surface.
+The button itself owns the glass material and its reveal transition so an opaque
+backing or fading parent cannot prevent it from sampling the content behind it.
+
+### Capsule actions
+
+Wrap a pill-shaped `Button`, inline `Input`, or tag label in `Capsule`, matching
+its `size` to the child. Pass one `IconButton` (optionally inside `Tooltip`) to
+`action`. The slot selects circular glass presentation and compact geometry;
+the consumer keeps the action's accessible label, tone, disabled/loading state,
+and callbacks. The action is a sibling of the primary control, never a nested
+button. Pointer hover or focus within the capsule reveals it; touch keeps it
+available. Its right inset equals the top and bottom clearance at every density.
+
+```tsx
+<Capsule size="sm" action={
+  <IconButton aria-label="Remove provider" icon={<Icon name="delete" />}
+    tone="danger" onClick={requestRemoval} />
+}>
+  <Button size="sm" variant="outline" onClick={editProvider}>Provider name</Button>
+</Capsule>
+```
+
+The action floats over the intact label: do not clip, mask, hide, resize, or add
+action padding to its text when revealing the icon. Normal constrained-width
+`OverflowText` behavior remains available. `TabGroup.endAction` and removable
+`MultiSelect` tags share this contract, including existing native tab buttons.
+Leading identity icons stay in their label layout; this contract governs the
+independent trailing actions. Product CSS owns placement of capsules, not their
+action offsets, backgrounds, or visibility.
 
 For supplemental label annotations, compose `Tooltip trigger="hover-focus"
 openOnClick` with `IconButton variant="annotation" size="xs"` and an `info`

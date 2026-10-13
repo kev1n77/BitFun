@@ -2623,13 +2623,15 @@
         "启用或停用 Computer Use",
         "连接或断开受支持的浏览器",
         "检查并打开系统权限设置",
-        "查看当前控制目标与预览，并随时停止控制"
+        "查看当前控制目标与预览，并随时停止控制",
+        "先选择共享 App，再授权输入；可记住授权或随时撤销"
       ],
       "highlightsEn": [
         "Enable or disable Computer Use",
         "Connect or disconnect a supported browser",
         "Inspect and open OS permission settings",
-        "Inspect the current control target and preview, and stop control at any time"
+        "Inspect the current control target and preview, and stop control at any time",
+        "Select an App share before granting input; remember or revoke the grant"
       ],
       "items": [
         {
@@ -2657,7 +2659,8 @@
             "reasonEn": "“Request the operating-system permissions required for desktop control” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user."
           },
           "evidence": [
-            "command:computer_use_request_permissions"
+            "command:computer_use_request_permissions",
+            "command:computer_use_request_permission"
           ]
         },
         {
@@ -2778,6 +2781,53 @@
           "evidence": [
             "command:computer_use_control_stop",
             "source:src/web-ui/src/app/components/ComputerUseControlCard.tsx#ComputerUseControlCard"
+          ]
+        },
+        {
+          "id": "app-sharing",
+          "titleZh": "选择 App 窗口并单独授权或撤销控制",
+          "titleEn": "Select an App window and separately grant or revoke control",
+          "control": {
+            "kind": "open",
+            "reasonCode": "visualSelection",
+            "reasonZh": "共享窗口及控制模式由用户明确选择；智能体只能请求共享，不能代替用户授权。",
+            "reasonEn": "Window selection and input mode require an explicit user choice; agents can request sharing but cannot grant themselves control."
+          },
+          "evidence": [
+            "command:computer_use_share_request",
+            "command:computer_use_share_targets",
+            "command:computer_use_share_start",
+            "command:computer_use_share_control"
+          ]
+        },
+        {
+          "id": "preview-input",
+          "titleZh": "在共享预览中点击、拖动、滚动及输入",
+          "titleEn": "Click, drag, scroll and type through the shared preview",
+          "control": {
+            "kind": "open",
+            "reasonCode": "visualSelection",
+            "reasonZh": "预览输入需要用户授权，并绑定共享窗口、图像坐标及授权版本。",
+            "reasonEn": "Preview input requires user authorization and is bound to the shared window, image coordinates and authorization revision."
+          },
+          "evidence": [
+            "command:computer_use_share_observe",
+            "command:computer_use_share_input"
+          ]
+        },
+        {
+          "id": "remembered-control",
+          "titleZh": "按应用执行文件和控制模式记住或忘记授权",
+          "titleEn": "Remember or forget control by application executable and input mode",
+          "control": {
+            "kind": "open",
+            "reasonCode": "visualSelection",
+            "reasonZh": "记住授权只在用户选定并共享同一应用后生效，应用文件或输入模式改变时需要重新授权。",
+            "reasonEn": "Remembered control applies only after the user shares the same application; changed executable contents or input modes require a new grant."
+          },
+          "evidence": [
+            "command:computer_use_share_grants",
+            "command:computer_use_share_forget_grant"
           ]
         }
       ],
@@ -5255,12 +5305,12 @@
       "highlightsZh": [
         "开机启动与自动更新",
         "窗口关闭和托盘行为",
-        "任务完成、权限请求与启动提示通知"
+        "任务完成与权限请求通知"
       ],
       "highlightsEn": [
         "Launch-at-login and automatic updates",
         "Window close and tray behavior",
-        "Completion, permission, and startup-tip notifications"
+        "Completion and permission notifications"
       ],
       "items": [
         {
@@ -5356,8 +5406,8 @@
         },
         {
           "id": "notifications",
-          "titleZh": "分别控制任务完成、权限请求和启动提示通知",
-          "titleEn": "Control completion, permission-request, and startup-tip notifications independently",
+          "titleZh": "分别控制任务完成和权限请求通知",
+          "titleEn": "Control completion and permission-request notifications independently",
           "control": {
             "kind": "direct",
             "operations": [],
@@ -5367,9 +5417,6 @@
               },
               {
                 "id": "permission-notification"
-              },
-              {
-                "id": "startup-tips"
               }
             ]
           },
@@ -5377,25 +5424,6 @@
             "source:src/web-ui/src/locales/zh-CN/settings/application.json#notifications.dialogCompletion.label",
             "source:src/web-ui/src/locales/zh-CN/settings/application.json#notifications.permissionRequest.label",
             "command:send_system_notification"
-          ]
-        },
-        {
-          "id": "announcements",
-          "titleZh": "查看、标记已读、忽略或永久隐藏产品公告与提示",
-          "titleEn": "Review, mark seen, dismiss, or permanently hide product announcements and tips",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“查看、标记已读、忽略或永久隐藏产品公告与提示”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；智能体会打开精确入口，并把后续交互保留在用户可见界面。",
-            "reasonEn": "“Review, mark seen, dismiss, or permanently hide product announcements and tips” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user."
-          },
-          "evidence": [
-            "command:get_pending_announcements",
-            "command:mark_announcement_seen",
-            "command:dismiss_announcement",
-            "command:never_show_announcement",
-            "command:get_announcement_tips",
-            "command:trigger_announcement"
           ]
         }
       ],
@@ -5466,13 +5494,6 @@
           "titleEn": "Permission request notifications",
           "descriptionZh": "智能体等待权限确认时发送系统通知。",
           "descriptionEn": "Send an OS notification when an agent waits for permission."
-        },
-        {
-          "id": "startup-tips",
-          "titleZh": "启动提示",
-          "titleEn": "Startup tips",
-          "descriptionZh": "启动后显示功能提示。",
-          "descriptionEn": "Show product tips after startup."
         }
       ]
     },
@@ -5899,7 +5920,11 @@
           "control": {
             "kind": "direct",
             "operations": [],
-            "options": [{ "id": "auto-show-selection-toolbar" }]
+            "options": [
+              {
+                "id": "auto-show-selection-toolbar"
+              }
+            ]
           },
           "evidence": [
             "source:src/web-ui/src/app/scenes/settings/pages/application/TextSelectionSettingsSection.tsx#AUTO_SHOW_SELECTION_TOOLBAR_CONFIG_PATH",
@@ -9573,9 +9598,6 @@
     },
     "html_preview": {
       "capabilityId": "feature.files-editor"
-    },
-    "announcement": {
-      "capabilityId": "setting.application.general"
     },
     "tool": {
       "capabilityId": "feature.ai-assistant"

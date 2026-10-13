@@ -51,6 +51,13 @@ remaining native acceptance scenarios separately.
 ## Module map
 
 - `desktop_host/` — `ComputerUseHost` trait impl; entry for all actions
+- `control_session/admission.rs` — pure mode/owner/lease/start/stop state machine
+- `control_session/sharing.rs`, `desktop_host/sharing.rs` — user-selected window, observe-first sharing and revocable input grant
+- `permissions.rs`, `process_identity.rs`, `grants.rs`, `share_grants.rs` — explicit OS requests and executable-bound remembered preferences
+- `desktop_host/shared_preview.rs` — scoped manual preview input through the same native host/lease as the Agent
+- `desktop_host/background_guard.rs` — before/after desktop witnesses; no focus restoration or replay
+- `desktop_host/observation.rs`, `observation_cache.rs` — observation identity and bounded screenshot geometry; never input authority
+- `desktop_host/state.rs` — derived host feedback and view caches
 - `macos_*` / `windows_*` — platform AX, capture, list-apps, shortcuts
 - `windows_capture.rs` — WGC frame conversion and authoritative window bounds
 - `windows_wgc_capture.rs` — Windows.Graphics.Capture (Direct3D11)
@@ -156,3 +163,37 @@ cargo build -p openbitfun-desktop
 ```
 
 Windows-only paths (`windows_wgc_capture`, UIA) compile on CI (`windows-latest`).
+The isolated native-module harness compiles the production control owner, UIA,
+MSAA, WGC and pointer modules. Its portable error-envelope adapter replaces no
+native APIs or algorithms. Cross-compilation is type-checking, not Windows
+execution; full Desktop compilation and native fixtures still belong on Windows.
+
+```bash
+# Native Windows: unit tests; native delivery fixtures remain opt-in/ignored.
+node scripts/test-windows-computer-use-native.mjs
+# Other hosts with the target installed: compile production native modules only.
+node scripts/test-windows-computer-use-native.mjs --check --target x86_64-pc-windows-msvc
+```
+
+Observation IDs and target revisions are additive wire fields. Keep accepting
+legacy payloads, advertise `observation-id-v1`, and reject explicit stale IDs
+before input. New observations invalidate prior AX/view indices even when the
+content digest is unchanged. Do not replace namespace identity with a digest.
+
+New native fixture setup must use the production target inventory, selected-share
+capture and explicit grant. Tool `start_control` only requests sharing. Do not
+bypass that gate to make a native fixture pass. Permission probes must never
+prompt, and remembered grants must never select or share a window automatically.
+
+The Web preview's deterministic cursor is verified against Rust-generated
+`computer-use-rust` samples retained in the repository. The reference source is
+not required to build or run tests. After preview, sharing or permission UI edits:
+
+```bash
+pnpm --dir src/web-ui run test:run src/app/components/ComputerUseControlCard.test.tsx src/app/components/computer-use src/infrastructure/api/adapters/peer-device-adapter.test.ts
+```
+
+These UI tests cover permission requests, stale device/grant responses, geometry,
+gesture cancellation and cursor math. They do not establish native delivery or
+remote end-to-end behavior. The strict macOS fixture also exercises native shared
+preview capture/input and stale preview rejection after revocation.

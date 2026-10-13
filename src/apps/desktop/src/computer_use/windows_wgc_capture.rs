@@ -44,6 +44,8 @@ impl WgcCaptureSession {
         if hwnd.is_invalid() {
             return Err(OpenBitFunError::service("WGC capture: invalid HWND"));
         }
+        let scope = crate::computer_use::control_session::observation_scope()
+            .map_err(OpenBitFunError::service)?;
         unsafe {
             let (device, context) = create_d3d11_device()?;
             let direct_device = create_winrt_d3d_device(&device)?;
@@ -85,9 +87,7 @@ impl WgcCaptureSession {
             }
             let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let signal = closed.clone();
-            let generation = crate::computer_use::control_session::capture_token()
-                .map_err(OpenBitFunError::service)?
-                .generation();
+
             let mut pid = 0;
             windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, Some(&mut pid));
             let target = format!("pid:{pid}/window:{}", hwnd.0 as isize);
@@ -95,7 +95,8 @@ impl WgcCaptureSession {
                 .Closed(&windows::Foundation::TypedEventHandler::new(move |_, _| {
                     signal.store(true, std::sync::atomic::Ordering::Release);
                     crate::computer_use::control_session::native_stopped_target(
-                        generation,
+                        scope.generation,
+                        scope.target_revision,
                         &target,
                         "target_closed",
                     );
@@ -220,9 +221,12 @@ enum CaptureCommand {
 
 // A generation change must not retain a prior owner's native capture session.
 fn ensure_stream(
-    active: &mut Option<(usize, u64, WgcCaptureSession)>,
+    active: &mut Option<(
+        usize,
+        openbitfun_agent_tools::computer_use_control::ObservationScope,
+        WgcCaptureSession,
+    )>,
     handle: usize,
-    generation: u64,
 ) -> OpenBitFunResult<&mut WgcCaptureSession> {
     use windows::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsIconic, IsWindow};
     crate::computer_use::control_session::capture_allowed().map_err(OpenBitFunError::service)?;
@@ -241,9 +245,11 @@ fn ensure_stream(
         handle as isize
     ))
     .map_err(OpenBitFunError::service)?;
-    if active.as_ref().map(|(id, owner, _)| (*id, *owner)) != Some((handle, generation)) {
+    let scope = crate::computer_use::control_session::observation_scope()
+        .map_err(OpenBitFunError::service)?;
+    if active.as_ref().map(|(id, owner, _)| (*id, owner)) != Some((handle, &scope)) {
         *active = None;
-        *active = Some((handle, generation, WgcCaptureSession::start(hwnd)?));
+        *active = Some((handle, scope, WgcCaptureSession::start(hwnd)?));
     }
     let stream = &mut active.as_mut().expect("capture initialized").2;
     stream.ensure_live()?;
@@ -252,14 +258,19 @@ fn ensure_stream(
 
 // All COM initialization, interfaces and D3D immediate-context calls stay on
 // this dedicated worker. The registry only contains a thread-safe sender.
+static CAPTURE_WORKER: std::sync::OnceLock<std::sync::mpsc::Sender<CaptureCommand>> =
+    std::sync::OnceLock::new();
+
 fn capture_worker() -> &'static std::sync::mpsc::Sender<CaptureCommand> {
-    static WORKER: std::sync::OnceLock<std::sync::mpsc::Sender<CaptureCommand>> =
-        std::sync::OnceLock::new();
-    WORKER.get_or_init(|| {
+    CAPTURE_WORKER.get_or_init(|| {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-            let mut active: Option<(usize, u64, WgcCaptureSession)> = None;
+            let mut active: Option<(
+                usize,
+                openbitfun_agent_tools::computer_use_control::ObservationScope,
+                WgcCaptureSession,
+            )> = None;
             while let Ok(command) = rx.recv() {
                 match command {
                     CaptureCommand::Stop(reply) => {
@@ -269,7 +280,7 @@ fn capture_worker() -> &'static std::sync::mpsc::Sender<CaptureCommand> {
                     CaptureCommand::Ensure(handle, token, reply) => {
                         let result =
                             crate::computer_use::control_session::with_token(token, || {
-                                ensure_stream(&mut active, handle, token.generation()).map(|_| ())
+                                ensure_stream(&mut active, handle).map(|_| ())
                             });
                         if result.is_err() {
                             active = None;
@@ -279,7 +290,7 @@ fn capture_worker() -> &'static std::sync::mpsc::Sender<CaptureCommand> {
                     CaptureCommand::Capture(handle, token, reply) => {
                         let result =
                             crate::computer_use::control_session::with_token(token, || {
-                                ensure_stream(&mut active, handle, token.generation())?.capture()
+                                ensure_stream(&mut active, handle)?.capture()
                             });
                         if result.is_err() {
                             active = None;
@@ -299,7 +310,10 @@ fn capture_worker() -> &'static std::sync::mpsc::Sender<CaptureCommand> {
 
 pub(super) fn stop_capture() {
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    if capture_worker().send(CaptureCommand::Stop(tx)).is_ok() {
+    if CAPTURE_WORKER
+        .get()
+        .is_some_and(|worker| worker.send(CaptureCommand::Stop(tx)).is_ok())
+    {
         let _ = rx.recv_timeout(Duration::from_secs(3));
     }
 }

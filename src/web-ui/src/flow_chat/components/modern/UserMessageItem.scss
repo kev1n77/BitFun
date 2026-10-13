@@ -169,6 +169,7 @@
 }
 
 .user-message-item-shell:hover .user-message-item__actions,
+.user-message-item__actions[data-menu-open],
 .user-message-item-shell:focus-within .user-message-item__actions {
   opacity: 1;
   pointer-events: auto;
@@ -274,8 +275,7 @@
 }
 
 .user-message-item__copy-btn,
-.user-message-item__edit-btn,
-.user-message-item__rollback-btn {
+.user-message-item__edit-rollback-btn {
   @include transcriptLayout.metadata-action;
   // Keep the message action feedback and original pending indicator.
   background: transparent;
@@ -457,8 +457,7 @@
   .user-message-item__timestamp,
   .user-message-item__actions,
   .user-message-item__copy-btn,
-  .user-message-item__edit-btn,
-  .user-message-item__rollback-btn,
+  .user-message-item__edit-rollback-btn,
     .user-message-item__image-thumb,
   .user-message-item__lightbox-close {
     transition-duration: 0ms;

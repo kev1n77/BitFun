@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "e05dbc222e1267523832f82d6392701ab011c9d8d5ad1582dbe407904dc80d3d",
-  "count": 214,
+  "catalogDigest": "09e162e571595bbe38f6c2e10e061e0f7243baae9e6db56a2e5b8948304a0e32",
+  "count": 216,
   "reasonCounts": {
     "externalAuth": 4,
     "secretEntry": 5,
-    "unstructuredInteraction": 185,
-    "visualSelection": 20
+    "unstructuredInteraction": 184,
+    "visualSelection": 23
   },
   "entries": [
     {
@@ -957,7 +957,8 @@
         "pageId": "tools.execution"
       },
       "evidence": [
-        "command:computer_use_request_permissions"
+        "command:computer_use_request_permissions",
+        "command:computer_use_request_permission"
       ]
     },
     {
@@ -1043,6 +1044,59 @@
         "command:computer_use_control_status",
         "command:computer_use_control_preview",
         "source:src/web-ui/src/app/components/ComputerUseControlCard.tsx#ComputerUseControlCard"
+      ]
+    },
+    {
+      "capabilityId": "feature.computer-use",
+      "itemId": "app-sharing",
+      "titleZh": "选择 App 窗口并单独授权或撤销控制",
+      "titleEn": "Select an App window and separately grant or revoke control",
+      "reasonCode": "visualSelection",
+      "reasonZh": "共享窗口及控制模式由用户明确选择；智能体只能请求共享，不能代替用户授权。",
+      "reasonEn": "Window selection and input mode require an explicit user choice; agents can request sharing but cannot grant themselves control.",
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "tools.execution"
+      },
+      "evidence": [
+        "command:computer_use_share_request",
+        "command:computer_use_share_targets",
+        "command:computer_use_share_start",
+        "command:computer_use_share_control"
+      ]
+    },
+    {
+      "capabilityId": "feature.computer-use",
+      "itemId": "preview-input",
+      "titleZh": "在共享预览中点击、拖动、滚动及输入",
+      "titleEn": "Click, drag, scroll and type through the shared preview",
+      "reasonCode": "visualSelection",
+      "reasonZh": "预览输入需要用户授权，并绑定共享窗口、图像坐标及授权版本。",
+      "reasonEn": "Preview input requires user authorization and is bound to the shared window, image coordinates and authorization revision.",
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "tools.execution"
+      },
+      "evidence": [
+        "command:computer_use_share_observe",
+        "command:computer_use_share_input"
+      ]
+    },
+    {
+      "capabilityId": "feature.computer-use",
+      "itemId": "remembered-control",
+      "titleZh": "按应用执行文件和控制模式记住或忘记授权",
+      "titleEn": "Remember or forget control by application executable and input mode",
+      "reasonCode": "visualSelection",
+      "reasonZh": "记住授权只在用户选定并共享同一应用后生效，应用文件或输入模式改变时需要重新授权。",
+      "reasonEn": "Remembered control applies only after the user shares the same application; changed executable contents or input modes require a new grant.",
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "tools.execution"
+      },
+      "evidence": [
+        "command:computer_use_share_grants",
+        "command:computer_use_share_forget_grant"
       ]
     },
     {
@@ -2516,27 +2570,6 @@
         "command:get_pending_update",
         "command:install_pending_update",
         "command:get_app_version"
-      ]
-    },
-    {
-      "capabilityId": "setting.application.general",
-      "itemId": "announcements",
-      "titleZh": "查看、标记已读、忽略或永久隐藏产品公告与提示",
-      "titleEn": "Review, mark seen, dismiss, or permanently hide product announcements and tips",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“查看、标记已读、忽略或永久隐藏产品公告与提示”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；智能体会打开精确入口，并把后续交互保留在用户可见界面。",
-      "reasonEn": "“Review, mark seen, dismiss, or permanently hide product announcements and tips” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.general"
-      },
-      "evidence": [
-        "command:get_pending_announcements",
-        "command:mark_announcement_seen",
-        "command:dismiss_announcement",
-        "command:never_show_announcement",
-        "command:get_announcement_tips",
-        "command:trigger_announcement"
       ]
     },
     {

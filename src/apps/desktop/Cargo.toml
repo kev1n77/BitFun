@@ -101,8 +101,9 @@ dispatch = { workspace = true }
 foreign-types = { workspace = true }
 libc = { workspace = true }
 objc2 = { workspace = true, features = ["exception"] }
-objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSData", "NSDictionary", "NSError", "NSString"] }
-objc2-app-kit = { workspace = true, features = ["std", "libc", "NSWorkspace", "NSRunningApplication"] }
+block2 = { workspace = true }
+objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSData", "NSDictionary", "NSError", "NSGeometry", "NSNotification", "NSOperation", "NSString", "block2"] }
+objc2-app-kit = { workspace = true, features = ["std", "libc", "NSAnimationContext", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow", "NSWorkspace", "NSRunningApplication"] }
 objc2-vision = { workspace = true, features = ["std", "VNRecognizeTextRequest", "VNRequest", "VNObservation", "VNRequestHandler", "VNUtils", "VNTypes", "objc2-core-foundation"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -129,7 +130,6 @@ windows = { workspace = true, features = [
   "Win32_System_LibraryLoader",
   "Win32_System_SystemServices",
   "Win32_System_Threading",
-  "Win32_Storage_Xps",
   "Win32_System_Com",
   "Win32_System_Ole",
   "Win32_System_Variant",
@@ -157,6 +157,7 @@ default = []
 devtools = ["tauri/devtools", "openbitfun-webdriver/embedded"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }
 atspi = { workspace = true, features = ["zbus"] }
 gstreamer = { workspace = true }
 gstreamer-app = { workspace = true }

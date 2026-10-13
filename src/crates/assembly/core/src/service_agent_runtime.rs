@@ -2378,10 +2378,25 @@ impl CoreServiceAgentRuntime {
             .get_session(session_id)
             .is_none()
         {
-            coordinator
-                .restore_session_for_workspace_binding(&binding, session_id)
+            let session = coordinator
+                .update_session_model_selection_from_storage_path(
+                    &binding.session_storage_dir(),
+                    session_id,
+                    &normalized_model_id,
+                    normalized_reasoning_preset
+                        .as_ref()
+                        .and_then(|value| value.as_deref()),
+                    false,
+                )
                 .await
-                .map_err(|e| format!("Failed to restore session: {e}"))?;
+                .map_err(|error| format!("Failed to update session model: {error}"))?;
+            if session_uses_shared_mode_default(&session) {
+                Self::persist_mode_model(&normalized_model_id).await;
+            }
+            return Ok(RemoteSessionModelSelection {
+                model_id: session.config.model_id.unwrap_or(normalized_model_id),
+                reasoning_preset: session.config.reasoning_preset,
+            });
         }
 
         let previous_model_id = coordinator
@@ -4199,7 +4214,6 @@ mod tests {
         assert!(!open_workspace.contains("initialize_snapshot_manager_for_workspace"));
 
         for (start, end) in [
-            ("pub(crate) async fn update_remote_session_model", "/// Persist the shared selector"),
             ("async fn restore_remote_session(\n        &self,\n        session_id: &str,\n        workspace: RemoteDialogWorkspaceBinding", "fn prewarm_remote_terminal"),
             ("async fn ensure_session_loaded(&self, session_id: &str)", "async fn update_session_title"),
             ("async fn restore_remote_session(\n        &self,\n        session_id: &str,\n        _restore_path_hint: &str", "async fn cancel_remote_turn"),
@@ -4218,6 +4232,17 @@ mod tests {
                 "remote attach or mutation must not bypass the Coordinator ownership gate"
             );
         }
+
+        let selector = source
+            .split("pub(crate) async fn update_remote_session_model")
+            .nth(1)
+            .and_then(|source| source.split("/// Persist the shared selector").next())
+            .unwrap();
+        assert!(selector.contains("ensure_remote_binding_runtime_ownership"));
+        assert!(selector.contains(
+            "coordinator\n                .update_session_model_selection_from_storage_path"
+        ));
+        assert!(!selector.contains("restore_session"));
 
         let remote_session_host = source
             .split("impl RemoteSessionRuntimeHost for CoreRemoteSessionRuntimeHost")

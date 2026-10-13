@@ -1,11 +1,21 @@
 //! Desktop GUI resource admission. Runtime remains the task/permission owner.
 use openbitfun_agent_tools::computer_use_control::{
-    action_is_observation, action_requires_foreground, ControlClick, ControlMode, ControlPointer,
-    ControlSnapshot,
+    ControlClick, ControlMode, ControlPointer, ControlSnapshot, ObservationScope,
 };
 use openbitfun_core::agentic::tools::computer_use_host::ComputerUseActionLease;
 use std::cell::Cell;
 use std::sync::{Mutex, OnceLock};
+
+#[path = "control_session/admission.rs"]
+mod admission;
+#[path = "control_session/sharing.rs"]
+mod sharing;
+use admission::Admission;
+pub(crate) use admission::ControlToken;
+pub(crate) use sharing::{
+    acquire_shared, begin_share, finish_share, grant_preference_result, request_share,
+    set_share_control, shared_process, shared_target_allowed,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Executor {
@@ -18,30 +28,16 @@ fn executor() -> Executor {
         .unwrap_or_else(|| Executor::Thread(std::thread::current().id()))
 }
 
-/// An in-process capability, never deserialized from the controller. Blocking
-/// workers retain the action identity even after the async tool future is gone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ControlToken {
-    generation: u64,
-    sequence: u64,
-    input: bool,
-}
-impl ControlToken {
-    pub(crate) fn generation(self) -> u64 {
-        self.generation
-    }
-}
 thread_local! { static TOKEN: Cell<Option<ControlToken>> = const { Cell::new(None) }; }
 
 #[derive(Default)]
 struct Resource {
-    snapshot: ControlSnapshot,
-    executor: Option<Executor>,
-    busy: bool,
-    cleaning: bool,
+    admission: Admission<Executor>,
     preview: Option<ControlPreview>,
+    process: Option<super::process_identity::ProcessIdentity>,
 }
 static RESOURCE: OnceLock<Mutex<Resource>> = OnceLock::new();
+static NATIVE_CLEANUP: Mutex<()> = Mutex::new(());
 static SCOPE_CHANGED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 fn resource() -> &'static Mutex<Resource> {
     RESOURCE.get_or_init(|| Mutex::new(Resource::default()))
@@ -52,24 +48,34 @@ fn locked() -> Result<std::sync::MutexGuard<'static, Resource>, String> {
         .map_err(|_| "[CONTROL_FAILED] Control resource lock poisoned".into())
 }
 fn active(r: &Resource) -> bool {
-    r.snapshot.state == "active" && !r.cleaning
+    r.admission.active()
 }
 fn token_for(r: &Resource) -> ControlToken {
-    ControlToken {
-        generation: r.snapshot.generation,
-        sequence: r.snapshot.sequence,
-        input: r.busy && r.executor == Some(executor()),
-    }
+    r.admission.token(executor())
 }
 fn matches_token(r: &Resource, token: ControlToken) -> bool {
-    token.generation == r.snapshot.generation && token.sequence == r.snapshot.sequence
+    r.admission.matches_token(token)
 }
 fn check_context(r: &Resource) -> Result<(), String> {
-    if !active(r) {
-        return Err("[CONTROL_STOPPED] Start a new control session before capturing".into());
+    r.admission.check_observer(executor(), TOKEN.get())?;
+    if let Some(process) = &r.process {
+        process.validate()?;
     }
-    if TOKEN.get().is_some_and(|token| !matches_token(r, token)) {
-        return Err("[CONTROL_STALE] This worker belongs to an earlier action".into());
+    Ok(())
+}
+
+/// Captured before crossing an async/native boundary; never mint a replacement
+/// scope after the work completes.
+pub(crate) fn observation_scope() -> Result<ObservationScope, String> {
+    let r = locked()?;
+    check_context(&r)?;
+    Ok(ObservationScope::from_control(&r.admission.snapshot))
+}
+pub(crate) fn validate_observation_scope(scope: &ObservationScope) -> Result<(), String> {
+    let r = locked()?;
+    check_context(&r)?;
+    if *scope != ObservationScope::from_control(&r.admission.snapshot) {
+        return Err("[CONTROL_STALE] Observation belongs to a stopped or rebound target".into());
     }
     Ok(())
 }
@@ -91,11 +97,7 @@ pub(crate) fn with_token<T>(token: ControlToken, f: impl FnOnce() -> T) -> T {
 /// Drop-in replacement for host blocking operations. Stale workers never gain
 /// the authority of a later task just because its global busy flag is true.
 pub(crate) fn dispatch_token() -> ControlToken {
-    capture_token().unwrap_or(ControlToken {
-        generation: u64::MAX,
-        sequence: u64::MAX,
-        input: false,
-    })
+    capture_token().unwrap_or(ControlToken::invalid())
 }
 pub(crate) fn spawn_blocking<F, R>(f: F) -> tokio::task::JoinHandle<R>
 where
@@ -130,11 +132,13 @@ async fn wait_with_scope_check(
 
 pub(crate) async fn wait(ms: u64) -> Result<(), String> {
     let token = capture_token()?;
-    let target = snapshot().target;
+    let scope = observation_scope()?;
     wait_with_scope_check(&SCOPE_CHANGED, std::time::Duration::from_millis(ms), || {
         let r = locked()?;
         check_context(&r)?;
-        if !matches_token(&r, token) || r.snapshot.target != target {
+        if !matches_token(&r, token)
+            || ObservationScope::from_control(&r.admission.snapshot) != scope
+        {
             return Err("[CONTROL_STALE] Control changed during wait".into());
         }
         Ok(())
@@ -143,12 +147,16 @@ pub(crate) async fn wait(ms: u64) -> Result<(), String> {
 }
 
 fn projected(r: &Resource) -> ControlSnapshot {
-    let mut s = r.snapshot.clone();
+    let mut s = r.admission.snapshot.clone();
     s.supported = true;
     s.capabilities = vec![
         "control-session-v1".into(),
         "stop-control".into(),
         "action-feedback".into(),
+        "observation-scope-v1".into(),
+        "observation-id-v1".into(),
+        "app-sharing-v1".into(),
+        "permission-requests-v1".into(),
     ];
     // Backend routes, not a claim that every control implements them. These
     // facts let the agent plan before sending unsupported canvas operations.
@@ -197,58 +205,28 @@ pub(crate) fn snapshot() -> ControlSnapshot {
             ..Default::default()
         })
 }
-fn begin_start(r: &mut Resource, owner: &str, mode: ControlMode) -> Result<u64, String> {
-    if owner.trim().is_empty() {
-        return Err("[CONTROL_OWNER_REQUIRED] A runtime session is required".into());
-    }
-    if r.busy || r.cleaning || (active(r) && r.snapshot.owner.as_deref() != Some(owner)) {
-        return Err("[CONTROL_BUSY] Another action or session owns desktop control".into());
-    }
-    r.cleaning = true;
-    r.snapshot.generation += 1;
-    r.snapshot.owner = Some(owner.into());
-    r.snapshot.mode = mode;
-    r.snapshot.target = None;
-    r.snapshot.pointer = None;
-    r.snapshot.reason = None;
-    r.snapshot.action = None;
-    r.snapshot.state = "starting".into();
-    r.preview = None;
-    Ok(r.snapshot.generation)
-}
-fn finish_start(r: &mut Resource, generation: u64) -> Result<(), String> {
-    if r.snapshot.generation != generation || r.snapshot.state != "starting" {
-        return Err("[CONTROL_STOPPED] Start was cancelled during native cleanup".into());
-    }
-    r.cleaning = false;
-    r.snapshot.state = "active".into();
-    Ok(())
-}
 pub(crate) fn start(owner: &str, mode: ControlMode) -> Result<ControlSnapshot, String> {
-    let generation = begin_start(&mut *locked()?, owner, mode)?;
-    stop_native();
+    let generation = {
+        let mut r = locked()?;
+        let generation = r.admission.begin_start(owner, mode)?;
+        r.preview = None;
+        r.process = None;
+        SCOPE_CHANGED.notify_waiters();
+        generation
+    };
+    stop_native(generation)?;
     let mut r = locked()?;
-    finish_start(&mut r, generation)?;
+    r.admission.finish_start(generation)?;
     Ok(projected(&r))
 }
 fn revoke(r: &mut Resource, reason: &str) -> u64 {
     SCOPE_CHANGED.notify_waiters();
-    r.snapshot.generation += 1;
-    r.snapshot.state = "stopped".into();
-    r.snapshot.reason = Some(reason.into());
-    r.snapshot.pointer = None;
-    r.snapshot.action = None;
-    r.busy = false;
-    r.executor = None;
-    r.cleaning = true;
     r.preview = None;
-    r.snapshot.generation
+    r.process = None;
+    r.admission.revoke(reason)
 }
 fn finish_cleanup(r: &mut Resource, ticket: u64) {
-    // An older callback cannot open admission while a newer cleanup is pending.
-    if r.snapshot.generation == ticket && r.snapshot.state == "stopped" {
-        r.cleaning = false;
-    }
+    r.admission.finish_cleanup(ticket);
 }
 pub(crate) fn stop(owner: Option<&str>, reason: &str) -> Result<ControlSnapshot, String> {
     stop_checked(owner, None, reason)
@@ -260,27 +238,24 @@ pub(crate) fn stop_checked(
 ) -> Result<ControlSnapshot, String> {
     let ticket = {
         let mut r = locked()?;
-        if generation.is_some_and(|g| r.snapshot.generation != g) {
-            return Err("[CONTROL_STALE] The control session has changed".into());
-        }
-        if owner.is_some_and(|owner| {
-            r.snapshot
-                .owner
-                .as_deref()
-                .is_some_and(|current| current != owner)
-        }) {
-            return Err("[CONTROL_OWNER_MISMATCH] This task does not own desktop control".into());
-        }
-        revoke(&mut r, reason)
+        let Some(ticket) = r.admission.request_stop(owner, generation, reason)? else {
+            return Ok(projected(&r));
+        };
+        r.preview = None;
+        r.process = None;
+        SCOPE_CHANGED.notify_waiters();
+        ticket
     };
-    stop_native();
+    stop_native(ticket)?;
     let mut r = locked()?;
     finish_cleanup(&mut r, ticket);
     Ok(projected(&r))
 }
 fn cleanup_async(ticket: u64) {
     std::thread::spawn(move || {
-        stop_native();
+        if stop_native(ticket).is_err() {
+            return;
+        }
         if let Ok(mut r) = locked() {
             finish_cleanup(&mut r, ticket);
         }
@@ -288,30 +263,38 @@ fn cleanup_async(ticket: u64) {
 }
 /// Native delegates pass the identity captured when their stream was created.
 /// Never call an unscoped "stop current" from a delayed native callback.
+#[cfg(target_os = "linux")]
 pub(crate) fn native_stopped_generation(generation: u64, reason: &str) {
-    native_stopped_inner(generation, None, reason);
+    native_stopped_inner(generation, None, None, reason);
 }
-pub(crate) fn native_stopped_target(generation: u64, target: &str, reason: &str) {
-    native_stopped_inner(generation, Some(target), reason);
+pub(crate) fn native_stopped_target(generation: u64, revision: u64, target: &str, reason: &str) {
+    native_stopped_inner(generation, Some(revision), Some(target), reason);
 }
 fn revoke_native(
     r: &mut Resource,
     generation: u64,
+    revision: Option<u64>,
     target: Option<&str>,
     reason: &str,
 ) -> Option<u64> {
-    if r.snapshot.generation != generation
+    if r.admission.snapshot.generation != generation
         || !active(r)
-        || target.is_some_and(|target| r.snapshot.target.as_deref() != Some(target))
+        || revision.is_some_and(|revision| r.admission.snapshot.target_revision != revision)
+        || target.is_some_and(|target| r.admission.snapshot.target.as_deref() != Some(target))
     {
         return None;
     }
     Some(revoke(r, reason))
 }
-fn native_stopped_inner(generation: u64, target: Option<&str>, reason: &str) {
+fn native_stopped_inner(
+    generation: u64,
+    revision: Option<u64>,
+    target: Option<&str>,
+    reason: &str,
+) {
     let ticket = locked()
         .ok()
-        .and_then(|mut r| revoke_native(&mut r, generation, target, reason));
+        .and_then(|mut r| revoke_native(&mut r, generation, revision, target, reason));
     if let Some(ticket) = ticket {
         cleanup_async(ticket);
     }
@@ -319,21 +302,25 @@ fn native_stopped_inner(generation: u64, target: Option<&str>, reason: &str) {
 pub(crate) fn capture_allowed() -> Result<(), String> {
     check_context(&*locked()?)
 }
+pub(crate) fn record_background_observation(
+    scope: &ObservationScope,
+    evidence: openbitfun_agent_tools::computer_use_control::BackgroundObservation,
+) {
+    if let Ok(mut r) = locked() {
+        if active(&r) && ObservationScope::from_control(&r.admission.snapshot) == *scope {
+            r.admission.snapshot.background_observation = Some(evidence);
+        }
+    }
+}
 pub(crate) fn input_allowed() -> Result<(), String> {
     let r = locked()?;
     check_context(&r)?;
-    let token = TOKEN.get().unwrap_or_else(|| token_for(&r));
-    if !r.busy || !token.input || !matches_token(&r, token) {
-        return Err("[CONTROL_STOPPED] Input lease has been revoked".into());
-    }
-    if r.snapshot.mode == ControlMode::Observe {
-        return Err("[CONTROL_OBSERVE_ONLY] Observation does not authorize input".into());
-    }
-    Ok(())
+    r.admission
+        .check_input(TOKEN.get().unwrap_or_else(|| token_for(&r)))
 }
 pub(crate) fn foreground_allowed() -> Result<(), String> {
     input_allowed()?;
-    if locked()?.snapshot.mode != ControlMode::Foreground {
+    if locked()?.admission.snapshot.mode != ControlMode::Foreground {
         return Err(
             "[FOREGROUND_REQUIRED] Seat input requires start_control with mode=foreground".into(),
         );
@@ -343,16 +330,11 @@ pub(crate) fn foreground_allowed() -> Result<(), String> {
 pub(crate) fn bind_target(target: String) -> Result<(), String> {
     let mut r = locked()?;
     check_context(&r)?;
-    if target.trim().is_empty() {
-        return Err("[CONTROL_TARGET_REQUIRED] A native target is required".into());
-    }
-    let changed = r.snapshot.target.as_deref() != Some(&target);
+    let changed = r.admission.bind(target)?;
     if changed {
         SCOPE_CHANGED.notify_waiters();
         r.preview = None;
-        r.snapshot.pointer = None;
     }
-    r.snapshot.target = Some(target);
     drop(r);
     if changed {
         #[cfg(target_os = "macos")]
@@ -368,7 +350,7 @@ pub(crate) fn bind_target(target: String) -> Result<(), String> {
 pub(crate) fn target_allowed(target: &str) -> Result<(), String> {
     let r = locked()?;
     check_context(&r)?;
-    if r.snapshot.target.as_deref() != Some(target) {
+    if r.admission.snapshot.target.as_deref() != Some(target) {
         return Err(
             "[CONTROL_TARGET_CHANGED] The input target differs from the captured window".into(),
         );
@@ -380,7 +362,7 @@ pub(crate) fn record_pointer(x: f64, y: f64, click: bool) {
         return;
     }
     let target = if let Ok(mut r) = locked() {
-        if check_context(&r).is_err() || !r.busy {
+        if check_context(&r).is_err() || !r.admission.busy {
             return;
         }
         let occurred_at_ms = std::time::SystemTime::now()
@@ -388,6 +370,7 @@ pub(crate) fn record_pointer(x: f64, y: f64, click: bool) {
             .unwrap_or_default()
             .as_millis() as u64;
         let sequence = r
+            .admission
             .snapshot
             .pointer
             .as_ref()
@@ -400,12 +383,13 @@ pub(crate) fn record_pointer(x: f64, y: f64, click: bool) {
                 occurred_at_ms,
             })
         } else {
-            r.snapshot
+            r.admission
+                .snapshot
                 .pointer
                 .as_ref()
                 .and_then(|p| p.last_click.clone())
         };
-        r.snapshot.pointer = Some(ControlPointer {
+        r.admission.snapshot.pointer = Some(ControlPointer {
             x,
             y,
             click,
@@ -413,7 +397,7 @@ pub(crate) fn record_pointer(x: f64, y: f64, click: bool) {
             occurred_at_ms,
             last_click,
         });
-        r.snapshot.target.clone()
+        r.admission.snapshot.target.clone()
     } else {
         return;
     };
@@ -438,48 +422,11 @@ pub(crate) fn record_pointer(x: f64, y: f64, click: bool) {
     #[cfg(target_os = "linux")]
     let _ = target;
 }
-fn admit(
-    r: &mut Resource,
-    owner: &str,
-    action: &str,
-    execution: Executor,
-) -> Result<ControlToken, String> {
-    if owner.trim().is_empty() {
-        return Err("[CONTROL_OWNER_REQUIRED] A runtime session is required".into());
-    }
-    if r.snapshot.state.is_empty() || r.snapshot.state == "idle" {
-        r.snapshot.owner = Some(owner.into());
-        r.snapshot.mode = ControlMode::Background;
-        r.snapshot.state = "active".into();
-        r.snapshot.generation += 1;
-    }
-    if !active(r) {
-        return Err("[CONTROL_STOPPED] Use start_control to begin a new session".into());
-    }
-    if r.snapshot.owner.as_deref() != Some(owner) || r.busy {
-        return Err("[CONTROL_BUSY] Desktop control belongs to another task or action".into());
-    }
-    if r.snapshot.mode == ControlMode::Observe && !action_is_observation(action) {
-        return Err("[CONTROL_OBSERVE_ONLY] Start a control session to send input".into());
-    }
-    if action_requires_foreground(action) && r.snapshot.mode != ControlMode::Foreground {
-        return Err("[FOREGROUND_REQUIRED] This action uses desktop focus or seat input; explicitly start_control with mode=foreground".into());
-    }
-    r.busy = true;
-    r.executor = Some(execution);
-    r.snapshot.sequence += 1;
-    r.snapshot.action = Some(action.into());
-    Ok(ControlToken {
-        generation: r.snapshot.generation,
-        sequence: r.snapshot.sequence,
-        input: true,
-    })
-}
 pub(crate) fn acquire(
     owner: &str,
     action: &str,
 ) -> Result<Box<dyn ComputerUseActionLease>, String> {
-    let token = admit(&mut *locked()?, owner, action, executor())?;
+    let token = locked()?.admission.admit(owner, action, executor())?;
     Ok(Box::new(Lease {
         token,
         complete: false,
@@ -494,45 +441,51 @@ impl ComputerUseActionLease for Lease {
         self.complete = true;
     }
 }
-fn release(r: &mut Resource, token: ControlToken, complete: bool) -> Option<u64> {
-    if !matches_token(r, token) {
-        return None;
-    }
-    r.busy = false;
-    r.executor = None;
-    if complete {
-        r.snapshot.action = None;
-        None
-    } else {
-        Some(revoke(r, "action_cancelled"))
-    }
-}
 impl Drop for Lease {
     fn drop(&mut self) {
-        let ticket = locked()
-            .ok()
-            .and_then(|mut r| release(&mut r, self.token, self.complete));
+        let ticket = locked().ok().and_then(|mut r| {
+            let ticket = r.admission.release(self.token, self.complete);
+            if ticket.is_some() {
+                r.preview = None;
+                SCOPE_CHANGED.notify_waiters();
+            }
+            ticket
+        });
         if let Some(ticket) = ticket {
             cleanup_async(ticket);
         }
     }
 }
-fn stop_native() {
+fn stop_native(ticket: u64) -> Result<(), String> {
+    // A cancelled Start and Stop can both enqueue cleanup. Serialize native
+    // teardown and recheck the ticket after waiting, so delayed old cleanup
+    // cannot stop resources created by a later successful Start.
+    let _cleanup = NATIVE_CLEANUP
+        .lock()
+        .map_err(|_| "[CONTROL_FAILED] Native cleanup lock poisoned".to_string())?;
+    if !locked()?.admission.owns_cleanup(ticket) {
+        return Ok(());
+    }
     #[cfg(target_os = "macos")]
     {
+        super::macos_bg_input::release_held_inputs();
         super::macos_capture::stop_capture();
+        super::macos_ax_dump::clear_observations();
         super::macos_input_focus::stop();
         super::macos_capture::hide_pointer();
     }
     #[cfg(target_os = "windows")]
     {
         super::windows_wgc_capture::stop_capture();
+        super::windows_ax_ui::clear_observations();
         super::windows_pointer_feedback::hide_pointer();
     }
     #[cfg(target_os = "linux")]
     {
         super::linux_control::stop_session();
+        super::linux_control_ax::clear_observations();
     }
+    Ok(())
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -547,13 +500,13 @@ pub struct ControlPreview {
     pub span_width: f64,
     pub span_height: f64,
     pub generation: u64,
+    pub target_revision: u64,
 }
 
 /// Capture callers pass the identity saved before native work, never retag a
 /// late frame with snapshot() after a new task has acquired the device.
-pub(crate) fn publish_rgba_generation(
-    generation: u64,
-    target: &str,
+pub(crate) fn publish_rgba(
+    scope: &ObservationScope,
     bytes: &[u8],
     width: u32,
     height: u32,
@@ -570,38 +523,41 @@ pub(crate) fn publish_rgba_generation(
         .encode_image(&image)
         .is_ok()
     {
-        publish_jpeg_generation(generation, target, &jpeg, bounds);
+        publish_jpeg(scope, &jpeg, [image.width(), image.height()], bounds);
     }
 }
-pub(crate) fn publish_jpeg_generation(
-    generation: u64,
-    target: &str,
+pub(crate) fn publish_jpeg(
+    scope: &ObservationScope,
     bytes: &[u8],
+    dimensions: [u32; 2],
     bounds: [f64; 4],
 ) {
     use base64::Engine;
     if bounds.iter().any(|v| !v.is_finite()) || bounds[2] <= 0.0 || bounds[3] <= 0.0 {
         return;
     }
-    let Ok(image) = image::load_from_memory(bytes) else {
+    let Some(target) = scope.target.as_ref() else {
         return;
     };
+    if dimensions.contains(&0) {
+        return;
+    }
     let frame = ControlPreview {
-        target: target.to_owned(),
+        target: target.clone(),
         image_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
         mime_type: "image/jpeg",
-        width: image.width(),
-        height: image.height(),
+        width: dimensions[0],
+        height: dimensions[1],
         origin_x: bounds[0],
         origin_y: bounds[1],
         span_width: bounds[2],
         span_height: bounds[3],
-        generation,
+        generation: scope.generation,
+        target_revision: scope.target_revision,
     };
     if let Ok(mut r) = locked() {
         if check_context(&r).is_ok()
-            && r.snapshot.generation == generation
-            && r.snapshot.target.as_deref() == Some(target)
+            && ObservationScope::from_control(&r.admission.snapshot) == *scope
         {
             r.preview = Some(frame);
         }
@@ -609,92 +565,59 @@ pub(crate) fn publish_jpeg_generation(
 }
 pub(crate) fn preview(generation: u64) -> Result<Option<ControlPreview>, String> {
     let r = locked()?;
-    if r.snapshot.generation != generation || !active(&r) {
+    if r.admission.snapshot.generation != generation || !active(&r) {
         return Err("[CONTROL_STALE] Control session changed".into());
     }
     Ok(r.preview
         .as_ref()
-        .filter(|p| p.generation == generation)
+        .filter(|p| {
+            p.generation == generation && p.target_revision == r.admission.snapshot.target_revision
+        })
         .cloned())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn running() -> Resource {
+    #[test]
+    fn old_native_stream_cannot_stop_a_return_to_the_same_window() {
         let mut r = Resource::default();
-        let g = begin_start(&mut r, "a", ControlMode::Background).unwrap();
-        finish_start(&mut r, g).unwrap();
-        r
-    }
-    #[test]
-    fn stop_during_start_cannot_resurrect_admission() {
-        let mut r = Resource::default();
-        let started = begin_start(&mut r, "a", ControlMode::Background).unwrap();
-        let stopped = revoke(&mut r, "user_stopped");
-        assert!(finish_start(&mut r, started).is_err());
-        assert!(!active(&r));
-        finish_cleanup(&mut r, stopped);
-        assert!(!active(&r));
-    }
-    #[test]
-    fn old_cleanup_cannot_clear_new_cleanup_barrier() {
-        let mut r = running();
-        let first = revoke(&mut r, "first");
-        let second = revoke(&mut r, "second");
-        finish_cleanup(&mut r, first);
-        assert!(r.cleaning);
-        assert!(begin_start(&mut r, "a", ControlMode::Background).is_err());
-        finish_cleanup(&mut r, second);
-        assert!(!r.cleaning);
-    }
-    #[test]
-    fn old_worker_and_old_lease_cannot_borrow_new_action() {
-        let mut r = running();
-        let first = admit(&mut r, "a", "app_click", executor()).unwrap();
-        let stopped = revoke(&mut r, "cancelled");
-        finish_cleanup(&mut r, stopped);
-        let g = begin_start(&mut r, "a", ControlMode::Background).unwrap();
-        finish_start(&mut r, g).unwrap();
-        let second = admit(&mut r, "a", "app_click", executor()).unwrap();
-        assert!(!matches_token(&r, first));
-        assert!(matches_token(&r, second));
-        with_token(first, || assert!(check_context(&r).is_err()));
-        assert!(release(&mut r, first, false).is_none());
-        assert!(r.busy);
-    }
-    #[test]
-    fn successive_actions_in_same_session_have_distinct_authority() {
-        let mut r = running();
-        let first = admit(&mut r, "a", "app_click", executor()).unwrap();
-        release(&mut r, first, true);
-        let second = admit(&mut r, "a", "app_click", executor()).unwrap();
-        assert_eq!(first.generation, second.generation);
-        assert_ne!(first.sequence, second.sequence);
-        with_token(first, || assert!(check_context(&r).is_err()));
+        let generation = r
+            .admission
+            .begin_start("a", ControlMode::Background)
+            .unwrap();
+        r.admission.finish_start(generation).unwrap();
+        r.admission.bind("window:a".into()).unwrap();
+        r.admission.bind("window:b".into()).unwrap();
+        r.admission.bind("window:a".into()).unwrap();
+        assert!(
+            revoke_native(&mut r, generation, Some(1), Some("window:a"), "late close").is_none()
+        );
+        assert!(active(&r));
+        assert!(revoke_native(
+            &mut r,
+            generation,
+            Some(3),
+            Some("window:a"),
+            "current close"
+        )
+        .is_some());
     }
     #[test]
     fn native_stop_from_old_stream_cannot_revoke_retargeted_window() {
-        let mut r = running();
-        let generation = r.snapshot.generation;
-        r.snapshot.target = Some("window:new".into());
-        assert!(revoke_native(&mut r, generation, Some("window:old"), "closed").is_none());
+        let mut r = Resource::default();
+        let generation = r
+            .admission
+            .begin_start("a", ControlMode::Background)
+            .unwrap();
+        r.admission.finish_start(generation).unwrap();
+        r.admission.bind("window:new".into()).unwrap();
+        assert!(revoke_native(&mut r, generation, Some(1), Some("window:old"), "closed").is_none());
         assert!(active(&r));
-        let ticket = revoke_native(&mut r, generation, Some("window:new"), "closed").unwrap();
-        assert!(r.cleaning);
+        let ticket =
+            revoke_native(&mut r, generation, Some(1), Some("window:new"), "closed").unwrap();
         assert!(!active(&r));
         finish_cleanup(&mut r, ticket);
-    }
-    #[test]
-    fn observer_foreground_and_owner_boundaries_are_enforced() {
-        let mut r = running();
-        r.snapshot.mode = ControlMode::Observe;
-        assert!(admit(&mut r, "a", "app_click", executor()).is_err());
-        assert!(admit(&mut r, "b", "get_app_state", executor()).is_err());
-        r.snapshot.mode = ControlMode::Background;
-        assert!(admit(&mut r, "a", "click", executor()).is_err());
-        assert!(admit(&mut r, "", "get_app_state", executor()).is_err());
-        assert!(!r.busy);
     }
 }
 

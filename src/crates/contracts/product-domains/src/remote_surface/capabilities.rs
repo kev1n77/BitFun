@@ -42,6 +42,8 @@ pub enum PeerHostCapability {
     MiniappAgentContextFilesV1,
     /// WSL profiles and discovery are understood; availability is probed on the host.
     WslWorkspacesV1,
+    /// User-selected native window sharing and explicit permission receipts.
+    ComputerUseSharingV1,
     /// `product_control_invoke` is implemented (shared config contract).
     ProductControlV1,
     /// ProductControl definitions that need a host-native provider run here.
@@ -75,6 +77,7 @@ impl PeerHostCapability {
         Self::TokenUsageStatistics,
         Self::MiniappAgentContextFilesV1,
         Self::WslWorkspacesV1,
+        Self::ComputerUseSharingV1,
         Self::ProductControlV1,
         Self::ProductControlNativeV1,
         Self::ProductControlPresentationV1,
@@ -99,6 +102,7 @@ impl PeerHostCapability {
             Self::TokenUsageStatistics => "token_usage_statistics",
             Self::MiniappAgentContextFilesV1 => "miniapp_agent_context_files_v1",
             Self::WslWorkspacesV1 => "wsl_workspaces_v1",
+            Self::ComputerUseSharingV1 => "computer_use_sharing_v1",
             Self::ProductControlV1 => "product_control_v1",
             Self::ProductControlNativeV1 => "product_control_native_v1",
             Self::ProductControlPresentationV1 => "product_control_presentation_v1",

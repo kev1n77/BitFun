@@ -16,7 +16,9 @@ each missing what the other had.
 
 | Test | Contract it holds |
 |---|---|
+| `../../timeline/hostQueueProjection.test.ts`, `../../timeline/useHostQueueTimeline.test.tsx`, `../HostPendingQueuePanel.test.tsx` | host-accepted preview, canonical handoff/event ordering, stable keys, blocked recovery, old-host fallback, history-window visibility and device lease cleanup; fixtures only, no live remote transport evidence |
 | `TurnFooter.test.tsx`, `modelRoundItemMemo.test.ts` | latest-turn identity, hover/focus across virtual rows, lease cleanup, no projection churn and the existing completion reveal gate; behavior only, not visual proof |
+| `MessageExportControls.test.tsx` | flat copy/export menu, illustrated checkbox-card selection by pointer and keyboard, complete user text/reference rendering, omission or expansion of thinking, minimal branding, confirmation, pending/error feedback, cancel/Escape/outside dismissal and resident-trigger focus restoration; local DOM behavior, not image fidelity or remote-host validation |
 | `../../../shared/ui/Tooltip.test.tsx` | shared metric click opening, immediate scroll dismissal, delayed-open cancellation, viewport-exit observer cleanup and no automatic reopening; DOM/observer behavior only, not native scrolling or visual proof |
 | `../../utils/turnUsageMetrics.test.ts` | cache denominator, whole-turn output rate, speed boundaries, invalid and unavailable telemetry |
 | `../../services/flow-chat-manager/EventHandlerModule.test.ts`, `../../services/flow-chat-manager/PersistenceModule.test.ts`, `../../store/FlowChatStore.test.ts` | live cache aggregation, optional-field persistence and legacy/current hydration; no remote-host claim |
@@ -27,7 +29,7 @@ each missing what the other had.
 | `../../selection/conversationExcerptEditing.test.ts` | draft/visible/queue edit and delete ownership, preserved prompt context and attachments, legacy payload handling, sending guards and sent snapshots with no mutation capability |
 | `../../services/flow-chat-manager/PendingQueueModule.test.ts` | persisted payload edits preserve queue order/identity, images and device isolation; sending entries reject edits |
 | `../../../infrastructure/markdown/useStreamingTextReveal.test.tsx` | appended-glyph-only fading, independent batch clocks and renderers, history/remount stability, stream completion and reduced motion |
-| `UserMessageItem.test.tsx` | sent and reloaded MCP references, mixed reference capsules, failed-message presentation, and message actions |
+| `UserMessageItem.test.tsx` | sent and reloaded MCP references, mixed reference capsules, failed-message presentation, shared edit/rollback menu, Escape focus return, disabled reasons, and existing message action flows; local DOM fixtures, not remote transport evidence |
 | `UserMessageItemActions.test.ts` | metadata visibility, bubble outsets from the shared reading column, and normal-flow action layout |
 | `../../services/submittedMessagePresentation.test.ts` | explicit-send receipts, one-shot claims, expiry, device activation isolation, and initial status paint delay |
 | `useSubmittedMessageMotion.test.tsx` | submission clock, remount stability, StrictMode, reduced motion, focus, and surface-change cancellation; lifecycle only, not visual acceptance |
@@ -90,6 +92,15 @@ choices stay in its draft until that request; its Agent mode is inherited.
 Its permission control reads the parent and becomes editable after submission.
 Peers advertise `btw_initial_model_selection_v1` before showing those draft
 settings as editable. Older hosts retain inherited settings and readable quotes.
+
+For completed-turn image export, check both option cards in light/dark and
+high-contrast themes: hover, press, and keyboard focus change the neutral fill
+without changing size or selection; only the checkbox indicates the selected
+output. Check reduced motion and touch input separately. Check the captured image's
+user bubble against the live message, full long text/reference labels, minimal
+brand/date header and attribution footer, and absence of all thinking items/icons
+in compact output. The same presentation
+on remote-workspace and peer-host sessions remains a real-host check.
 
 **Agents must not perform UI interaction verification.** Report these as pending
 unless a human confirms them. They are grouped so that adding a check to one
@@ -344,6 +355,21 @@ Keyboard focus has its own outline and does not navigate until activation.
     neither retains the old navigation selection.
 11. With reduced motion enabled, the hover fan changes without animation. Touch
     navigation must not leave a hover fan behind.
+
+### Accepted steering
+
+1. Send immediately during a long tool/model round in the main transcript and
+   BTW pane. After host acceptance, verify the message uses the ordinary user-message
+   appearance without a pending label and leaves the composer queue. Confirm long text and attachment count.
+2. Let the formal Turn start. Verify one message remains and
+   attachments appear normally. Send multiple messages and check ordering.
+3. Exercise blocked handoff, history navigation, transcript closure, disconnect,
+   reconnect, host restart and device switching; recovery controls must remain
+   available and another device's preview must never appear.
+4. Repeat on a remote workspace and Peer Device host with two controllers, one
+   sending from mobile. Mobile retains its existing queue UI. Check an older
+   host without display receipts retains the existing desktop queue UI. Detached
+   dispatch and ACP use their existing paths and have no preview requirement.
 
 ### History paging demand
 

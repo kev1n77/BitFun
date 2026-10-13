@@ -1,7 +1,7 @@
 //! The single app-input executor: a validated program, ordered receipts and one observation.
 //! Never retries a submitted step; a new model decision starts a new program.
 use crate::agentic::tools::computer_use_host::{
-    AppInputAction, AppSelector, AppStateSnapshot, ClickTarget, ComputerUseHost, ControlSnapshot,
+    AppInputAction, AppSelector, AppStateSnapshot, ComputerUseHost, ControlSnapshot,
 };
 use crate::agentic::tools::framework::ToolUseContext;
 use serde_json::{json, Value};
@@ -14,94 +14,7 @@ pub(super) struct ProgramObservation {
 /// Check structural target errors before the first mutation. Native providers
 /// still validate current window bounds, retained identities and screenshot IDs.
 pub(super) fn validate_step(step: &AppInputAction) -> Result<(), String> {
-    step.validate()?;
-    fn target(target: &ClickTarget) -> Result<(), String> {
-        match target {
-            ClickTarget::ImageXy {
-                x,
-                y,
-                screenshot_id,
-            } => {
-                if *x < 0
-                    || *y < 0
-                    || screenshot_id
-                        .as_deref()
-                        .is_none_or(|id| id.trim().is_empty())
-                {
-                    return Err("image_xy requires nonnegative image coordinates and the observed screenshot_id".into());
-                }
-            }
-            ClickTarget::ImageGrid {
-                x0,
-                y0,
-                width,
-                height,
-                rows,
-                cols,
-                row,
-                col,
-                intersections,
-                screenshot_id,
-            } => {
-                if *x0 < 0
-                    || *y0 < 0
-                    || *width == 0
-                    || *height == 0
-                    || *rows == 0
-                    || *cols == 0
-                    || row >= rows
-                    || col >= cols
-                    || (*intersections && (*rows < 2 || *cols < 2))
-                    || screenshot_id
-                        .as_deref()
-                        .is_none_or(|id| id.trim().is_empty())
-                {
-                    return Err("image_grid requires a nonempty observed screenshot_id, positive rectangle/grid dimensions and an in-range row/col".into());
-                }
-            }
-            ClickTarget::VisualGrid {
-                rows,
-                cols,
-                row,
-                col,
-                intersections,
-                ..
-            } => {
-                if *rows == 0
-                    || *cols == 0
-                    || row >= rows
-                    || col >= cols
-                    || (*intersections && (*rows < 2 || *cols < 2))
-                {
-                    return Err(
-                        "visual_grid requires positive dimensions and an in-range row/col".into(),
-                    );
-                }
-            }
-            ClickTarget::OcrText { needle } if needle.trim().is_empty() => {
-                return Err("ocr_text requires non-empty observed text".into())
-            }
-            ClickTarget::ScreenXy { x, y } if !x.is_finite() || !y.is_finite() => {
-                return Err("screen_xy coordinates must be finite".into())
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-    match step {
-        AppInputAction::Click { target: point, .. } => target(point),
-        AppInputAction::TypeText {
-            focus: Some(point), ..
-        }
-        | AppInputAction::Scroll {
-            focus: Some(point), ..
-        } => target(point),
-        AppInputAction::Drag { from, to, .. } => {
-            target(from)?;
-            target(to)
-        }
-        _ => Ok(()),
-    }
+    step.validate()
 }
 
 pub(super) async fn execute(
@@ -220,7 +133,7 @@ pub(super) async fn observe_after_input(
     }
 }
 
-fn same_active_control(before: &ControlSnapshot, after: &ControlSnapshot) -> bool {
+pub(super) fn same_active_control(before: &ControlSnapshot, after: &ControlSnapshot) -> bool {
     if !before.supported {
         return !after.supported;
     }
@@ -230,4 +143,5 @@ fn same_active_control(before: &ControlSnapshot, after: &ControlSnapshot) -> boo
         && after.owner == before.owner
         && after.mode == before.mode
         && after.target == before.target
+        && after.target_revision == before.target_revision
 }

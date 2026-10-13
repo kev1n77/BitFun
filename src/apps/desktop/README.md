@@ -116,6 +116,17 @@ real desktop and asks you to select its dedicated fixture window in the system
 picker. These fixtures require Node.js 22/24, Rust, `python3-gi` and GTK 3; the
 portal fixture also needs the runtime packages listed above.
 
+## macOS application icon builds
+
+Development uses the committed macOS ICNS fallback and does not require Icon
+Composer. Packaged macOS 26/27 builds also include the native Icon Composer
+catalog; earlier macOS releases use the static fallback. Building a distributable
+macOS bundle requires full Xcode 26 or newer selected through `DEVELOPER_DIR` or
+`xcode-select`. The packaging command rejects a missing catalog instead of
+silently shipping only the legacy icon. See the
+[brand resource guide](../../../assets/brand/README.md#macos-icons) for regeneration
+and focused validation commands.
+
 ## macOS menu bar
 
 The menu bar uses the solid ring brand mark as a transparent template logo that follows the system's light

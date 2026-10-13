@@ -71,15 +71,6 @@ describe('isPeerLocalOnlyCommand', () => {
     expect(isPeerLocalOnlyCommand('i18n_set_config')).toBe(true);
   });
 
-  it('keeps announcement scheduler and state on the controller device', () => {
-    expect(isPeerLocalOnlyCommand('get_pending_announcements')).toBe(true);
-    expect(isPeerLocalOnlyCommand('get_announcement_tips')).toBe(true);
-    expect(isPeerLocalOnlyCommand('mark_announcement_seen')).toBe(true);
-    expect(isPeerLocalOnlyCommand('dismiss_announcement')).toBe(true);
-    expect(isPeerLocalOnlyCommand('never_show_announcement')).toBe(true);
-    expect(isPeerLocalOnlyCommand('trigger_announcement')).toBe(true);
-  });
-
   it('keeps companion-pet import and preview on the controller device', () => {
     expect(isPeerLocalOnlyCommand('list_agent_companion_pets')).toBe(true);
     expect(isPeerLocalOnlyCommand('import_agent_companion_pet_package')).toBe(true);
@@ -216,14 +207,12 @@ describe('peerInvokePriorityFor', () => {
     expect(isPeerRetryableReadCommand('start_dialog_turn')).toBe(false);
     expect(isPeerRetryableReadCommand('delete_session')).toBe(false);
     expect(isPeerRetryableReadCommand('respond_permission')).toBe(false);
-  });
-
-  it('does not retry side-effecting announcement get_* commands', () => {
-    // These run the scheduler (mutate app_open_count + persist) and must never
-    // be auto-retried by the peer read path, where retries would multiply the
-    // side effect.
-    expect(isPeerRetryableReadCommand('get_pending_announcements')).toBe(false);
-    expect(isPeerRetryableReadCommand('get_announcement_tips')).toBe(false);
+    // Copying a session rides `fork_session`. It carries no host-side
+    // idempotency key, so a retry would create a second copy of the session.
+    expect(isPeerRetryableReadCommand('fork_session')).toBe(false);
+    expect(isPeerRetryableIdempotentMutation('fork_session', {
+      request: { workspace_id: 'workspace-1', source_session_id: 'session-1' },
+    })).toBe(false);
   });
 
   it('retries Browser Control / Computer Use status reads but not their mutations', () => {
@@ -267,6 +256,26 @@ describe('peerInvokePriorityFor', () => {
 });
 
 describe('PeerDeviceTransportAdapter queue', () => {
+  it.each(['computer_use_share_targets', 'computer_use_share_input', 'computer_use_request_permission'])('rejects %s on old peers without sending an RPC or using the local host', async command => {
+    const rpc = vi.fn();
+    const local = vi.spyOn(TauriTransportAdapter.prototype, 'request');
+    const adapter = new PeerDeviceTransportAdapter('peer-1', rpc);
+    await adapter.connect();
+    await expect(adapter.request(command, {})).rejects.toThrow('computer_use_sharing_v1_unsupported');
+    expect(rpc).not.toHaveBeenCalled();
+    expect(local).not.toHaveBeenCalled();
+    local.mockRestore();
+  });
+  it('carries sharing scope unchanged to a capable executing peer', async () => {
+    const rpc = vi.fn().mockResolvedValue(JSON.stringify({ resp: 'host_invoke_result', ok: true, value: { state: 'active' } }));
+    const adapter = new PeerDeviceTransportAdapter('peer-1', rpc, { supportsComputerUseSharingV1: true });
+    await adapter.connect();
+    const request = { generation: 7, target_revision: 4, authorization_revision: 2, input: { action: 'app_type_text', text: 'hello' } };
+    await adapter.request('computer_use_share_input', { request });
+    const wire = JSON.parse(rpc.mock.calls[0][1]);
+    expect(wire.command).toBe('computer_use_share_input');
+    expect(wire.args).toEqual({ request });
+  });
   it('orders one dispatch burst with control first without capping in-flight data requests', async () => {
     const started: string[] = []; const gate = createDeferred<void>();
     const deviceRpc = vi.fn(async (_target: string, commandJson: string) => {

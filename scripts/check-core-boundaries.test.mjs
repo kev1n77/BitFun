@@ -1801,7 +1801,6 @@ test('SDK Host closure rejects unreviewed capability owners below Core', () => {
     ['openbitfun-services-integrations', 'src/crates/services/services-integrations/Cargo.toml', 'remote-ssh'],
     ['openbitfun-services-integrations', 'src/crates/services/services-integrations/Cargo.toml', 'remote-ssh-concrete'],
     ['openbitfun-services-integrations', 'src/crates/services/services-integrations/Cargo.toml', 'function-agents'],
-    ['openbitfun-services-integrations', 'src/crates/services/services-integrations/Cargo.toml', 'announcement'],
     ['openbitfun-services-integrations', 'src/crates/services/services-integrations/Cargo.toml', 'product-full'],
     ['openbitfun-product-domains', 'src/crates/contracts/product-domains/Cargo.toml', 'function-agents'],
     ['openbitfun-product-domains', 'src/crates/contracts/product-domains/Cargo.toml', 'product-full'],
@@ -2723,8 +2722,8 @@ test('CLI dependency closure includes build dependencies and excluded capabiliti
   const core = {
     ...packageAt('openbitfun-core', 'src/crates/assembly/core/Cargo.toml'),
     features: {
-      'cli-everything': ['announcement'],
-      announcement: [],
+      'cli-everything': ['product-full'],
+      'product-full': [],
     },
   };
   const bridge = packageAt('bridge', 'src/crates/assembly/bridge/Cargo.toml', [
@@ -2745,7 +2744,7 @@ test('CLI dependency closure includes build dependencies and excluded capabiliti
   );
 
   assert.equal(violations.length, 1);
-  assert.match(violations[0].message, /openbitfun-core\/announcement/);
+  assert.match(violations[0].message, /openbitfun-core\/product-full/);
 });
 
 test('CLI dependency closure excludes the Core dispatch store', () => {
@@ -2864,7 +2863,7 @@ test('services integrations Reqwest policy uses Cargo-decoded feature references
   const pkg = servicesIntegrationsPackage(`
 [features]
 reqwest = ["dep:reqwest"]
-announcement = ["reqwest", "reqwest/rustls-no-provider"]
+browser-control = ["reqwest", "reqwest/rustls-no-provider"]
 file-watch = ["reqwest?/__native-tls"]
 mcp = ["reqwest", "reqwest/rustls-no-provider", "reqwest/json"]
 models-dev = ["reqwest", "reqwest/rustls-no-provider", "reqwest/system-proxy"]
@@ -2874,7 +2873,7 @@ speech = ["reqwest", "reqwest/rustls-no-provider", "reqwest/http3"]
   const messages = findServicesIntegrationsReqwestFeatureViolations(pkg)
     .map((violation) => violation.message)
     .join('\n');
-  assert.match(messages, /announcement.*missing Reqwest feature reference reqwest\/json/);
+  assert.match(messages, /browser-control.*missing Reqwest feature reference reqwest\/json/);
   assert.match(messages, /file-watch.*outside its reviewed owner features/);
   assert.match(messages, /mcp.*missing Reqwest feature reference reqwest\/stream/);
   assert.doesNotMatch(messages, /models-dev.*system-proxy/);
@@ -3820,10 +3819,7 @@ test('desktop preview rebuild inputs use the current crate layout', async () => 
     devScript,
     /'src', 'crates', '(?:core|transport|events|ai-adapters|webdriver|api-layer|assembly|adapters|contracts|execution|interfaces|services)'/,
   );
-  assert.match(
-    devScript,
-    /service\$\{path\.sep\}announcement\$\{path\.sep\}content/,
-  );
+  assert.match(devScript, /prompts\$\{path\.sep\}/);
 });
 
 test('split core boundary check keeps self-test execution behavior', () => {
@@ -4382,11 +4378,11 @@ test('closed feature profiles reject product-full hidden behind a child feature'
     './core-boundaries/manifest-feature-helpers.mjs'
   );
   const features = new Map([
-    ['service-integrations', { refs: ['announcement'], line: 1 }],
+    ['service-integrations', { refs: ['file-watch'], line: 1 }],
     [
-      'announcement',
+      'file-watch',
       {
-        refs: ['openbitfun-services-integrations/announcement', 'product-full'],
+        refs: ['openbitfun-services-integrations/file-watch', 'product-full'],
         line: 2,
       },
     ],
@@ -4397,12 +4393,12 @@ test('closed feature profiles reject product-full hidden behind a child feature'
     unexpectedReachableLocalFeatures(
       features,
       'service-integrations',
-      new Set(['announcement']),
+      new Set(['file-watch']),
     ),
     [
       {
         featureName: 'product-full',
-        path: ['service-integrations', 'announcement', 'product-full'],
+        path: ['service-integrations', 'file-watch', 'product-full'],
       },
     ],
   );
@@ -4848,6 +4844,25 @@ test('vendored Engine.IO remains in resolved feature audits without becoming a p
   assert.ok(graph.resolvedPackageFeatures.some(record => record.name === 'eioc'));
   assert.ok(collect([owner.id, vendor.id]).packages.some(pkg => pkg.name === 'eioc'),
     'a product workspace member cannot bypass ownership checks through a vendor path');
+});
+
+test('vendored Tao is external only at its reviewed version and stays in feature audits', () => {
+  const owner = packageAt('owner', 'src/apps/example/Cargo.toml');
+  const vendor = { ...packageAt('tao', 'third_party/tao/Cargo.toml'), version: '0.36.0' };
+  const collect = (pkg = vendor, members = [owner.id]) => collectCargoMetadataGraph({
+    root: TEST_ROOT,
+    manifestPaths: [join(TEST_ROOT, 'Cargo.toml')],
+    loadMetadata: () => ({
+      packages: [owner, pkg], workspace_members: members,
+      resolve: { nodes: [{ id: pkg.id, features: ['rwh_06'], deps: [] }] },
+    }),
+  });
+  const graph = collect();
+  assert.deepEqual(graph.packages.map(pkg => pkg.name), ['owner']);
+  assert.ok(graph.resolvedPackageFeatures.some(record => record.name === 'tao'));
+  assert.ok(collect(vendor, [owner.id, vendor.id]).packages.some(pkg => pkg.name === 'tao'));
+  assert.ok(collect({ ...vendor, version: '0.37.0' }).packages.some(pkg => pkg.name === 'tao'));
+  assert.ok(collect({ ...vendor, name: 'product-owner' }).packages.some(pkg => pkg.name === 'product-owner'));
 });
 
 

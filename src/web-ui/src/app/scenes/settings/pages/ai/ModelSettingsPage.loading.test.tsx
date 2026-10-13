@@ -35,7 +35,7 @@ const model: AIModelConfig = {
 
 // Service reads are controlled to exercise pending, failed, and recovered states.
 // The actual settings and design-system components render; this is not visual QA.
-describe('ModelSettingsPage independent loading', () => {
+describe('ModelSettingsPage loading and provider actions', () => {
   let container: HTMLDivElement;
   let root: Root;
   let reads: Map<string, ReturnType<typeof deferred>>;
@@ -53,6 +53,7 @@ describe('ModelSettingsPage independent loading', () => {
   });
 
   beforeEach(() => {
+    configManager.clearCache();
     reads = new Map([
       'ai.models', 'ai.default_models', 'ai.proxy',
       'ai.stream_idle_timeout_secs', 'ai.stream_ttft_timeout_secs',
@@ -77,6 +78,21 @@ describe('ModelSettingsPage independent loading', () => {
     act(() => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it('renders a warm model pool immediately without starting a read that could overwrite edits', () => {
+    const values: Record<string, unknown> = {
+      'ai.models': [model], 'ai.default_models': { primary: model.id },
+      'ai.proxy': { enabled: false, url: '', username: '', password: '' },
+      'ai.stream_idle_timeout_secs': 120, 'ai.stream_ttft_timeout_secs': 60,
+    };
+    vi.spyOn(configManager, 'hasCachedConfig').mockImplementation(path => path in values);
+    vi.spyOn(configManager, 'getCachedConfig').mockImplementation(<T,>(path: string) => values[path] as T);
+    act(() => root.render(<ModelSettingsPage />));
+    expect(container.querySelector('[data-testid="settings-model-pool"]')?.textContent).toContain(model.model_name);
+    expect(selectors()[0].disabled).toBe(false);
+    expect(configManager.getOptionalConfig).not.toHaveBeenCalled();
+    expect(configManager.getConfig).not.toHaveBeenCalled();
   });
 
   it('shows stable content immediately and releases models without waiting for catalogs or network settings', async () => {
@@ -133,4 +149,60 @@ describe('ModelSettingsPage independent loading', () => {
     expect(container.querySelector('[data-testid="settings-model-pool"]')?.textContent).toContain(model.model_name);
     expect(button('actions.addModel').disabled).toBe(false);
   });
+
+  it.each(['api', 'subscription'] as const)(
+    'confirms %s capsule deletion before removing only that provider’s models',
+    async kind => {
+      const providerModels: AIModelConfig[] = [model, { ...model, id: 'second-model', model_name: 'second-model' }]
+        .map(entry => ({
+          ...entry,
+          metadata: { provider_instance_id: 'provider-to-delete' },
+          ...(kind === 'subscription' ? { auth: { type: 'subscription' as const, provider: 'codex' as const } } : {}),
+        }));
+      const otherModel: AIModelConfig = { ...model, id: 'other-model', name: 'Other provider' };
+      let savedModels = [...providerModels, otherModel];
+      const updateConfig = vi.spyOn(configManager, 'updateConfig').mockImplementation(async <T,>(_path: string, update: (current: T) => T) => {
+        const updated = update(savedModels as T);
+        savedModels = updated as AIModelConfig[];
+        return updated;
+      });
+      reads.set('ai.task_models', deferred());
+      reads.set('ai.agent_model_defaults', deferred());
+      await act(async () => root.render(<ModelSettingsPage />));
+      await act(async () => {
+        reads.get('ai.models')!.resolve(savedModels);
+        reads.get('ai.default_models')!.resolve({ primary: model.id });
+        reads.get('ai.task_models')!.resolve({});
+        reads.get('ai.agent_model_defaults')!.resolve({});
+      });
+
+      const deleteButton = [...container.querySelectorAll<HTMLButtonElement>('.openbitfun-model-settings__source-pill-delete')]
+        .find(element => element.getAttribute('aria-label')?.endsWith(`: ${model.name}`))!;
+      expect(deleteButton.getAttribute('aria-label')).toContain(model.name);
+      expect(deleteButton.parentElement?.closest('button')).toBeNull();
+      await act(async () => deleteButton.click());
+
+      const dialog = document.querySelector<HTMLElement>('[role="alertdialog"]')!;
+      expect(dialog.textContent).toContain(copy('providerDeleteConfirm.title'));
+      expect(dialog.textContent).toContain(String(i18nService.getI18nInstance().t('providerDeleteConfirm.message', {
+        ns: 'settings/models', name: model.name, modelCount: 2, referenceCount: 1,
+      })));
+      expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(0);
+      expect(updateConfig).not.toHaveBeenCalled();
+
+      const cancel = dialog.querySelector<HTMLButtonElement>('button[data-openbitfun-variant="fill"]')!;
+      await act(async () => cancel.click());
+      expect(updateConfig).not.toHaveBeenCalled();
+      expect(savedModels).toHaveLength(3);
+
+      await act(async () => deleteButton.click());
+      const confirm = document.querySelector<HTMLButtonElement>('[role="alertdialog"] button[data-openbitfun-tone="danger"]')!;
+      await act(async () => confirm.click());
+      expect(updateConfig).toHaveBeenCalledTimes(1);
+      expect(updateConfig).toHaveBeenCalledWith('ai.models', expect.any(Function));
+      expect(savedModels).toEqual([otherModel]);
+      expect(container.querySelectorAll('.openbitfun-model-settings__source-pill')).toHaveLength(1);
+      expect(container.querySelector('.openbitfun-model-settings__source-pill')?.textContent).toBe(otherModel.name);
+    },
+  );
 });

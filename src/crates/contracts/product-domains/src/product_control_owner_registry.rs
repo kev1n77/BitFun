@@ -354,12 +354,6 @@ pub fn owner_definitions() -> Vec<ProductControlOwnerDefinition> {
             config("app.notifications.permission_request_notify"),
         ),
         option(
-            "setting.application.general",
-            "startup-tips",
-            boolean(),
-            config("app.notifications.enable_startup_tips"),
-        ),
-        option(
             "setting.application.appearance",
             "theme",
             string(),

@@ -1,5 +1,26 @@
 # FlowChat Virtualization
 
+## Accepted steering display
+
+The host queue's optional `steeringDisplay` receipt projects an accepted message
+after its target Turn, without changing recorded rounds or writing a second
+history record. Full display text and composer references come from the host;
+pending attachments show their count rather than retransmitting image bytes.
+Accepted text messages use the ordinary user-message appearance without a pending
+status label; internal admission state still disables edit and rollback actions.
+Formal Turn handoff keeps the original queue Turn id and the preview's virtual
+key. Canonical history replaces the preview even when events precede the receipt.
+Queue disappearance alone is not consumption: the observer queries the receipt
+and retains the pending shell until history arrives. Blocked messages show a
+not-applied label and restore composer recovery controls.
+
+Only mounted transcript projections lease hidden queue rows. History windows
+without the target, older hosts without display receipts, and closed transcripts
+retain queue controls. Leases and previews are isolated by queue client, surface
+activation and host queue epoch. Restart recovery remains with the existing
+outbox; mobile retains its existing queue presentation. No scroll placement or
+mount animation is added, and execution order remains host-owned.
+
 ## Measured row spacing
 
 `VirtualItemRenderer` establishes a `flow-root` on the measured wrapper so
@@ -26,6 +47,30 @@ The resident completed-turn footer keeps `FlowChatTurnMetrics` on the left and
 elapsed time with the existing actions on the right. Only elapsed time is shown
 inline; its shared Tooltip exposes the completion timestamp and elapsed time.
 Metric typography and Lucide glyph sizing belong to `@openbitfun/ui`.
+The completed-turn copy menu contains one export-as-image action alongside the
+copy actions, without sections. It opens a shared Dialog with two selectable
+cards with matching 224×168px footprints, reducing only their width in narrow
+panes. Public CardHeader actions and CardBody slots compose the checkbox and
+preview without overriding Checkbox anatomy. Whole-card activation selects the
+shared Checkbox; its checked mark indicates
+the single selected output without changing the card border. Hover and keyboard
+focus use the semantic neutral hover surface; pressing uses its pressed surface.
+Only the background transitions, using shared fast motion with a reduced-motion
+fallback, so interaction never changes the card geometry. Equal, compact
+preview frames consume semantic surface/content/accent tokens directly and
+distinguish a reply-only preview from a larger accent-tinted
+expanded thinking panel and the reply content. Pointer activation and arrow/Home/End
+keys select an output without starting capture. Export requires confirmation. Cancel and Escape leave the
+transcript untouched and restore focus to the resident trigger. The trigger shows
+export progress and stays disabled until capture finishes; the exporter stays
+mounted when the menu and Dialog close. There is no separate image action in the footer.
+The capture uses the same transcript inset and user-bubble tokens as the live
+message, with right alignment, borderless quiet fill and complete text rather
+than the live view's three-line clamp. Persisted reference capsules reuse the
+live message's content renderer. Compact output omits thinking items entirely,
+including their icons; the other output renders expanded thinking in item order.
+The small brand/date header and muted attribution footer use semantic typography,
+spacing and divider tokens, without an assistant slogan or subtitle.
 Each number has its own hover/focus/click capsule and details card. Clicking
 opens immediately and keeps the card open until another trigger click, an outside
 press, Escape, or scrolling; native button triggers also support keyboard activation. `FlowChatMetric`
@@ -302,6 +347,13 @@ User-message timestamps and actions occupy a normal-flow meta row below the
 bubble. Its full height, including the 28px action targets, belongs to the
 measured message even when no valid timestamp is available. The timestamp and
 actions remain visible at rest, without requiring hover or keyboard focus.
+Editing and rollback share one edit-icon menu trigger, labelled "Edit and rollback".
+The public MenuPopover owns anchoring, dismissal, keyboard navigation and focus
+return. Opening it performs no history mutation; selecting a row enters the
+existing edit or rollback flow. Each row retains its visibility gates and disabled
+reason, including remote-workspace and detached-dispatch restrictions. An open
+menu keeps the resident action cluster visible while focus moves into the portal.
+The menu leaves measured row geometry and viewport ownership unchanged.
 `_transcript-layout.scss` owns the reading-column inset shared by user-message
 shells, model rounds, Explore regions, and the runtime-status footer.
 The messages viewport enables a shared outer column rule for virtual rows and

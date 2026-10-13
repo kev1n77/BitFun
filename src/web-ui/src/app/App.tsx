@@ -9,7 +9,6 @@ import { NotificationContainer, notificationService } from '../shared/notificati
 import { ComputerUseControlCard } from './components/ComputerUseControlCard';
 import { UpdateNotificationCard } from '@/infrastructure/update/UpdateNotificationCard';
 import { NotificationCenter } from '../shared/notification-system/components/NotificationCenter';
-import { AnnouncementProvider } from '../shared/announcement-system';
 import { ConfirmDialogRenderer } from '@/infrastructure/confirm-dialog';
 import { SessionUsageModal } from '../flow_chat/components/usage/SessionUsageModal';
 import { createLogger } from '@/shared/utils/logger';
@@ -777,40 +776,6 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!isTauriRuntime()) {
-      return;
-    }
-
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-
-    void import('@tauri-apps/api/window')
-      .then(({ getCurrentWindow }) => getCurrentWindow().onFocusChanged(({ payload }) => {
-        if (disposed) return;
-        void import('@tauri-apps/api/event').then(({ emit }) => {
-          void emit('agent-companion://main-window-state', { focused: payload });
-        });
-      }))
-      .then(removeListener => {
-        if (disposed) {
-          removeListener();
-          return;
-        }
-        unlisten = removeListener;
-      })
-      .catch(error => {
-        if (!disposed) {
-          log.warn('Failed to listen for main window focus changes', error);
-        }
-      });
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
-  useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
     void import('@tauri-apps/api/event')
@@ -1005,9 +970,6 @@ function App() {
                   the request runs below any component, and the report outlives
                   whichever session view is on screen. */}
               <SessionUsageModal />
-
-              {/* Announcement / feature-demo / tips system */}
-              <AnnouncementProvider ready={interactiveShellReady && !startupOverlayVisible} />
 
               {/* AskUserQuestion waiting-state aria-live announcer.
                   Mounted here (inside ToolbarModeProvider, outside LazyAppLayout)

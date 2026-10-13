@@ -1027,6 +1027,7 @@ fn snapshot_and_nodes(
 
     Ok((
         AppStateSnapshot {
+            observation_id: None,
             app,
             window_title,
             tree_text,
@@ -1102,6 +1103,7 @@ enum SemanticAction {
     Center(u32),
 }
 enum UiaRequest {
+    Clear,
     InsertNative(
         isize,
         Option<(f64, f64)>,
@@ -1125,14 +1127,21 @@ enum UiaRequest {
 }
 struct ObservedWindow {
     hwnd: isize,
-    generation: u64,
+    scope: openbitfun_agent_tools::computer_use_control::ObservationScope,
     pid: u32,
     nodes: Vec<UiaNode>,
 }
+static UIA_WORKER: std::sync::OnceLock<std::sync::mpsc::Sender<UiaRequest>> =
+    std::sync::OnceLock::new();
+
+pub(super) fn clear_observations() {
+    if let Some(worker) = UIA_WORKER.get() {
+        let _ = worker.send(UiaRequest::Clear);
+    }
+}
+
 fn uia_worker() -> &'static std::sync::mpsc::Sender<UiaRequest> {
-    static WORKER: std::sync::OnceLock<std::sync::mpsc::Sender<UiaRequest>> =
-        std::sync::OnceLock::new();
-    WORKER.get_or_init(|| {
+    UIA_WORKER.get_or_init(|| {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             // UIA client work belongs on an MTA thread separate from the UI.
@@ -1140,6 +1149,7 @@ fn uia_worker() -> &'static std::sync::mpsc::Sender<UiaRequest> {
             let mut observed: Option<ObservedWindow> = None;
             while let Ok(request) = rx.recv() {
                 match request {
+                    UiaRequest::Clear => { observed = None; },
                     UiaRequest::InsertNative(hwnd, point, text, token, reply) => {
                         let result = super::control_session::with_token(token, || insert_native_target(hwnd, point, &text));
                         let _ = reply.send(result);
@@ -1147,10 +1157,12 @@ fn uia_worker() -> &'static std::sync::mpsc::Sender<UiaRequest> {
                     UiaRequest::Observe(hwnd, depth, focus, token, reply) => {
                         let result = super::control_session::with_token(token, || {
                             super::control_session::capture_allowed().map_err(OpenBitFunError::tool)?;
+                            let scope = super::control_session::observation_scope().map_err(OpenBitFunError::tool)?;
                             let handle = windows::Win32::Foundation::HWND(hwnd as *mut _);
                             let (snapshot, nodes) = snapshot_and_nodes(handle, depth, focus)?;
                             super::control_session::capture_allowed().map_err(OpenBitFunError::tool)?;
-                            observed = Some(ObservedWindow { hwnd, generation: token.generation(),
+                            super::control_session::validate_observation_scope(&scope).map_err(OpenBitFunError::tool)?;
+                            observed = Some(ObservedWindow { hwnd, scope,
                                 pid: window_pid_for(handle).unwrap_or(0), nodes });
                             Ok(snapshot)
                         });
@@ -1161,7 +1173,7 @@ fn uia_worker() -> &'static std::sync::mpsc::Sender<UiaRequest> {
                         let result = super::control_session::with_token(token, || {
                             let cache = observed.as_ref().ok_or_else(|| OpenBitFunError::tool(
                                 "[AX_OBSERVATION_REQUIRED] Read the target window before using a node index"))?;
-                            apply_semantic(cache, hwnd, token.generation(), action)
+                            apply_semantic(cache, hwnd, action)
                         });
                         let _ = reply.send(result);
                     }
@@ -1449,7 +1461,6 @@ pub(super) fn cached_node_center(hwnd: isize, idx: u32) -> OpenBitFunResult<(f64
 fn apply_semantic(
     cache: &ObservedWindow,
     hwnd: isize,
-    generation: u64,
     action: SemanticAction,
 ) -> OpenBitFunResult<(f64, f64)> {
     use windows::Win32::UI::Accessibility::{
@@ -1459,7 +1470,7 @@ fn apply_semantic(
     };
     super::control_session::capture_allowed().map_err(OpenBitFunError::tool)?;
     if cache.hwnd != hwnd
-        || cache.generation != generation
+        || super::control_session::validate_observation_scope(&cache.scope).is_err()
         || window_pid_for(windows::Win32::Foundation::HWND(hwnd as *mut _)) != Some(cache.pid)
     {
         return Err(OpenBitFunError::tool(

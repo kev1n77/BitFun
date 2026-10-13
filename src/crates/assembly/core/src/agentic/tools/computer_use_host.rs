@@ -40,6 +40,14 @@ pub trait ComputerUseHost: Send + Sync + std::fmt::Debug {
         None
     }
 
+    /// Validate an opaque observation reference against the prepared target.
+    /// Older hosts must reject explicit references they cannot validate.
+    fn validate_observation(&self, _observation_id: &str) -> OpenBitFunResult<()> {
+        Err(OpenBitFunError::tool(
+            "[OBSERVATION_REFERENCE_UNSUPPORTED] This host cannot validate observation_id",
+        ))
+    }
+
     async fn prepare_control_target(&self, _app: AppSelector) -> OpenBitFunResult<()> {
         Ok(())
     }

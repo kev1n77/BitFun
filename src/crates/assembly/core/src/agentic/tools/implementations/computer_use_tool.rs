@@ -83,7 +83,7 @@ pub(crate) async fn computer_use_augment_result_json(
     let success = body
         .get("success")
         .and_then(|v| v.as_bool())
-        .unwrap_or(true);
+        .unwrap_or(false);
     host.record_action(&action_type, &action_params, success);
 
     // Check for action loops
@@ -455,6 +455,7 @@ If neither accessibility nor built-in OCR exposes the required content, report t
             "text_query": { "type": "string", "description": "For `move_to_text`, `move_to_target`, `click_target`: visible text to OCR-match on screen (case-insensitive substring)." },
             "identifier_contains": { "type": "string", "description": "For `locate`, `click_element`: case-insensitive substring on AXIdentifier." },
             "node_idx": { "type": "integer", "minimum": 0, "description": "For `locate`, `click_element`: jump straight to a node returned by the most recent `get_app_state` (field `idx`). Bypasses BFS. macOS only; other platforms return AX_IDX_NOT_SUPPORTED." },
+            "observation_id": { "type": "string", "minLength": 1, "description": "Echo the opaque observation_id from get_app_state or the latest app action when sending node/index input. It is invalidated by every new app observation, target change, or stop. Omit only for older hosts without observation-id-v1." },
             "app_state_digest": { "type": "string", "description": "For `locate`, `click_element`: optional `state_digest` from the same `get_app_state` call that produced `node_idx`. Stale digest yields AX_IDX_STALE so you re-snapshot." },
             "max_depth": { "type": "integer", "minimum": 1, "maximum": 200, "description": "For get_app_state: AX depth (default 32). For locate/click_element: max BFS depth (default 48), ignored with node_idx." },
             "filter_combine": { "type": "string", "enum": ["all", "any"], "description": "For `locate`, `click_element`: `all` (default, AND) or `any` (OR) for filter combination. Priority: `node_idx` > `text_contains` > `title_contains`+`role_substring`." },
@@ -560,6 +561,7 @@ If neither accessibility nor built-in OCR exposes the required content, report t
                     | "text"
                     | "keys"
                     | "focus_idx"
+                    | "observation_id"
                     | "dx"
                     | "dy"
                     | "app_name"
@@ -1509,9 +1511,9 @@ Use foreground only when the user explicitly requests taking over the visible de
 Use list_apps once to identify the target, then get_app_state with its app selector (pid, bundle_id, or name). \
 An empty app selector follows the bound target, or the current app when no target is bound yet. \
 For GUI tasks, use this tool's capture, accessibility and input interfaces. Do not replace failed observations with ad hoc AppleScript, screen-capture, or OCR programs in ExecCommand. \
-Read the returned structured data: application identities, tree_text, node indices, screenshot_id, coordinate bounds, and errors. \
+Read the returned structured data: application identities, tree_text, observation_id, node indices, screenshot_id, coordinate bounds, and errors. \
 Prefer app_batch for already-decided app_click, app_type_text, app_key_chord, app_scroll or app_drag steps; it returns one final observation. Stop before choosing a target that depends on new pixels. Never replay completed receipts after a partial failure. \
-Use observed image_xy coordinates with the matching screenshot_id; node_idx and ocr_text are optional precision aids, not prerequisites for graphical controls. \
+Use observed image_xy coordinates with the matching screenshot_id; echo observation_id for node/index input when available. node_idx and ocr_text are optional precision aids, not prerequisites for graphical controls. \
 Screenshot image coordinates are valid only with that screenshot identity and its image_content_rect/image_global_bounds; never reinterpret them as screen coordinates. \
 Execute an action or batch once, then verify the intended change. A submitted event is not evidence of successful delivery; do not repeat a mutation merely because the AX digest is unchanged. \
 If the app exposes only window chrome, use the authorized window screenshot and built-in OCR targeting instead of guessing controls from a sparse tree. \
@@ -1689,6 +1691,13 @@ impl ComputerUseTool {
             .get("action")
             .and_then(Value::as_str)
             .ok_or_else(|| OpenBitFunError::tool("action is required"))?;
+        let policy =
+            openbitfun_agent_tools::computer_use_control::ControlActionPolicy::for_action(action)
+                .ok_or_else(|| {
+                OpenBitFunError::tool(format!(
+                    "[CONTROL_ACTION_INVALID] Unknown ComputerUse action: {action}"
+                ))
+            })?;
         let host = context
             .computer_use_host
             .as_ref()
@@ -1727,27 +1736,15 @@ impl ComputerUseTool {
             _ => {}
         }
         let previous_generation = host.control_snapshot().generation;
-        let mut lease = host.acquire_control_action(owner, action).await?;
+        let lease_result = host.acquire_control_action(owner, action).await;
         let current_generation = host.control_snapshot().generation;
         if current_generation != previous_generation {
             Self::watch_control_cancellation(host.clone(), context, current_generation);
         }
+        let mut lease = lease_result?;
         let result = async {
             let mut capture_preparation_error = None;
-            if !matches!(
-                action,
-                "list_apps"
-                    | "list_displays"
-                    | "wait"
-                    | "get_os_info"
-                    | "clipboard_get"
-                    | "clipboard_set"
-                    | "open_app"
-                    | "open_url"
-                    | "open_file"
-                    | "run_script"
-                    | "run_apple_script"
-            ) {
+            if policy.target {
                 let app: crate::agentic::tools::computer_use_host::AppSelector = match input.get("app").filter(|v| v.is_object()) {
                     Some(app) => serde_json::from_value(app.clone())
                         .map_err(|e| OpenBitFunError::tool(format!("Invalid app selector: {e}")))?,
@@ -1769,7 +1766,19 @@ impl ComputerUseTool {
                     }
                 }
             }
+            if !policy.observation {
+                if let Some(value) = input.get("observation_id") {
+                    let id = value.as_str().filter(|id| !id.is_empty()).ok_or_else(|| OpenBitFunError::tool("[INVALID_PARAMS] observation_id must be a nonempty string"))?;
+                    host.validate_observation(id)?;
+                }
+            }
+            let observation_scope = host.control_snapshot();
             let mut results = self.call_controlled(input, context).await?;
+            if policy.observation && policy.lease
+                && !super::computer_use_program::same_active_control(&observation_scope, &host.control_snapshot())
+            {
+                return Err(OpenBitFunError::tool("[CONTROL_STALE] Observation discarded because control stopped or changed target"));
+            }
             if let Some(error) = capture_preparation_error {
                 for result in &mut results {
                     if let ToolResult::Result { data, .. } = result {
@@ -3347,6 +3356,12 @@ mod tests {
         fn control_snapshot(&self) -> crate::agentic::tools::computer_use_host::ControlSnapshot {
             crate::agentic::tools::computer_use_host::ControlSnapshot {
                 supported: self.control_supported,
+                state: if self.control_supported {
+                    "active"
+                } else {
+                    "idle"
+                }
+                .into(),
                 target: self.control_supported.then(|| "pid:421/window:22".into()),
                 ..Default::default()
             }
@@ -3702,6 +3717,7 @@ mod tests {
         state: Mutex<ControlSnapshot>,
         events: Arc<Mutex<Vec<String>>>,
         wait_started: tokio::sync::Notify,
+        require_share: bool,
         fail_capture: bool,
         fail_observation: bool,
         replace_control_during_observation: Option<ControlSnapshot>,
@@ -3718,6 +3734,7 @@ mod tests {
                 }),
                 events: Arc::default(),
                 wait_started: tokio::sync::Notify::new(),
+                require_share: false,
                 fail_capture: false,
                 fail_observation: false,
                 replace_control_during_observation: None,
@@ -3750,6 +3767,15 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl ComputerUseHost for ControlRecordingHost {
+        fn validate_observation(&self, id: &str) -> OpenBitFunResult<()> {
+            self.events.lock().unwrap().push(format!("validate:{id}"));
+            if id == "fixture-current" {
+                Ok(())
+            } else {
+                Err(OpenBitFunError::tool("[STALE_OBSERVATION] Read again"))
+            }
+        }
+
         async fn dispatch_app_input(
             &self,
             app: crate::agentic::tools::computer_use_host::AppSelector,
@@ -3848,6 +3874,23 @@ mod tests {
             state.state = "stopped".into();
             Ok(state.clone())
         }
+        async fn stop_control_generation(
+            &self,
+            owner: &str,
+            generation: u64,
+        ) -> OpenBitFunResult<ControlSnapshot> {
+            let snapshot = {
+                let mut state = self.state.lock().unwrap();
+                if state.generation != generation {
+                    return Ok(state.clone());
+                }
+                state.generation += 1;
+                state.state = "stopped".into();
+                state.clone()
+            };
+            self.events.lock().unwrap().push(format!("stop:{owner}"));
+            Ok(snapshot)
+        }
         async fn acquire_control_action(
             &self,
             owner: &str,
@@ -3857,6 +3900,21 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("acquire:{owner}:{action}"));
+            {
+                let mut state = self.state.lock().unwrap();
+                if self.require_share {
+                    state.generation += 1;
+                    state.owner = Some(owner.into());
+                    state.state = "awaiting_share".into();
+                    return Err(OpenBitFunError::tool(
+                        "[SHARE_REQUIRED] Select an application",
+                    ));
+                }
+                if state.state == "idle" {
+                    state.state = "active".into();
+                    state.owner = Some(owner.into());
+                }
+            }
             Ok(Some(Box::new(RecordingLease {
                 events: self.events.clone(),
                 complete: false,
@@ -3925,6 +3983,108 @@ mod tests {
         context
     }
 
+    #[test]
+    fn every_advertised_action_has_explicit_admission_policy() {
+        for schema in [
+            ComputerUseTool::new().input_schema(),
+            ComputerUseTool::input_schema_text_only(),
+        ] {
+            for action in schema["properties"]["action"]["enum"].as_array().unwrap() {
+                let name = action.as_str().unwrap();
+                assert!(
+                    openbitfun_agent_tools::computer_use_control::ControlActionPolicy::for_action(
+                        name
+                    )
+                    .is_some(),
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_workspace_and_headless_hosts_never_fall_back_to_controller_gui() {
+        let host = Arc::new(ControlRecordingHost::default());
+        let mut remote = control_context(host.clone());
+        let identity = openbitfun_services_core::workspace_identity::workspace_session_identity(
+            "/srv/project",
+            Some("fixture-ssh"),
+            Some("ssh.fixture"),
+        )
+        .unwrap();
+        remote.workspace = Some(crate::agentic::WorkspaceBinding::new_remote(
+            None,
+            std::path::PathBuf::from("/srv/project"),
+            "fixture-ssh".into(),
+            "Fixture".into(),
+            identity,
+        ));
+        let result = ComputerUseTool::new()
+            .call_impl(&json!({"action":"start_control"}), &remote)
+            .await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("workspace is remote"));
+        assert!(host.events.lock().unwrap().is_empty());
+        let headless = ToolUseContext::for_tool_listing(None, None);
+        let result = ComputerUseTool::new()
+            .call_impl(
+                &json!({"action":"get_app_state","app":{"pid":421}}),
+                &headless,
+            )
+            .await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("provider unavailable"));
+    }
+
+    #[tokio::test]
+    async fn stale_observation_references_fail_before_any_input() {
+        let host = Arc::new(ControlRecordingHost::default());
+        let context = control_context(host.clone());
+        let result = ComputerUseTool::new().call_impl(&json!({
+            "action":"app_click", "app":{"pid":421}, "observation_id":"fixture-old", "target":{"node_idx":0}
+        }), &context).await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("STALE_OBSERVATION"));
+        let events = host.events.lock().unwrap();
+        assert!(events.iter().any(|event| event == "validate:fixture-old"));
+        assert!(!events.iter().any(|event| event.starts_with("input:")));
+    }
+
+    #[tokio::test]
+    async fn read_discarded_after_target_revision_changes_even_when_target_is_identical() {
+        let initial = ControlSnapshot {
+            supported: true,
+            state: "active".into(),
+            owner: Some("control-task".into()),
+            generation: 1,
+            target: Some("window:a".into()),
+            target_revision: 1,
+            ..Default::default()
+        };
+        let host = Arc::new(ControlRecordingHost {
+            state: Mutex::new(initial.clone()),
+            replace_control_during_observation: Some(ControlSnapshot {
+                target_revision: 3,
+                ..initial
+            }),
+            ..Default::default()
+        });
+        let context = control_context(host);
+        let result = ComputerUseTool::new()
+            .call_impl(
+                &json!({"action":"get_app_state","app":{"pid":421}}),
+                &context,
+            )
+            .await;
+        assert!(result.unwrap_err().to_string().contains("CONTROL_STALE"));
+    }
+
     #[tokio::test]
     async fn control_entrypoints_route_owner_mode_and_do_not_take_action_leases() {
         let host = Arc::new(ControlRecordingHost::default());
@@ -3987,6 +4147,48 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("CONTROL_UNSUPPORTED"));
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_failed_share_request_closes_only_its_own_generation() {
+        for superseded in [false, true] {
+            let host = Arc::new(ControlRecordingHost {
+                require_share: true,
+                ..Default::default()
+            });
+            let mut context = control_context(host.clone());
+            let token = tokio_util::sync::CancellationToken::new();
+            context.runtime_handles =
+                openbitfun_runtime_ports::ToolRuntimeHandles::new(None, Some(token.clone()));
+            let error = ComputerUseTool::new()
+                .call_impl(
+                    &json!({"action":"get_app_state","app":{"pid":421}}),
+                    &context,
+                )
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("SHARE_REQUIRED"));
+            assert_eq!(host.control_snapshot().state, "awaiting_share");
+            if superseded {
+                host.state.lock().unwrap().generation += 1;
+            }
+            token.cancel();
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            assert_eq!(
+                host.control_snapshot().state,
+                if superseded {
+                    "awaiting_share"
+                } else {
+                    "stopped"
+                }
+            );
+            assert!(!host
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| event.starts_with("observe:") || event.starts_with("input:")));
         }
     }
 

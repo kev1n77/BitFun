@@ -178,7 +178,6 @@ product-full = [
     "external-sources",
     "plugin-runtime",
     "opencode-plugin-host",
-    "announcement",
     "file-watch",
     "workspace-watch",
     "ssh-remote",
@@ -430,11 +429,10 @@ canvas-runtime = [
 ]
 runtime-services = ["dep:openbitfun-runtime-services"]
 legacy-migration = ["dep:openbitfun-legacy-migration-adapters"]
-announcement = ["openbitfun-services-integrations/announcement"]
 file-watch = ["openbitfun-services-integrations/file-watch"]
 git = ["openbitfun-services-integrations/git"]
 review-platform = ["openbitfun-services-integrations/review-platform"]
-service-integrations = ["announcement", "file-watch", "git", "review-platform"]
+service-integrations = ["file-watch", "git", "review-platform"]
 diagnostics = ["openbitfun-services-core/diagnostics"]
 diff = ["openbitfun-services-core/diff"]
 dispatch-store = ["dep:base64", "local-storage", "openbitfun-services-core/dispatch-workspace"]

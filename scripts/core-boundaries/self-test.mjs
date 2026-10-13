@@ -372,7 +372,6 @@ export function runManifestParserSelfTest({
     'agent-runtime',
     'diagnostics',
     'diff',
-    'announcement',
     'canvas-runtime',
     'dispatch-store',
     'file-watch',
@@ -563,11 +562,10 @@ export function runManifestParserSelfTest({
       'canvas-runtime',
       ['dep:openbitfun-product-domains', 'openbitfun-services-integrations/canvas-runtime'],
     ],
-    [coreManifest, 'announcement', ['openbitfun-services-integrations/announcement']],
     [coreManifest, 'file-watch', ['openbitfun-services-integrations/file-watch']],
     [coreManifest, 'git', ['openbitfun-services-integrations/git']],
     [coreManifest, 'review-platform', ['openbitfun-services-integrations/review-platform']],
-    [coreManifest, 'service-integrations', ['announcement', 'file-watch', 'git', 'review-platform']],
+    [coreManifest, 'service-integrations', ['file-watch', 'git', 'review-platform']],
     [
       coreManifest,
       'ssh-remote',
@@ -684,16 +682,14 @@ export function runManifestParserSelfTest({
     'default = ["product-full"]',
     'product-full = [',
     '    "dep:tool-runtime",',
-    '    "announcement",',
     '    "file-watch",',
     '    "git",',
     '    "review-platform",',
     ']',
-    'announcement = ["openbitfun-services-integrations/announcement"]',
     'file-watch = ["openbitfun-services-integrations/file-watch"]',
     'git = ["openbitfun-services-integrations/git"]',
     'review-platform = ["openbitfun-services-integrations/review-platform"]',
-    'service-integrations = ["announcement", "file-watch", "git", "review-platform"]',
+    'service-integrations = ["file-watch", "git", "review-platform"]',
     'workspace-runtime = ["dep:serde_yaml", "openbitfun-services-core/workspace-runtime"]',
     'remote-workspace = [',
     '    "workspace-runtime",',
@@ -4541,8 +4537,6 @@ export function runManifestParserSelfTest({
     {
       path: 'src/crates/assembly/core/src/service/mod.rs',
       contracts: [
-        'feature = "announcement"',
-        'pub mod announcement',
         'feature = "file-watch"',
         'file_watch',
         'feature = "git"',
@@ -5208,13 +5202,6 @@ async fn release_baseline_claim(release: BaselineClaimRelease) -> Result<(), Dis
     if (!ruleText.includes(helper)) {
       throw new Error(`remote SSH workspace boundary rule must forbid helper: ${helper}`);
     }
-  }
-
-  const announcementStateStoreRule = forbiddenContentRules.find(
-    (rule) => rule.path === 'src/crates/assembly/core/src/service/announcement/state_store.rs',
-  );
-  if (!announcementStateStoreRule) {
-    throw new Error('missing announcement state store boundary rule');
   }
 
   const mcpProcessRule = forbiddenContentRules.find(
