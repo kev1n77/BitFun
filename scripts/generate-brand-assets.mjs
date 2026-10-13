@@ -245,7 +245,10 @@ async function generateBrandAssets() {
   const applicationMark = await createApplicationMark(await normalizePng(SOURCE_APP_MARK));
   await writePng(path.join(COMPOSER_ICON, 'Assets/Mark.png'), await resizePng(applicationMark, APP_ICON_SIZE));
   if (process.argv.includes('--macos-source-only')) return;
-  const macosFallback = readMacosFallback();
+  // Non-Apple runners cannot regenerate the Icon Composer export. They can
+  // still build Windows/Linux assets from the current sources while reusing the
+  // committed macOS fallback; macOS packaging keeps the freshness check.
+  const macosFallback = readMacosFallback({ allowStale: process.platform !== 'darwin' });
   const svg = await readFile(SOURCE_SVG, 'utf8');
   const [darkMark, lightMark] = await Promise.all([
     renderMark(svg, BRAND_SIZE, '#202020'),

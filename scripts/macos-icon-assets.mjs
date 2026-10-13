@@ -26,11 +26,15 @@ export function macosSourceDigest() {
 
 // Normal installs and non-Apple builds only copy the committed native export.
 // Changing either composition requires an explicit export on a Mac.
-export function readMacosFallback() {
+export function readMacosFallback({ allowStale = false } = {}) {
   const manifest = JSON.parse(readFileSync(join(MACOS_ICON_DIR, 'generated.json'), 'utf8'));
   const icns = readFileSync(join(ROOT, ICNS_OUTPUTS[0]));
-  if (manifest.sourceSha256 !== macosSourceDigest() || manifest.icnsSha256 !== sha256(icns)) {
+  const stale = manifest.sourceSha256 !== macosSourceDigest() || manifest.icnsSha256 !== sha256(icns);
+  if (stale && !allowStale) {
     throw new Error('macOS icon export is stale. Run pnpm run generate:macos-icons on macOS and commit the generated assets.');
+  }
+  if (stale && allowStale) {
+    console.warn('macOS icon export is stale; using the committed fallback for a non-Apple build.');
   }
   return icns;
 }

@@ -883,9 +883,11 @@ test('nightly orchestrates the shared build before the separately privileged pub
       "${{ fromJSON(inputs.artifact_retention_days || '7') }}",
     build_desktop_packages: true,
     desktop_platforms:
-      '["linux-x64","linux-arm64","macos-arm64","macos-x64","windows-x64"]',
-    build_linux_binaries: true,
-    build_relay_image: true,
+      "${{ inputs.desktop_platforms || '[\"linux-x64\",\"linux-arm64\",\"macos-arm64\",\"macos-x64\",\"windows-x64\"]' }}",
+    build_linux_binaries:
+      "${{ github.event_name != 'workflow_dispatch' || inputs.build_linux_binaries }}",
+    build_relay_image:
+      "${{ github.event_name != 'workflow_dispatch' || inputs.build_relay_image }}",
     upload_artifacts: true,
     cache_write: "${{ github.repository_owner == 'GCWing' }}",
   });
