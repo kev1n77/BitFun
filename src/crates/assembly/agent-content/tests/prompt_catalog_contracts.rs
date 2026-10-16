@@ -245,7 +245,7 @@ fn computer_use_prompt_preserves_background_observation_and_input_contract() {
     for required in [
         "{LANGUAGE_PREFERENCE}",
         "When `ControlHub` appears in your current tool list",
-        "If `ControlHub` is unavailable",
+        "If `ControlHub` lacks the required technical capability",
         "unless the user has explicitly authorized that exact action",
         "`start_control` with `mode: \"background\"`",
         "Keep the session active across observations",
@@ -257,6 +257,17 @@ fn computer_use_prompt_preserves_background_observation_and_input_contract() {
         "\"screenshot_id\":\"capture-1\"",
         "Do not replace failed GUI observations or input with ad hoc AppleScript",
         "an unchanged digest does not prove failure",
+        "choose its `app` selector yourself",
+        "does not require a user-selected share",
+        "do not add a second confirmation solely because you wrote the wording",
+        "Settings > Browser Control",
+        "Never enable permissions yourself",
+        "Permission denial or user Disconnect is not a technical limitation to work around",
+        "Use `app_batch` by default when several inputs are already decided",
+        "first app observation can start background control automatically",
+        "`include_image: false`",
+        "never replay completed steps or the whole batch",
+        "Do not insert routine settle delays",
     ] {
         assert!(
             prompt.contains(required),
@@ -275,6 +286,9 @@ fn computer_use_prompt_preserves_background_observation_and_input_contract() {
         "Drive hard-to-reach apps directly",
         "screenshot_unavailable: true",
         "verify `ax_state_digest` changed",
+        "Stop this attempt until the user completes that choice",
+        "A system stop requires a new user-selected share",
+        "ask the user to click **Enable default CDP**",
     ] {
         assert!(
             !prompt.contains(obsolete),
@@ -288,6 +302,10 @@ fn computer_use_delegation_preserves_user_scope_in_parents_and_child() {
     for name in ["claw_mode", "standard_mode", "cowork_mode", "creative_mode"] {
         let prompt = agent_prompt(name).unwrap();
         assert!(prompt.contains("{COMPUTER_USE_GUIDANCE}"), "{name}");
+        assert!(
+            !prompt.contains("ask the user to click **Enable default CDP**"),
+            "{name}"
+        );
     }
     let prompt = agent_prompt("general_purpose_agent").unwrap();
     assert!(
@@ -298,6 +316,8 @@ fn computer_use_delegation_preserves_user_scope_in_parents_and_child() {
         prompt.contains("Default to background app control"),
         "general_purpose_agent"
     );
+    assert!(prompt.contains("do not require the user to select or share an app"));
+    assert!(prompt.contains("without an extra approval solely for your wording"));
     assert!(
         prompt.contains(
             "Confirmation of message content does not authorize a change of control mode"

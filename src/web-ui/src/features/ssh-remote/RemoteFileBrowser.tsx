@@ -94,6 +94,9 @@ export const RemoteFileBrowser: React.FC<RemoteFileBrowserProps> = ({
   const textInputCompositionActiveRef = useRef(false);
   const [entries, setEntries] = useState<RemoteFileEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadedConnectionId, setLoadedConnectionId] = useState<string | null>(null);
+  const directoryRequestRef = useRef(0);
+  const requestedPathRef = useRef(initialPath);
   const [error, setError] = useState<string | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({
@@ -152,8 +155,12 @@ export const RemoteFileBrowser: React.FC<RemoteFileBrowserProps> = ({
   // already-in-flight request still fails. Retrying once gives the recovery
   // path a chance to succeed before surfacing an error to the user.
   const loadDirectory = useCallback(async (path: string) => {
+    const request = ++directoryRequestRef.current;
+    requestedPathRef.current = path;
     setLoading(true);
     setError(null);
+    setSelectedPath(null);
+    setIsEditingPath(false);
     const fetchOnce = () => sshApi.readDir(connectionId, path);
     try {
       let result;
@@ -163,28 +170,41 @@ export const RemoteFileBrowser: React.FC<RemoteFileBrowserProps> = ({
         // Brief pause lets the backend complete its reconnect handshake before
         // we hammer it again.
         await new Promise((resolve) => setTimeout(resolve, 250));
+        if (request !== directoryRequestRef.current) return;
         try {
           result = await fetchOnce();
         } catch {
           throw firstErr;
         }
       }
+      if (request !== directoryRequestRef.current) return;
       result.sort((a, b) => {
         if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
         return a.name.localeCompare(b.name);
       });
       setEntries(result);
+      // READDIR follows directory links on the remote host. Commit navigation
+      // only after it succeeds, retaining the link path and last usable listing
+      // when a link is broken, points to a file, or cannot be accessed.
+      setCurrentPath(path);
+      setPathInputValue(path);
+      setLoadedConnectionId(connectionId);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load directory');
-      setEntries([]);
+      if (request !== directoryRequestRef.current) return;
+      setError(e instanceof Error ? e.message : typeof e === 'string' ? e : 'Failed to load directory');
     } finally {
-      setLoading(false);
+      if (request === directoryRequestRef.current) setLoading(false);
     }
   }, [connectionId]);
 
   useEffect(() => {
-    loadDirectory(currentPath);
-  }, [currentPath, loadDirectory]);
+    setEntries([]);
+    setLoadedConnectionId(null);
+    setCurrentPath(initialPath);
+    setPathInputValue(initialPath);
+    void loadDirectory(initialPath);
+    return () => { directoryRequestRef.current += 1; };
+  }, [initialPath, loadDirectory]);
 
   // Close context menu when clicking outside
   useEffect(() => {
@@ -198,10 +218,7 @@ export const RemoteFileBrowser: React.FC<RemoteFileBrowserProps> = ({
   }, []);
 
   const navigateTo = (path: string) => {
-    setCurrentPath(path);
-    setPathInputValue(path);
-    setSelectedPath(null);
-    setIsEditingPath(false);
+    void loadDirectory(path);
   };
 
   const handlePathInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -234,7 +251,7 @@ export const RemoteFileBrowser: React.FC<RemoteFileBrowserProps> = ({
   };
 
   const handleEntryClick = (entry: RemoteFileEntry) => {
-    if (entry.isDir) {
+    if (entry.isDir || (selectDirectoriesOnly && entry.isSymlink)) {
       navigateTo(entry.path);
     } else if (!selectDirectoriesOnly) {
       setSelectedPath(entry.path);
@@ -243,7 +260,7 @@ export const RemoteFileBrowser: React.FC<RemoteFileBrowserProps> = ({
   };
 
   const handleEntryDoubleClick = (entry: RemoteFileEntry) => {
-    if (entry.isDir) {
+    if (entry.isDir || entry.isSymlink) {
       navigateTo(entry.path);
     }
   };
@@ -299,7 +316,7 @@ export const RemoteFileBrowser: React.FC<RemoteFileBrowserProps> = ({
           setDeleteConfirm({ show: true, entry });
           break;
         case 'open':
-          if (entry.isDir) {
+          if (entry.isDir || entry.isSymlink) {
             navigateTo(entry.path);
           } else if (!selectDirectoriesOnly) {
             onSelect(entry.path);
@@ -395,6 +412,7 @@ export const RemoteFileBrowser: React.FC<RemoteFileBrowserProps> = ({
   };
 
   const openSelectedWorkspace = () => {
+    if (loading || loadedConnectionId !== connectionId) return;
     onSelect(selectDirectoriesOnly ? currentPath : (selectedPath || currentPath));
   };
 
@@ -579,7 +597,7 @@ export const RemoteFileBrowser: React.FC<RemoteFileBrowserProps> = ({
               <span>{error}</span>
               <IconButton
                 type="button"
-                onClick={() => loadDirectory(currentPath)}
+                onClick={() => loadDirectory(requestedPathRef.current)}
                 title={t('actions.retry') || 'Retry'}
                 style={{ marginLeft: 'auto', marginRight: 8 }}
                 aria-label={t('actions.retry')}
@@ -653,7 +671,7 @@ export const RemoteFileBrowser: React.FC<RemoteFileBrowserProps> = ({
                     </td>
                   </tr>
                 ))}
-                {entries.length === 0 && !loading && (
+                {entries.length === 0 && !loading && !error && loadedConnectionId === connectionId && (
                   <tr>
                     <td colSpan={3} className="remote-file-browser__empty">
                       {t('ssh.remote.emptyDirectory')}
@@ -801,7 +819,7 @@ export const RemoteFileBrowser: React.FC<RemoteFileBrowserProps> = ({
               variant="primary"
               size="sm"
               onClick={openSelectedWorkspace}
-              disabled={false}
+              disabled={loading || loadedConnectionId !== connectionId}
             >
               {t('ssh.remote.openWorkspace')}
             </Button>

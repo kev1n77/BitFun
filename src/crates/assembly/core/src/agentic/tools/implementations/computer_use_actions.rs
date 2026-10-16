@@ -31,6 +31,17 @@ const OPEN_FILE_ROUTING_NOTE: &str = "The file is now open in an external applic
 
 pub(crate) struct ComputerUseActions;
 
+fn include_app_state_image(params: &Value) -> OpenBitFunResult<bool> {
+    match params.get("include_image") {
+        None => Ok(true),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(coded_tool_error(
+            ErrorCode::InvalidParams,
+            "include_image must be a boolean",
+        )),
+    }
+}
+
 impl Default for ComputerUseActions {
     fn default() -> Self {
         Self::new()
@@ -795,6 +806,7 @@ impl ComputerUseActions {
             }
             "get_app_state" => {
                 let app = parse_selector(params)?;
+                let include_image = include_app_state_image(params)?;
                 let max_depth = params
                     .get("max_depth")
                     .and_then(|v| v.as_u64())
@@ -804,7 +816,12 @@ impl ComputerUseActions {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true);
                 let snap = host
-                    .get_app_state(app.clone(), max_depth, focus_window_only)
+                    .get_app_state_with_options(
+                        app.clone(),
+                        max_depth,
+                        focus_window_only,
+                        include_image,
+                    )
                     .await?;
                 let summary = format!(
                     "AX state for {} (digest={}, {} nodes)",
@@ -846,6 +863,7 @@ impl ComputerUseActions {
             "app_batch" | "app_drag" | "app_click" | "app_type_text" | "app_scroll"
             | "app_key_chord" => {
                 let app = parse_selector(params)?;
+                let include_image = include_app_state_image(params)?;
                 // Legacy single-action calls are syntax aliases for a one-step
                 // input program. No separate input+capture execution path exists.
                 let raw = if action == "app_batch" {
@@ -917,8 +935,14 @@ impl ComputerUseActions {
                     super::computer_use_program::validate_step(step)
                         .map_err(|e| coded_tool_error(ErrorCode::InvalidParams, e))?;
                 }
-                let result =
-                    super::computer_use_program::execute(host.as_ref(), app, steps, context).await;
+                let result = super::computer_use_program::execute(
+                    host.as_ref(),
+                    app,
+                    steps,
+                    context,
+                    include_image,
+                )
+                .await;
                 let mut data = result.receipt;
                 data["action"] = json!(action);
                 data["background_input"] = json!(bg);

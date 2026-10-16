@@ -122,8 +122,10 @@ fn prompt_environment_info_preserves_local_and_remote_guidance() {
         remote_execution_active: false,
     });
     assert!(local.contains("- Operating System: windows (windows)"));
-    assert!(local.contains("Computer use / `key_chord`"));
-    assert!(local.contains("PowerShell"));
+    assert!(local.contains("Computer use / keyboard"));
+    assert!(local.contains("Windows app-scoped keyboard chords are unavailable"));
+    assert!(local.contains("requires authorized foreground control"));
+    assert!(!local.contains("PowerShell"));
 
     let remote = render_prompt_environment_info(PromptEnvironmentFacts {
         host_os: "linux",
@@ -217,6 +219,21 @@ fn runtime_context_renderer_adds_text_only_computer_use_guidance_for_non_visual_
     assert!(reminder.contains("primary model does not accept image inputs"));
     assert!(reminder.contains("do not use `screenshot`"));
     assert!(reminder.contains("prefer `snapshot` then click by `@e*` ref"));
+    assert!(reminder.contains("selected or bound app"));
+    assert!(reminder.contains("`include_image: false`"));
+    assert!(reminder.contains("`app_batch`"));
+    assert!(reminder.contains("never replay completed steps after partial failure"));
+    for obsolete in [
+        "frontmost app",
+        "again after an action to confirm `ax_state_digest` changed",
+        "Action priority:",
+        "`paste` with `submit: true`",
+    ] {
+        assert!(
+            !reminder.contains(obsolete),
+            "legacy desktop guidance: {obsolete}"
+        );
+    }
 }
 
 #[test]

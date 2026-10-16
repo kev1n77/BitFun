@@ -77,6 +77,12 @@ int main(int argc, const char **argv) { @autoreleasepool {
         const double timeoutSeconds = argc > 2 ? strtod(argv[2], NULL) : 20.0;
         const double started = NSProcessInfo.processInfo.systemUptime;
         do {
+            NSDictionary *session = CFBridgingRelease(CGSessionCopyCurrentDictionary());
+            NSNumber *locked = session[@"CGSSessionScreenIsLocked"];
+            if ([locked isKindOfClass:NSNumber.class] && locked.boolValue) {
+                fprintf(stderr, "INCONCLUSIVE: execution host screen is locked; no observer was activated\n");
+                return 75;
+            }
             double idle = CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateHIDSystemState, kCGAnyInputEventType);
             if (!isfinite(idle) || idle < 0) {
                 fprintf(stderr, "INCONCLUSIVE: hardware input idle state unavailable; no observer was activated\n");
@@ -170,6 +176,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     NSButton *button = [NSButton buttonWithTitle:@"Count one action" target:actions action:@selector(clicked:)];
     button.frame = NSMakeRect(20,240,240,30);
     field = [[NSTextField alloc] initWithFrame:NSMakeRect(20,180,300,30)];
+    [field setAccessibilityIdentifier:@"fixture-text-field"];
     field.delegate = actions;
     OBFPlainCanvas *canvas = [[OBFPlainCanvas alloc] initWithFrame:NSMakeRect(20,20,300,100)];
     [targetWindow.contentView addSubview:button]; [targetWindow.contentView addSubview:field]; [targetWindow.contentView addSubview:canvas];

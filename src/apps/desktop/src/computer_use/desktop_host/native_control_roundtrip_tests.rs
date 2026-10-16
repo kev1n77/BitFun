@@ -1,14 +1,18 @@
 //! Real Tool -> desktop host -> native capture/input regression, opt-in only.
 use super::desktop_host::DesktopComputerUseHost;
 use openbitfun_core::agentic::tools::computer_use_host::ComputerUseHost;
-use openbitfun_core::agentic::tools::framework::{Tool, ToolUseContext};
+use openbitfun_core::agentic::tools::framework::{Tool, ToolResult, ToolUseContext};
 use openbitfun_core::agentic::tools::implementations::ComputerUseTool;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
 const OWNER: &str = "native-control-roundtrip-fixture";
 async fn select_and_grant_fixture(host: &DesktopComputerUseHost, pid: i32, window: Option<u64>) {
-    let pending = host.control_snapshot();
+    let pending = crate::computer_use::control_session::request_share(
+        OWNER,
+        openbitfun_agent_tools::computer_use_control::ControlMode::Background,
+    )
+    .unwrap();
     assert_eq!(pending.state, "awaiting_share");
     assert!(crate::computer_use::control_session::acquire(OWNER, "app_click").is_err());
     let target = crate::computer_use::share_targets()
@@ -71,6 +75,19 @@ impl Drop for StopOnExit {
 }
 
 async fn call(tool: &ComputerUseTool, context: &ToolUseContext, input: Value) -> Value {
+    call_observation(tool, context, input).await.data
+}
+
+struct NativeObservation {
+    data: Value,
+    image_count: usize,
+}
+
+async fn call_observation(
+    tool: &ComputerUseTool,
+    context: &ToolUseContext,
+    input: Value,
+) -> NativeObservation {
     let started = std::time::Instant::now();
     eprintln!("TRACE native roundtrip action: {}", input["action"]);
     let results = tool
@@ -88,11 +105,69 @@ async fn call(tool: &ComputerUseTool, context: &ToolUseContext, input: Value) ->
         .content();
     assert_ne!(body.get("ok"), Some(&Value::Bool(false)), "{body}");
     assert_ne!(body.get("success"), Some(&Value::Bool(false)), "{body}");
-    if body.get("ok") == Some(&Value::Bool(true)) && body.get("data").is_some() {
+    let data = if body.get("ok") == Some(&Value::Bool(true)) && body.get("data").is_some() {
         body["data"].clone()
     } else {
         body
+    };
+    let image_count = results
+        .iter()
+        .map(|result| match result {
+            ToolResult::Result {
+                image_attachments, ..
+            } => image_attachments.as_ref().map_or(0, Vec::len),
+            _ => 0,
+        })
+        .sum();
+    NativeObservation { data, image_count }
+}
+
+fn assert_app_observation(
+    result: &NativeObservation,
+    include_image: bool,
+    previous_id: Option<&str>,
+) -> String {
+    let state = &result.data["app_state"];
+    let id = state["observation_id"]
+        .as_str()
+        .expect("fresh application observation identity");
+    assert!(!id.is_empty());
+    assert_ne!(
+        Some(id),
+        previous_id,
+        "each read must replace the AX index namespace"
+    );
+    assert!(state["node_count"].as_u64().is_some_and(|count| count > 0));
+    assert_eq!(state["has_screenshot"], include_image);
+    assert_eq!(result.image_count, usize::from(include_image));
+    if include_image {
+        assert!(state["screenshot_meta"]["screenshot_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()));
+    } else {
+        assert!(
+            state.get("screenshot_meta").is_none(),
+            "AX-only observation must not advertise image coordinates"
+        );
     }
+    id.to_owned()
+}
+
+fn observed_node_index(observation: &Value, label: &str) -> u32 {
+    let line = observation["app_state"]["tree_text"]
+        .as_str()
+        .expect("native AX tree")
+        .lines()
+        .find(|line| line.contains(label))
+        .expect("fixture control in native AX tree");
+    line.trim()
+        .strip_prefix('[')
+        .unwrap()
+        .split(']')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap()
 }
 
 fn assert_session(
@@ -141,7 +216,11 @@ async fn wait_for_observer(path: &str) -> Value {
 
 pub(crate) async fn run() {
     if std::env::var_os("OPENBITFUN_INPUT_FIXTURE_PID").is_some() {
-        run_covered_semantic().await;
+        if let Ok(case) = std::env::var("OPENBITFUN_INPUT_LATENCY_CASE") {
+            run_latency_case(&case).await;
+        } else {
+            run_covered_semantic().await;
+        }
         return;
     }
     let pid: i32 = std::env::var("OPENBITFUN_ROUNDTRIP_FIXTURE_PID")
@@ -174,14 +253,8 @@ pub(crate) async fn run() {
     context.primary_model_facts.api_format = "anthropic".into();
     let tool = ComputerUseTool::new();
     let _cleanup = StopOnExit;
-    let start = call(
-        &tool,
-        &context,
-        json!({"action":"start_control", "mode":"background"}),
-    )
-    .await;
-    let generation = start["generation"].as_u64().expect("control generation");
-    select_and_grant_fixture(&host, pid, None).await;
+    // Reproduce ordinary Agent usage: discovery followed by the first app
+    // observation starts background control without any UI sharing calls.
     let apps = call(&tool, &context, json!({"action":"list_apps"})).await;
     assert!(
         apps.to_string().contains(&pid.to_string()),
@@ -193,6 +266,10 @@ pub(crate) async fn run() {
         json!({"action":"get_app_state", "app":{"pid":pid}}),
     )
     .await;
+    let control = host.control_snapshot();
+    assert_eq!(control.state, "active");
+    assert!(control.sharing.is_none());
+    let generation = control.generation;
     let old_observation_id = observation["app_state"]["observation_id"]
         .as_str()
         .expect("scoped observation identity")
@@ -358,13 +435,75 @@ async fn run_covered_semantic() {
         json!({"action":"start_control","mode":"background"}),
     )
     .await;
-    select_and_grant_fixture(&host, pid, initial["window_id"].as_u64()).await;
+    assert_eq!(host.control_snapshot().state, "active");
+    assert!(host.control_snapshot().sharing.is_none());
+    let opened = call(
+        &tool,
+        &context,
+        json!({
+            "action":"open_app", "app_name":"dev.openbitfun.input-fixture.target"
+        }),
+    )
+    .await;
+    assert_eq!(opened["success"], true);
+    assert_eq!(opened["process_id"], pid);
+    assert_eq!(
+        crate::computer_use::macos_bg_input::frontmost_pid_macos(),
+        foreground
+    );
+    let opened_by_path = call(
+        &tool,
+        &context,
+        json!({"action":"open_app", "app_name":std::env::var("OPENBITFUN_INPUT_FIXTURE_APP").unwrap()}),
+    )
+    .await;
+    assert_eq!(opened_by_path["success"], true);
+    assert_eq!(opened_by_path["process_id"], pid);
+    assert_eq!(opened_by_path["launch_path"], "open_background");
+    assert_eq!(
+        crate::computer_use::macos_bg_input::frontmost_pid_macos(),
+        foreground
+    );
     let observation = call(
         &tool,
         &context,
         json!({"action":"get_app_state","app":{"pid":pid}}),
     )
     .await;
+    let visual_id = observation["app_state"]["observation_id"].as_str().unwrap();
+    let ax_only = call_observation(
+        &tool,
+        &context,
+        json!({"action":"get_app_state","app":{"pid":pid},"include_image":false}),
+    )
+    .await;
+    let ax_id = assert_app_observation(&ax_only, false, Some(visual_id));
+    assert!(host.validate_observation(visual_id).is_err());
+    let button_idx = observed_node_index(&ax_only.data, "Count one action");
+    let ax_click = call_observation(
+        &tool,
+        &context,
+        json!({"action":"app_click","app":{"pid":pid},"include_image":false,
+            "observation_id":ax_id,"target":{"kind":"node_idx","idx":button_idx}}),
+    )
+    .await;
+    let ax_click_id = assert_app_observation(&ax_click, false, Some(&ax_id));
+    assert_eq!(ax_click.data["completed_steps"], 1);
+    assert_eq!(
+        read(&path)["button_actions"],
+        1,
+        "AX-only node must deliver the semantic action exactly once"
+    );
+    assert_eq!(read(&path)["events"].as_array().unwrap().len(), 0);
+    let restored = call_observation(
+        &tool,
+        &context,
+        json!({"action":"get_app_state","app":{"pid":pid}}),
+    )
+    .await;
+    assert_app_observation(&restored, true, Some(&ax_click_id));
+    let observation = restored.data;
+    eprintln!("PASS AX-only observations retain fresh actionable node identities and default observation restores pixels");
     eprintln!(
         "After initial observation frontmost={:?} observer={}",
         crate::computer_use::macos_bg_input::frontmost_pid_macos(),
@@ -420,7 +559,7 @@ async fn run_covered_semantic() {
     let button_state = read(&path);
     let button_observer = read(&observer_path);
     eprintln!("After image button: target={button_state} observer={button_observer} frontmost={:?} expected={foreground:?}", crate::computer_use::macos_bg_input::frontmost_pid_macos());
-    assert_eq!(button_state["button_actions"], 1);
+    assert_eq!(button_state["button_actions"], 2);
     assert_eq!(
         button_state["events"].as_array().unwrap().len(),
         0,
@@ -477,7 +616,7 @@ async fn run_covered_semantic() {
     );
     assert!(scrolled["canvas_scroll_y"].as_f64().unwrap().abs() > 0.0);
     assert_eq!(scrolled["canvas_downs"], 0);
-    assert_eq!(scrolled["button_actions"], 1);
+    assert_eq!(scrolled["button_actions"], 2);
     assert_eq!(scrolled["events"].as_array().unwrap().len(), 0);
     assert_eq!(scrolled["active"], false);
     assert_eq!(scrolled["key_window"], false);
@@ -512,7 +651,7 @@ async fn run_covered_semantic() {
     assert_eq!(state["canvas_scrolls"], 2);
     assert_eq!(state["canvas_downs"], 1);
     assert_eq!(state["canvas_command_downs"], 0);
-    assert_eq!(state["button_actions"], 1);
+    assert_eq!(state["button_actions"], 2);
     let events = state["events"].as_array().unwrap();
     assert_eq!(
         events
@@ -542,6 +681,9 @@ async fn run_covered_semantic() {
     );
     // Human preview input uses a separate host instance but the same native
     // sharing resource, lease and background guard as the Agent.
+    // Exercise that optional API separately, after the entire Agent task has
+    // completed without a share selection or per-application grant.
+    select_and_grant_fixture(&host, pid, initial["window_id"].as_u64()).await;
     use crate::computer_use::shared_preview::{self, SharedInputRequest, SharedPreviewRequest};
     let shared = host.control_snapshot();
     let scope = || SharedPreviewRequest {
@@ -617,4 +759,167 @@ async fn run_covered_semantic() {
         "foreground must not switch away and back between samples: {final_observer}"
     );
     eprintln!("PASS independent app bundles preserve foreground across all semantic actions and stop: {final_observer}");
+}
+
+/// Identical native input sequence in a fresh target/observer process per case.
+/// Tool execution and one immediate native-effect check are timed; startup,
+/// recovery and cleanup are excluded. No model is invoked by this fixture.
+async fn run_latency_case(case: &str) {
+    let (batched, include_image) = match case {
+        "singles:default" => (false, true),
+        "batch:default" => (true, true),
+        "singles:ax" => (false, false),
+        "batch:ax" => (true, false),
+        _ => panic!("Unknown native latency fixture case: {case}"),
+    };
+    let pid: i32 = std::env::var("OPENBITFUN_INPUT_FIXTURE_PID")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let path = std::env::var("OPENBITFUN_INPUT_FIXTURE_RESULT").unwrap();
+    let observer_path = std::env::var("OPENBITFUN_INPUT_OBSERVER_RESULT").unwrap();
+    let read = |path: &str| -> Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    };
+    let observer = wait_for_observer(&observer_path).await;
+    let foreground = crate::computer_use::macos_bg_input::frontmost_pid_macos();
+    assert_ne!(foreground, Some(pid));
+    assert_eq!(observer["target_ahead"], false);
+    assert_eq!(read(&path)["field_text"], "");
+    let host = Arc::new(DesktopComputerUseHost::new());
+    let mut context = ToolUseContext::for_tool_listing(None, None);
+    context.session_id = Some(OWNER.into());
+    context.computer_use_host = Some(host.clone());
+    context.primary_model_facts.supports_image_inputs = true;
+    context.primary_model_facts.api_format = "anthropic".into();
+    let tool = ComputerUseTool::new();
+    let _cleanup = StopOnExit;
+    call(
+        &tool,
+        &context,
+        json!({"action":"start_control","mode":"background"}),
+    )
+    .await;
+    let with_policy = |mut input: Value| {
+        // Deliberately omit the field for the compatibility/default cases.
+        if !include_image {
+            input["include_image"] = json!(false);
+        }
+        input
+    };
+    let initial = call_observation(
+        &tool,
+        &context,
+        with_policy(json!({"action":"get_app_state","app":{"pid":pid}})),
+    )
+    .await;
+    let mut observation_id = assert_app_observation(&initial, include_image, None);
+    let initial_nodes = initial.data["app_state"]["node_count"].clone();
+    let mut current = initial.data;
+    let control = host.control_snapshot();
+    let target = control.target.as_deref().expect("fixture capture target");
+    let make_steps = |observation: &Value| {
+        let idx = observed_node_index(observation, "fixture-text-field");
+        let text = |value: &str| {
+            json!({"action":"app_type_text","text":value,
+            "focus":{"kind":"node_idx","idx":idx}})
+        };
+        vec![
+            text("speed"),
+            text("✓"),
+            json!({"action":"app_key_chord","keys":["command","shift","k"]}),
+            text("中文"),
+            text("🙂"),
+        ]
+    };
+    let mut returned_observations = Vec::new();
+    let mut input_count = 0;
+    let started = std::time::Instant::now();
+    let calls = if batched { 1 } else { 5 };
+    for index in 0..calls {
+        let steps = make_steps(&current);
+        let mut input = if batched {
+            json!({"action":"app_batch","steps":steps})
+        } else {
+            steps[index].clone()
+        };
+        input["app"] = json!({"pid":pid});
+        input["observation_id"] = json!(observation_id);
+        let result = call_observation(&tool, &context, with_policy(input)).await;
+        observation_id = assert_app_observation(&result, include_image, Some(&observation_id));
+        assert_eq!(result.data["status"], "submitted");
+        let completed = result.data["completed_steps"].as_u64().unwrap();
+        assert_eq!(completed, if batched { 5 } else { 1 });
+        input_count += completed;
+        returned_observations.push(json!({
+            "observation_id":observation_id,
+            "node_count":result.data["app_state"]["node_count"],
+            "image_count":result.image_count
+        }));
+        current = result.data;
+    }
+    let verification_started = std::time::Instant::now();
+    let immediate_native = read(&path);
+    assert_eq!(
+        immediate_native["shortcut_actions"], 1,
+        "the fixture shortcut must already have executed before any recovery read or wait"
+    );
+    let sidecar_verification_ms = verification_started.elapsed().as_secs_f64() * 1000.0;
+    let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+    assert_eq!(input_count, 5);
+    assert_eq!(returned_observations.len(), calls);
+    assert_session(&host, control.generation, target, foreground);
+    let final_field = current["app_state"]["tree_text"]
+        .as_str()
+        .expect("final input response contains its AX tree")
+        .lines()
+        .find(|line| line.contains("fixture-text-field"))
+        .expect("final input response contains the observed text field");
+    assert!(
+        final_field.contains("value=\"speed✓中文🙂\""),
+        "the returned observation itself must expose the completed text before any recovery read or wait: {final_field}"
+    );
+    // A read-only default request must recover pixels after the AX-only run.
+    let recovery = call_observation(
+        &tool,
+        &context,
+        json!({"action":"get_app_state","app":{"pid":pid}}),
+    )
+    .await;
+    assert_app_observation(&recovery, true, Some(&observation_id));
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    let native = read(&path);
+    let after = read(&observer_path);
+    assert_eq!(native["field_text"], "speed✓中文🙂");
+    assert_eq!(native["shortcut_actions"], 1);
+    assert_eq!(native["button_actions"], 0);
+    assert_eq!(native["canvas_text"], "");
+    assert_eq!(native["canvas_downs"], 0);
+    assert_eq!(native["foreign_actions"], 0);
+    assert!(native["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|event| event["outside_frame"] == true
+            && event["hit"] == "none"
+            && event["flags"] == 0));
+    assert_eq!(after["active"], true);
+    assert_eq!(after["key_window"], true);
+    assert_eq!(after["target_ahead"], false);
+    assert_eq!(after["cursor"], after["ready_cursor"]);
+    call(&tool, &context, json!({"action":"stop_control"})).await;
+    // The runner additionally checks transient observer deactivation, exact
+    // target window routing, physical cursor and input delivered to the observer.
+    eprintln!(
+        "CUA_NATIVE_LATENCY {}",
+        json!({
+            "case":case,"duration_ms":duration_ms,"input_steps":input_count,
+            "sidecar_verification_ms":sidecar_verification_ms,
+            "tool_calls":calls,"returned_observation_count":returned_observations.len(),
+            "returned_image_count":returned_observations.iter().map(|v| v["image_count"].as_u64().unwrap()).sum::<u64>(),
+            "initial_node_count":initial_nodes,"observations":returned_observations,
+            "verification":"exact native text and shortcut count; foreground and cursor preserved",
+            "scope":"local macOS native tool execution plus one immediate fixture JSON check; excludes startup and model inference"
+        })
+    );
 }

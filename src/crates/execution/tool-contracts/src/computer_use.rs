@@ -643,13 +643,10 @@ pub struct AppStateSnapshot {
     pub digest: String,
     /// Unix-epoch milliseconds when the snapshot was captured.
     pub captured_at_ms: u64,
-    /// **Auto-attached** focused-window screenshot (Codex parity). The host
-    /// captures the visible pixels of the target app's frontmost window
-    /// every time `get_app_state` (or any `app_*` mutation) returns, so
-    /// the model is never blind on canvas / WebView / WebGL surfaces that
-    /// the AX tree cannot describe (e.g. the Gobang board). `None` only
-    /// when the host explicitly opted out (e.g. inner `app_wait_for`
-    /// polls) or the capture itself failed.
+    /// Optional focused-window screenshot. Existing observations include pixels
+    /// by default; explicit AX-only reads and internal polling omit them. Capture
+    /// failure can also leave this absent. Canvas and visual decisions need a
+    /// fresh image-bearing observation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screenshot: Option<ComputerScreenshot>,
     /// Optional per-snapshot warning emitted by the host when it detects

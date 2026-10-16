@@ -39,6 +39,7 @@ export type PeerConnectionHealth = 'connecting' | 'ready' | 'degraded';
 export type PeerHostKind = 'desktop' | 'cli';
 
 export interface PeerHostCapabilities {
+  readonly backgroundResultDeliveryV1?: boolean;
   readonly idempotentDialogSubmit: boolean;
   /** Only true after explicit negotiation; older hosts need the upload API. */
   readonly inlineImageAttachmentsV1?: boolean;
@@ -50,6 +51,7 @@ export interface PeerHostCapabilities {
   /** MiniApp Agent runs accept immutable virtual context-file snapshots. */
   readonly miniAppAgentContextFilesV1: boolean;
   readonly wslWorkspacesV1?: boolean;
+  readonly wholeSessionCopyV1?: boolean;
   readonly computerUseSharingV1?: boolean;
   /** Typed ProductControl HostInvoke, including shared config read-back. */
   readonly productControlV1?: boolean;
@@ -166,6 +168,7 @@ interface PeerModePingResult {
 }
 
 const NO_CAPABILITIES: PeerHostCapabilities = {
+  backgroundResultDeliveryV1: false,
   idempotentDialogSubmit: false,
   inlineImageAttachmentsV1: false,
   btwInitialModelSelectionV1: false,
@@ -175,6 +178,7 @@ const NO_CAPABILITIES: PeerHostCapabilities = {
   tokenUsageStatistics: false,
   miniAppAgentContextFilesV1: false,
   wslWorkspacesV1: false,
+  wholeSessionCopyV1: false,
   computerUseSharingV1: false,
   productControlV1: false,
   productControlNativeV1: false,
@@ -429,6 +433,7 @@ export class PeerConnectionManager {
       supportsTokenUsageStatistics: entry.capabilities.tokenUsageStatistics,
       supportsMiniAppAgentContextFilesV1: entry.capabilities.miniAppAgentContextFilesV1,
       supportsWslWorkspacesV1: entry.capabilities.wslWorkspacesV1,
+      supportsWholeSessionCopyV1: entry.capabilities.wholeSessionCopyV1,
       supportsComputerUseSharingV1: entry.capabilities.computerUseSharingV1,
       supportsProductControlV1: entry.capabilities.productControlV1,
     });
@@ -507,6 +512,7 @@ export class PeerConnectionManager {
 
     return {
       idempotentDialogSubmit: caps?.idempotent_dialog_submit === true,
+      backgroundResultDeliveryV1: caps?.background_result_delivery_v1 === true,
       inlineImageAttachmentsV1: caps?.inline_image_attachments_v1 === true,
       btwInitialModelSelectionV1: caps?.btw_initial_model_selection_v1 === true,
       controlConversationV1: caps?.control_conversation_v1 === true,
@@ -515,6 +521,7 @@ export class PeerConnectionManager {
       tokenUsageStatistics: caps?.token_usage_statistics === true,
       miniAppAgentContextFilesV1: caps?.miniapp_agent_context_files_v1 === true,
       wslWorkspacesV1: caps?.wsl_workspaces_v1 === true,
+      wholeSessionCopyV1: caps?.whole_session_copy_v1 === true,
       computerUseSharingV1: caps?.computer_use_sharing_v1 === true,
       productControlV1: caps?.product_control_v1 === true,
       productControlNativeV1: caps?.product_control_native_v1 === true,
@@ -611,6 +618,7 @@ export class PeerConnectionManager {
         supportsTokenUsageStatistics: capabilities.tokenUsageStatistics,
         supportsMiniAppAgentContextFilesV1: capabilities.miniAppAgentContextFilesV1,
         supportsWslWorkspacesV1: capabilities.wslWorkspacesV1,
+        supportsWholeSessionCopyV1: capabilities.wholeSessionCopyV1,
         supportsComputerUseSharingV1: capabilities.computerUseSharingV1,
         supportsProductControlV1: capabilities.productControlV1,
       });
@@ -747,6 +755,7 @@ function capabilitiesEqual(
   b: PeerHostCapabilities,
 ): boolean {
   return a.idempotentDialogSubmit === b.idempotentDialogSubmit &&
+    a.backgroundResultDeliveryV1 === b.backgroundResultDeliveryV1 &&
     a.inlineImageAttachmentsV1 === b.inlineImageAttachmentsV1 &&
     a.btwInitialModelSelectionV1 === b.btwInitialModelSelectionV1 &&
     a.controlConversationV1 === b.controlConversationV1 &&
@@ -755,6 +764,7 @@ function capabilitiesEqual(
     a.tokenUsageStatistics === b.tokenUsageStatistics &&
     a.miniAppAgentContextFilesV1 === b.miniAppAgentContextFilesV1 &&
     a.wslWorkspacesV1 === b.wslWorkspacesV1 &&
+    a.wholeSessionCopyV1 === b.wholeSessionCopyV1 &&
     a.computerUseSharingV1 === b.computerUseSharingV1 &&
     a.cancelTool === b.cancelTool &&
     a.toolCatalog === b.toolCatalog &&

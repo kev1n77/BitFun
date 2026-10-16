@@ -151,6 +151,7 @@ fn projected(r: &Resource) -> ControlSnapshot {
     s.supported = true;
     s.capabilities = vec![
         "control-session-v1".into(),
+        "agent-directed-control-v1".into(),
         "stop-control".into(),
         "action-feedback".into(),
         "observation-scope-v1".into(),

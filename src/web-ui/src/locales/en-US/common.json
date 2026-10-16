@@ -363,6 +363,9 @@
       "duplicate": "Copy session",
       "duplicateSuccess": "Copied to “{{name}}”",
       "duplicateFailed": "Failed to copy session",
+      "duplicateCreatedRefreshFailed": "Copied to “{{name}}”. Refresh the session list to see it; copying again creates another copy.",
+      "duplicateHostUnsupported": "The connected host does not support session copying. Upgrade the host to use this action.",
+      "duplicateEmpty": "Send a message before copying this session.",
       "duplicateRunning": "Wait for the running turn to finish before copying this session.",
       "duplicateDispatchUnsupported": "Sessions running on another device cannot be copied.",
       "openStorageDirectory": "Open session storage directory",
@@ -487,7 +490,8 @@
         "anchorMs": "Anchor time (optional)",
         "cronExpr": "Cron expression",
         "timezone": "Timezone (optional)",
-        "prompt": "Prompt"
+        "prompt": "Prompt",
+        "reportPolicy": "Result delivery"
       },
       "placeholders": {
         "workspacePath": "Enter workspace path",
@@ -500,7 +504,14 @@
         "prompt": "Enter the message that should be sent to the agent when the schedule fires"
       },
       "hints": {
-        "cronExpr": "Cron format: minute hour day month weekday, for example 0 8 * * * runs every day at 08:00."
+        "cronExpr": "Cron format: minute hour day month weekday, for example 0 8 * * * runs every day at 08:00.",
+        "reportPolicy": "Define report conditions in the task. Failures and uncertain decisions remain visible.",
+        "reportPolicyUnsupported": "This host does not support report policies. Existing task instructions still apply."
+      },
+      "reportPolicies": {
+        "inherit": "Follow task instructions",
+        "always": "Report every run",
+        "conditional": "Report when conditions are met"
       },
       "scheduleKinds": {
         "at": "One-time",

@@ -44,7 +44,7 @@ windows = { version = "0.61", features = [
   "Win32_System_Com", "Win32_System_Ole", "Win32_System_Variant", "Win32_System_LibraryLoader",
   "Win32_System_Threading", "Win32_System_WinRT", "Win32_System_WinRT_Direct3D11",
   "Win32_System_WinRT_Graphics_Capture", "Win32_UI_Accessibility", "Win32_UI_Input_KeyboardAndMouse",
-  "Win32_UI_WindowsAndMessaging"
+  "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell"
 ] }
 `);
   await copyFile(join(root, 'Cargo.lock'), join(dir, 'Cargo.lock'));
@@ -75,6 +75,7 @@ mod computer_use {
   mod desktop_host {
     use crate::util::errors::{OpenBitFunError, OpenBitFunResult};
     #[path = ${source('src/apps/desktop/src/computer_use/desktop_host/background_guard.rs')}] mod background_guard;
+    #[path = ${source('src/apps/desktop/src/computer_use/desktop_host/windows_launch.rs')}] mod windows_launch;
   }
 }
 `);

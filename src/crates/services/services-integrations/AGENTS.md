@@ -129,6 +129,7 @@ streamable HTTP stay independent. Representative stable entry points are:
 
 ```bash
 cargo check -p openbitfun-services-integrations --no-default-features
+cargo test -p openbitfun-services-integrations --no-default-features --features browser-control --lib browser_control::cdp::tests::
 cargo test -p openbitfun-services-integrations --no-default-features --features remote-persistence --lib remote_persistence::tests::
 cargo test -p openbitfun-services-integrations --no-default-features --features mcp --test mcp_contracts
 cargo test -p openbitfun-services-integrations --no-default-features --features mcp --test mcp_streamable_http_contracts
@@ -136,6 +137,7 @@ cargo test -p openbitfun-services-integrations --no-default-features --features 
 cargo test -p openbitfun-services-integrations --no-default-features --features remote-ssh-concrete --lib remote_ssh::manager::tests::workspace_
 cargo test -p openbitfun-services-integrations --no-default-features --features remote-ssh-concrete --lib remote_ssh::wsl::tests::
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-ssh-concrete --lib remote_ssh::relay_deploy::tests::
+cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::account::tests
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::relay_client::tests::
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::host_stream::tests::
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::host_stream_subscriber::tests::
@@ -170,6 +172,12 @@ advertise a small handle limit and are included in the existing CI
 `OPENBITFUN_TEST_SFTP_SERVER` to an installed `sftp-server` executable and run
 the same command with the filter ending in
 `workspace_sftp::openssh_real_files_over_loopback_ssh -- --ignored`.
+
+For directory symlink browsing and workspace-path validation, use the same
+package/features with `--lib directory_symlink_browsing -- --include-ignored`
+and `OPENBITFUN_TEST_SFTP_SERVER` set. This runs real OpenSSH SFTP over loopback
+and the Docker command adapter against a local POSIX shell fixture; the latter
+does not establish real Docker-daemon or Windows WSL coverage.
 
 For the remote Flashgrep distribution gate and retained protocol helpers, use:
 

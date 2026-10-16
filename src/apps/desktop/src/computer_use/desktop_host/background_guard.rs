@@ -51,47 +51,34 @@ pub(super) async fn run<T>(
         return input.await;
     }
     let scope = ObservationScope::from_control(&control);
-    let before = capture().await.map_err(|error| {
-        OpenBitFunError::tool(format!(
-            "[BACKGROUND_OBSERVATION_UNAVAILABLE] No input sent: {error}"
-        ))
-    })?;
-    let result = input.await;
-    // Once an operation may have been submitted, any failure must preserve
-    // ambiguity. A fallback click or a foreground repair can duplicate effects.
-    let after = capture().await;
-    match after {
-        Ok(after) => {
-            let observation = evidence(&before, &after, control.sequence);
-            let changed = !observation.foreground_unchanged
-                || observation.cursor_unchanged == Some(false)
-                || observation.window_order_unchanged == Some(false);
-            crate::computer_use::control_session::record_background_observation(
-                &scope,
-                observation,
-            );
-            if !changed {
-                return result;
-            }
-            revoke(&scope, "background_desktop_changed");
-            Err(OpenBitFunError::tool(format!("[BACKGROUND_INTERFERENCE] Desktop focus, physical pointer or window ordering changed during the operation; control was revoked. Cause may be application behavior or concurrent user/system input. Effects may already have occurred. No restoration or retry was sent. Operation error: {}", result.err().map(|error| error.to_string()).unwrap_or_else(|| "none".into()))))
-        }
-        Err(error) => {
-            revoke(&scope, "background_observation_failed");
-            Err(OpenBitFunError::tool(format!("[BACKGROUND_OBSERVATION_FAILED] Could not verify the desktop after input; control was revoked. Effects may already have occurred; observe before deciding another action. {error}")))
-        }
+    let (result, observation) = observe_operation(input, capture, control.sequence).await;
+    if let Some(observation) = observation {
+        crate::computer_use::control_session::record_background_observation(&scope, observation);
     }
+    result
 }
 
-fn revoke(scope: &ObservationScope, reason: &str) {
-    if let Some(target) = &scope.target {
-        crate::computer_use::control_session::native_stopped_target(
-            scope.generation,
-            scope.target_revision,
-            target,
-            reason,
-        );
-    }
+/// Global desktop changes cannot be attributed to this action: the user is
+/// allowed to keep working while directed input runs. Witnesses are diagnostic
+/// evidence, never admission or revocation. Native target/lease checks still own
+/// input validity. Preserve the action's exact outcome and never replay it.
+async fn observe_operation<T, F, Fut>(
+    input: impl std::future::Future<Output = OpenBitFunResult<T>>,
+    mut read: F,
+    sequence: u64,
+) -> (OpenBitFunResult<T>, Option<BackgroundObservation>)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<Witness, String>>,
+{
+    let before = read().await;
+    let result = input.await;
+    let after = read().await;
+    let observation = before
+        .ok()
+        .zip(after.ok())
+        .map(|(before, after)| evidence(&before, &after, sequence));
+    (result, observation)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -202,6 +189,49 @@ mod tests {
             window_order: Some(order.iter().map(|value| (*value).into()).collect()),
             activation_epoch: Some(4),
         }
+    }
+    #[tokio::test]
+    async fn concurrent_human_input_does_not_cancel_or_replay_directed_input() {
+        let before = witness(&["human", "target"]);
+        let mut after = witness(&["other", "target", "human"]);
+        after.foreground = vec!["other".into()];
+        after.pointer = Some((900.0, 500.0));
+        after.activation_epoch = Some(5);
+        let mut witnesses = [Ok(before), Ok(after)].into_iter();
+        let mut calls = 0;
+        let (result, evidence) = observe_operation(
+            async {
+                calls += 1;
+                Ok("delivered")
+            },
+            || std::future::ready(witnesses.next().unwrap()),
+            7,
+        )
+        .await;
+        assert_eq!(result.unwrap(), "delivered");
+        assert_eq!(calls, 1);
+        let evidence = evidence.unwrap();
+        assert!(!evidence.foreground_unchanged);
+        assert_eq!(evidence.cursor_unchanged, Some(false));
+    }
+    #[tokio::test]
+    async fn missing_diagnostics_preserve_the_native_operation_result() {
+        let mut calls = 0;
+        let (result, evidence) = observe_operation(
+            async {
+                calls += 1;
+                Err::<(), _>(OpenBitFunError::tool("native target closed"))
+            },
+            || std::future::ready(Err("desktop witness unavailable".into())),
+            8,
+        )
+        .await;
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            OpenBitFunError::tool("native target closed").to_string()
+        );
+        assert_eq!(calls, 1);
+        assert!(evidence.is_none());
     }
     #[test]
     fn detects_raise_pointer_and_transient_activation_without_blame_or_repair() {

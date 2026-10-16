@@ -445,6 +445,26 @@ pub trait ComputerUseHost: Send + Sync + std::fmt::Debug {
         ))
     }
 
+    /// Select whether an observation needs pixels. Older providers keep their
+    /// existing capture behavior, then omit the image from the result. Native
+    /// providers can override this to avoid capture and encoding altogether.
+    /// Omitting the tool option retains the original image-bearing observation.
+    async fn get_app_state_with_options(
+        &self,
+        app: AppSelector,
+        max_depth: u32,
+        focus_window_only: bool,
+        include_image: bool,
+    ) -> OpenBitFunResult<AppStateSnapshot> {
+        let mut snapshot = self
+            .get_app_state(app, max_depth, focus_window_only)
+            .await?;
+        if !include_image {
+            snapshot.screenshot = None;
+        }
+        Ok(snapshot)
+    }
+
     /// Whether this host can enumerate a target application's menu-bar
     /// keyboard shortcuts (Codex-adjacent `get_app_shortcuts`). This is the
     /// **read** counterpart to [`Self::key_chord`] / [`Self::app_key_chord`]

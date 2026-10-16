@@ -148,7 +148,8 @@ impl ControlActionPolicy {
             | "interactive_scroll"
             | "visual_click" => (false, false, true, true),
             "clipboard_set" => (false, false, false, true),
-            "open_app" | "run_apple_script" | "run_script" | "open_url" | "open_file" => {
+            "open_app" => (false, false, false, true),
+            "run_apple_script" | "run_script" | "open_url" | "open_file" => {
                 (false, true, false, true)
             }
             "click" | "mouse_move" | "pointer_move_rel" | "scroll" | "drag" | "key_chord"
@@ -220,11 +221,12 @@ mod tests {
     }
     #[test]
     fn seat_actions_never_claim_background_semantics() {
-        for action in ["paste", "drag", "click_target", "key_chord", "open_app"] {
+        for action in ["paste", "drag", "click_target", "key_chord"] {
             assert!(action_requires_foreground(action));
             assert!(!action_is_observation(action));
         }
         assert!(!action_requires_foreground("app_click"));
+        assert!(!action_requires_foreground("open_app"));
         assert!(action_is_observation("get_app_state"));
     }
 

@@ -86,7 +86,8 @@ impl<E: Copy + PartialEq> Admission<E> {
             .map_or(0, |sharing| sharing.authorization_revision)
     }
 
-    /// A tool can request sharing, but cannot select a window or grant input.
+    /// Optional manual sharing has its own selection and input grant. Normal
+    /// Agent sessions use begin_start/admit and never enter this workflow.
     pub(super) fn request_share(&mut self, owner: &str, mode: ControlMode) -> Result<(), String> {
         if self.snapshot.owner.as_deref() != Some(owner) || self.busy || self.cleaning {
             return Err("[CONTROL_BUSY] Another task or action owns desktop control".into());
@@ -401,7 +402,10 @@ impl<E: Copy + PartialEq> Admission<E> {
         }
         let initial = self.snapshot.state.is_empty() || self.snapshot.state == "idle";
         if self.snapshot.state == "awaiting_share" {
-            return Err("[SHARE_REQUIRED] Select an App in the Computer Use sharing panel on the executing Desktop or its connected peer controller. Mobile/IM/headless surfaces cannot select a native window; this call is not waiting for a hidden dialog.".into());
+            if self.snapshot.owner.as_deref() != Some(owner) {
+                return Err("[CONTROL_BUSY] Desktop control is reserved by another session".into());
+            }
+            return Err("[SHARE_REQUIRED] This optional manual share has no target. Agent tasks use start_control to select applications through their tool requests.".into());
         }
         if !initial && !self.active() {
             return Err("[CONTROL_STOPPED] Use start_control to begin a new session".into());
@@ -415,7 +419,8 @@ impl<E: Copy + PartialEq> Admission<E> {
             self.snapshot.mode
         };
         if self.snapshot.sharing.is_some()
-            && (policy.foreground && !policy.target || matches!(action, "clipboard_set"))
+            && (policy.foreground && !policy.target
+                || matches!(action, "clipboard_set" | "open_app"))
         {
             return Err("[SHARED_TARGET_ONLY] Window sharing does not authorize global clipboard, launching or scripts".into());
         }
@@ -470,6 +475,24 @@ impl<E: Copy + PartialEq> Admission<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn agent_selects_targets_and_operates_without_a_manual_share() {
+        let mut state = Admission::<u8>::default();
+        let observe = state.admit("task", "get_app_state", 1).unwrap();
+        assert_eq!(state.snapshot.mode, ControlMode::Background);
+        assert!(state.snapshot.sharing.is_none());
+        state.bind("pid:1/window:10".into()).unwrap();
+        state.release(observe, true);
+        let input = state.admit("task", "app_type_text", 1).unwrap();
+        assert!(state.check_input(input).is_ok());
+        state.release(input, true);
+        let next = state.admit("task", "get_app_state", 1).unwrap();
+        state.bind("pid:2/window:20".into()).unwrap();
+        assert_eq!(state.snapshot.target_revision, 2);
+        state.release(next, true);
+        let launch = state.admit("task", "open_app", 1).unwrap();
+        assert!(state.check_input(launch).is_ok());
+    }
     #[test]
     fn sharing_requires_selection_capture_and_a_separate_revocable_grant() {
         let mut state = running();

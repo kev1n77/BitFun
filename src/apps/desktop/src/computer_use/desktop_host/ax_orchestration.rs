@@ -709,7 +709,9 @@ impl DesktopComputerUseHost {
                         modifier_keys: vec![],
                         wait_ms_after: None,
                     };
-                    self.dispatch_app_click_impl(click).await?;
+                    // The outer focus-and-type action already witnesses the
+                    // complete operation, including this native focus click.
+                    self.dispatch_app_click_native(click).await?;
                     // Pointer targets (including OCR) record the actual submitted
                     // location. Do not infer it from the human's real mouse.
                     let intended_point = verify_pointer_focus
@@ -995,7 +997,8 @@ impl DesktopComputerUseHost {
                         modifier_keys: vec![],
                         wait_ms_after: None,
                     };
-                    self.dispatch_app_click_impl(click).await?;
+                    // The outer chord action already witnesses this focus click.
+                    self.dispatch_app_click_native(click).await?;
                 }
             }
             require_macos_background_input()?;

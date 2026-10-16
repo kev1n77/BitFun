@@ -457,6 +457,9 @@
   margin: var(--markdown-block-gap) 0;
   overflow-x: auto;
   overflow-y: hidden;
+  // Keep words in intrinsic column sizing; the prose-level `anywhere` rule
+  // otherwise lets long descriptions squeeze names and numbers to a few glyphs.
+  overflow-wrap: normal;
   border: 0;
   border-radius: var(--openbitfun-radius-lg);
   background: color-mix(in srgb, var(--openbitfun-color-surface-tertiary) 50%, var(--openbitfun-color-surface-scene));
@@ -479,12 +482,19 @@
 
 .markdown-renderer .table-wrapper th,
 .markdown-renderer .table-wrapper td {
+  // Leave room for short values (including units), with overflow in the scroller.
+  min-width: calc(8ch + 2 * var(--markdown-table-cell-pad-x));
   padding: var(--markdown-table-cell-pad-y) var(--markdown-table-cell-pad-x);
   border: 0;
   background: transparent;
   color: var(--openbitfun-color-content-primary);
   text-align: left;
   vertical-align: top;
+}
+
+.markdown-renderer .table-wrapper .inline-code {
+  // Inline code has its own prose wrapping rule; preserve its word widths too.
+  overflow-wrap: normal;
 }
 
 .markdown-renderer .table-wrapper th {

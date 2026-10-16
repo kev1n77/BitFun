@@ -384,21 +384,23 @@ fn container_read_dir_script(path: &str, max_entries: Option<usize>) -> String {
     let entry_loop = crate::remote_ssh::shell::quote_arg(&format!(
         "for item do [ -e \"$item\" ] || [ -L \"$item\" ] || continue; {CONTAINER_ENTRY_METADATA_SCRIPT} done"
     ));
+    // Follow only the explicitly requested directory, like SFTP OPENDIR.
+    // Child links retain their own metadata and are never traversed by this list.
     let (head_probe, producer) = match max_entries {
         Some(max_entries) => (
             "command -v head >/dev/null 2>&1 && head -z -n 0 </dev/null >/dev/null 2>&1 || { echo 'NUL-delimited bounded directory reads require head -z' >&2; exit 78; }; ",
             format!(
-                "find \"$dir\" -mindepth 1 -maxdepth 1 -print0 | head -z -n {max_entries}"
+                "find -H \"$dir\" -mindepth 1 -maxdepth 1 -print0 | head -z -n {max_entries}"
             ),
         ),
         None => (
             "",
-            "find \"$dir\" -mindepth 1 -maxdepth 1 -print0".to_string(),
+            "find -H \"$dir\" -mindepth 1 -maxdepth 1 -print0".to_string(),
         ),
     };
     format!(
         "dir={quoted}; \
-         [ -d \"$dir\" ] && [ ! -L \"$dir\" ] || {{ echo 'Container directory is missing or is a symbolic link' >&2; exit 44; }}; \
+         [ -d \"$dir\" ] || {{ echo 'Container path is not a directory or is inaccessible' >&2; exit 44; }}; \
          command -v find >/dev/null 2>&1 && command -v xargs >/dev/null 2>&1 || {{ echo 'Container directory reads require find and xargs' >&2; exit 78; }}; \
          {head_probe}\
          {producer} | xargs -0 -n 64 sh -c {entry_loop} sh"
@@ -7740,6 +7742,81 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn workspace_directory_symlink_browsing_shell() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let (manager, _provider) = shell_workspace_provider_fixture(temp.path()).await;
+        let service = crate::remote_ssh::RemoteFileService::new(Arc::new(
+            tokio::sync::RwLock::new(Some(manager)),
+        ));
+        let connection = "workspace-shell-fixture";
+        let directory = temp.path().join("target directory");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("sentinel.txt"), b"keep").unwrap();
+        symlink("..", directory.join("parent-link")).unwrap();
+        symlink(&directory, temp.path().join("absolute-link")).unwrap();
+        symlink("target directory", temp.path().join("relative-link")).unwrap();
+        symlink("relative-link", temp.path().join("chained-link")).unwrap();
+        symlink("missing", temp.path().join("broken-link")).unwrap();
+        symlink(
+            "target directory/sentinel.txt",
+            temp.path().join("file-link"),
+        )
+        .unwrap();
+        symlink("loop-link", temp.path().join("loop-link")).unwrap();
+
+        let entries = service
+            .read_dir(connection, temp.path().to_str().unwrap())
+            .await
+            .unwrap();
+        for name in ["absolute-link", "relative-link", "chained-link"] {
+            let entry = entries.iter().find(|entry| entry.name == name).unwrap();
+            assert!(entry.is_symlink);
+            assert!(!entry.is_dir, "listing must retain no-follow metadata");
+            assert!(service.is_dir(connection, &entry.path).await.unwrap());
+            let children = service.read_dir(connection, &entry.path).await.unwrap();
+            assert_eq!(children.len(), 2);
+            let file = children
+                .iter()
+                .find(|child| child.name == "sentinel.txt")
+                .unwrap();
+            assert_eq!(file.path, format!("{}/sentinel.txt", entry.path));
+            let link = children
+                .iter()
+                .find(|child| child.name == "parent-link")
+                .unwrap();
+            assert!(link.is_symlink && !link.is_dir);
+        }
+        for name in ["file-link", "broken-link"] {
+            let path = temp.path().join(name);
+            assert!(!service
+                .is_dir(connection, path.to_str().unwrap())
+                .await
+                .unwrap());
+            assert!(service
+                .read_dir(connection, path.to_str().unwrap())
+                .await
+                .is_err());
+        }
+        assert!(service
+            .is_dir(connection, temp.path().join("loop-link").to_str().unwrap())
+            .await
+            .is_err());
+        service
+            .remove_dir_all(
+                connection,
+                temp.path().join("relative-link").to_str().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(directory.join("sentinel.txt")).unwrap(),
+            b"keep"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn workspace_container_metadata_preserves_errors_and_follows_links() {
         use openbitfun_runtime_ports::{WorkspaceFileSystem, WorkspacePathKind};
         use std::os::unix::fs::{symlink, PermissionsExt};
@@ -8435,7 +8512,7 @@ mod tests {
         let bounded = container_read_dir_script("/workspace", Some(4096));
         let unbounded = container_read_dir_script("/workspace", None);
 
-        assert!(bounded.contains("find \"$dir\" -mindepth 1 -maxdepth 1 -print0"));
+        assert!(bounded.contains("find -H \"$dir\" -mindepth 1 -maxdepth 1 -print0"));
         assert!(bounded.contains("head -z -n 4096"));
         assert!(bounded.contains("xargs -0 -n 64"));
         assert!(!bounded.contains("\"$dir\"/*"));

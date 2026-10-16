@@ -22,6 +22,7 @@ pub(super) async fn execute(
     app: AppSelector,
     steps: Vec<AppInputAction>,
     context: Option<&ToolUseContext>,
+    include_image: bool,
 ) -> ProgramObservation {
     let initial_control = host.control_snapshot();
     let started = std::time::Instant::now();
@@ -76,11 +77,12 @@ pub(super) async fn execute(
     interrupted |= context
         .and_then(ToolUseContext::cancellation_token)
         .is_some_and(|token| token.is_cancelled());
+    let observation_started = std::time::Instant::now();
     let (snapshot, observation_error) = if same_active_control(
         &initial_control,
         &host.control_snapshot(),
     ) {
-        observe_after_input(host, app.clone(), context).await
+        observe_after_input(host, app.clone(), context, include_image).await
     } else {
         (None, Some("CONTROL_CHANGED_DURING_INPUT: No observation was taken after control stopped or changed scope. Submitted inputs were not replayed.".into()))
     };
@@ -94,6 +96,7 @@ pub(super) async fn execute(
             "status":if interrupted {"cancelled"} else if completed == requested {"submitted"} else {"partial"},
             "requested_steps":requested,"completed_steps":completed,"steps":receipts,
             "observation_error":observation_error,"elapsed_ms":started.elapsed().as_millis(),
+            "observation_elapsed_ms":observation_started.elapsed().as_millis(),
             "verification":"Submission is not proof of task completion. Inspect the final observation; never replay the whole batch to repair a failed step or observation. Unattempted steps were not executed."
         }),
         snapshot,
@@ -106,6 +109,7 @@ pub(super) async fn observe_after_input(
     host: &dyn ComputerUseHost,
     app: AppSelector,
     context: Option<&ToolUseContext>,
+    include_image: bool,
 ) -> (Option<AppStateSnapshot>, Option<String>) {
     let cancelled = context
         .and_then(ToolUseContext::cancellation_token)
@@ -117,7 +121,9 @@ pub(super) async fn observe_after_input(
             Some("Control was cancelled or stopped; no new observation was taken".into()),
         );
     }
-    let observation = host.get_app_state(app, 32, true).await;
+    let observation = host
+        .get_app_state_with_options(app, 32, true, include_image)
+        .await;
     // A read can outlive Stop Sharing, cancellation, or a new control generation.
     // Never attach pixels from an observation that lost its control scope while
     // awaiting the host, even if that host completed the capture successfully.

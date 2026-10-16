@@ -1,8 +1,10 @@
 # Computer Use control-session SPEC
 
-Status: the October 2026 migration implements permissions, user-selected App
-sharing and control grants, coordinate mapping, virtual cursor feedback and
-platform-scoped background input. Validation includes native macOS Tool/input/
+Status: Agent tasks select applications and execute through the existing tool
+permission policy without a manual App-sharing or per-application grant step.
+Optional manual-sharing APIs remain compatible for existing clients. The October
+2026 migration implements permissions, coordinate mapping, virtual cursor
+feedback and platform-scoped background input. Validation includes native macOS Tool/input/
 capture checks, Linux GTK/AT-SPI execution and Windows native-module
 cross-compilation. Windows native execution, GNOME Wayland portal execution and
 remote end-to-end control remain acceptance gaps. Compilation is not native
@@ -26,6 +28,61 @@ macOS's Sharing menu on other systems nor suppresses native capture borders.
 Product feedback adds target, mode, action, preview and Stop without claiming to
 replace system consent or system Stop Sharing.
 
+## Browser tool orchestration
+
+`ControlHub.browser.navigate {url, observe?}` is the task entry point for rendered
+pages. On Desktop it opens a built-in WebView when the conversation has no page;
+otherwise it navigates that conversation's selected page. `observe: snapshot`
+returns interactive refs and `observe: article` returns readable content in the
+same call. Opening, connection, fixed sleeps and redundant reads are not required
+preflight steps. The Desktop host correlates the exact requested WebView before
+returning it; load/observation receipts separately describe readiness.
+
+| Intent / action family | Contract |
+|---|---|
+| Discover / public HTTP | `WebSearch` discovers URLs; `WebFetch` reads public HTTP without browser cookies. These remain separate from rendered browser work. |
+| Open / read rendered content | `navigate`, `snapshot`, `read_article`, `get` and its `get_text/get_html/get_url/get_title` aliases. `observe` avoids a second read after navigation. |
+| Account / existing external tab | Prefer the Settings-selected, user-authorized CDP connection. `connect` selects an exact `session_id` or unique URL/title match without navigating it. An unbound navigation creates a new tab, preserving existing tabs. |
+| Interact | `click`, `hover`, `fill`, `type`, `check/uncheck`, `select`, `press_key`, `scroll`, `auto_scroll`; use observed refs or selectors and refresh only when the next decision needs new state. |
+| Readiness / capture | Condition-based `wait` and `screenshot`; built-in network-idle means native load completion, and full-page capture requires CDP. A duration-only wait requires no browser session. |
+| Page lifecycle | `tab_new`, `back/forward/reload`, `close`, `list_pages/tab_query`, `switch_page`, `list_sessions`. Keep exact returned page identity across calls. |
+| Page-context requests | `fetch` uses the selected page's credentials and CORS rules; `cookies/set_cookies` and `evaluate` remain explicit advanced operations. HTTP error responses preserve status/body; CORS/transport failure is a tool error. |
+| CDP-only diagnostics | `network/network_requests`, `console`, `errors`, `trace`, `dialog`, `set_file_input_files` and allow-listed raw `cdp`. Built-in engines return explicit unsupported results. |
+| Show empty product surface | `OpenBitFunControl.open(feature.browser)` shows the browser UI without inventing a URL. It is distinct from website navigation. |
+
+The common actions use the existing `BrowserActions` engine port for WebView and
+CDP. A conversation retains target/page identity; explicit or stale ids never
+fall through to a different tab. Ending a conversation releases its selection,
+not the user's browser pages. `open_builtin` and URL-bearing `read_article`
+remain compatible aliases, including their legacy result keys.
+
+Browser permissions are independent of `ai.computer_use_enabled`. External
+browser identity/availability is exposed only after a Settings connection has
+succeeded (or an opted-in startup connection receives browser-owned consent).
+The Agent never starts another profile or opens permission settings through
+`connect`. Disconnect blocks subsequent actions and clears page transports.
+Explicit `mode: headless` remains an attach-only path for disposable project
+browsers; product name and browser-reported user agent establish headless mode,
+and a normal headed endpoint is rejected before page enumeration.
+
+Navigation receipts distinguish a submitted navigation, load completion and an
+optional failed observation. Observation failure never replays navigation or
+input. Download and same-document transitions do not wait for nonexistent load
+events. Full-page CDP screenshots use a document clip with
+`captureBeyondViewport`, preserving viewport/emulation state; see the
+[CDP capture contract](https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-captureScreenshot).
+Errors and recovery hints, complete bounded article text and fetch response
+bodies survive assistant rendering. Partial action failures remain `ok: false`
+with any receipts retained.
+
+Remote-workspace sessions reject browser access before host IO; there is no
+remote-workspace browser provider or silent controller-local fallback. A local
+host driven through remote control or Peer Device Mode still owns its browser
+provider/permission. Headless and detached hosts require an explicit available
+CDP endpoint; they cannot create a Desktop WebView or prompt a disconnected
+controller to approve a browser. Local unit/Chromium fixtures do not establish
+mobile/IM, peer, detached, or native WebKit end-to-end behavior.
+
 ## Platform architecture
 
 | Platform | Authorized observation | Input | System integration |
@@ -33,7 +90,7 @@ replace system consent or system Stop Sharing.
 | macOS | Persistent ScreenCaptureKit `SCStream`, exact single-window filter | AX semantic actions; directed application events where supported; global input only with foreground authorization | System sharing integration and native stop; nonactivating AppKit feedback |
 | Windows | Persistent Windows.Graphics.Capture window session | UI Automation patterns and supported targeted window messages; `SendInput` requires foreground authorization | WGC capture border and Closed event; product preview/Stop |
 | Ubuntu Wayland | RemoteDesktop and ScreenCast portals sharing one session and its authorized PipeWire FD/stream | AT-SPI semantic actions; portal Notify seat input only in explicit foreground mode | Portal consent, compositor sharing UI and Session.Closed |
-| Ubuntu X11 | New explicit control sessions use the same portal path | AT-SPI; missing portal capabilities fail explicitly | Product status/Stop; no claim of Wayland isolation for legacy X11 calls |
+| Ubuntu X11 | Observe/foreground sessions use the same portal path; background semantic sessions need no picker | AT-SPI; missing portal capabilities fail explicitly | Product status/Stop; no claim of Wayland isolation for legacy X11 calls |
 
 The control snapshot’s `capabilities` lists backend routes, such as semantic
 input, directed keyboard/scroll or foreground seat input. It is not a promise
@@ -73,25 +130,35 @@ runtime, build, test or filesystem dependency of OpenBitFun.
 | App sharing and control grants | `src/sharing.rs`, `src/grants.rs`, sharing controls in `src/gui.rs` | Admission state machine plus Desktop `sharing.rs`, `shared_preview.rs`, `process_identity.rs`, `grants.rs`, `share_grants.rs`; user-selected native window, observe first, separate revocable grant, executable-bound remembered preference, manual preview gestures |
 | Coordinate conversion | `CoordinateMap` in `src/sharing.rs` | Portable `CaptureGeometry` and Web `previewGeometry.ts`; image/content/global/preview round trips, aspect fit, negative origins, independent X/Y scales, strict padding rejection and immutable screenshot identity |
 | Virtual mouse | `src/cursor.rs`, GUI cursor rendering | Web `VirtualCursor.ts` ports the deterministic physical model, rendered by `PreviewCursor.tsx`; 63 Rust-generated reference samples cover movement, retargeting, immediate placement, resize and visibility. Existing passive native overlays remain platform adapters |
-| Background control | Native directed/semantic input and desktop-state comparison | Existing AX/UIA/AT-SPI and directed-input providers plus `background_guard.rs`; focus/pointer/window-order evidence, explicit unsupported routes, revocation on observed interference, no restore or replay. The reference's implicit Command modifier is not copied because it changes the requested click |
+| Background control | Native directed/semantic input and desktop-state comparison | Existing AX/UIA/AT-SPI and directed-input providers plus `background_guard.rs`; diagnostic focus/pointer/window-order evidence, explicit unsupported routes, no restore or replay. Concurrent human input does not revoke Agent control. The reference's implicit Command modifier is not copied because it changes the requested click |
 
 ### Permissions and user sharing
 
-Opening settings, checking status or reading AX never requests OS permission.
+Opening the OpenBitFun settings page, checking status or reading AX never requests OS permission.
 The user selects each request explicitly. Receipts distinguish a request API
 invocation from the current grant and from observing a visible OS dialog. Input
 Monitoring is optional. Windows does not invent a macOS-style grant; protected
 desktops, capture policy and target integrity still apply. Linux's portal grant
 belongs to one selected session; AT-SPI availability does not grant seat input.
 
-`start_control` and implicit tool admission return `awaiting_share` / a clear
-`SHARE_REQUIRED` result until the user selects a target in the executing host's
-control card. Discovery returns opaque choices bound to the process lifetime,
-not authority derived from a title or a client-supplied PID. Starting the selected
-share validates the live process and exact window, obtains real pixels or the
-supported AT-SPI tree, then exposes observation. Input requires a separate user
-grant for the selected background or foreground mode. A tool cannot select a
-different window, grant itself input or widen the mode.
+`start_control` enters the requested mode directly. An initial app action can
+start background control implicitly. The Agent discovers applications through
+`list_apps`, supplies the target selector and continues observation/input under
+the existing Runtime tool policy. Application changes invalidate old references;
+they do not require a user to select the next app. Background AT-SPI startup
+does not open a portal picker. Linux portal capture and foreground seat input
+still require compositor-owned consent.
+
+The optional manual-sharing API uses `awaiting_share`, opaque process-bound
+choices, observe-first capture and a separate revocable input grant. Its scope
+does not apply to normal Agent tasks. Existing remembered preferences and manual
+clients remain readable; no stored user grants are deleted by this correction.
+Settings uses the established `ConfigPageRow` layout: desktop-control toggle and
+the two required macOS permissions, with setup actions only for missing grants.
+Input Monitoring, executable diagnostics and manual-sharing controls are not
+part of this settings page. The missing-permission setup button explicitly
+requests the corresponding OS permission on capable hosts before opening its
+system pane; older hosts retain their existing system-pane action.
 
 Remembering a grant is optional and never starts a share or selects a window.
 The preference binds the canonical executable path, full executable SHA-256,
@@ -101,6 +168,29 @@ grant. The versioned bounded file preserves unknown fields and unreadable user
 data; writes are atomic, privately permissioned and protected against concurrent
 changes. Forgetting an active matching preference revokes input before disk IO.
 Portal streams have no verified executable identity and remain session-only.
+
+### Autonomous task execution
+
+The built-in prompt carries the user's task through app discovery, observation,
+input, verification and supported recovery. Routine app targeting, connection
+alternatives and message composition do not create additional approval steps.
+A request to compose and send specified information to a named recipient includes
+composing the wording; the Agent verifies the recipient/content without asking
+for the same authorization again. Genuine missing information, OS-owned consent,
+explicit permission denials and user Stop remain authoritative.
+
+Computer Use, Cowork, Claw and shared parent-agent guidance use the same autonomous
+targeting and composition rules. Browser selection and connection are user-owned
+Settings actions. Account-dependent work prefers the selected browser only after
+connection/consent; a missing grant or user Disconnect cannot be bypassed through
+ComputerUse, a different profile, or an agent-driven debugging setup. Native
+browser chrome still uses independently authorized ComputerUse capabilities. `open_app` no longer has a platform-wide
+foreground-only policy: macOS uses `open -g` and Windows requests
+`SW_SHOWNOACTIVATE` for background launches. These are launch requests, not proof
+that every third-party app honors activation policy; subsequent observations
+establish actual state. Linux currently reports unavailable background launch
+instead of silently using an activating launcher. Existing AT-SPI targets remain
+usable. GUI-less hosts and remote workspaces do not fall back to the local GUI.
 
 Manual preview input joins the same exclusive action lease as the Agent. Pointer
 gestures retain their screenshot until release; resizing or revocation cancels
@@ -155,6 +245,30 @@ input returns its delivery result so partial delivery is not hidden by dropping
 a future. Remaining steps are not run after failure or cancellation. Native macOS gestures also release any presses left unfinished by a failed or cancelled action, so a partial chord or drag cannot leave modifiers or mouse buttons held for the next action. An
 observation completing after stop, rebinding or generation change is discarded.
 
+For latency, the model starts with a known application's observation instead of
+unconditionally listing applications, starting control and checking status. The
+first app observation can enter background control; stopped sessions still require
+an explicitly permitted restart. Prompt guidance groups already-decided inputs
+until the next information boundary and reuses the returned observation. It does
+not reduce the user's selected reasoning effort or impose step/retry-count caps.
+
+`get_app_state`, `app_batch` and single app-input aliases accept optional
+`include_image` (default `true`). With `false`, Desktop reads AX and refreshes
+observation/node identities without retrieving or encoding a model screenshot.
+This is suitable for sufficient semantic state or known keyboard flows. Canvas,
+visual verification and selecting image coordinates still need an image-bearing
+observation. Target preparation, control leases, cancellation and native consent
+remain unchanged; AX-only is not a different input route. Legacy port providers
+can retain their old capture path and omit the image from its result. Existing
+callers/persisted tool calls omit the field and retain their previous behavior.
+The option is local tool presentation, not a new remote GUI capability.
+
+Program receipts include `observation_elapsed_ms` alongside per-step and total
+elapsed time. These measure host execution, not model reasoning or end-to-end
+latency. macOS focus-and-type/key operations take one desktop witness pair around
+the complete operation, including an internal native focus click; nested witness
+pairs are unnecessary. No native validation or post-input frame barrier is removed.
+
 Receipts distinguish attempted steps, submitted steps, the failing step and
 observation failure. A native error may follow partial submission. Neither that
 error, a missing screenshot nor an unchanged AX digest authorizes replay.
@@ -174,20 +288,19 @@ authorization boundary for native chrome, dialogs or unattached windows.
 
 ## Session lifecycle and revocation
 
-The user-facing resource lifecycle is
-`idle → awaiting_share → active(observe) → active(authorized mode) → stopped|failed`,
+The Agent resource lifecycle is `idle → active(requested mode) → stopped|failed`,
 with internal starting/cleanup transitions. One Runtime session owns the GUI
 resource. Competing ownership returns `control_busy`; it does not create a
 second permission owner or Agent loop.
 
-An explicit tool start requests a mode; the user's share selection and grant
-establish authority. Discovery alone does not create capture. Legacy wire fields
-remain readable but do not bypass the new host's user-selection gate. Linux
-portal capture binds the consented surface separately from semantic application
-identity. Stop/status are idempotent. A stopped generation requires an explicit
-restart, not a screenshot-driven resurrection. Revoking control preserves the
-shared observation and increments the authorization revision immediately; stale
-workers lose input authority and held native inputs are released.
+An explicit tool start requests a mode under Runtime permission policy. Discovery
+alone does not create capture. Linux portal capture binds the consented surface
+separately from semantic application identity. Stop/status are idempotent. A
+stopped generation requires an explicit restart, not a screenshot-driven
+resurrection. The Agent may restart after recoverable target/capture loss, but
+must respect a user stop or denial. Optional manual sharing retains its separate
+`awaiting_share → active(observe) → active(granted mode)` lifecycle; revoking its
+grant preserves observation and invalidates stale input workers immediately.
 
 Stop revokes admission and advances generation before cancelling native work,
 releasing owned pressed keys/buttons, stopping capture and hiding feedback.
@@ -279,12 +392,13 @@ Background actions capture desktop witnesses before and after submission.
 macOS checks foreground identity plus its activation epoch, the physical pointer
 and relative order of existing windows; Windows checks foreground HWND, pointer
 and window order. Linux can inspect active AT-SPI top-level windows but cannot
-observe compositor cursor/stacking, which remain unknown in the receipt. A
-missing preflight witness sends no input. Changed or unavailable post-action
-evidence revokes the session without focus restoration or retry. Concurrent
-human/system input can also change these witnesses, so an interference error
-does not blame the application or claim that already submitted effects were
-undone. Boundary samples cannot prove all transient or later application behavior.
+observe compositor cursor/stacking, which remain unknown in the receipt. These
+witnesses are diagnostics, not admission or revocation gates: the user may keep
+working while directed input runs. Missing samples leave evidence unavailable;
+changed samples retain their actual values without replacing the native action's
+result, stopping the session or replaying input. Native target, mode and lease
+checks still govern input. Boundary samples cannot attribute changes to this
+operation or prove all transient or later application behavior.
 
 ### macOS
 
@@ -453,7 +567,7 @@ checks discard stale preview responses and device-switch results.
 | Scenario | Required behavior |
 |---|---|
 | Remote workspace | Existing SSH/Docker workspace refusal; never operate the controller's local GUI as fallback |
-| Remote control | Mobile/IM have no App picker or grant UI and receive an explicit unsupported/`SHARE_REQUIRED` state; no hidden blocking prompt; task cancellation remains reachable |
+| Remote control | An executing Desktop's Agent selects and controls its own applications without requiring an App picker on Mobile/IM; cancellation remains reachable. Native OS consent and missing GUI providers are explicit limitations; no hidden app-selection dialog |
 | Peer Device | Share/permission/preview commands proxy to the peer only after `computer_use_sharing_v1` negotiation; controller permission is not peer permission; old peers and CLI without GUI reject explicitly |
 | Detached Dispatch | Headless execution has no implied GUI capability or submitter UI dependency; require an explicitly negotiated target provider |
 
@@ -464,6 +578,125 @@ port cleanup does not authorize changing persisted or cross-version wire shapes.
 Local fixtures and unsupported-host unit tests are not remote end-to-end evidence.
 
 ## Verification and acceptance
+
+### Latency design evidence, 2026-10-13
+
+The installed `openai-codex-electron` 26.1007.30912 artifact (`@oai/cua` 0.2.6,
+`@oai/sky` 0.7.6) informed the interaction policy. Focused REA static analysis
+covered the shipped CUA JavaScript API and macOS Sky client, plus their packaged
+tool documentation. It established these distinctions:
+
+- Persistent JavaScript can await several input operations and return one final
+  observation in one model-facing call. Native input and state reads still use
+  separate IPC requests. This is grouping at the model boundary, not evidence of
+  one native batch RPC.
+- App selection already emits initial state. Native input wrappers do not
+  implicitly emit another tree/image after each input.
+- AX text, image and combined observations have separate public methods.
+  `getAXState` only emits text to the model, but calls the same underlying state
+  RPC; these wrappers do not prove that the native service avoids capture.
+- The macOS client caches its transport, correlates responses by request ID and
+  serializes writes. The exposed AX diff option is visible; the native diff and
+  settling algorithms are outside the inspected JavaScript boundary.
+
+The corresponding REA parent Evidence IDs are
+`ev_2f831c53ee4f06ac0236cdbc8eb701cbd5e584c2e33fa12029006b3fc80512e0`
+and `ev_49bc75d47413c72fd45730106ded6c3377f0651baa70105ec8494e64f7898056`.
+The inventories completed, while dynamic/external semantic relationships remain
+unknown. This is shipped-code evidence, not observed Codex execution or a recovered
+server-side system prompt. No comparative model latency or hidden reasoning
+configuration was established. Third-party code is not a product dependency.
+
+The [public computer-use API guide](https://developers.openai.com/api/docs/guides/tools-computer-use)
+also describes executing ordered actions before returning an observation; this
+is a public integration pattern, not proof of the desktop application's API wire.
+The [programmatic-tool guide](https://developers.openai.com/api/docs/guides/tools-programmatic-tool-calling)
+calls for measuring correctness, evidence, model turns and latency together.
+OpenBitFun applies the interaction policy through its existing typed program and
+host port, retaining its authorization, partial receipts and cancellation rules.
+
+Local macOS acceptance used the production Tool → host → native input/observation
+path, with independent target and foreground-observer applications. The strict
+fixture passed AX-only node input, fresh/stale observation checks, default-image
+recovery, semantic and image targets, Unicode entry, scroll, five-step canvas
+input, manual preview/revocation and Stop. Foreground identity/key state, window
+order, physical cursor and exact native delivery assertions remained enabled.
+
+The latency fixture executed the same five inputs (four Unicode text insertions
+and one known shortcut) in fresh processes for each case. Three repetitions per
+case, using a development build and a 12-node AX tree, produced:
+
+| Observation policy | Input tool calls | Returned observations / images | Median host time | Range |
+|---|---:|---:|---:|---:|
+| Single inputs, default images | 5 | 5 / 5 | 1,749 ms | 1,661–1,755 ms |
+| One batch, default image | 1 | 1 / 1 | 464 ms | 462–464 ms |
+| Single inputs, AX only | 5 | 5 / 0 | 176 ms | 164–181 ms |
+| One batch, AX only | 1 | 1 / 0 | 149 ms | 137–150 ms |
+
+Each timed result had to contain the exact final text in its returned AX state;
+an immediate fixture read confirmed shortcut delivery before recovery reads or
+waits. That read adds 0.073–0.130 ms, reported separately. Setup, the initial
+observation, later screenshot recovery and cleanup are outside the measurement.
+These are strategy comparisons in the same updated build, not a before/after
+model benchmark: batching already existed. No model inference, complex-app tree,
+Codex runtime, Windows/Linux native execution or remote end-to-end latency is
+included. Three samples establish a range/median, not a meaningful p95.
+The measured executable SHA-256 is
+`e1c2e5b3beb4eb608b94d3520905d53f16575aa85c009fe0de8475ad6cdb7d16`.
+
+The 78 focused tool/prompt contracts passed, including legacy provider/image
+defaults, malformed option rejection before input, cancellation/scope changes,
+partial receipts, and SSH-workspace/headless refusal of controller-local GUI.
+Remote workspace, remote control, Peer Device Mode and Detached Dispatch were
+not exercised end to end. Locked or concurrently active test desktops are
+inconclusive; clean runs retain all isolation assertions rather than accepting
+those samples as performance evidence.
+
+### Autonomous-control correction, 2026-10-13
+
+The correction starts from `99acb6f04`. Focused checks passed: 51 Core
+ComputerUse tool tests, two browser connection-hint tests, 163 Desktop Computer
+Use tests, 33 control/permission contract tests, eight prompt-catalog tests,
+64 isolated production-source context tests and 27 frontend settings/control
+tests. Nine Desktop native tests and one isolated browser test are ignored in
+those unit commands. `cargo build -p openbitfun-desktop`, `check:web`, the Web
+production build, changed-page ESLint, generated capabilities, repository hygiene
+and core boundaries passed. These suite counts overlap.
+
+The real macOS Tool roundtrip starts implicitly through application observation,
+with no manual sharing API or separate input grant. It passed exact click,
+Unicode/Return delivery, OCR verification, stale-reference rejection and Stop.
+The strict native fixture starts background control explicitly, resolves a
+running bundle, opens its explicit app path without activation, then passes
+the covered button/text/scroll and five-action canvas/shortcut/emoji program.
+Observer foreground/key/stacking, activation history, input history and the
+physical cursor stay unchanged. Optional manual-preview tests run only after
+the Agent sequence has passed. Two earlier strict runs exposed bundle-ID and
+unregistered-path resolution failures; both were fixed before the final pass,
+with no relaxed assertions or input replay.
+
+The settings page was inspected in a real macOS Tauri window using the newly
+built frontend and an isolated test profile. The desktop-control section has
+the standard toggle and two permission rows, with no app selector, grant panel,
+Input Monitoring or executable diagnostics. The test profile does not exercise
+a fresh OS permission denial/approval/restart cycle.
+
+Windows production modules, including the shell launcher, pass cross-compilation.
+Windows and Linux native execution and all four remote scenarios were not rerun
+for this correction. Prior platform evidence below does not prove the updated
+end-to-end behavior. Cold application startup and arbitrary third-party app
+activation behavior are not covered by the macOS already-running fixture.
+
+A wider Core `--lib computer_use` filter additionally selected the unchanged
+`registry_exposes_controlhub_and_computer_use` test, whose product-registry
+expectation failed under the minimal feature set: without `product-full`, the
+default runtime selects the Agent Runtime baseline tool plan. The owning
+`computer_use_tool::tests` suite passes. Full product assembly is covered by CI;
+the registry test's narrow-feature mismatch remains unresolved. The older
+`direct_desktop_policy_tests` filter matches no current
+tests and is not counted as coverage.
+
+### Historical migration evidence, 2026-10-12
 
 The 2026-10-12 refactor started from `f5b6d3ab2`. Focused checks passed: 72 Core
 Computer Use tests, 160 Desktop tests, 33 contract tests, five runtime-evidence

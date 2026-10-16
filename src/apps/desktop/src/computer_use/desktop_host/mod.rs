@@ -7,6 +7,8 @@ mod observation;
 pub(crate) mod shared_preview;
 pub(crate) mod sharing;
 mod state;
+#[cfg(target_os = "windows")]
+mod windows_launch;
 use state::ComputerUseSessionMutableState;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use state::{CachedInteractiveView, CachedVisualMarkView};
@@ -72,7 +74,7 @@ const OSASCRIPT_TIMEOUT_MS: u64 = 10_000;
 fn run_osascript_bounded(script: &str, timeout_ms: u64) -> std::io::Result<std::process::Output> {
     use std::process::Stdio;
 
-    let mut child = std::process::Command::new("/usr/bin/osascript")
+    let mut child = openbitfun_core::util::process_manager::create_command("/usr/bin/osascript")
         .args(["-e", script])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -447,13 +449,16 @@ impl DesktopComputerUseHost {
     ///    running with none — the usual state for an Electron client the user
     ///    closed earlier. The result was `success: true` with an empty screen.
     ///
-    /// So: resolve the bundle id via LaunchServices, activate, poll for a
-    /// window, and re-open the bundle when the poll comes up empty.
+    /// Resolve the bundle identity, open with the session's activation policy,
+    /// poll for a window, and re-open the bundle when the poll comes up empty.
     #[cfg(target_os = "macos")]
     fn open_app_macos(
         name: String,
+        background: bool,
     ) -> OpenBitFunResult<openbitfun_core::agentic::tools::computer_use_host::OpenAppResult> {
-        use crate::computer_use::macos_bg_input::running_app_identity_macos;
+        use crate::computer_use::macos_bg_input::{
+            pid_for_bundle_id_macos, running_app_identity_macos,
+        };
         use openbitfun_core::agentic::tools::computer_use_host::OpenAppResult;
 
         let failure = |err: String| OpenAppResult {
@@ -467,22 +472,66 @@ impl DesktopComputerUseHost {
             launch_path: None,
         };
 
-        // `id of application "X"` asks LaunchServices to resolve the name the
-        // same way `tell application "X"` will, so the bundle id we report is
-        // guaranteed to describe the app we are about to activate.
-        let bundle_id = run_osascript_bounded(
-            &format!("id of application {}", applescript_quote(&name)),
-            OSASCRIPT_TIMEOUT_MS,
-        )
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
+        // Discovery returns bundle identifiers as well as names. A running
+        // bundle need not be registered in LaunchServices (for example a
+        // freshly built app), and an existing window needs no launch at all.
+        let running_pid = pid_for_bundle_id_macos(&name);
+        if background {
+            if let Some(pid) = running_pid {
+                let window_count = crate::computer_use::macos_ax_ui::window_count_for_pid(pid);
+                if window_count.is_some_and(|count| count > 0) {
+                    let (process_name, bundle_id) =
+                        running_app_identity_macos(pid).unwrap_or((None, None));
+                    return Ok(OpenAppResult {
+                        app_name: name,
+                        success: true,
+                        process_id: Some(pid),
+                        error_message: None,
+                        bundle_id,
+                        process_name,
+                        window_count,
+                        launch_path: Some("already_running".into()),
+                    });
+                }
+            }
+        }
+        let bundle_id = running_pid.map(|_| name.clone()).or_else(|| {
+            ["application", "application id"]
+                .into_iter()
+                .find_map(|specifier| {
+                    run_osascript_bounded(
+                        &format!("id of {specifier} {}", applescript_quote(&name)),
+                        OSASCRIPT_TIMEOUT_MS,
+                    )
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .filter(|s| !s.is_empty())
+                })
+        });
 
-        let activate = match run_osascript_bounded(
-            &format!("tell application {} to activate", applescript_quote(&name)),
-            OSASCRIPT_TIMEOUT_MS,
-        ) {
+        crate::computer_use::control_session::input_allowed().map_err(OpenBitFunError::tool)?;
+        let opened = if background {
+            let mut command =
+                openbitfun_core::util::process_manager::create_command("/usr/bin/open");
+            command.arg("-g");
+            if std::path::Path::new(&name).is_absolute() {
+                // A caller-provided app path stays authoritative even before
+                // LaunchServices has registered that bundle identifier.
+                command.args(["-a", &name]);
+            } else if let Some(bundle) = bundle_id.as_deref() {
+                command.args(["-b", bundle]);
+            } else {
+                command.args(["-a", &name]);
+            }
+            command.output()
+        } else {
+            run_osascript_bounded(
+                &format!("tell application {} to activate", applescript_quote(&name)),
+                OSASCRIPT_TIMEOUT_MS,
+            )
+        };
+        let activate = match opened {
             Ok(out) => out,
             // A timeout is a real outcome, not an internal error: the app is
             // installed but not answering. Report it as a failed launch the
@@ -490,7 +539,7 @@ impl DesktopComputerUseHost {
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
                 return Ok(failure(format!(
                     "'{}' did not respond to activation within {}s — it may be hung or showing a modal dialog. \
-Check the app directly, or ask the user to bring it up.",
+Inspect its process and current application state before choosing another operation.",
                     name,
                     OSASCRIPT_TIMEOUT_MS / 1000
                 )));
@@ -503,7 +552,11 @@ Check the app directly, or ask the user to bring it up.",
             ));
         }
 
-        let mut launch_path = "activate";
+        let mut launch_path = if background {
+            "open_background"
+        } else {
+            "activate"
+        };
         // Resolving by bundle id beats "whoever is frontmost right now" —
         // activation is asynchronous, so the frontmost app during the first
         // poll ticks is often still the previous one.
@@ -515,13 +568,24 @@ Check the app directly, or ask the user to bring it up.",
         // alone never triggers.
         if window_count == Some(0) {
             if let Some(bid) = bundle_id.as_deref() {
-                let reopened = std::process::Command::new("/usr/bin/open")
+                crate::computer_use::control_session::input_allowed()
+                    .map_err(OpenBitFunError::tool)?;
+                let mut command =
+                    openbitfun_core::util::process_manager::create_command("/usr/bin/open");
+                if background {
+                    command.arg("-g");
+                }
+                let reopened = command
                     .args(["-b", bid])
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false);
                 if reopened {
-                    launch_path = "reopen_bundle";
+                    launch_path = if background {
+                        "reopen_background"
+                    } else {
+                        "reopen_bundle"
+                    };
                     pid = Self::poll_for_app_pid(Some(bid), OPEN_APP_WINDOW_WAIT_MS).or(pid);
                     window_count = Self::poll_for_window(pid, OPEN_APP_WINDOW_WAIT_MS);
                 }
@@ -544,17 +608,15 @@ Check the app directly, or ask the user to bring it up.",
         })
     }
 
-    /// Poll until the app owning `bundle_id` is running (or the frontmost app
-    /// settles, when no bundle id could be resolved). Returns its pid.
+    /// Poll for the launched bundle. Never report the user's foreground app
+    /// as the launch target when application identity could not be resolved.
     #[cfg(target_os = "macos")]
     fn poll_for_app_pid(bundle_id: Option<&str>, budget_ms: u64) -> Option<i32> {
-        use crate::computer_use::macos_bg_input::{frontmost_pid_macos, pid_for_bundle_id_macos};
+        use crate::computer_use::macos_bg_input::pid_for_bundle_id_macos;
+        let bundle_id = bundle_id?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(budget_ms);
         loop {
-            let found = match bundle_id {
-                Some(bid) => pid_for_bundle_id_macos(bid),
-                None => frontmost_pid_macos(),
-            };
+            let found = pid_for_bundle_id_macos(bundle_id);
             if found.is_some() {
                 return found;
             }
@@ -919,8 +981,30 @@ impl ComputerUseHost for DesktopComputerUseHost {
         owner: &str,
         request: openbitfun_core::agentic::tools::computer_use_host::ControlStartRequest,
     ) -> OpenBitFunResult<openbitfun_core::agentic::tools::computer_use_host::ControlSnapshot> {
-        crate::computer_use::control_session::request_share(owner, request.mode)
-            .map_err(OpenBitFunError::tool)
+        let snapshot = crate::computer_use::control_session::start(owner, request.mode)
+            .map_err(OpenBitFunError::tool)?;
+        let scope =
+            openbitfun_agent_tools::computer_use_control::ObservationScope::from_control(&snapshot);
+        drop(self.state_for_scope(&scope)?);
+        // Background AT-SPI actions need no portal or window picker. The
+        // compositor's consent is required only for a portal capture/seat session.
+        #[cfg(target_os = "linux")]
+        if request.mode != openbitfun_agent_tools::computer_use_control::ControlMode::Background {
+            if let Err(error) = crate::computer_use::linux_control::start_session(
+                request.mode
+                    == openbitfun_agent_tools::computer_use_control::ControlMode::Foreground,
+            )
+            .await
+            {
+                let _ = crate::computer_use::control_session::stop_checked(
+                    Some(owner),
+                    Some(snapshot.generation),
+                    &error,
+                );
+                return Err(OpenBitFunError::tool(error));
+            }
+        }
+        Ok(crate::computer_use::control_session::snapshot())
     }
 
     fn control_snapshot(
@@ -963,14 +1047,6 @@ impl ComputerUseHost for DesktopComputerUseHost {
             })?;
         if !policy.lease {
             return Ok(None);
-        }
-        let current = crate::computer_use::control_session::snapshot();
-        if current.state == "idle" {
-            crate::computer_use::control_session::request_share(
-                owner,
-                openbitfun_agent_tools::computer_use_control::ControlMode::Background,
-            )
-            .map_err(OpenBitFunError::tool)?;
         }
         crate::computer_use::control_session::acquire(owner, action)
             .map(Some)
@@ -1232,11 +1308,16 @@ impl ComputerUseHost for DesktopComputerUseHost {
     ) -> OpenBitFunResult<openbitfun_core::agentic::tools::computer_use_host::OpenAppResult> {
         use openbitfun_core::agentic::tools::computer_use_host::OpenAppResult;
         let name = app_name.to_string();
+        crate::computer_use::control_session::input_allowed().map_err(OpenBitFunError::tool)?;
+        let background = crate::computer_use::control_session::snapshot().mode
+            == openbitfun_agent_tools::computer_use_control::ControlMode::Background;
 
         #[cfg(target_os = "macos")]
         {
             let result = crate::computer_use::control_session::spawn_blocking(
-                move || -> OpenBitFunResult<OpenAppResult> { Self::open_app_macos(name) },
+                move || -> OpenBitFunResult<OpenAppResult> {
+                    Self::open_app_macos(name, background)
+                },
             )
             .await
             .map_err(|e| OpenBitFunError::tool(e.to_string()))??;
@@ -1247,30 +1328,7 @@ impl ComputerUseHost for DesktopComputerUseHost {
         {
             let result = crate::computer_use::control_session::spawn_blocking(
                 move || -> OpenBitFunResult<OpenAppResult> {
-                    let output = openbitfun_core::util::process_manager::create_command("cmd")
-                        .args(["/c", "start", "", &name])
-                        .output()
-                        .map_err(|e| OpenBitFunError::tool(format!("open_app: {}", e)))?;
-                    Ok(OpenAppResult {
-                        app_name: name,
-                        success: output.status.success(),
-                        process_id: None,
-                        error_message: if output.status.success() {
-                            None
-                        } else {
-                            Some(String::from_utf8_lossy(&output.stderr).trim().to_string())
-                        },
-                        // `start` hands off to the shell and returns immediately
-                        // without telling us what it launched, so there is no pid
-                        // to resolve identity or window count from. Left as `None`
-                        // (the "not measured" value) rather than faked — the model
-                        // reads `window_count: Some(0)` as a definite windowless
-                        // app and would act on it.
-                        bundle_id: None,
-                        process_name: None,
-                        window_count: None,
-                        launch_path: Some("shell_start".to_string()),
-                    })
+                    windows_launch::open(name, background)
                 },
             )
             .await
@@ -1280,12 +1338,17 @@ impl ComputerUseHost for DesktopComputerUseHost {
 
         #[cfg(target_os = "linux")]
         {
+            if background {
+                return Err(OpenBitFunError::tool("[BACKGROUND_LAUNCH_UNSUPPORTED] This Linux host cannot request application launch without compositor activation. Already-running applications remain available through list_apps and AT-SPI."));
+            }
             let result = crate::computer_use::control_session::spawn_blocking(
                 move || -> OpenBitFunResult<OpenAppResult> {
-                    let output = std::process::Command::new("xdg-open")
+                    let output = openbitfun_core::util::process_manager::create_command("xdg-open")
                         .arg(&name)
                         .output()
-                        .or_else(|_| std::process::Command::new(&name).output())
+                        .or_else(|_| {
+                            openbitfun_core::util::process_manager::create_command(&name).output()
+                        })
                         .map_err(|e| OpenBitFunError::tool(format!("open_app: {}", e)))?;
                     Ok(OpenAppResult {
                         app_name: name,
@@ -1629,11 +1692,19 @@ impl ComputerUseHost for DesktopComputerUseHost {
         max_depth: u32,
         focus_window_only: bool,
     ) -> OpenBitFunResult<AppStateSnapshot> {
-        // Public path: always auto-attach a focused-window screenshot so the
-        // model is never blind on Canvas / WebView / WebGL surfaces that the
-        // AX tree can't describe (Codex parity — its `get_app_state` is the
-        // single "eyes" of the desktop loop).
+        // Preserve image-bearing observations for existing callers.
         self.get_app_state_inner(app, max_depth, focus_window_only, true)
+            .await
+    }
+
+    async fn get_app_state_with_options(
+        &self,
+        app: AppSelector,
+        max_depth: u32,
+        focus_window_only: bool,
+        include_image: bool,
+    ) -> OpenBitFunResult<AppStateSnapshot> {
+        self.get_app_state_inner(app, max_depth, focus_window_only, include_image)
             .await
     }
 

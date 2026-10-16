@@ -363,6 +363,9 @@
       "duplicate": "复制会话",
       "duplicateSuccess": "已复制为「{{name}}」",
       "duplicateFailed": "复制会话失败",
+      "duplicateCreatedRefreshFailed": "已复制为「{{name}}」。请刷新会话列表查看，再次复制会创建另一个副本。",
+      "duplicateHostUnsupported": "连接的宿主不支持复制会话，请升级宿主后使用。",
+      "duplicateEmpty": "请发送消息后再复制该会话。",
       "duplicateRunning": "请等待当前对话结束后再复制该会话。",
       "duplicateDispatchUnsupported": "运行在其他设备上的会话无法复制。",
       "openStorageDirectory": "打开会话存储目录",
@@ -487,7 +490,8 @@
         "anchorMs": "锚点时间（可选）",
         "cronExpr": "Cron 表达式",
         "timezone": "时区（可选）",
-        "prompt": "任务内容"
+        "prompt": "任务内容",
+        "reportPolicy": "结果投递"
       },
       "placeholders": {
         "workspacePath": "请输入工作区路径",
@@ -500,7 +504,14 @@
         "prompt": "请输入定时触发时发送给智能体的内容"
       },
       "hints": {
-        "cronExpr": "Cron 格式：分 时 日 月 周，例如 0 8 * * * 表示每天 08:00。"
+        "cronExpr": "Cron 格式：分 时 日 月 周，例如 0 8 * * * 表示每天 08:00。",
+        "reportPolicy": "在任务内容中说明报告条件；失败或判定不明确时仍会报告。",
+        "reportPolicyUnsupported": "此主机暂不支持设置结果投递，继续按原任务说明执行。"
+      },
+      "reportPolicies": {
+        "inherit": "按任务说明",
+        "always": "每次报告",
+        "conditional": "符合条件才报告"
       },
       "scheduleKinds": {
         "at": "单次执行",

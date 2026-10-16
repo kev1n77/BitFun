@@ -5,11 +5,11 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 assert.equal(process.platform, 'darwin', 'directed input fixture requires macOS');
-const orchestration = process.argv.includes('--orchestration') || process.argv.includes('--semantic');
+const latency = process.argv.includes('--latency');
+const orchestration = process.argv.includes('--orchestration') || process.argv.includes('--semantic') || latency;
 const semantic = process.argv.includes('--semantic') || orchestration;
-assert.ok(process.argv.length === 2 || (process.argv.length === 3 && semantic), 'Usage: node scripts/test-macos-input-controls.mjs [--semantic | --orchestration]');
+assert.ok(process.argv.length === 2 || (process.argv.length === 3 && semantic), 'Usage: node scripts/test-macos-input-controls.mjs [--semantic | --orchestration | --latency]');
 const root = fileURLToPath(new URL('../', import.meta.url));
-const directory = await mkdtemp(join(tmpdir(), 'openbitfun-directed-input-'));
 const run = (command, args, env = process.env, onSpawn) => new Promise((resolve, reject) => {
   const child = spawn(command, args, { cwd: root, stdio: 'inherit', windowsHide: true, env });
   onSpawn?.(child);
@@ -17,6 +17,67 @@ const run = (command, args, env = process.env, onSpawn) => new Promise((resolve,
   child.on('error', error => { clearTimeout(timer); reject(error); });
   child.on('close', code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`${command} exited ${code}`)); });
 });
+
+const nativeTestBinary = async () => process.env.OPENBITFUN_TEST_BINARY || new Promise((resolve, reject) => {
+  const build = spawn('cargo', ['test', '--locked', '-p', 'openbitfun-desktop', ...(orchestration ? ['--features', 'devtools', '--test', 'computer_use_native_roundtrip'] : ['--lib']), '--no-run', '--message-format=json'], {
+    cwd: root, stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true,
+  });
+  let pending = '';
+  let executable;
+  build.stdout.on('data', chunk => {
+    pending += String(chunk);
+    const lines = pending.split('\n');
+    pending = lines.pop();
+    for (const line of lines) {
+      const message = JSON.parse(line);
+      if (message.reason === 'compiler-artifact' && message.target.name === (orchestration ? 'computer_use_native_roundtrip' : 'openbitfun_desktop_lib') && message.executable) executable = message.executable;
+      if (message.reason === 'compiler-message' && message.message.rendered) process.stderr.write(message.message.rendered);
+    }
+  });
+  build.once('error', reject);
+  build.once('close', code => code === 0 && executable ? resolve(executable) : reject(new Error(`Test build failed (${code}) or produced no executable`)));
+});
+
+if (latency) {
+  // Compile once, then isolate every case in a fresh target, observer and native
+  // host. Child runners retain the ordinary input-idle gates and final checks.
+  const testBinary = await nativeTestBinary();
+  const measurements = [];
+  for (const fixtureCase of ['singles:default', 'batch:default', 'singles:ax', 'batch:ax']) {
+    await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--orchestration'], {
+        cwd: root, windowsHide: true, stdio: ['ignore', 'inherit', 'pipe'],
+        env: { ...process.env, OPENBITFUN_TEST_BINARY: testBinary, OPENBITFUN_INPUT_LATENCY_CASE: fixtureCase },
+      });
+      let pending = '';
+      child.stderr.on('data', chunk => {
+        process.stderr.write(chunk);
+        pending += String(chunk);
+        const lines = pending.split('\n');
+        pending = lines.pop();
+        for (const line of lines) {
+          if (line.startsWith('CUA_NATIVE_LATENCY ')) measurements.push(JSON.parse(line.slice('CUA_NATIVE_LATENCY '.length)));
+        }
+      });
+      child.once('error', reject);
+      child.once('close', code => code === 0 ? resolve() : reject(new Error(`Native latency case ${fixtureCase} failed (${code})`)));
+    });
+  }
+  assert.equal(measurements.length, 4, 'every measured case must report after native assertions pass');
+  for (const result of measurements) {
+    const batched = result.case.startsWith('batch:');
+    const images = result.case.endsWith(':default');
+    assert.equal(result.input_steps, 5);
+    assert.equal(result.tool_calls, batched ? 1 : 5);
+    assert.equal(result.returned_observation_count, batched ? 1 : 5);
+    assert.equal(result.returned_image_count, images ? result.tool_calls : 0);
+    assert.ok(result.initial_node_count > 0);
+  }
+  console.log(`CUA_NATIVE_LATENCY_COMPARISON ${JSON.stringify({ measurements, scope: 'Same five native inputs in fresh disposable apps; no model latency or remote behavior measured. Timings are measurements, not pass/fail thresholds.' })}`);
+  process.exit(0);
+}
+
+const directory = await mkdtemp(join(tmpdir(), 'openbitfun-directed-input-'));
 let fixture;
 let observer;
 let harness;
@@ -34,28 +95,7 @@ try {
   await run('xcrun', ['clang', '-fobjc-arc', '-Wall', '-Werror', 'scripts/fixtures/computer-use-input-controls.m', '-framework', 'AppKit', '-o', binary]);
   // Build before opening either fixture window, so compiler latency never
   // leaves the foreground observer sitting above the user's work.
-  let testBinary = process.env.OPENBITFUN_TEST_BINARY;
-  if (!testBinary) {
-    testBinary = await new Promise((resolve, reject) => {
-      const build = spawn('cargo', ['test', '-p', 'openbitfun-desktop', ...(orchestration ? ['--features', 'devtools', '--test', 'computer_use_native_roundtrip'] : ['--lib']), '--no-run', '--message-format=json'], {
-        cwd: root, stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true,
-      });
-      let pending = '';
-      let executable;
-      build.stdout.on('data', chunk => {
-        pending += String(chunk);
-        const lines = pending.split('\n');
-        pending = lines.pop();
-        for (const line of lines) {
-          const message = JSON.parse(line);
-          if (message.reason === 'compiler-artifact' && message.target.name === (orchestration ? 'computer_use_native_roundtrip' : 'openbitfun_desktop_lib') && message.executable) executable = message.executable;
-          if (message.reason === 'compiler-message' && message.message.rendered) process.stderr.write(message.message.rendered);
-        }
-      });
-      build.once('error', reject);
-      build.once('close', code => code === 0 && executable ? resolve(executable) : reject(new Error(`Test build failed (${code}) or produced no executable`)));
-    });
-  }
+  const testBinary = await nativeTestBinary();
   const targetBinary = await bundleExecutable('OpenBitFun Input Target', 'dev.openbitfun.input-fixture.target');
   const observerBinary = await bundleExecutable('OpenBitFun Input Observer', 'dev.openbitfun.input-fixture.observer');
   await run(binary, ['--wait-input-idle', '20']);
@@ -75,6 +115,7 @@ try {
   const hostReady = join(directory, 'host-ready');
   const testEnvironment = {
     ...process.env, OPENBITFUN_INPUT_FIXTURE_PID: pid,
+    OPENBITFUN_INPUT_FIXTURE_APP: join(directory, 'OpenBitFun Input Target.app'),
     OPENBITFUN_INPUT_FIXTURE_RESULT: result, OPENBITFUN_INPUT_OBSERVER_RESULT: `${result}.observer`,
     OPENBITFUN_INPUT_HOST_READY: hostReady,
   };

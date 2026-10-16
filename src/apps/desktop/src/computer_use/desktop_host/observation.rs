@@ -37,11 +37,9 @@ impl DesktopComputerUseHost {
         Ok(snapshot)
     }
 
-    /// Internal `get_app_state` that lets callers opt out of the focused-window
-    /// screenshot. The public trait method always passes `capture_screenshot=true`
-    /// (Codex parity). Internal re-snapshots from `app_click` / `app_type_text` /
-    /// `app_scroll` / `app_key_chord` pass `false` to avoid a redundant capture
-    /// — the **outer** call (e.g. the one returned to the model) gets the image.
+    /// AX-only observations skip frame retrieval and JPEG encoding. They still
+    /// rebuild node identities and obey the same control scope as image-bearing
+    /// observations. Existing callers include pixels unless explicitly opted out.
     async fn get_native_app_state_inner(
         &self,
         app: AppSelector,
