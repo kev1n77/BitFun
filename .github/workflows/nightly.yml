@@ -7,7 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       build_only:
-        description: "Build and upload the Windows package without publishing it."
+        description: "Build and upload the selected packages without publishing them."
+        required: false
+        default: false
+        type: boolean
+      all_platforms:
+        description: "Build Windows x64, Linux x64/arm64, and macOS x64/arm64 desktop packages."
         required: false
         default: false
         type: boolean
@@ -59,8 +64,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REUSE_RUN_ID: ${{ inputs.reuse_run_id }}
           REUSE_VERSION: ${{ inputs.reuse_version }}
+          ALL_PLATFORMS: ${{ inputs.all_platforms }}
         run: |
           set -euo pipefail
+
+          if [[ "${ALL_PLATFORMS}" == "true" && -n "${REUSE_RUN_ID}" ]]; then
+            echo "Windows artifact reuse cannot supply an all-platform build." >&2
+            exit 1
+          fi
 
           if [[ -n "${REUSE_RUN_ID}" ]]; then
             [[ "${REUSE_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
@@ -104,7 +115,7 @@ jobs:
           fi
 
   build-artifacts:
-    name: Build Windows Nightly Artifact
+    name: Build Nightly Artifacts
     needs: check-changes
     if: >-
       needs.check-changes.outputs.should_build == 'true' &&
@@ -122,14 +133,14 @@ jobs:
       artifact_prefix: nightly
       artifact_retention_days: ${{ fromJSON(inputs.artifact_retention_days || '7') }}
       build_desktop_packages: true
-      desktop_platforms: '["windows-x64"]'
+      desktop_platforms: ${{ inputs.all_platforms && '["windows-x64","linux-x64","linux-arm64","macos-arm64","macos-x64"]' || '["windows-x64"]' }}
       build_linux_binaries: false
       build_relay_image: false
       upload_artifacts: true
       cache_write: ${{ github.repository_owner == 'GCWing' }}
 
   publish-nightly:
-    name: Publish Windows Nightly
+    name: Publish Nightly
     needs: [check-changes, build-artifacts]
     if: >-
       always() && !cancelled() &&
@@ -147,6 +158,7 @@ jobs:
       SOURCE_SHA: ${{ needs.check-changes.outputs.source_sha }}
       SOURCE_RUN_ID: ${{ needs.check-changes.outputs.source_run_id }}
       NIGHTLY_VERSION: ${{ needs.check-changes.outputs.nightly_version }}
+      PACKAGE_SCOPE: ${{ inputs.all_platforms && 'Windows, Linux and macOS' || 'Windows' }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -181,6 +193,17 @@ jobs:
             "release-manual-assets/OpenBitFun_${NIGHTLY_VERSION%%+*}_windows-x86_64-installer.exe" "$NIGHTLY_VERSION"
           (cd release-manual-assets && sha256sum *.exe > "OpenBitFun_${NIGHTLY_VERSION%%+*}_windows-x86_64-installer.exe.sha256")
 
+      - name: Download all desktop platform artifacts
+        if: inputs.all_platforms == true
+        uses: actions/download-artifact@v7
+        with:
+          pattern: openbitfun-nightly-*-bundle
+          path: desktop-release-assets
+
+      - name: Stage Linux and macOS installers
+        if: inputs.all_platforms == true
+        run: node scripts/stage-nightly-desktop-assets.mjs desktop-release-assets release-manual-assets
+
       - name: Sign installer packages
         shell: bash
         env:
@@ -189,7 +212,8 @@ jobs:
           OPENBITFUN_SIGNING_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
         run: |
           set -euo pipefail
-          bash scripts/sign-release-assets.sh release-manual-assets/*.exe release-manual-assets/*.sha256
+          mapfile -t assets < <(find release-manual-assets -type f ! -name '*.sig' | sort)
+          bash scripts/sign-release-assets.sh "${assets[@]}"
           test -s "release-manual-assets/OpenBitFun_${NIGHTLY_VERSION%%+*}_windows-x86_64-installer.exe.sig"
           test -s "release-manual-assets/OpenBitFun_${NIGHTLY_VERSION%%+*}_windows-x86_64-installer.exe.sha256.sig"
           node scripts/write-minisign-public-key.mjs --out release-manual-assets/minisign.pub
@@ -211,13 +235,13 @@ jobs:
           fi
 
           cat > nightly-release-notes.md <<EOF
-          Windows nightly package from main.
+          ${PACKAGE_SCOPE:-Windows} nightly packages from main.
 
           **Version**: ${NIGHTLY_VERSION}
           **Source commit**: ${SOURCE_SHA}
           **Build run**: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}
 
-          The Windows installer is accompanied by its SHA-256 checksum and detached minisign signatures.
+          Each installer is accompanied by its SHA-256 checksum and detached minisign signatures.
           EOF
           # The tag lookup endpoint omits draft releases. Include drafts so a
           # retry resumes the same release after staging or a partial upload.
@@ -231,7 +255,7 @@ jobs:
           case "${release_count}" in
             1) gh release edit "${NIGHTLY_TAG}" --repo "${GITHUB_REPOSITORY}" --draft ;;
             0) gh release create "${NIGHTLY_TAG}" --repo "${GITHUB_REPOSITORY}" \
-                   --verify-tag --draft --title "Nightly Windows Build (${NIGHTLY_VERSION})" \
+                   --verify-tag --draft --title "Nightly ${PACKAGE_SCOPE:-Windows} Build (${NIGHTLY_VERSION})" \
                    --notes-file nightly-release-notes.md ;;
             *) echo "Expected at most one release for nightly." >&2; exit 1 ;;
           esac
@@ -254,7 +278,7 @@ jobs:
           done < nightly-obsolete-asset-ids.txt
           gh release edit "${NIGHTLY_TAG}" --repo "${GITHUB_REPOSITORY}" \
             --draft=false --prerelease --latest=false \
-            --title "Nightly Windows Build (${NIGHTLY_VERSION})" \
+            --title "Nightly ${PACKAGE_SCOPE:-Windows} Build (${NIGHTLY_VERSION})" \
             --notes-file nightly-release-notes.md
 
       - name: Verify published Windows installer and signatures
@@ -265,8 +289,9 @@ jobs:
           set -euo pipefail
           gh release download "${NIGHTLY_TAG}" --repo "${GITHUB_REPOSITORY}" \
             --dir published-windows-assets --pattern '*.exe' --pattern '*.exe.sig' \
-            --pattern '*.sha256' --pattern '*.sha256.sig' --pattern minisign.pub
-          for asset in release-manual-assets/*; do
+            --pattern '*.exe.sha256' --pattern '*.exe.sha256.sig' --pattern minisign.pub
+          for asset in release-manual-assets/*.exe release-manual-assets/*.exe.sig \
+            release-manual-assets/*.exe.sha256 release-manual-assets/*.exe.sha256.sig release-manual-assets/minisign.pub; do
             cmp "${asset}" "published-windows-assets/$(basename "${asset}")"
           done
           (cd published-windows-assets && sha256sum --check *.sha256)
@@ -276,3 +301,21 @@ jobs:
             minisign -Vm "${asset}" -p published-windows-assets/minisign.pub -x "${asset}.minisig"
           done
           test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${NIGHTLY_TAG}" --jq .object.sha)" = "${SOURCE_SHA}"
+
+      - name: Verify published Linux and macOS installers
+        if: inputs.all_platforms == true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download "${NIGHTLY_TAG}" --repo "${GITHUB_REPOSITORY}" \
+            --dir published-desktop-assets --clobber
+          for asset in release-manual-assets/*; do
+            cmp "${asset}" "published-desktop-assets/$(basename "${asset}")"
+          done
+          (cd published-desktop-assets && sha256sum --check *.sha256)
+          for signature in published-desktop-assets/*.sig; do
+            base64 -d "${signature}" > "${signature}.minisig"
+            minisign -Vm "${signature%.sig}" -p published-desktop-assets/minisign.pub -x "${signature}.minisig"
+          done

@@ -1058,7 +1058,7 @@ test('nightly orchestrates the shared build before the separately privileged pub
     artifact_retention_days:
       "${{ fromJSON(inputs.artifact_retention_days || '7') }}",
     build_desktop_packages: true,
-    desktop_platforms: '["windows-x64"]',
+    desktop_platforms: '${{ inputs.all_platforms && \'["windows-x64","linux-x64","linux-arm64","macos-arm64","macos-x64"]\' || \'["windows-x64"]\' }}',
     build_linux_binaries: false,
     build_relay_image: false,
     upload_artifacts: true,
@@ -1177,7 +1177,7 @@ test('PR-capable release builds cannot save repository caches or upload CI packa
   assert.equal(node.with['package-manager-cache'], false);
 });
 
-test('nightly publishes only Windows assets and pins a reused artifact to its original run', () => {
+test('nightly defaults to Windows, supports all desktop platforms and pins reused Windows artifacts', () => {
   const workflow = yaml.parse(readFileSync(path.join(repoRoot, '.github/workflows/nightly.yml'), 'utf8'));
   const check = workflow.jobs['check-changes'];
   const build = workflow.jobs['build-artifacts'];
@@ -1185,6 +1185,14 @@ test('nightly publishes only Windows assets and pins a reused artifact to its or
   const steps = publish.steps;
   assert.equal(workflow.on.workflow_dispatch.inputs.reuse_run_id.type, 'string');
   assert.equal(workflow.on.workflow_dispatch.inputs.reuse_version.type, 'string');
+  assert.equal(workflow.on.workflow_dispatch.inputs.all_platforms.default, false);
+  assert.equal(workflow.on.workflow_dispatch.inputs.all_platforms.type, 'boolean');
+  const allDownload = steps.find(step => step.name === 'Download all desktop platform artifacts');
+  assert.equal(allDownload.if, 'inputs.all_platforms == true');
+  assert.equal(allDownload.with.pattern, 'openbitfun-nightly-*-bundle');
+  assert.equal(allDownload.with['merge-multiple'], undefined);
+  assert.equal(steps.find(step => step.name === 'Stage Linux and macOS installers').if, 'inputs.all_platforms == true');
+  assert.equal(steps.find(step => step.name === 'Verify published Linux and macOS installers').if, 'inputs.all_platforms == true');
   assert.match(build.if, /artifact_id == ''/);
   assert.deepEqual(check.permissions, { contents: 'read', actions: 'read' });
   assert.match(check.steps.find(step => step.id === 'check').run, /git merge-base --is-ancestor "\${source_sha}" origin\/main/);
@@ -1198,7 +1206,8 @@ test('nightly publishes only Windows assets and pins a reused artifact to its or
   assert.equal(publish.env.SOURCE_SHA, '${{ needs.check-changes.outputs.source_sha }}');
   assert.equal(publish.env.SOURCE_RUN_ID, '${{ needs.check-changes.outputs.source_run_id }}');
   const signing = steps.find(step => step.name === 'Sign installer packages');
-  assert.match(signing.run, /sign-release-assets\.sh release-manual-assets\/\*\.exe/);
+  assert.match(signing.run, /sign-release-assets\.sh "\$\{assets\[@\]\}"/);
+  assert.match(signing.run, /find release-manual-assets/);
   assert.ok(signing.env.OPENBITFUN_SIGNING_PUBKEY);
   const upload = steps.find(step => step.name === 'Publish Windows nightly release');
   assert.match(upload.run, /--clobber release-manual-assets\/\*/);

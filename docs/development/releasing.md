@@ -212,6 +212,14 @@ minisign signatures, and the public key. The release tag and notes identify the
 original build commit, and publication removes assets from the previous nightly.
 Stable and beta packaging retain their own platform contracts.
 
+For all desktop platforms, dispatch `nightly.yml` on `main` with
+`all_platforms=true`. This builds Windows x64, Linux x64/arm64 (deb, rpm and
+AppImage), and macOS x64/arm64 (dmg). Every installer is published to the same
+nightly prerelease with a SHA-256 checksum and detached minisign signatures.
+Missing platform bundles or formats stop publication. This option cannot be
+combined with Windows-only artifact reuse. Linux CLI and Relay image publishing
+are not enabled by this desktop package option.
+
 To publish an existing successful Windows build without compiling again, dispatch
 `nightly.yml` on `main` with `reuse_run_id` set to its run ID and `reuse_version`
 set to its original full version, for example

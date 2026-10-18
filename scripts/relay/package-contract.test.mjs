@@ -38,7 +38,7 @@ test('formal releases gate publication on Linux binaries while nightly selects W
   assert.match(nightly, /uses:\s+\.\/\.github\/workflows\/nightly-artifacts\.yml/);
   assert.match(desktop, /needs:\s*\[[^\]]*linux-binaries[^\]]*\]/);
   assert.match(nightly, /needs:\s*\[[^\]]*build-artifacts[^\]]*\]/);
-  assert.match(nightly, /desktop_platforms:\s*'\["windows-x64"\]'/);
+  assert.match(nightly, /desktop_platforms:.*inputs\.all_platforms.*\["windows-x64"\]/);
   assert.match(nightly, /build_linux_binaries:\s*false/);
   assert.match(nightly, /build_relay_image:\s*false/);
   assert.doesNotMatch(nightly, /linux-release-assets/);
