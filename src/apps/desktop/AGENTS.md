@@ -128,6 +128,9 @@ For whole-session copy routing, run
 `cargo test --locked -p openbitfun-desktop --lib whole_session_copy_uses_the_latest_persisted_turn_fork`.
 After command registration changes, also run the `remote_workspace_policy` filter.
 
+For optional workspace catalog query payload compatibility, run
+`cargo test --locked -p openbitfun-desktop --lib api::session_api::catalog_request_tests`.
+
 For model selector request compatibility and configuration effect routing:
 
 ```bash
@@ -189,6 +192,12 @@ Verify HTML text/tab/file-tree drags still work. The temporary OLE child only
 covers the active chat target during an external file drag; do not enable Wry's
 window-wide Windows handler as a replacement. After command registration changes,
 also run `cargo test -p openbitfun-desktop --lib remote_workspace_policy`.
+
+For macOS HTML versus native file drag routing, use the focused command in
+[`third_party/wry/OPENBITFUN-PATCH.md`](../../../third_party/wry/OPENBITFUN-PATCH.md)
+and `cargo build -p openbitfun-desktop`. The host keeps the native file receiver
+enabled for Finder paths; the Wry adapter delegates non-file gestures to WebKit.
+Frontend HMR and synthetic DOM drag tests cannot verify that native boundary.
 
 The layered receiver requires the compatibility declaration in
 `windows-app.manifest`; keep it wired through `build.rs` for dev and release.

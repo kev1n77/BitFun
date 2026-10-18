@@ -5,6 +5,8 @@ use openbitfun_agent_tools::computer_use_control::{
     ControlActionPolicy, ControlMode, ControlSharing, ControlSnapshot, SharingPhase,
 };
 
+pub(super) const FOREGROUND_REQUIRED: &str = "[FOREGROUND_REQUIRED] This global action uses the human's foreground application or cursor. Keep background control and use app_click, app_type_text, app_key_chord, app_scroll or app_drag with observed application/window targets. Do not request foreground takeover to recover from this error. Use start_control with mode=foreground only when the user explicitly requests taking over the visible desktop.";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ControlToken {
     pub(super) generation: u64,
@@ -420,7 +422,7 @@ impl<E: Copy + PartialEq> Admission<E> {
         };
         if self.snapshot.sharing.is_some()
             && (policy.foreground && !policy.target
-                || matches!(action, "clipboard_set" | "open_app"))
+                || matches!(action, "clipboard_get" | "clipboard_set" | "open_app"))
         {
             return Err("[SHARED_TARGET_ONLY] Window sharing does not authorize global clipboard, launching or scripts".into());
         }
@@ -428,7 +430,7 @@ impl<E: Copy + PartialEq> Admission<E> {
             return Err("[CONTROL_OBSERVE_ONLY] Start a control session to send input".into());
         }
         if policy.foreground && mode != ControlMode::Foreground {
-            return Err("[FOREGROUND_REQUIRED] This action uses desktop focus or seat input; explicitly start_control with mode=foreground".into());
+            return Err(FOREGROUND_REQUIRED.into());
         }
         let sequence = self
             .snapshot
@@ -483,6 +485,15 @@ mod tests {
         assert!(state.snapshot.sharing.is_none());
         state.bind("pid:1/window:10".into()).unwrap();
         state.release(observe, true);
+        for action in ["click", "type_text", "key_chord", "scroll", "drag"] {
+            let error = state.admit("task", action, 1).unwrap_err();
+            assert!(error.starts_with("[FOREGROUND_REQUIRED]"), "{error}");
+            assert!(error.contains("app_click, app_type_text, app_key_chord"));
+            assert!(error.contains("Do not request foreground takeover"));
+            assert!(error.contains("only when the user explicitly requests"));
+            assert_eq!(state.snapshot.mode, ControlMode::Background);
+            assert!(!state.busy);
+        }
         let input = state.admit("task", "app_type_text", 1).unwrap();
         assert!(state.check_input(input).is_ok());
         state.release(input, true);
@@ -570,10 +581,22 @@ mod tests {
             .unwrap();
         state.finish_share(generation, 1).unwrap();
         state.set_control(generation, 1, 0, true).unwrap();
-        for action in ["clipboard_set", "open_app", "run_jxa"] {
+        for action in ["clipboard_get", "clipboard_set", "open_app", "run_script"] {
             assert!(state.admit("owner", action, 1).is_err(), "{action}");
             assert!(!state.busy);
         }
+    }
+
+    #[test]
+    fn clipboard_reads_obey_owner_stop_and_observe_mode() {
+        let mut state = running();
+        state.snapshot.mode = ControlMode::Observe;
+        assert!(state.admit("other-owner", "clipboard_get", 1).is_err());
+        assert!(state.admit("owner", "clipboard_set", 1).is_err());
+        let token = state.admit("owner", "clipboard_get", 1).unwrap();
+        state.release(token, true);
+        state.revoke("user_stopped");
+        assert!(state.admit("owner", "clipboard_get", 1).is_err());
     }
     fn running() -> Admission<u8> {
         let mut state = Admission::default();

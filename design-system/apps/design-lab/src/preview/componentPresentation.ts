@@ -19,6 +19,7 @@ const presentations: Record<string, ComponentPresentation> = {
   Disclosure: "composition", Composer: "composition", Listbox: "composition", Menu: "composition",
   NavigationPanel: "composition", PageHeader: "composition", ScrollArea: "composition", SplitView: "composition",
   SegmentedControl: "composition", TabGroup: "composition",
+  SetupWizard: "composition",
   Icon: "icons", RollingText: "motion", ShimmerText: "motion", VoiceCallPanel: "motion",
   ThinkingIndicator: "motion",
   MobileBadge: "compact", MobileButton: "compact", MobileIconButton: "compact",

@@ -8,6 +8,15 @@ const mocks = vi.hoisted(() => ({
   invoke: vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => {}),
   view: { label: 'test-browser', show: vi.fn(async () => {}), hide: vi.fn(async () => {}),
     close: vi.fn(async () => {}), setFocus: vi.fn(async () => {}) },
+  hostVisible: true,
+  hostListeners: new Set<(visible: boolean) => void>(),
+}));
+vi.mock('@/infrastructure/runtime/windowVisibility', () => ({
+  observeCurrentWindowVisibility: (changed: (visible: boolean) => void) => {
+    mocks.hostListeners.add(changed);
+    changed(mocks.hostVisible);
+    return () => mocks.hostListeners.delete(changed);
+  },
 }));
 vi.mock('@/infrastructure/api/service-api/ApiClient', () => ({ api: { invoke: mocks.invoke } }));
 vi.mock('@tauri-apps/api/webview', () => ({ Webview: { getByLabel: async () => mocks.view } }));
@@ -25,6 +34,8 @@ let container: HTMLDivElement;
 let viewportBounds: DOMRect;
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.hostVisible = true;
+  mocks.hostListeners.clear();
   mocks.invoke.mockImplementation(async () => {});
   vi.stubGlobal('__TAURI__', {});
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
@@ -40,6 +51,7 @@ afterEach(async () => {
   document.body.replaceChildren();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 async function render(active = true) {
@@ -54,6 +66,63 @@ function overlay() {
   node.getBoundingClientRect = () => new DOMRect(50, 50, 100, 100);
   return node;
 }
+
+async function hostVisibility(visible: boolean) {
+  await mutate(() => {
+    mocks.hostVisible = visible;
+    mocks.hostListeners.forEach(changed => changed(visible));
+  });
+}
+
+it('stops preview capture while minimized and resumes without changing the active interval', async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal('Image', class { src = ''; decode = async () => {}; });
+  let frame = 0;
+  mocks.invoke.mockImplementation(async command => command === 'browser_webview_capture_preview'
+    ? { status: 'ready', dataUrl: `data:image/jpeg;base64,${frame++}` } : undefined);
+  const captures = () => mocks.invoke.mock.calls.filter(call => call[0] === 'browser_webview_capture_preview').length;
+  await render();
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(captures()).toBe(1);
+  await hostVisibility(false);
+  expect(mocks.view.hide).toHaveBeenCalledOnce();
+  await act(async () => vi.advanceTimersByTimeAsync(30_000));
+  expect(captures()).toBe(1);
+  await hostVisibility(true);
+  expect(mocks.view.show).toHaveBeenCalledTimes(2);
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(captures()).toBe(2);
+  await act(async () => vi.advanceTimersByTimeAsync(5000));
+  expect(captures()).toBe(3);
+});
+
+it('restores only active, unoccluded views and does not steal focus on window restoration', async () => {
+  await render();
+  await hostVisibility(false);
+  await render(false);
+  await hostVisibility(true);
+  expect(mocks.view.show).toHaveBeenCalledTimes(1);
+  const panel = overlay();
+  await mutate(() => document.body.append(panel));
+  await render(true);
+  await hostVisibility(false);
+  await hostVisibility(true);
+  expect(mocks.view.show).toHaveBeenCalledTimes(1);
+  mocks.view.setFocus.mockClear();
+  await mutate(() => panel.remove());
+  expect(mocks.view.show).toHaveBeenCalledTimes(2);
+  expect(mocks.view.setFocus).not.toHaveBeenCalled();
+});
+
+it('keeps a newly created view hidden when the host is already minimized', async () => {
+  mocks.hostVisible = false;
+  await render();
+  expect(mocks.view.show).not.toHaveBeenCalled();
+  expect(mocks.view.setFocus).not.toHaveBeenCalled();
+  await hostVisibility(true);
+  expect(mocks.view.show).toHaveBeenCalledOnce();
+  expect(mocks.view.setFocus).not.toHaveBeenCalled();
+});
 
 it('keeps creation, navigation, resize and activation hidden while any floating panel overlaps', async () => {
   const first = overlay();

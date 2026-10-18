@@ -354,6 +354,11 @@ async fn complete_launch(
 ) -> Result<BrowserControlLaunchResponse, String> {
     match result {
         LaunchResult::UserProfileReady { endpoint } => {
+            // Attaching to a guarded real profile makes the browser show its own
+            // approval request, and that prompt is only answerable from a
+            // visible window. Browser control itself is background work, so
+            // this is one of the few flows that must surface the browser.
+            BrowserLauncher::activate_browser(kind);
             let connection = CdpClient::connect_user_profile_browser(
                 logical_port,
                 endpoint.port,

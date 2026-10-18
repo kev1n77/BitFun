@@ -178,6 +178,14 @@ impl Default for AppearanceConfig {
 }
 
 impl AppearanceConfig {
+    pub(crate) fn miniapp_mode() -> &'static str {
+        if Self::load_startup_bootstrap_config().appearance.is_light {
+            "light"
+        } else {
+            "dark"
+        }
+    }
+
     pub fn get_builtin_appearance(appearance_id: &str) -> Option<Self> {
         Self::startup_appearance_bootstrap_manifest()
             .appearances
@@ -655,8 +663,9 @@ pub fn create_main_window(
     // target and disables every HTML5 drag/drop interaction in the page. Keep
     // the browser handler there. The frontend keeps dropped File wrappers alive
     // briefly while the Desktop host resolves their original paths through
-    // WebView2, without copying file contents. WKWebView/WebKitGTK do not have
-    // that conflict, so their native handler remains enabled and supplies paths.
+    // WebView2, without copying file contents. The reviewed Wry macOS adapter
+    // delegates non-file drags to WebKit; its native file handler and WebKitGTK's
+    // remain enabled to supply original paths. See third_party/wry/OPENBITFUN-PATCH.md.
     #[cfg(target_os = "windows")]
     {
         builder = builder.disable_drag_drop_handler();

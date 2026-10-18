@@ -10,6 +10,7 @@ import {
   ArrowRight,
   ArrowUp,
   ArrowUpRight,
+  BatteryFull,
   Bell,
   Blocks,
   BookOpen,
@@ -92,6 +93,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { classNames } from "../../internal/classNames";
+import { Galaxy } from './galaxy';
 import { LayersPlus } from './layersPlus';
 import gitUrl from "./assets/git.svg";
 import thinkingUrl from "./assets/thinking.svg";
@@ -118,6 +120,7 @@ export const iconNames = [
   "arrow-right",
   "arrow-up",
   "arrow-up-right",
+  "battery-full",
   "bell",
   "book-open",
   "book-search",
@@ -151,6 +154,7 @@ export const iconNames = [
   "folder",
   "folder-open",
   "folder-search",
+  "galaxy",
   "gear",
   "git",
   "git-pull-request",
@@ -246,6 +250,7 @@ const lineGlyphs = {
   "arrow-right": ArrowRight,
   "arrow-up": ArrowUp,
   "arrow-up-right": ArrowUpRight,
+  "battery-full": BatteryFull,
   "bell": Bell,
   "book-open": BookOpen,
   "book-search": BookSearch,
@@ -283,6 +288,7 @@ const lineGlyphs = {
   "folder": Folder,
   "folder-open": FolderOpen,
   "folder-search": FolderSearch,
+  "galaxy": Galaxy,
   "gear": Settings,
   "hourglass": Hourglass,
   "image": Image,

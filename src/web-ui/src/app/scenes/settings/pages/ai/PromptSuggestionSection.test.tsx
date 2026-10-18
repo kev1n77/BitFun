@@ -3,6 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import PromptSuggestionSection from './PromptSuggestionSection';
+import { promptSuggestionKey, usePromptSuggestionStore } from '@/flow_chat/store/promptSuggestionStore';
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), save: vi.fn(), error: vi.fn(), success: vi.fn() }));
 vi.mock('@/infrastructure/config/services/AIExperienceConfigService', () => ({
@@ -25,11 +26,16 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.get.mockResolvedValue({ enable_prompt_suggestion: true });
   mocks.save.mockResolvedValue(undefined);
+  usePromptSuggestionStore.setState({ suggestions: {}, enabledBySurface: {} });
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
 });
-afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
+afterEach(async () => {
+  await act(async () => root.unmount());
+  container.remove();
+  usePromptSuggestionStore.setState({ suggestions: {}, enabledBySurface: {} });
+});
 
 describe('Prompt suggestion settings', () => {
   it('keeps older hosts without the optional setting explicitly unsupported', async () => {
@@ -41,15 +47,21 @@ describe('Prompt suggestion settings', () => {
   });
 
   it('saves only the prompt suggestion field and keeps the previous value on failure', async () => {
+    const candidate = { suggestion: 'Run the tests', sourceTurnId: 't1' };
+    usePromptSuggestionStore.getState().setSuggestion('session', candidate);
     await act(async () => root.render(<PromptSuggestionSection />));
     expect(toggle().checked).toBe(true);
     mocks.save.mockRejectedValueOnce(new Error('Host unavailable'));
     await act(async () => toggle().click());
     expect(toggle().checked).toBe(true);
     expect(mocks.error).toHaveBeenCalledWith('promptSuggestion.messages.saveFailed');
+    expect(usePromptSuggestionStore.getState().suggestions[promptSuggestionKey('session')]).toEqual(candidate);
     await act(async () => toggle().click());
     expect(mocks.save).toHaveBeenLastCalledWith({ enable_prompt_suggestion: false });
     expect(toggle().checked).toBe(false);
+    expect(usePromptSuggestionStore.getState().suggestions).toEqual({});
+    usePromptSuggestionStore.getState().setSuggestion('session', candidate);
+    expect(usePromptSuggestionStore.getState().suggestions).toEqual({});
     expect(mocks.success).toHaveBeenCalledWith('promptSuggestion.messages.saveSuccess');
   });
 

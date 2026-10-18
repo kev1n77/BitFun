@@ -18,12 +18,13 @@ use async_trait::async_trait;
 use log::debug;
 use openbitfun_core::agentic::tools::computer_use_host::{
     ActionRecord, AppInfo, AppSelector, AppShortcutsSnapshot, AppStateSnapshot, AppWaitPredicate,
-    ComputerScreenshot, ComputerUseDisplayInfo, ComputerUseHost, ComputerUseInteractionState,
-    ComputerUseLastMutationKind, ComputerUsePermissionSnapshot, ComputerUseScreenshotParams,
-    ComputerUseScreenshotRefinement, ComputerUseSessionSnapshot, InteractiveActionResult,
-    InteractiveClickParams, InteractiveScrollParams, InteractiveTypeTextParams, InteractiveView,
-    InteractiveViewOpts, LoopDetectionResult, UiElementLocateQuery, UiElementLocateResult,
-    VisualActionResult, VisualClickParams, VisualMarkView, VisualMarkViewOpts,
+    AppWindowInfo, ComputerScreenshot, ComputerUseDisplayInfo, ComputerUseHost,
+    ComputerUseInteractionState, ComputerUseLastMutationKind, ComputerUsePermissionSnapshot,
+    ComputerUseScreenshotParams, ComputerUseScreenshotRefinement, ComputerUseSessionSnapshot,
+    InteractiveActionResult, InteractiveClickParams, InteractiveScrollParams,
+    InteractiveTypeTextParams, InteractiveView, InteractiveViewOpts, LoopDetectionResult,
+    UiElementLocateQuery, UiElementLocateResult, VisualActionResult, VisualClickParams,
+    VisualMarkView, VisualMarkViewOpts,
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use openbitfun_core::agentic::tools::computer_use_host::{
@@ -928,6 +929,8 @@ impl ComputerUseHost for DesktopComputerUseHost {
     }
 
     async fn prepare_control_target(&self, mut app: AppSelector) -> OpenBitFunResult<()> {
+        app.validate_window_target()
+            .map_err(OpenBitFunError::tool)?;
         if app.is_empty() {
             if let Some(pid) = crate::computer_use::control_session::snapshot()
                 .target
@@ -942,8 +945,13 @@ impl ComputerUseHost for DesktopComputerUseHost {
         #[cfg(target_os = "macos")]
         {
             let pid = resolve_pid_macos(self, &app).await?;
+            let window_id = app.window_id.map(u32::try_from).transpose().map_err(|_| {
+                OpenBitFunError::tool(
+                    "[INVALID_PARAMS] window_id exceeds the macOS window ID range",
+                )
+            })?;
             crate::computer_use::control_session::spawn_blocking(move || {
-                crate::computer_use::macos_capture::ensure_capture(pid, None)
+                crate::computer_use::macos_capture::ensure_capture(pid, window_id)
             })
             .await
             .map_err(|e| OpenBitFunError::tool(e.to_string()))?
@@ -966,6 +974,9 @@ impl ComputerUseHost for DesktopComputerUseHost {
         }
         #[cfg(target_os = "linux")]
         {
+            if app.window_id.is_some() {
+                return Err(OpenBitFunError::tool("[WINDOW_TARGET_UNSUPPORTED] This host uses AT-SPI app selectors and portal-selected capture, not native window IDs"));
+            }
             if !app.is_empty() {
                 crate::computer_use::linux_control_ax::bind_app_selector(&app).await?;
             }
@@ -1655,6 +1666,44 @@ impl ComputerUseHost for DesktopComputerUseHost {
         }
     }
 
+    async fn list_windows(&self, app: Option<AppSelector>) -> OpenBitFunResult<Vec<AppWindowInfo>> {
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            let filter = if let Some(app) = app.filter(|app| !app.is_empty()) {
+                app.validate_window_target()
+                    .map_err(OpenBitFunError::tool)?;
+                Some((resolve_pid(self, &app).await?, app.window_id))
+            } else {
+                None
+            };
+            let windows = tokio::task::spawn_blocking(|| {
+                #[cfg(target_os = "macos")]
+                {
+                    crate::computer_use::macos_list_apps::list_windows()
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    Ok::<_, OpenBitFunError>(crate::computer_use::windows_list_apps::list_windows())
+                }
+            })
+            .await
+            .map_err(|e| OpenBitFunError::tool(e.to_string()))??;
+            Ok(windows
+                .into_iter()
+                .filter(|window| {
+                    filter.is_none_or(|(pid, id)| {
+                        window.pid == pid && id.is_none_or(|id| window.window_id == id)
+                    })
+                })
+                .collect())
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            let _ = app;
+            Err(OpenBitFunError::tool("[WINDOW_DISCOVERY_UNSUPPORTED] This host exposes AT-SPI applications and portal-selected surfaces; use list_apps and get_app_state"))
+        }
+    }
+
     async fn list_apps(&self, include_hidden: bool) -> OpenBitFunResult<Vec<AppInfo>> {
         #[cfg(target_os = "macos")]
         {
@@ -1798,7 +1847,7 @@ pub(crate) const LINUX_LEGACY_AX_UNAVAILABLE: &str = "[CONTROL_CAPABILITY_UNSUPP
 
 #[cfg(target_os = "windows")]
 fn app_selector_is_unspecified(app: &AppSelector) -> bool {
-    app.pid.is_none() && app.name.is_none() && app.bundle_id.is_none()
+    app.is_empty()
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]

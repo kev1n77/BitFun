@@ -94,6 +94,17 @@ describe('SessionAPI paged metadata reads', () => {
     });
   });
 
+  it.each(['local', 'peer'])('forwards a read-only catalog query on the %s surface and preserves the host acknowledgement', async surface => {
+    activateSurface(surface);
+    const query = { workspaceId: 'project', ordering: 'updated' as const, source: 'codex', sortTimestamps: { running: 123 } };
+    const response = { sessions: [], totalTopLevelCount: 42, loadedTopLevelCount: 0, hasMore: false, catalogQuery: query };
+    invokeMock.mockResolvedValueOnce(response);
+    await expect(sessionAPI.listSessionsPage({ workspaceId: 'project', limit: 5, query })).resolves.toBe(response);
+    expect(invokeMock).toHaveBeenCalledExactlyOnceWith('list_persisted_sessions_page', {
+      request: { workspace_id: 'project', limit: 5, query },
+    });
+  });
+
   it('loads the scoped hidden Session lineage without listing all internal Sessions', async () => {
     const snapshot = { rootSessionId: 'root', sessions: [] };
     invokeMock.mockResolvedValueOnce(snapshot);

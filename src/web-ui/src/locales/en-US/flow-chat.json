@@ -1,4 +1,20 @@
 {
+  "externalHistory": {
+    "removed": "The source session was removed from OpenBitFun. This branch keeps its own history.",
+    "restoreSource": "Add source again",
+    "sourceMissing": "The source session is unavailable. This branch keeps its own history.",
+    "openFailed": "Could not open the source session. You can keep using this branch and retry later.",
+    "restoreFailed": "Could not add the source session again. This branch is unchanged; retry later.",
+    "unavailableWithoutCache": "The source is unavailable and no cached history is available. Restore the source and reopen this session.",
+    "unsupportedSurface": "Following source sessions is unavailable in Peer mode. Open the source on its host, or continue an existing OpenBitFun branch.",
+    "forkBeforeEdit": "Fork this source session before editing or rolling back its history.",
+    "followHint": "From {{source}} · Sending starts a new OpenBitFun branch",
+    "branchHint": "Continued from {{source}}",
+    "openSource": "Open source session",
+    "unavailable": "Source unavailable; showing the last cached view",
+    "incomplete": "The source conversation is unfinished; showing the available history",
+    "openBeforeContinue": "Open the source session and wait for its history to load before continuing."
+  },
   "subagentIdentity": {
     "names": {
       "bouncyBean": "Bouncy Bean",
@@ -524,14 +540,14 @@
     }
   },
   "session": {
-    "new": "New Session",
+    "new": "$t(shared:sessions.new)",
     "newCode": "New Code session",
     "newCowork": "New Cowork session",
-    "newClaw": "New Claw session",
+    "newClaw": "New assistant session",
     "newWithIndex": "New Session {{count}}",
     "newCodeWithIndex": "New Code Session {{count}}",
     "newCoworkWithIndex": "New Cowork Session {{count}}",
-    "newClawWithIndex": "New Claw Session {{count}}",
+    "newClawWithIndex": "New Assistant Session {{count}}",
     "title": "Session",
     "chatWithAgent": "Chat with {{name}}",
     "rename": "Rename Session",
@@ -747,7 +763,7 @@
     "streaming": "Streaming"
   },
   "toolbar": {
-    "newSession": "New Session",
+    "newSession": "$t(shared:sessions.new)",
     "history": "History",
     "export": "Export Chat",
     "clear": "Clear Chat",
@@ -831,21 +847,21 @@
       "fixedTooltip": "This session uses {{name}} and is now fixed.",
       "compatibilityShort": "Legacy",
       "comingSoon": "In development",
-      "comingSoonNotice": "The {{name}} Harness execution framework is in development.",
-      "legacySessionNotice": "This legacy session keeps its original Agent execution mode. Create a new session to use the Agent Harness execution framework.",
-      "sessionStartedNotice": "Harness and main Agent are set before the first turn starts. Create a new session to use another selection.",
+      "comingSoonNotice": "The {{name}} execution mode is in development.",
+      "legacySessionNotice": "This legacy session keeps its original agent. Create a new session to choose a new execution mode.",
+      "sessionStartedNotice": "The execution mode or main agent is set before the first turn starts. Create a new session to use another selection.",
       "newSessionConfirmation": {
         "title": "Create a new session with {{name}}?",
         "message": "The current session will remain unchanged. The new session will use {{name}}.",
         "confirm": "Create new session"
       },
-      "unsupportedProfile": "Unsupported Harness ({{id}})",
-      "unsupportedProfileNotice": "This session uses {{id}}, which this version cannot run. Select a supported Harness explicitly.",
-      "profileChangeBusy": "Wait for the current turn to finish before changing Harness.",
-      "profileChangeOutcomeUnknown": "OpenBitFun cannot confirm whether the Harness changed. Refresh the session before trying again.",
-      "profileUnavailable": "This Harness is not supported by the current OpenBitFun Host.",
-      "profileChangeFailed": "Failed to change Harness. Try again.",
-      "rememberFailed": "The Harness changed, but this selection could not be remembered. New sessions may continue using the previous default.",
+      "unsupportedProfile": "Unsupported execution mode ({{id}})",
+      "unsupportedProfileNotice": "This session uses {{id}}, which this version cannot run. Select a supported execution mode.",
+      "profileChangeBusy": "Wait for the current turn to finish before changing execution modes.",
+      "profileChangeOutcomeUnknown": "OpenBitFun cannot confirm whether the execution mode changed. Refresh the session before trying again.",
+      "profileUnavailable": "This execution mode is not supported by the current OpenBitFun Host.",
+      "profileChangeFailed": "Failed to change execution mode. Try again.",
+      "rememberFailed": "The execution mode changed, but this selection could not be remembered. New sessions may continue using the previous default.",
       "otherAgentsTitle": "Agents",
       "otherAgentsEmpty": "No main Agents are available",
       "unavailable": "Unavailable",
@@ -867,7 +883,7 @@
           "name": "$t(shared:agents.Creative)"
         }
       },
-      "activateStandard": "Switch to Standard Harness"
+      "activateStandard": "Switch to Standard execution mode"
     },
     "agents": {
       "available": "Available",
@@ -1716,7 +1732,7 @@
       "averageRate": "Average output",
       "speedLevel": "Speed level",
       "rateValue": "{{value}} t/s",
-      "rateBasis": "Output tokens divided by total turn time, including tools and waiting; speed levels change at 15, 40 and 80 tokens/s",
+      "rateBasis": "Output tokens divided by the time from the first token to end of stream, excluding tool execution, queueing and waiting; speed levels change at 15, 40 and 80 tokens/s",
       "slow": "Slow",
       "normal": "Normal",
       "fast": "Fast",
@@ -2200,6 +2216,7 @@
       "awaitingTimeoutConfirmation": "Waiting for timeout confirmation",
       "cancelCountdown": "Cancel countdown",
       "timeoutSettingsHint": "Click to cancel the countdown. Change the timeout in Settings → Execution & Permissions → Tool execution → Question timeout.",
+      "unlimitedWait": "No time limit",
       "questionsCount": "{{count}} questions",
       "answerAllBeforeSubmit": "Please answer all questions before submitting",
       "submit": "Submit",
@@ -2509,7 +2526,7 @@
       "resultCount": "{{count}} sessions",
       "title": "Session",
       "currentWorkspace": "Current workspace",
-      "defaultSessionName": "New Session",
+      "defaultSessionName": "$t(shared:sessions.new)",
       "unknownSession": "Unknown session",
       "preparingCreate": "Preparing to create session {{session}}",
       "creatingSession": "Creating session {{session}}",
@@ -3309,6 +3326,22 @@
     "projectCowork": "working in the project."
   },
   "modelSelector": {
+    "home": {
+      "context": "Context",
+      "effort": "Effort",
+      "unknownContext": "Unknown",
+      "contextReadOnly": "The context window is managed by the execution target",
+      "editContext": "Edit context window",
+      "contextTokens": "Context window (tokens)",
+      "saveContext": "Save context window",
+      "contextInvalid": "Enter a whole number between {{min}} and {{max}} tokens",
+      "contextSaveFailed": "Could not save. Please try again.",
+      "availablePoolModels": "Available pool models",
+      "mode": "Mode",
+      "currentModel": "Current model",
+      "poolConnections": "Battery connections",
+      "modelPool": "Model pool"
+    },
     "modes": {
       "selection": "Select mode",
       "manual": "Manual selection",
@@ -3323,6 +3356,12 @@
     "modelExplanation": "Model explanation",
     "modelSettings": "Model settings",
     "modelSelection": "Select Model",
+    "searchModels": "Search models",
+    "collapseSearch": "Collapse search",
+    "searchPlaceholder": "Search models or providers",
+    "noSearchResults": "No matching models or providers",
+    "filterProvider": "Filter models by provider",
+    "allProviders": "All providers",
     "primaryModel": "Primary Model",
     "primaryModelDesc": "Uses the configured primary model",
     "fastModel": "Fast Model",

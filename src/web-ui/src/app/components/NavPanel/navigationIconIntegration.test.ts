@@ -3,39 +3,40 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 describe('navigation icon integration', () => {
-  it('uses the standard extension icon in the expandable entry', () => {
+  it('uses the standard cable icon in the ecosystem menu entry', () => {
     const source = readFileSync(
-      fileURLToPath(new URL('./MainNav.tsx', import.meta.url)),
+      fileURLToPath(new URL('./components/PersistentFooterActions.tsx', import.meta.url)),
       'utf8',
     );
-    const entryStart = source.indexOf('data-testid="agent-skill-entry"');
-    const entryEnd = source.indexOf('</NavigationPanelItem>', entryStart);
+    const entryStart = source.lastIndexOf('<MenuItem', source.indexOf('data-testid="ecosystem-compatibility-tab"'));
+    const entryEnd = source.indexOf('</MenuItem>', entryStart);
     const entryMarkup = source.slice(entryStart, entryEnd);
 
     expect(entryStart).toBeGreaterThanOrEqual(0);
     expect(entryEnd).toBeGreaterThan(entryStart);
-    expect(entryMarkup).toContain(
-      'className="openbitfun-nav-panel__top-action-icon-slot openbitfun-nav-panel__top-action-expand-icons"',
-    );
-    expect(entryMarkup).toContain('name="extension"');
+    expect(entryMarkup).toContain('glyph={Cable}');
+    expect(entryMarkup).not.toContain('chevron-down');
     expect(entryMarkup).toContain('size="sm"');
   });
 
-  it('keeps extension subnavigation icons at one optical weight', () => {
+  it('uses each MiniApp icon and the standard Skill discovery icon in the overview', () => {
     const source = readFileSync(
-      fileURLToPath(new URL('./MainNav.tsx', import.meta.url)),
+      fileURLToPath(new URL('../../scenes/personal-overview/PersonalOverviewScene.tsx', import.meta.url)),
       'utf8',
     );
-    const sublistStart = source.indexOf('data-testid="agent-skill-tabs"');
-    const sublistEnd = source.indexOf('</div>', sublistStart);
-    const sublistMarkup = source.slice(sublistStart, sublistEnd);
-
-    expect(sublistStart).toBeGreaterThanOrEqual(0);
-    expect(sublistEnd).toBeGreaterThan(sublistStart);
-    expect(sublistMarkup).toContain('<Icon glyph={Users} size="sm" />');
-    expect(sublistMarkup).toContain('<Icon name="book-open" size="sm" />');
-    expect(sublistMarkup).toContain('<Icon glyph={Network} size="sm" />');
-    expect(sublistMarkup).not.toContain('strokeWidth');
+    const miniAppLogosSource = readFileSync(
+      fileURLToPath(new URL('../../scenes/personal-overview/OverviewMiniAppLogos.tsx', import.meta.url)),
+      'utf8',
+    );
+    expect(source).toContain('<OverviewMiniAppLogos apps={miniAppItems}');
+    expect(miniAppLogosSource).toContain("icon={renderMiniAppIcon(app.icon || 'box', 'lg')}");
+    const discoveryEnd = source.indexOf('data-testid="personal-overview-discover-skills"');
+    const discoveryStart = source.lastIndexOf('<OverviewSplitCardAction', discoveryEnd);
+    expect(discoveryStart).toBeGreaterThanOrEqual(0);
+    expect(discoveryEnd).toBeGreaterThan(discoveryStart);
+    expect(source.slice(discoveryStart, discoveryEnd)).toContain('<Icon name="search" size="lg" />');
+    expect(source).not.toContain('strokeWidth');
+    expect(miniAppLogosSource).not.toContain('strokeWidth');
   });
 
   it('uses the reference clock icon for Task Board', () => {
@@ -108,19 +109,21 @@ describe('navigation icon integration', () => {
     }
   });
 
-  it('uses stable standard icons for every session-group type', () => {
+  it('uses assistant avatars and standard local/remote project icons', () => {
     const source = readFileSync(
       fileURLToPath(new URL('./sections/workspaces/WorkspaceItem.tsx', import.meta.url)),
       'utf8',
     );
-    const assistantStart = source.indexOf('openbitfun-nav-panel__assistant-item-group-icon');
+    const assistantStart = source.indexOf('openbitfun-nav-panel__assistant-item-avatar');
     const assistantEnd = source.indexOf('</span>', assistantStart);
     const assistantMarkup = source.slice(assistantStart, assistantEnd);
     const workspaceStart = source.indexOf('openbitfun-nav-panel__workspace-item-icon-default');
     const workspaceEnd = source.indexOf('</span>', workspaceStart);
     const workspaceMarkup = source.slice(workspaceStart, workspaceEnd);
 
-    expect(assistantMarkup).toContain('<Icon name="user" size="sm" />');
+    expect(assistantStart).toBeGreaterThanOrEqual(0);
+    expect(assistantEnd).toBeGreaterThan(assistantStart);
+    expect(assistantMarkup).toContain('<AssistantAvatar size={22} name={workspaceDisplayName} />');
     expect(assistantMarkup).not.toContain('SessionGroupAssistant');
 
     expect(workspaceMarkup).toContain('workspaceIsRemote');

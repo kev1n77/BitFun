@@ -9,6 +9,8 @@ export interface PromptSuggestion {
 
 interface PromptSuggestionState {
   suggestions: Record<string, PromptSuggestion>;
+  enabledBySurface: Record<DeviceSurfaceId, boolean>;
+  setEnabled: (enabled: boolean, surfaceId: DeviceSurfaceId) => void;
   setSuggestion: (sessionId: string, suggestion: PromptSuggestion, surfaceId?: DeviceSurfaceId) => void;
   clearSuggestion: (sessionId: string, surfaceId?: DeviceSurfaceId) => void;
   removeSurfaceSuggestions: (surfaceId: DeviceSurfaceId) => void;
@@ -20,19 +22,31 @@ export function promptSuggestionKey(sessionId: string, surfaceId = getActiveSurf
 
 export const usePromptSuggestionStore = create<PromptSuggestionState>((set) => ({
   suggestions: {},
-  setSuggestion: (sessionId, suggestion, surfaceId) => set((state) => ({
-    suggestions: { ...state.suggestions, [promptSuggestionKey(sessionId, surfaceId)]: suggestion },
+  enabledBySurface: {},
+  setEnabled: (enabled, surfaceId) => set(state => ({
+    enabledBySurface: { ...state.enabledBySurface, [surfaceId]: enabled },
+    suggestions: enabled ? state.suggestions : Object.fromEntries(Object.entries(state.suggestions)
+      .filter(([key]) => JSON.parse(key)[0] !== surfaceId)),
   })),
+  setSuggestion: (sessionId, suggestion, surfaceId = getActiveSurfaceId()) => set((state) => (
+    state.enabledBySurface[surfaceId] === false ? state : {
+      suggestions: { ...state.suggestions, [promptSuggestionKey(sessionId, surfaceId)]: suggestion },
+    }
+  )),
   clearSuggestion: (sessionId, surfaceId) => set((state) => {
     const key = promptSuggestionKey(sessionId, surfaceId);
     if (!(key in state.suggestions)) return state;
     const { [key]: _removed, ...suggestions } = state.suggestions;
     return { suggestions };
   }),
-  removeSurfaceSuggestions: (surfaceId) => set(state => ({
-    suggestions: Object.fromEntries(Object.entries(state.suggestions)
-      .filter(([key]) => JSON.parse(key)[0] !== surfaceId)),
-  })),
+  removeSurfaceSuggestions: (surfaceId) => set(state => {
+    const { [surfaceId]: _removed, ...enabledBySurface } = state.enabledBySurface;
+    return {
+      enabledBySurface,
+      suggestions: Object.fromEntries(Object.entries(state.suggestions)
+        .filter(([key]) => JSON.parse(key)[0] !== surfaceId)),
+    };
+  }),
 }));
 
 export function clearPromptSuggestion(sessionId: string | null | undefined): void {
@@ -41,6 +55,7 @@ export function clearPromptSuggestion(sessionId: string | null | undefined): voi
 }
 
 export interface PromptSuggestionComposerState {
+  enabled: boolean;
   editorEmpty: boolean;
   value: string;
   canCompose: boolean;
@@ -54,7 +69,7 @@ export function visiblePromptSuggestion(
   stored: PromptSuggestion | null | undefined,
   composer: PromptSuggestionComposerState,
 ): string | null {
-  if (!stored || !composer.editorEmpty || composer.value || !composer.canCompose || composer.processing) {
+  if (!composer.enabled || !stored || !composer.editorEmpty || composer.value || !composer.canCompose || composer.processing) {
     return null;
   }
   if (stored.sourceTurnId !== composer.latestTurnId || composer.latestTurnStatus !== 'completed') return null;

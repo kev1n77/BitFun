@@ -43,8 +43,14 @@
       inline-size: 100%;
       block-size: 100%;
       // Fixed neutral feedback over captured content, independent of accent color.
-      fill: color-mix(in srgb, var(--openbitfun-color-content-on-dark) 65%, var(--openbitfun-color-content-on-light));
-      filter: drop-shadow(0 2px 3px color-mix(in srgb, var(--openbitfun-color-content-on-light) 45%, transparent));
+      fill: color-mix(in srgb, var(--openbitfun-color-content-on-dark) 25%, var(--openbitfun-color-content-on-light));
+      stroke: var(--openbitfun-color-content-on-dark);
+      stroke-width: 3px;
+      stroke-linejoin: round;
+      // Centered contour shadows: a dark contact edge with a wider soft halo.
+      filter:
+        drop-shadow(0 0 1px color-mix(in srgb, var(--openbitfun-color-content-on-light) 80%, transparent))
+        drop-shadow(0 0 4px color-mix(in srgb, var(--openbitfun-color-content-on-light) 50%, transparent));
     }
 
   }

@@ -371,6 +371,7 @@ export const ModelRoundItem = React.memo<ModelRoundItemProps>(
     turnStartedAt,
     turnEndedAt,
     turnDurationMs,
+    turnOutputDurationMs,
     turnTokenUsage,
     canvasArtifactItems = [],
     expandedThinkingItemIds = [],
@@ -392,7 +393,7 @@ export const ModelRoundItem = React.memo<ModelRoundItemProps>(
       open: isCopyMenuOpen,
       anchorRef: copyButtonRef,
       popoverRef: copyMenuRef,
-      preferredPlacement: 'top',
+      preferredPlacement: 'bottom',
       alignment: 'end',
       gap: 4,
     });
@@ -551,7 +552,9 @@ export const ModelRoundItem = React.memo<ModelRoundItemProps>(
     );
 
     const completedAt = turnEndedAt ?? round.endTime;
-    const usageDurationMs = turnDurationMs ??
+    // Throughput must divide by streaming time, not turn wall time: the latter
+    // also counts tool execution and waiting and would report a deflated rate.
+    const usageDurationMs = turnOutputDurationMs ?? turnDurationMs ??
       (typeof turnStartedAt === 'number' && typeof completedAt === 'number'
         ? Math.max(0, completedAt - turnStartedAt) : undefined);
     const effectiveDurationMs = turnDurationMs ??
@@ -806,7 +809,7 @@ export const ModelRoundItem = React.memo<ModelRoundItemProps>(
                         ref={copyMenuRef}
                         className="model-round-item__copy-menu"
                         data-testid="model-round-copy-menu"
-                        data-openbitfun-placement={copyMenuLayout?.placement ?? 'top'}
+                        data-openbitfun-placement={copyMenuLayout?.placement ?? 'bottom'}
                         style={{
                           top: `${copyMenuLayout?.top ?? 0}px`,
                           left: `${copyMenuLayout?.left ?? 0}px`,

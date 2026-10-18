@@ -435,16 +435,35 @@ fn flash_click_highlight_cg(gx: f64, gy: f64) {
 impl DesktopComputerUseHost {
     #[cfg(target_os = "windows")]
     pub(super) async fn windows_target(&self, app: &AppSelector) -> OpenBitFunResult<(i32, isize)> {
+        app.validate_window_target()
+            .map_err(OpenBitFunError::tool)?;
         let pid = super::resolve_pid(self, app).await?;
         // A sharing indicator or newly opened utility window must not replace
         // the window already owned by the control session.
         let prefix = format!("pid:{pid}/window:");
-        if let Some(window) = crate::computer_use::control_session::snapshot()
+        let control = crate::computer_use::control_session::snapshot();
+        let bound = control
             .target
             .as_deref()
             .and_then(|target| target.strip_prefix(&prefix))
-            .and_then(|window| window.parse::<isize>().ok())
+            .and_then(|window| window.parse::<isize>().ok());
+        let requested = app
+            .window_id
+            .map(isize::try_from)
+            .transpose()
+            .map_err(|_| {
+                OpenBitFunError::tool(
+                    "[INVALID_PARAMS] window_id exceeds the native window handle range",
+                )
+            })?;
+        if control.sharing.is_some()
+            && (bound.is_none() || requested.is_some_and(|id| Some(id) != bound))
         {
+            return Err(OpenBitFunError::tool(
+                "[SHARED_TARGET_ONLY] Window was not shared by the user",
+            ));
+        }
+        if let Some(window) = requested.or(bound) {
             use windows::Win32::Foundation::HWND;
             use windows::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow};
             let hwnd = HWND(window as *mut std::ffi::c_void);
@@ -453,7 +472,7 @@ impl DesktopComputerUseHost {
                 GetWindowThreadProcessId(hwnd, Some(&mut actual_pid));
             }
             if !unsafe { IsWindow(Some(hwnd)) }.as_bool() || actual_pid != pid as u32 {
-                return Err(OpenBitFunError::tool("[TARGET_WINDOW_UNAVAILABLE] The bound window closed; select a new target explicitly"));
+                return Err(OpenBitFunError::tool("[TARGET_WINDOW_UNAVAILABLE] The requested window no longer belongs to this process; refresh list_windows and select the intended window"));
             }
             return Ok((pid, window));
         }

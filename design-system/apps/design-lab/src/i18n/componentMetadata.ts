@@ -25,6 +25,7 @@ const descriptionKeys: Readonly<Record<string, MessageKey>> = {
   MobileTag: "component.MobileTag.description",
   MobileToolbar: "component.MobileToolbar.description",
   SplitView: "component.SplitView.description",
+  SetupWizard: "component.SetupWizard.description",
   ListModelsToolCard: "component.ListModelsToolCard.description",
   ControlHubToolCard: "component.ControlHubToolCard.description",
   ThinkingBlock: "component.ThinkingBlock.description",

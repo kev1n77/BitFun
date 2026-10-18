@@ -1,11 +1,11 @@
-import { OverflowText, Button, Icon, Input, ScrollArea, Switch, Textarea, Tooltip, type IconSource } from '@openbitfun/ui';
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Button, DialogBody, DialogClose, Icon, Input, PageHeader, ScrollArea, SetupWizard, Switch, Tooltip, type IconSource } from '@openbitfun/ui';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   FileText,
   FolderTree,
-  Minus,
 } from 'lucide-react';
-import { useTranslation } from 'react-i18next';
+import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
+import { getActiveSurfaceScope } from '@/infrastructure/peer-device/deviceSurface';
 import {
   CustomAgentAPI,
   type CustomAgentKind,
@@ -26,6 +26,8 @@ import { ToolGroupPicker, ToolGroupSummary } from './ToolGroupPicker';
 import { useUserToolGroups } from './useUserToolGroups';
 import '../AgentsView.scss';
 import './CreateAgentPage.scss';
+
+const MEditor = React.lazy(() => import('@/tools/editor/meditor/components/MEditor').then((module) => ({ default: module.MEditor })));
 
 const ID_REGEX = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 const DEFAULT_MODE_POLICY: UserContextSection[] = [
@@ -68,8 +70,6 @@ const CONTEXT_SECTION_ICONS: Record<UserContextSection, IconSource> = {
   workspace_instructions: { glyph: FileText },
   project_layout: { glyph: FolderTree },
 };
-const TOOL_SUMMARY_MIN_HEIGHT = 96;
-const TOOL_SUMMARY_MAX_HEIGHT = 360;
 
 function defaultReadonlyForKind(kind: CustomAgentKind): boolean {
   return kind === 'subagent';
@@ -95,18 +95,66 @@ function defaultSelectedTools(
   );
 }
 
-const CreateAgentPage: React.FC = () => {
-  const { t } = useTranslation('scenes/agents');
+interface CreateAgentPageProps {
+  standalone?: boolean;
+  titleId?: string;
+  onCancel?: () => void;
+  onCreated?: () => void;
+}
+
+const CreateAgentPage: React.FC<CreateAgentPageProps> = ({ standalone = false, titleId, onCancel, onCreated }) => {
+  const { t, formatNumber } = useI18n('scenes/agents');
   const notification = useNotification();
   const { hasWorkspace, workspace } = useCurrentWorkspace();
   const workspaceId = workspace?.id;
   const { openHome, agentEditorMode, editingAgentId } = useAgentsStore();
+  const closeEditor = onCancel ?? openHome;
+  const formInstanceId = React.useId();
+  const formId = `${formInstanceId}-custom-agent-form`;
+  const fieldId = (field: string) => `${formInstanceId}-custom-agent-${field}`;
+  const formRef = useRef<HTMLFormElement>(null);
+  const promptControlRef = useRef<HTMLDivElement>(null);
+  const [step, setStep] = useState(0);
+  const steps = [
+    {
+      id: 'basics',
+      label: t('agentsOverview.form.basicInformation'),
+      title: t('agentsOverview.form.wizard.basicsTitle'),
+      description: t('agentsOverview.form.wizard.basicsDescription'),
+    },
+    {
+      id: 'prompt',
+      label: t('agentsOverview.form.prompt'),
+      title: t('agentsOverview.form.wizard.promptTitle'),
+      description: t('agentsOverview.form.wizard.promptDescription'),
+    },
+    {
+      id: 'tools',
+      label: t('agentsOverview.form.tools'),
+      title: t('agentsOverview.form.wizard.toolsTitle'),
+      description: t('agentsOverview.form.wizard.toolsDescription'),
+    },
+  ];
+
+  useEffect(() => {
+    if (!standalone) return;
+    // The Markdown editor owns focus once its lazy-loaded editing surface mounts.
+    if (step === 1) return;
+    const firstControl = formRef.current?.querySelector<HTMLElement>('input:not(:disabled), textarea')
+      ?? formRef.current?.querySelector<HTMLElement>('button:not(:disabled)');
+    firstControl?.focus();
+  }, [standalone, step]);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const {
     groups: userToolGroups,
     saveGroups: saveUserToolGroups,
   } = useUserToolGroups();
 
-  const isEdit = agentEditorMode === 'edit' && Boolean(editingAgentId);
+  const isEdit = !standalone && agentEditorMode === 'edit' && Boolean(editingAgentId);
 
   const [kind, setKind] = useState<CustomAgentKind>('mode');
   const [level, setLevel] = useState<CustomAgentLevel>('user');
@@ -114,28 +162,33 @@ const CreateAgentPage: React.FC = () => {
   const [agentIdError, setAgentIdError] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [descriptionError, setDescriptionError] = useState(false);
   const [prompt, setPrompt] = useState('');
+  const [promptError, setPromptError] = useState(false);
   const [readonly, setReadonly] = useState(defaultReadonlyForKind('mode'));
   const [review, setReview] = useState(false);
   const [toolInfos, setToolInfos] = useState<SubagentEditorToolInfo[]>([]);
+  const [toolsLoading, setToolsLoading] = useState(true);
+  const [toolsLoadError, setToolsLoadError] = useState(false);
+  const [toolsAttempt, setToolsAttempt] = useState(0);
   const [selectedTools, setSelectedTools] = useState<Set<string>>(new Set());
   const [toolsEditing, setToolsEditing] = useState(false);
   const [pendingTools, setPendingTools] = useState<Set<string> | null>(null);
-  const [toolSummaryHeight, setToolSummaryHeight] = useState<number | null>(null);
   const [userContextPolicy, setUserContextPolicy] = useState<Set<UserContextSection>>(
     () => new Set(defaultPolicyForKind('mode')),
   );
   const [submitting, setSubmitting] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const definitionColumnRef = useRef<HTMLDivElement>(null);
-  const capabilitiesColumnRef = useRef<HTMLDivElement>(null);
-  const toolSummaryRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    let cancelled = false;
+    setToolsLoading(true);
+    setToolsLoadError(false);
     toolAPI
       .getAllToolsInfo()
       .then((tools) => {
+        if (cancelled) return;
         const normalizedTools = tools
           .map((tool): SubagentEditorToolInfo | null => {
             const toolName = typeof tool?.name === 'string' ? tool.name : '';
@@ -153,8 +206,16 @@ const CreateAgentPage: React.FC = () => {
           .filter((tool): tool is SubagentEditorToolInfo => Boolean(tool));
         setToolInfos(normalizedTools);
       })
-      .catch(() => setToolInfos([]));
-  }, []);
+      .catch(() => {
+        if (cancelled) return;
+        setToolInfos([]);
+        setToolsLoadError(true);
+      })
+      .finally(() => {
+        if (!cancelled) setToolsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [toolsAttempt]);
 
   useEffect(() => {
     if (!hasWorkspace && level === 'project') {
@@ -170,10 +231,10 @@ const CreateAgentPage: React.FC = () => {
     setReadonly(defaultReadonlyForKind(kind));
     setReview(false);
     setUserContextPolicy(new Set(defaultPolicyForKind(kind)));
-    setSelectedTools(defaultSelectedTools(toolInfos, kind, false));
+    setSelectedTools(new Set());
     setToolsEditing(false);
     setPendingTools(null);
-  }, [isEdit, kind, toolInfos]);
+  }, [isEdit, kind]);
 
   useEffect(() => {
     if (isEdit || toolInfos.length === 0) {
@@ -309,55 +370,6 @@ const CreateAgentPage: React.FC = () => {
     dynamic_info: tool.dynamicInfo,
   })), [toolInfos]);
 
-  useLayoutEffect(() => {
-    const desktopMediaQuery = window.matchMedia('(min-width: 961px)');
-
-    const updateToolSummaryHeight = () => {
-      if (toolsEditing || !desktopMediaQuery.matches) {
-        setToolSummaryHeight(null);
-        return;
-      }
-
-      const definitionColumn = definitionColumnRef.current;
-      const capabilitiesColumn = capabilitiesColumnRef.current;
-      const toolSummary = toolSummaryRef.current;
-      if (!definitionColumn || !capabilitiesColumn || !toolSummary) {
-        setToolSummaryHeight(null);
-        return;
-      }
-
-      const availableHeight =
-        capabilitiesColumn.getBoundingClientRect().bottom
-        - toolSummary.getBoundingClientRect().top;
-      const nextHeight = Math.min(
-        TOOL_SUMMARY_MAX_HEIGHT,
-        Math.max(TOOL_SUMMARY_MIN_HEIGHT, Math.floor(availableHeight)),
-      );
-      setToolSummaryHeight((currentHeight) => (
-        currentHeight === nextHeight ? currentHeight : nextHeight
-      ));
-    };
-
-    updateToolSummaryHeight();
-    const resizeObserver = typeof ResizeObserver === 'undefined'
-      ? null
-      : new ResizeObserver(updateToolSummaryHeight);
-    if (definitionColumnRef.current) {
-      resizeObserver?.observe(definitionColumnRef.current);
-    }
-    if (capabilitiesColumnRef.current) {
-      resizeObserver?.observe(capabilitiesColumnRef.current);
-    }
-    window.addEventListener('resize', updateToolSummaryHeight);
-    desktopMediaQuery.addEventListener('change', updateToolSummaryHeight);
-
-    return () => {
-      resizeObserver?.disconnect();
-      window.removeEventListener('resize', updateToolSummaryHeight);
-      desktopMediaQuery.removeEventListener('change', updateToolSummaryHeight);
-    };
-  }, [selectableTools.length, toolsEditing]);
-
   const contextSectionLabels: Record<UserContextSection, string> = {
     workspace_context: t('agentsOverview.form.contextWorkspaceContext'),
     workspace_instructions: t('agentsOverview.form.contextWorkspaceInstructions'),
@@ -368,9 +380,35 @@ const CreateAgentPage: React.FC = () => {
     workspace_instructions: t('agentsOverview.form.contextWorkspaceInstructionsTooltip'),
     project_layout: t('agentsOverview.form.contextProjectLayoutTooltip'),
   };
-  const selectedContextSections = VISIBLE_CONTEXT_SECTIONS.filter((section) => (
-    userContextPolicy.has(section)
-  ));
+
+  const focusField = (field: string) => {
+    if (field === 'prompt') {
+      promptControlRef.current?.querySelector<HTMLElement>('[contenteditable="true"], textarea')?.focus({ preventScroll: true });
+      return;
+    }
+    const control = formRef.current?.elements.namedItem(fieldId(field));
+    if (control instanceof HTMLElement) control.focus();
+  };
+
+  const handleNext = () => {
+    if (step === 0) {
+      const idError = validateAgentId(agentId);
+      setAgentIdError(idError);
+      setDescriptionError(!description.trim());
+      if (idError || !description.trim()) {
+        focusField(idError ? 'id' : 'description');
+        return;
+      }
+    }
+    if (step === 1) {
+      setPromptError(!prompt.trim());
+      if (!prompt.trim()) {
+        focusField('prompt');
+        return;
+      }
+    }
+    setStep(step + 1);
+  };
 
   const handleSubmit = useCallback(async () => {
     const nextAgentIdError = validateAgentId(agentId);
@@ -398,6 +436,7 @@ const CreateAgentPage: React.FC = () => {
       return;
     }
 
+    const scope = getActiveSurfaceScope();
     setSubmitting(true);
     try {
       const normalizedId = agentId.trim();
@@ -428,13 +467,17 @@ const CreateAgentPage: React.FC = () => {
           userContextPolicy: payload.userContextPolicy,
           workspaceId: payload.workspaceId,
         });
+        if (!mountedRef.current || !scope.isCurrent()) return;
         notification.success(t('agentsOverview.form.updateSuccess', { name: payload.name }));
       } else {
         await CustomAgentAPI.createCustomAgent(payload);
+        if (!mountedRef.current || !scope.isCurrent()) return;
         notification.success(t('agentsOverview.form.createSuccess', { name: payload.name }));
       }
-      openHome();
+      if (onCreated) onCreated();
+      else openHome();
     } catch (error) {
+      if (!mountedRef.current || !scope.isCurrent()) return;
       notification.error(
         `${
           isEdit
@@ -443,7 +486,7 @@ const CreateAgentPage: React.FC = () => {
         }${error instanceof Error ? error.message : String(error)}`,
       );
     } finally {
-      setSubmitting(false);
+      if (mountedRef.current && scope.isCurrent()) setSubmitting(false);
     }
   }, [
     agentId,
@@ -454,6 +497,7 @@ const CreateAgentPage: React.FC = () => {
     level,
     name,
     notification,
+    onCreated,
     openHome,
     prompt,
     readonly,
@@ -468,13 +512,6 @@ const CreateAgentPage: React.FC = () => {
   const formTitle = isEdit
     ? t('agentsOverview.form.titleEdit')
     : t('agentsOverview.form.title');
-  const formSubtitle = isEdit
-    ? t(
-        kind === 'subagent'
-          ? 'agentsOverview.form.subtitleEditSubagent'
-          : 'agentsOverview.form.subtitleEditMode',
-      )
-    : t('agentsOverview.form.subtitle');
   const submitLabel = isEdit
     ? t('agentsOverview.form.save')
     : t('agentsOverview.form.submit');
@@ -486,7 +523,7 @@ const CreateAgentPage: React.FC = () => {
             variant="outline"
             size="sm"
             leadingIcon={<Icon name="arrow-left" size="lg" />}
-            onClick={openHome}
+            onClick={closeEditor}
           >
             {t('agentsOverview.backToOverview')}
           </Button>
@@ -508,7 +545,7 @@ const CreateAgentPage: React.FC = () => {
             variant="outline"
             size="sm"
             leadingIcon={<Icon name="arrow-left" size="lg" />}
-            onClick={openHome}
+            onClick={closeEditor}
           >
             {t('agentsOverview.backToOverview')}
           </Button>
@@ -516,7 +553,7 @@ const CreateAgentPage: React.FC = () => {
         <ScrollArea className="th__list-body">
           <div className="th__list-inner">
             <p className="th-create-panel__error" data-openbitfun-component="create-agent-page" data-openbitfun-part="error" role="alert">{detailError}</p>
-            <Button variant="fill" size="sm" onClick={openHome}>
+            <Button variant="fill" size="sm" onClick={closeEditor}>
               {t('agentsOverview.form.cancel')}
             </Button>
           </div>
@@ -525,433 +562,495 @@ const CreateAgentPage: React.FC = () => {
     );
   }
 
-  return (
-    <div className="tv th-create-page" data-openbitfun-component="create-agent-page" data-openbitfun-part="root">
-      <ScrollArea className="th__list-body th-create-page__body">
-        <div className="th__list-inner th-create-page__inner" data-openbitfun-component="create-agent-page" data-openbitfun-part="body">
-          <header className="th-create-page__head" data-openbitfun-component="create-agent-page" data-openbitfun-part="heading">
-            <div className="th-create-page__heading">
-              <h2 className="th__title">{formTitle}</h2>
-              <p className="th__title-sub">{formSubtitle}</p>
-              {!isEdit && (
-                <p className="th__title-sub">{t('agentsOverview.form.createThroughChatHint')}</p>
-              )}
-            </div>
-            <div className="th-create-page__actions" data-openbitfun-component="create-agent-page" data-openbitfun-part="actions">
-              <Button
-                className="th-create-page__action"
-                type="button"
-                variant="fill"
-                size="sm"
-                onClick={openHome}
-                disabled={submitting}
-              >
-                {t('agentsOverview.form.cancel')}
-              </Button>
-              <Button
-                className="th-create-page__action"
-                type="submit"
-                form="custom-agent-form"
-                variant="primary"
-                size="sm"
-                disabled={submitting || toolsEditing}
-                aria-busy={submitting}
-              >
-                {submitting ? '…' : submitLabel}
-              </Button>
-            </div>
-          </header>
-
-          <form
-            id="custom-agent-form"
-            className="th-create-page__form"
-            data-openbitfun-component="create-agent-page"
-            data-openbitfun-part="form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (submitting || toolsEditing) {
-                return;
-              }
-              void handleSubmit();
-            }}
-          >
-            <div className="th-create-page__columns" data-openbitfun-component="create-agent-page" data-openbitfun-part="columns">
-              <section
-                ref={definitionColumnRef}
-                className="th-create-page__panel th-create-page__panel--definition"
-                data-openbitfun-component="create-agent-page"
-                data-openbitfun-part="column"
-              >
-                <div className="th-create-page__section">
-                  <div className="th-create-page__section-heading" data-openbitfun-component="create-agent-page" data-openbitfun-part="sectionHeading">
-                    <span className="th-create-page__section-marker" aria-hidden="true">
-                      <Minus size={18} strokeWidth={5} />
-                    </span>
-                    <h3>{t('agentsOverview.form.basicInformation')}</h3>
-                  </div>
-
-                  <div className="th-create-panel__field" data-openbitfun-component="create-agent-page" data-openbitfun-part="field">
-                    <span className="th-create-panel__label">{t('agentsOverview.form.kind')}</span>
-                    <div
-                      className="th-create-panel__level-group"
-                      data-openbitfun-component="create-agent-page"
-                      data-openbitfun-part="levelGroup"
-                      role="group"
-                      aria-label={t('agentsOverview.form.kind')}
-                    >
-                      {(['mode', 'subagent'] as CustomAgentKind[]).map((candidateKind) => (
-                        <Tooltip
-                          key={candidateKind}
-                          content={t(
-                            candidateKind === 'mode'
-                              ? 'agentsOverview.form.kindAgentTooltip'
-                              : 'agentsOverview.form.kindSubagentTooltip',
-                          )}
-                          placement="top"
-                        >
-                          <button
-                            type="button"
-                            disabled={isEdit}
-                            className={`th-create-panel__level-btn${kind === candidateKind ? ' is-active' : ''}`}
-                            data-openbitfun-component="create-agent-page"
-                            data-openbitfun-part="levelOption"
-                            data-openbitfun-state={kind === candidateKind ? 'active' : undefined}
-                            aria-pressed={kind === candidateKind}
-                            onClick={() => setKind(candidateKind)}
-                          >
-                            {candidateKind === 'mode'
-                              ? t('filters.agent')
-                              : t('filters.subagent')}
-                          </button>
-                        </Tooltip>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="th-create-panel__identity-fields">
-                    <div className="th-create-panel__field">
-                      <label className="th-create-panel__label" htmlFor="custom-agent-id">
-                        {t('agentsOverview.form.id')}
-                      </label>
-                      <Input
-                        id="custom-agent-id"
-                        value={agentId}
-                        onChange={(event) => {
-                          setAgentId(event.target.value);
-                          setAgentIdError(validateAgentId(event.target.value));
-                        }}
-                        onBlur={() => setAgentIdError(validateAgentId(agentId))}
-                        placeholder={t('agentsOverview.form.idPlaceholder')}
-                        invalid={!!agentIdError}
-                        disabled={isEdit}
-                        size="sm"
-                      />
-                      {agentIdError ? (
-                        <span className="th-create-panel__error" data-openbitfun-component="create-agent-page" data-openbitfun-part="error" role="alert">{agentIdError}</span>
-                      ) : null}
-                    </div>
-
-                    <div className="th-create-panel__field">
-                      <label className="th-create-panel__label" htmlFor="custom-agent-name">
-                        {t('agentsOverview.form.name')}
-                      </label>
-                      <Input
-                        id="custom-agent-name"
-                        value={name}
-                        onChange={(event) => setName(event.target.value)}
-                        placeholder={t('agentsOverview.form.namePlaceholder')}
-                        size="sm"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="th-create-panel__field">
-                    <label className="th-create-panel__label" htmlFor="custom-agent-description">
-                      {t('agentsOverview.form.description')}
-                    </label>
-                    <Input
-                      id="custom-agent-description"
-                      value={description}
-                      onChange={(event) => setDescription(event.target.value)}
-                      placeholder={t('agentsOverview.form.descPlaceholder')}
-                      size="sm"
-                    />
-                  </div>
-
-                  {kind === 'subagent' ? (
-                    <div className="th-create-panel__field">
-                      <span className="th-create-panel__label">{t('agentsOverview.form.level')}</span>
-                      <div
-                        className="th-create-panel__level-group"
-                        data-openbitfun-component="create-agent-page"
-                        data-openbitfun-part="levelGroup"
-                        role="group"
-                        aria-label={t('agentsOverview.form.level')}
-                      >
-                        {(['user', 'project'] as CustomAgentLevel[]).map((candidateLevel) => {
-                          const disabled =
-                            (candidateLevel === 'project' && !hasWorkspace) || isEdit;
-                          return (
-                            <button
-                              data-openbitfun-component="create-agent-page"
-                              data-openbitfun-part="levelOption"
-                              key={candidateLevel}
-                              type="button"
-                              disabled={disabled}
-                              className={`th-create-panel__level-btn${level === candidateLevel ? ' is-active' : ''}`}
-                              data-openbitfun-state={level === candidateLevel ? 'active' : undefined}
-                              aria-pressed={level === candidateLevel}
-                              onClick={() => setLevel(candidateLevel)}
-                              title={
-                                disabled && !isEdit && candidateLevel === 'project'
-                                  ? t('agentsOverview.form.noWorkspace')
-                                  : undefined
-                              }
-                            >
-                              {candidateLevel === 'user'
-                                ? t('agentsOverview.filterUser')
-                                : t('agentsOverview.filterProject')}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  <div className="th-create-panel__field th-create-panel__field--row">
-                    <div className="th-create-panel__readonly-row">
-                      <span className="th-create-panel__label">
-                        {t('agentsOverview.form.readonly')}
-                      </span>
-                      <Switch
-                        checked={readonly}
-                        disabled={kind === 'subagent' && review}
-                        onChange={(event) => handleReadonlyChange(event.target.checked)}
-                        aria-label={t('agentsOverview.form.readonly')}
-                      />
-                    </div>
-                    {kind === 'subagent' ? (
-                      <div className="th-create-panel__readonly-row">
-                        <span className="th-create-panel__label">
-                          {t('agentsOverview.form.review')}
-                        </span>
-                        <Switch
-                          checked={review}
-                          onChange={(event) => handleReviewChange(event.target.checked)}
-                          aria-label={t('agentsOverview.form.review')}
-                        />
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-
-                {selectableTools.length > 0 ? (
-                  <>
-                    <div className="th-create-page__divider" aria-hidden="true" />
-                    <div className="th-create-page__section th-create-page__section--tools">
-                      <div className="th-create-panel__field-head">
-                        <div
-                          className="th-create-page__section-heading th-create-page__section-heading--tools"
-                          data-openbitfun-component="create-agent-page"
-                          data-openbitfun-part="sectionHeading"
-                        >
-                          <h3>{t('agentsOverview.form.tools')}</h3>
-                          <span className="th-create-panel__label-hint">
-                            {kind === 'subagent' && review
-                              ? t('agentsOverview.form.reviewToolsHint')
-                              : t('agentsOverview.form.toolsHint', {
-                                  optionalLabel: t('agentsOverview.form.toolsOptional'),
-                                })}
-                          </span>
-                        </div>
-                        {toolsEditing ? (
-                          <div className="th-create-panel__tool-edit-actions">
-                            <Button
-                              type="button"
-                              variant="fill"
-                              size="sm"
-                              onClick={() => {
-                                setToolsEditing(false);
-                                setPendingTools(null);
-                              }}
-                              disabled={submitting}
-                            >
-                              {t('agentsOverview.cancel')}
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="primary"
-                              size="sm"
-                              onClick={() => {
-                                setSelectedTools(new Set(pendingTools ?? selectedTools));
-                                setToolsEditing(false);
-                                setPendingTools(null);
-                              }}
-                              disabled={submitting}
-                            >
-                              {t('agentsOverview.save')}
-                            </Button>
-                          </div>
-                        ) : (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              setPendingTools(new Set(selectedTools));
-                              setToolsEditing(true);
-                            }}
-                            disabled={submitting}
-                            leadingIcon={<Icon name="settings" size="sm" aria-hidden="true" />}
-                          >
-
-                            {t('agentsOverview.toolsEdit')}
-                          </Button>
-                        )}
-                      </div>
-                      {toolsEditing ? (
-                        <ToolGroupPicker
-                          tools={selectableGroupTools}
-                          managementTools={managementGroupTools}
-                          selectedToolNames={Array.from(pendingTools ?? selectedTools)}
-                          userGroups={userToolGroups}
-                          onSelectionChange={(toolNames) => setPendingTools(new Set(toolNames))}
-                          onSaveUserGroups={saveUserToolGroups}
-                          disabled={submitting}
-                          testId="custom-agent-tool-groups"
-                        />
-                      ) : (
-                        <ScrollArea
-                          ref={toolSummaryRef}
-                          className="th-create-panel__tool-summary"
-                          style={toolSummaryHeight === null ? undefined : { height: toolSummaryHeight }}
-                        >
-                          <ToolGroupSummary
-                            tools={selectableGroupTools}
-                            selectedToolNames={Array.from(selectedTools)}
-                            userGroups={userToolGroups}
-                          />
-                        </ScrollArea>
-                      )}
-                    </div>
-                  </>
-                ) : null}
-              </section>
-
-              <section
-                ref={capabilitiesColumnRef}
-                className="th-create-page__panel th-create-page__panel--capabilities"
-                data-openbitfun-component="create-agent-page"
-                data-openbitfun-part="column"
-              >
-                <div className="th-create-page__section th-create-page__section--context">
-                  <div
-                    className="th-create-page__context-heading"
-                    data-openbitfun-component="create-agent-page"
-                    data-openbitfun-part="sectionHeading"
-                  >
-                    <h3>{t('agentsOverview.form.contextPolicy')}</h3>
-                    <span className="th-create-panel__label-hint">
-                      {t('agentsOverview.form.contextPolicyHint')}
-                    </span>
-                  </div>
-                  <div className="th-create-panel__context-options" data-openbitfun-component="create-agent-page" data-openbitfun-part="tools">
-                    {VISIBLE_CONTEXT_SECTIONS.map((section) => {
-                      const label = contextSectionLabels[section];
-                      const tooltipContent = contextSectionTooltips[section];
-                      const contextIcon = CONTEXT_SECTION_ICONS[section];
-                      const isSelected = userContextPolicy.has(section);
-                      return (
-                        <Tooltip
-                          key={section}
-                          content={<span className="th-create-panel__tooltip-content">{tooltipContent}</span>}
-                          placement="top"
-                          interactive
-                        >
-                          <button data-overflow-trigger
-                            type="button"
-                            className={`th-create-panel__context-option${isSelected ? ' is-on' : ''}`}
-                            data-openbitfun-component="create-agent-page"
-                            data-openbitfun-part="tool"
-                            data-openbitfun-state={isSelected ? 'active' : undefined}
-                            onClick={() => toggleContextSection(section)}
-                            aria-label={`${label}: ${tooltipContent}`}
-                            aria-pressed={isSelected}
-                          >
-                            <Icon {...contextIcon} size="sm" />
-                            <OverflowText>{label}</OverflowText>
-                          </button>
-                        </Tooltip>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div className="th-create-panel__field th-create-panel__field--prompt">
-                  <label className="th-create-panel__label th-create-panel__label--strong" htmlFor="custom-agent-prompt">
-                    {t('agentsOverview.form.prompt')}
-                  </label>
-                  <div
-                    className="th-create-panel__prompt-editor"
-                    data-openbitfun-component="create-agent-page"
-                    data-openbitfun-part="promptEditor"
-                  >
-                    <div
-                      id="custom-agent-runtime-context-preview"
-                      className="th-create-panel__prompt-context-preview"
-                      data-openbitfun-component="create-agent-page"
-                      data-openbitfun-part="contextPreview"
-                      aria-live="polite"
-                    >
-                      <span className="th-create-panel__prompt-context-label">
-                        {t('agentsOverview.form.contextPreviewLabel')}
-                      </span>
-                      {selectedContextSections.length > 0 ? (
-                        <span className="th-create-panel__prompt-context-items">
-                          {selectedContextSections.map((section) => {
-                            const contextIcon = CONTEXT_SECTION_ICONS[section];
-                            return (
-                              <span
-                                key={section}
-                                className="th-create-panel__prompt-context-item"
-                              >
-                                <Icon {...contextIcon} size="xs" />
-                                <span>{contextSectionLabels[section]}</span>
-                              </span>
-                            );
-                          })}
-                        </span>
-                      ) : (
-                        <span className="th-create-panel__prompt-context-empty">
-                          {t('agentsOverview.form.contextPreviewEmpty')}
-                        </span>
-                      )}
-                    </div>
-                    <div
-                      data-openbitfun-component="create-agent-page"
-                      data-openbitfun-part="prompt"
-                      className="th-create-panel__prompt-control"
-                    >
-                      <Textarea
-                        id="custom-agent-prompt"
-                        value={prompt}
-                        onChange={(event) => setPrompt(event.target.value)}
-                        placeholder={t('agentsOverview.form.promptPlaceholder')}
-                        aria-describedby="custom-agent-runtime-context-preview"
-                        layout="fill"
-                        resize="none"
-                        rows={20}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </section>
-            </div>
-          </form>
+  const permissionControls = (
+    <div className="th-create-panel__field th-create-panel__field--row">
+      <div className="th-create-panel__readonly-row">
+        <span className="th-create-panel__label">
+          {t('agentsOverview.form.readonly')}
+        </span>
+        <Switch
+          checked={readonly}
+          disabled={kind === 'subagent' && review}
+          onChange={(event) => handleReadonlyChange(event.target.checked)}
+          aria-label={t('agentsOverview.form.readonly')}
+        />
+      </div>
+      {kind === 'subagent' ? (
+        <div className="th-create-panel__readonly-row">
+          <span className="th-create-panel__label">
+            {t('agentsOverview.form.review')}
+          </span>
+          <Switch
+            checked={review}
+            onChange={(event) => handleReviewChange(event.target.checked)}
+            aria-label={t('agentsOverview.form.review')}
+          />
         </div>
-      </ScrollArea>
+      ) : null}
     </div>
   );
+  const basicInformation = (
+    <div className="th-create-page__section">
+      <div className="th-create-page__section-heading" data-openbitfun-component="create-agent-page" data-openbitfun-part="sectionHeading">
+        <h3>{t('agentsOverview.form.basicInformation')}</h3>
+      </div>
+
+      <div className="th-create-panel__field" data-openbitfun-component="create-agent-page" data-openbitfun-part="field">
+        <span className="th-create-panel__label">{t('agentsOverview.form.kind')}</span>
+        <div
+          className="th-create-panel__level-group"
+          data-openbitfun-component="create-agent-page"
+          data-openbitfun-part="levelGroup"
+          role="group"
+          aria-label={t('agentsOverview.form.kind')}
+        >
+          {(['mode', 'subagent'] as CustomAgentKind[]).map((candidateKind) => (
+            <Tooltip
+              key={candidateKind}
+              content={t(
+                candidateKind === 'mode'
+                  ? 'agentsOverview.form.kindAgentTooltip'
+                  : 'agentsOverview.form.kindSubagentTooltip',
+              )}
+              placement="top"
+            >
+              <button
+                type="button"
+                disabled={isEdit}
+                className={`th-create-panel__level-btn${kind === candidateKind ? ' is-active' : ''}`}
+                data-openbitfun-component="create-agent-page"
+                data-openbitfun-part="levelOption"
+                data-openbitfun-state={kind === candidateKind ? 'active' : undefined}
+                aria-pressed={kind === candidateKind}
+                onClick={() => setKind(candidateKind)}
+              >
+                {candidateKind === 'mode'
+                  ? t('filters.agent')
+                  : t('filters.subagent')}
+              </button>
+            </Tooltip>
+          ))}
+        </div>
+      </div>
+
+      <div className="th-create-panel__identity-fields">
+        <div className="th-create-panel__field">
+          <label className="th-create-panel__label" htmlFor={fieldId('id')}>
+            {t('agentsOverview.form.id')}
+          </label>
+          <Input
+            id={fieldId('id')}
+            value={agentId}
+            onChange={(event) => {
+              setAgentId(event.target.value);
+              setAgentIdError(validateAgentId(event.target.value));
+            }}
+            onBlur={() => setAgentIdError(validateAgentId(agentId))}
+            placeholder={t('agentsOverview.form.idPlaceholder')}
+            invalid={!!agentIdError}
+            aria-describedby={agentIdError ? fieldId('id-error') : undefined}
+            disabled={isEdit}
+            size="sm"
+          />
+          {agentIdError ? (
+            <span id={fieldId('id-error')} className="th-create-panel__error" data-openbitfun-component="create-agent-page" data-openbitfun-part="error" role="alert">{agentIdError}</span>
+          ) : null}
+        </div>
+
+        <div className="th-create-panel__field">
+          <label className="th-create-panel__label" htmlFor={fieldId('name')}>
+            {t('agentsOverview.form.name')}
+          </label>
+          <Input
+            id={fieldId('name')}
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder={t('agentsOverview.form.namePlaceholder')}
+            size="sm"
+          />
+        </div>
+      </div>
+
+      <div className="th-create-panel__field">
+        <label className="th-create-panel__label" htmlFor={fieldId('description')}>
+          {t('agentsOverview.form.description')}
+        </label>
+        <Input
+          id={fieldId('description')}
+          value={description}
+          onChange={(event) => {
+            setDescription(event.target.value);
+            setDescriptionError(false);
+          }}
+          invalid={descriptionError}
+          aria-describedby={descriptionError ? fieldId('description-error') : undefined}
+          placeholder={t('agentsOverview.form.descPlaceholder')}
+          size="sm"
+        />
+        {descriptionError && (
+          <span id={fieldId('description-error')} className="th-create-panel__error" role="alert">
+            {t('agentsOverview.form.descRequired')}
+          </span>
+        )}
+      </div>
+
+      {kind === 'subagent' ? (
+        <div className="th-create-panel__field">
+          <span className="th-create-panel__label">{t('agentsOverview.form.level')}</span>
+          <div
+            className="th-create-panel__level-group"
+            data-openbitfun-component="create-agent-page"
+            data-openbitfun-part="levelGroup"
+            role="group"
+            aria-label={t('agentsOverview.form.level')}
+          >
+            {(['user', 'project'] as CustomAgentLevel[]).map((candidateLevel) => {
+              const disabled =
+                (candidateLevel === 'project' && !hasWorkspace) || isEdit;
+              return (
+                <button
+                  data-openbitfun-component="create-agent-page"
+                  data-openbitfun-part="levelOption"
+                  key={candidateLevel}
+                  type="button"
+                  disabled={disabled}
+                  className={`th-create-panel__level-btn${level === candidateLevel ? ' is-active' : ''}`}
+                  data-openbitfun-state={level === candidateLevel ? 'active' : undefined}
+                  aria-pressed={level === candidateLevel}
+                  onClick={() => setLevel(candidateLevel)}
+                  title={
+                    disabled && !isEdit && candidateLevel === 'project'
+                      ? t('agentsOverview.form.noWorkspace')
+                      : undefined
+                  }
+                >
+                  {candidateLevel === 'user'
+                    ? t('agentsOverview.filterUser')
+                    : t('agentsOverview.filterProject')}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+      {!standalone && permissionControls}
+    </div>
+  );
+  const toolSelection = selectableTools.length > 0 ? (
+    <div className="th-create-page__section th-create-page__section--tools">
+      <div className="th-create-panel__field-head">
+        <div
+          className="th-create-page__section-heading th-create-page__section-heading--tools"
+          data-openbitfun-component="create-agent-page"
+          data-openbitfun-part="sectionHeading"
+        >
+          <h3>{t('agentsOverview.form.tools')}</h3>
+          <span className="th-create-panel__label-hint">
+            {kind === 'subagent' && review
+              ? t('agentsOverview.form.reviewToolsHint')
+              : t('agentsOverview.form.toolsHint', {
+                  optionalLabel: t('agentsOverview.form.toolsOptional'),
+                })}
+          </span>
+        </div>
+        {standalone ? null : toolsEditing ? (
+          <div className="th-create-panel__tool-edit-actions">
+            <Button
+              type="button"
+              variant="fill"
+              size="sm"
+              onClick={() => {
+                setToolsEditing(false);
+                setPendingTools(null);
+              }}
+              disabled={submitting}
+            >
+              {t('agentsOverview.cancel')}
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              size="sm"
+              onClick={() => {
+                setSelectedTools(new Set(pendingTools ?? selectedTools));
+                setToolsEditing(false);
+                setPendingTools(null);
+              }}
+              disabled={submitting}
+            >
+              {t('agentsOverview.save')}
+            </Button>
+          </div>
+        ) : (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setPendingTools(new Set(selectedTools));
+              setToolsEditing(true);
+            }}
+            disabled={submitting}
+            leadingIcon={<Icon name="settings" size="sm" aria-hidden="true" />}
+          >
+            {t('agentsOverview.toolsEdit')}
+          </Button>
+        )}
+      </div>
+      {standalone ? (
+        <ToolGroupPicker
+          grouped={false}
+          tools={selectableGroupTools}
+          managementTools={managementGroupTools}
+          selectedToolNames={Array.from(selectedTools)}
+          userGroups={userToolGroups}
+          onSelectionChange={(toolNames) => setSelectedTools(new Set(toolNames))}
+          onSaveUserGroups={saveUserToolGroups}
+          disabled={submitting}
+          testId="custom-agent-tool-groups"
+        />
+      ) : toolsEditing ? (
+        <ScrollArea className="th-create-panel__tool-editor" overscrollBehaviorY="contain">
+          <ToolGroupPicker
+            grouped={false}
+            tools={selectableGroupTools}
+            managementTools={managementGroupTools}
+            selectedToolNames={Array.from(pendingTools ?? selectedTools)}
+            userGroups={userToolGroups}
+            onSelectionChange={(toolNames) => setPendingTools(new Set(toolNames))}
+            onSaveUserGroups={saveUserToolGroups}
+            disabled={submitting}
+            testId="custom-agent-tool-groups"
+          />
+        </ScrollArea>
+      ) : (
+        <ScrollArea
+          className="th-create-panel__tool-summary"
+        >
+          <ToolGroupSummary
+            grouped={false}
+            tools={selectableGroupTools}
+            selectedToolNames={Array.from(selectedTools)}
+            userGroups={userToolGroups}
+          />
+        </ScrollArea>
+      )}
+    </div>
+  ) : null;
+  const promptEditor = (
+    <div className="th-create-panel__field th-create-panel__field--prompt">
+      <h3 id={fieldId('prompt-label')} className="th-create-page__prompt-heading" data-openbitfun-component="create-agent-page" data-openbitfun-part="sectionHeading">
+        <span className="th-create-panel__label th-create-panel__label--strong">
+          {t('agentsOverview.form.prompt')}
+        </span>
+      </h3>
+      <div
+        className="th-create-panel__prompt-editor"
+        data-openbitfun-component="create-agent-page"
+        data-openbitfun-part="promptEditor"
+      >
+        <div
+          id={fieldId('runtime-context-preview')}
+          className="th-create-panel__prompt-context-preview"
+          data-openbitfun-component="create-agent-page"
+          data-openbitfun-part="contextPreview"
+        >
+          <span className="th-create-panel__prompt-context-label">
+            {t('agentsOverview.form.contextPreviewLabel')}
+          </span>
+          <div className="th-create-panel__context-options" data-openbitfun-component="create-agent-page" data-openbitfun-part="tools" role="group" aria-label={t('agentsOverview.form.contextPolicy')}>
+            {VISIBLE_CONTEXT_SECTIONS.map((section) => {
+              const label = contextSectionLabels[section];
+              const isSelected = userContextPolicy.has(section);
+              return (
+                <span
+                  key={section}
+                  className="th-create-panel__context-option"
+                  data-openbitfun-component="create-agent-page"
+                  data-openbitfun-part="tool"
+                  data-openbitfun-state={isSelected ? 'active' : undefined}
+                >
+                  <Tooltip content={contextSectionTooltips[section]} placement="top">
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant={isSelected ? 'fill' : 'outline'}
+                      leadingIcon={<Icon {...CONTEXT_SECTION_ICONS[section]} size="xs" />}
+                      trailingIcon={isSelected ? <Icon name="check-line" size="xs" tone="success" /> : undefined}
+                      onClick={() => toggleContextSection(section)}
+                      aria-pressed={isSelected}
+                      disabled={submitting}
+                    >
+                      {label}
+                    </Button>
+                  </Tooltip>
+                </span>
+              );
+            })}
+          </div>
+        </div>
+        <div
+          ref={promptControlRef}
+          id={fieldId('prompt')}
+          role="group"
+          aria-labelledby={fieldId('prompt-label')}
+          aria-describedby={`${fieldId('runtime-context-preview')}${promptError ? ` ${fieldId('prompt-error')}` : ''}`}
+          aria-invalid={promptError || undefined}
+          data-openbitfun-component="create-agent-page"
+          data-openbitfun-part="prompt"
+          className="th-create-panel__prompt-control"
+        >
+          <React.Suspense fallback={<p className="th__title-sub" role="status">{t('agentsOverview.form.loadingDetail')}</p>}>
+            <MEditor
+              value={prompt}
+              onChange={(value) => {
+                setPrompt(value);
+                setPromptError(false);
+              }}
+              placeholder={t('agentsOverview.form.promptPlaceholder')}
+              emptyDocumentPlaceholder={t('agentsOverview.form.promptPlaceholder')}
+              mode="ir"
+              toolbar={false}
+              height="100%"
+              readonly={submitting}
+              autofocus={standalone}
+              className="th-create-panel__markdown-editor"
+            />
+          </React.Suspense>
+        </div>
+      </div>
+      {promptError && (
+        <span id={fieldId('prompt-error')} className="th-create-panel__error" role="alert">
+          {t('agentsOverview.form.promptRequired')}
+        </span>
+      )}
+    </div>
+  );
+
+  const formActions = (
+    <>
+      <Button
+        className="th-create-page__action"
+        type="button"
+        variant="fill"
+        size="sm"
+        onClick={closeEditor}
+        disabled={submitting}
+      >
+        {t('agentsOverview.form.cancel')}
+      </Button>
+      {standalone && step > 0 && (
+        <Button type="button" variant="outline" size="sm" onClick={() => setStep(step - 1)} disabled={submitting}>
+          {t('agentsOverview.form.wizard.back')}
+        </Button>
+      )}
+      <Button
+        className="th-create-page__action"
+        type="submit"
+        form={formId}
+        variant="primary"
+        size="sm"
+        disabled={submitting || toolsEditing || (standalone && step === 2 && (toolsLoading || toolsLoadError))}
+        loading={submitting}
+      >
+        {standalone && step < 2 ? t('agentsOverview.form.wizard.next') : submitLabel}
+      </Button>
+    </>
+  );
+
+  const formContent = (
+    <form
+      ref={formRef}
+      id={formId}
+      className="th-create-page__form"
+      data-openbitfun-component="create-agent-page"
+      data-openbitfun-part="form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (submitting || toolsEditing) return;
+        if (standalone && step < 2) {
+          handleNext();
+          return;
+        }
+        if (standalone && (toolsLoading || toolsLoadError)) return;
+        void handleSubmit();
+      }}
+    >
+      <div className="th-create-page__columns" data-openbitfun-component="create-agent-page" data-openbitfun-part="columns">
+        {(!standalone || step !== 1) && (
+          <section className="th-create-page__panel th-create-page__panel--definition" data-openbitfun-component="create-agent-page" data-openbitfun-part="column">
+            {(!standalone || step === 0) && basicInformation}
+            {(!standalone || step === 2) && (
+              <>
+                {standalone && permissionControls}
+                {standalone && toolsLoading ? (
+                  <p className="th__title-sub" role="status">{t('agentsOverview.form.wizard.loadingTools')}</p>
+                ) : standalone && toolsLoadError ? (
+                  <div className="th-create-page__section">
+                    <p className="th-create-panel__error" role="alert">{t('agentsOverview.form.wizard.toolsLoadFailed')}</p>
+                    <Button type="button" variant="outline" size="sm" onClick={() => setToolsAttempt((value) => value + 1)}>
+                      {t('agentsOverview.form.wizard.retry')}
+                    </Button>
+                  </div>
+                ) : (
+                  <>
+                    {toolSelection}
+                    {standalone && selectableTools.length === 0 && (
+                      <p className="th__title-sub">{t('agentsOverview.form.wizard.noTools')}</p>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+          </section>
+        )}
+        {(!standalone || step === 1) && (
+          <section className="th-create-page__panel th-create-page__panel--capabilities" data-openbitfun-component="create-agent-page" data-openbitfun-part="column">
+            {promptEditor}
+          </section>
+        )}
+      </div>
+    </form>
+  );
+
+  const page = (
+    <div className={`tv th-create-page${standalone ? ' th-create-page--dialog' : ''}${standalone && step === 1 ? ' th-create-page--prompt-step' : ''}`} data-openbitfun-component="create-agent-page" data-openbitfun-part="root">
+      {standalone ? (
+        <SetupWizard
+          title={formTitle}
+          titleId={titleId}
+          headerActions={<DialogClose />}
+          guideLabel={t('agentsOverview.form.wizard.navigation')}
+          step={{
+            ...steps[step],
+            progress: t('agentsOverview.form.wizard.progress', { current: formatNumber(step + 1), total: formatNumber(steps.length) }),
+          }}
+          contentMode={step === 1 ? 'contained' : 'scroll'}
+          footer={<div className="th-create-page__actions" data-openbitfun-component="create-agent-page" data-openbitfun-part="actions">{formActions}</div>}
+        >
+          {formContent}
+        </SetupWizard>
+      ) : (
+        <>
+          <ScrollArea className="th__list-body th-create-page__body">
+            <div className="th__list-inner th-create-page__inner" data-openbitfun-component="create-agent-page" data-openbitfun-part="body">
+              <header className="th-create-page__head" data-openbitfun-component="create-agent-page" data-openbitfun-part="heading">
+                <PageHeader title={formTitle} level={2} />
+              </header>
+              {formContent}
+            </div>
+          </ScrollArea>
+          <footer className="th-create-page__footer">
+            <div className="th-create-page__footer-inner">
+              <div className="th-create-page__actions" data-openbitfun-component="create-agent-page" data-openbitfun-part="actions">{formActions}</div>
+            </div>
+          </footer>
+        </>
+      )}
+    </div>
+  );
+
+  return standalone ? <DialogBody inset="none">{page}</DialogBody> : page;
 };
 
 export default CreateAgentPage;

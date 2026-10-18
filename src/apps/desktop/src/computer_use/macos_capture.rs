@@ -191,8 +191,7 @@ pub(super) fn ensure_capture(pid: i32, mut window_id: Option<u32>) -> Result<(),
                 "CAPTURE_GENERATION_CHANGED: Previous capture cleanup is still pending".into(),
             );
         }
-        if session.pid == pid {
-            validate_bound_window(session.window_id, window_id)?;
+        if session.pid == pid && reuse_bound_window(session.window_id, window_id) {
             return session.check();
         }
         // A bad target request must not destroy a healthy stream. Resolve the
@@ -224,12 +223,10 @@ pub(super) fn ensure_capture(pid: i32, mut window_id: Option<u32>) -> Result<(),
     Ok(())
 }
 // The sharing indicator itself may be reported as this application's front
-// window. Once selected, a window stays bound until the session is stopped.
-fn validate_bound_window(bound: u32, requested: Option<u32>) -> Result<(), String> {
-    if requested.is_some_and(|id| id != bound) {
-        return Err("TARGET_WINDOW_CHANGED: Existing capture remains active; use the bound window or start a new control session to select another window".into());
-    }
-    Ok(())
+// window. Omitted selection keeps the binding; only an explicit window ID may
+// request a replacement, validated above before the old stream is released.
+fn reuse_bound_window(bound: u32, requested: Option<u32>) -> bool {
+    requested.is_none_or(|id| id == bound)
 }
 
 pub(super) fn bound_window_id(pid: i32) -> Result<u32, String> {
@@ -340,14 +337,12 @@ extern "C" fn obf_control_native_stopped(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_bound_window;
+    use super::reuse_bound_window;
 
     #[test]
     fn sharing_badge_cannot_retarget_an_existing_window_capture() {
-        assert!(validate_bound_window(100, None).is_ok());
-        assert!(validate_bound_window(100, Some(100)).is_ok());
-        assert!(validate_bound_window(100, Some(101))
-            .unwrap_err()
-            .starts_with("TARGET_WINDOW_CHANGED:"));
+        assert!(reuse_bound_window(100, None));
+        assert!(reuse_bound_window(100, Some(100)));
+        assert!(!reuse_bound_window(100, Some(101)));
     }
 }

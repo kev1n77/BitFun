@@ -19,6 +19,7 @@ use crate::infrastructure::ai::reasoning_catalog::{
     load_models_dev_reasoning_catalog_without_refresh, project_model_reasoning_catalog,
 };
 use crate::infrastructure::ai::AIClient;
+use crate::service::config::{subscribe_config_updates, ConfigUpdateEvent};
 use crate::util::types::{Message as AIMessage, ToolDefinition};
 use log::{debug, info, warn};
 use openbitfun_agent_runtime::prompt_suggestion::{
@@ -132,35 +133,70 @@ async fn generate_prompt_suggestion(
     request: PromptSuggestionRequest,
     session_manager: Arc<SessionManager>,
 ) -> anyhow::Result<Option<String>> {
-    if !prompt_suggestion_enabled().await {
-        debug!(
-            "Prompt suggestion disabled by configuration: session_id={}, turn_id={}",
-            request.session_id, request.turn_id
-        );
+    // Subscribe before reading enablement so a saved setting cannot fall between
+    // the initial check and the in-flight request's cancellation boundary.
+    let Some(updates) = subscribe_config_updates() else {
+        return Ok(None);
+    };
+    generate_while_enabled(updates, prompt_suggestion_enabled, async {
+        let ai_client = suggestion_client(&request).await;
+        let ai_messages = build_prompt_suggestion_messages(&request).await?;
+
+        let trace_dir = session_manager
+            .persistent_model_exchange_trace_dir(&request.session_id)
+            .await;
+        let trace = prepare_model_exchange_trace_for_workspace(
+            &request.session_id,
+            &request.turn_id,
+            request.workspace.as_ref(),
+            trace_dir.as_deref(),
+            ModelExchangeTraceOperation {
+                kind: "prompt_suggestion",
+                id: &request.turn_id,
+                trigger: None,
+            },
+            request.ai_client.as_ref(),
+        )
+        .await;
+
+        request_prompt_suggestion_response(&request, ai_client, ai_messages, trace).await
+    })
+    .await
+}
+
+/// Drop both the active provider request and any fallback when the host disables
+/// suggestions. The same config notifications cover local, peer and relay hosts.
+async fn generate_while_enabled<F, E, EF>(
+    mut updates: tokio::sync::broadcast::Receiver<ConfigUpdateEvent>,
+    enabled: E,
+    generation: F,
+) -> anyhow::Result<Option<String>>
+where
+    F: Future<Output = anyhow::Result<Option<String>>>,
+    E: Fn() -> EF,
+    EF: Future<Output = bool>,
+{
+    if !enabled().await {
         return Ok(None);
     }
-
-    let ai_client = suggestion_client(&request).await;
-    let ai_messages = build_prompt_suggestion_messages(&request).await?;
-
-    let trace_dir = session_manager
-        .persistent_model_exchange_trace_dir(&request.session_id)
-        .await;
-    let trace = prepare_model_exchange_trace_for_workspace(
-        &request.session_id,
-        &request.turn_id,
-        request.workspace.as_ref(),
-        trace_dir.as_deref(),
-        ModelExchangeTraceOperation {
-            kind: "prompt_suggestion",
-            id: &request.turn_id,
-            trigger: None,
-        },
-        request.ai_client.as_ref(),
-    )
-    .await;
-
-    request_prompt_suggestion_response(&request, ai_client, ai_messages, trace).await
+    tokio::pin!(generation);
+    loop {
+        tokio::select! {
+            biased;
+            update = updates.recv() => {
+                if matches!(update, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
+                    return Ok(None);
+                }
+                if !enabled().await {
+                    return Ok(None);
+                }
+            }
+            result = &mut generation => {
+                // Also fence a completed response against a simultaneous save.
+                return if enabled().await { result } else { Ok(None) };
+            }
+        }
+    }
 }
 
 async fn request_prompt_suggestion_response(
@@ -325,6 +361,100 @@ mod tests {
         // The same queue feeds desktop, peer and relay consumers: no error,
         // lifecycle change, or partial suggestion may escape this task.
         assert_eq!(queue.stats().await.total_enqueued, 0);
+    }
+
+    #[tokio::test]
+    async fn disabling_suggestions_drops_inflight_request_without_publishing() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct DropWitness(Arc<AtomicBool>);
+        impl Drop for DropWitness {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let enabled = Arc::new(AtomicBool::new(true));
+        let check = enabled.clone();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let witness = DropWitness(dropped.clone());
+        let (updates, receiver) = tokio::sync::broadcast::channel(4);
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let runtime = PromptSuggestionRuntime::new();
+        let queue = Arc::new(EventQueue::new(EventQueueConfig::default()));
+        let task = spawn_prompt_suggestion_generation(
+            &runtime,
+            queue.clone(),
+            "session-1".into(),
+            "turn-1".into(),
+            generate_while_enabled(
+                receiver,
+                move || std::future::ready(check.load(Ordering::SeqCst)),
+                async move {
+                    let _witness = witness;
+                    started.send(()).unwrap();
+                    std::future::pending().await
+                },
+            ),
+        );
+        ready.await.unwrap();
+        enabled.store(false, Ordering::SeqCst);
+        updates.send(ConfigUpdateEvent::AppUpdated).unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            assert_silent_completion(&runtime, &queue, task),
+        )
+        .await
+        .expect("disabling must not wait for the provider response");
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn disabled_generation_is_not_polled_and_reenable_allows_a_new_request() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let enabled = AtomicBool::new(false);
+        let (updates, receiver) = tokio::sync::broadcast::channel(4);
+        let result = generate_while_enabled(
+            receiver,
+            || std::future::ready(enabled.load(Ordering::SeqCst)),
+            async { panic!("disabled suggestions must not call the provider") },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, None);
+
+        enabled.store(true, Ordering::SeqCst);
+        let receiver = updates.subscribe();
+        updates.send(ConfigUpdateEvent::EditorUpdated).unwrap();
+        assert_eq!(
+            generate_while_enabled(
+                receiver,
+                || std::future::ready(enabled.load(Ordering::SeqCst)),
+                async { Ok(Some("Run the tests".into())) },
+            )
+            .await
+            .unwrap(),
+            Some("Run the tests".into()),
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_prediction_rechecks_enablement_before_returning() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let enabled = AtomicBool::new(true);
+        let (_updates, receiver) = tokio::sync::broadcast::channel(4);
+        let result = generate_while_enabled(
+            receiver,
+            || std::future::ready(enabled.load(Ordering::SeqCst)),
+            async {
+                enabled.store(false, Ordering::SeqCst);
+                Ok(Some("Late suggestion".into()))
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, None);
     }
 
     #[tokio::test(start_paused = true)]

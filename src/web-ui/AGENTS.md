@@ -108,6 +108,15 @@ deliberate layout transitions or animate virtualized content. Rely on CI for
 full lint, build, and broad test coverage unless the local change specifically
 needs it.
 
+For navigation-divider dragging, elastic feedback, cancellation, and keyboard resizing:
+
+```bash
+pnpm --dir src/web-ui run test:run src/app/layout/useNavResize.test.tsx src/app/layout/WorkspaceBody.presentation.test.ts
+```
+
+These local DOM fixtures cover gesture state and spring settling, not native
+WebView rendering or live remote scenarios.
+
 For Appearance descriptor changes, also exercise production registration; its ID
 and property validation goes beyond the static DOM audit:
 
@@ -137,6 +146,19 @@ For ecosystem discovery, import, or compatibility status presentation changes:
 ```bash
 pnpm --dir src/web-ui run test:run src/app/scenes/ecosystem-compatibility
 ```
+
+For followed external session views, refresh-on-open and first-send forks:
+
+```bash
+pnpm --dir src/web-ui run test:run src/flow_chat/components/ExternalHistoryNotice.test.tsx src/flow_chat/utils/externalHistory.test.ts src/flow_chat/services/flow-chat-manager/MessageModule.test.ts src/flow_chat/services/flow-chat-manager/SessionModule.test.ts src/flow_chat/store/FlowChatStore.test.ts src/flow_chat/components/modern/UserMessageItem.test.tsx src/flow_chat/hooks/useMessageSender.test.tsx
+```
+
+These local store/DOM fixtures cover source-version pinning, device switches and
+explicit Peer gating; they do not validate native WebView or remote-host behavior.
+
+For workspace catalog pagination, source filters, count/expansion behavior and
+old-host fallback, run `pnpm --dir src/web-ui run test:run src/app/components/NavPanel/sections/sessions src/app/components/NavPanel/workspaceSessionView.test.ts src/flow_chat/store/FlowChatStore.test.ts src/infrastructure/api/service-api/SessionAPI.test.ts`.
+These fixtures verify bounded page requests and transport payloads, not live remote connections.
 
 For application update discovery, skip persistence, notification timing, and
 download/install transitions, run the focused behavior tests (these do not

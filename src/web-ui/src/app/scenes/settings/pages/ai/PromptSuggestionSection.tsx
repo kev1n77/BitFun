@@ -5,6 +5,8 @@ import { createLogger } from '@/shared/utils/logger';
 import { Switch } from '@openbitfun/ui';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useI18n } from '@/infrastructure/i18n';
+import { getActiveSurfaceScope } from '@/infrastructure/peer-device/deviceSurface';
+import { usePromptSuggestionStore } from '@/flow_chat/store/promptSuggestionStore';
 
 const log = createLogger('PromptSuggestionSection');
 
@@ -41,10 +43,14 @@ export default function PromptSuggestionSection() {
 
   const handleToggle = async (next: boolean) => {
     if (saveInFlight.current || enabled === undefined) return;
+    const scope = getActiveSurfaceScope();
     saveInFlight.current = true;
     setSaving(true);
     try {
       await aiExperienceConfigService.saveSettings({ enable_prompt_suggestion: next });
+      if (!scope.isCurrent()) return;
+      // The composer may be unmounted while Settings is open.
+      usePromptSuggestionStore.getState().setEnabled(next, scope.surfaceId);
       setEnabled(next);
       notification.success(t('promptSuggestion.messages.saveSuccess'));
     } catch (error) {

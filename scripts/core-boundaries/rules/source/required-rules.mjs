@@ -3010,6 +3010,10 @@ export const requiredContentRules = [
         message: 'missing session metadata page owner entrypoint',
       },
       {
+        regex: /\bpub async fn list_metadata_page_with_query\b/,
+        message: 'missing query-aware session metadata page owner entrypoint',
+      },
+      {
         regex: /\bpub async fn list_metadata_including_internal\b/,
         message: 'missing internal session metadata list owner entrypoint',
       },
@@ -3226,7 +3230,7 @@ export const requiredContentRules = [
         message: 'missing metadata list delegation to services-core store',
       },
       {
-        regex: /\.list_metadata_page\(cursor,\s*limit\)/,
+        regex: /\.session_metadata_store\(workspace_path\)\s*\.list_metadata_page_with_query\(cursor,\s*limit,\s*query\)/,
         message: 'missing metadata page delegation to services-core store',
       },
       {

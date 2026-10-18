@@ -298,6 +298,59 @@ fn computer_use_prompt_preserves_background_observation_and_input_contract() {
 }
 
 #[test]
+fn creative_prompt_fetches_creative_skills_on_demand_and_keeps_product_owners() {
+    let prompt = agent_prompt("creative_mode").expect("Creative prompt");
+    for (repository, entry) in [
+        ("https://github.com/feitangyuan/onetake", "`SKILL.md`"),
+        (
+            "https://github.com/heygen-com/hyperframes",
+            "`skills/hyperframes/SKILL.md`",
+        ),
+        ("https://github.com/alchaincyf/huashu-design", "`SKILL.md`"),
+        (
+            "https://github.com/leonxlnx/taste-skill",
+            "`skills/taste-skill/SKILL.md`",
+        ),
+        (
+            "https://github.com/emilkowalski/skills",
+            "`skills/<name>/SKILL.md`",
+        ),
+    ] {
+        assert!(prompt.contains(repository), "missing skill {repository}");
+        assert!(prompt.contains(entry), "missing entry {entry}");
+    }
+    let normalized = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    for required in [
+        "They are not bundled with OpenBitFun and do not appear in the `Skill` listing",
+        "https://raw.githubusercontent.com/<owner>/<repo>/HEAD/<path>",
+        "git clone --depth 1 --filter=blob:none --sparse",
+        "Never check out a whole HyperFrames or onetake repository",
+        "Do not copy skill files into the user's workspace or deliverable",
+        "PolyForm Noncommercial 1.0.0",
+        "Never claim to have followed a skill you did not read",
+        "never deliver a simulated render",
+        "Never mix two video pipelines in one piece",
+        "OpenBitFunControl",
+        "FrontendWorkbench",
+        "installed client",
+        "do not substitute a mockup, instructions, workspace website, or source-code patch",
+        "Creative skills run wherever `ExecCommand` runs",
+    ] {
+        assert!(
+            normalized.contains(required),
+            "missing Creative contract: {required}"
+        );
+    }
+    for placeholder in [
+        "{FILE_REFERENCES}",
+        "{LANGUAGE_PREFERENCE}",
+        "{COMPUTER_USE_GUIDANCE}",
+    ] {
+        assert!(prompt.contains(placeholder), "missing {placeholder}");
+    }
+}
+
+#[test]
 fn computer_use_delegation_preserves_user_scope_in_parents_and_child() {
     for name in ["claw_mode", "standard_mode", "cowork_mode", "creative_mode"] {
         let prompt = agent_prompt(name).unwrap();

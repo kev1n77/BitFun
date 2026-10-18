@@ -240,12 +240,13 @@ impl ComputerUseTool {
         format!(
             "Desktop application control on {}. {} \
 Text-only model: observe the selected app through get_app_state or describe_screen and read AX/OCR facts; do not call screenshot or guess unseen pixels. \
-A first app observation can start background control automatically. Use list_apps only when the target is unknown; reuse its selector or omit app to follow the bound target. \
+A first app observation can start background control automatically. Use list_apps for application identity and list_windows for window titles and exact {{pid,window_id}} selection. After a missing/wrong window, inspect list_windows across processes before concluding the task is unavailable. Reuse the selector or omit app to follow the bound window. \
 Use app_batch by default for already-decided app_click/app_type_text/app_key_chord/app_scroll steps. Focus and exact Unicode text fit in one app_type_text step. Batch known search input and its submit key, or several observed fields. \
 One batch returns ordered receipts and one final observation. End it when new information is needed; reuse the result without a duplicate read or routine delay. include_image=false omits the image when AX text is sufficient. \
 Use fresh observed node_idx/ocr_text targets and echo observation_id for node/index input when available. Read capability, OCR and truncation notes; report missing evidence instead of inventing it. \
 Verify the intended content, not digest changes. Never replay completed steps after partial failure; check delivery before retrying a submission. \
 Keep background mode. Foreground takeover requires the user's explicit request; never activate an app or widen scope to repair an error. Respect Stop, cancellation and permission denial. start_control is needed for an authorized restart or mode choice; control_status is diagnostic, and stop_control releases the session when finished. \
+Use clipboard_get to read plain text from the runtime host clipboard (optional max_output_bytes, default 65536), and clipboard_set with text to replace it; an empty string clears it. Clipboard actions do not activate or paste into an application and are unavailable during window-only sharing. \
 Use ExecCommand for genuine shell work, never ad hoc GUI capture, clipboard or input workarounds. Prefer available ControlHub browser actions for web content. Before an irreversible submission verify its target, content and user authorization, then verify the result.",
             os, keys
         )
@@ -261,6 +262,7 @@ Use ExecCommand for genuine shell work, never ad hoc GUI capture, clipboard or i
                 | "focus_display"
                 | "paste"
                 | "list_apps"
+                | "list_windows"
                 | "get_app_state"
                 | "get_app_shortcuts"
                 | "app_batch"
@@ -448,7 +450,7 @@ Use ExecCommand for genuine shell work, never ad hoc GUI capture, clipboard or i
             "start_y": { "type": "integer", "description": "For `drag`: start Y coordinate." },
             "end_x": { "type": "integer", "description": "For `drag`: end X coordinate." },
             "end_y": { "type": "integer", "description": "For `drag`: end Y coordinate." },
-            "text": { "type": "string", "description": "Required for app_type_text/type_text/paste: the exact text to insert. For background tasks use app_type_text with the app selector and optional focus; do not substitute global clipboard shortcuts." },
+            "text": { "type": "string", "description": "Required for clipboard_set/app_type_text/type_text/paste: exact plain text. clipboard_set accepts an empty string to clear the clipboard (maximum 16 MiB; no NUL). For background tasks use app_type_text with the app selector and optional focus; do not substitute global clipboard shortcuts." },
             "ms": { "type": "integer", "description": "For `wait`: duration in milliseconds." },
             "text_query": { "type": "string", "description": "For `move_to_text`, `move_to_target`, `click_target`: visible text to OCR-match on screen (case-insensitive substring)." },
             "identifier_contains": { "type": "string", "description": "For `locate`, `click_element`: case-insensitive substring on AXIdentifier." },
@@ -459,20 +461,21 @@ Use ExecCommand for genuine shell work, never ad hoc GUI capture, clipboard or i
             "filter_combine": { "type": "string", "enum": ["all", "any"], "description": "For `locate`, `click_element`: `all` (default, AND) or `any` (OR) for filter combination. Priority: `node_idx` > `text_contains` > `title_contains`+`role_substring`." },
             "url": { "type": "string", "description": "For `open_url`: URL to open with the system/default browser." },
             "path": { "type": "string", "description": "For `open_file`: local file path to open with its default handler." },
-            "app": {"description":"Required object for get_app_state/get_app_shortcuts and app_* actions: select a running application by pid, bundle_id or name from list_apps. Example: {\"pid\":421}. A string is accepted only by open_file to choose its handler.", "anyOf":[
-                {"type":"object","properties":{"pid":{"type":"integer","minimum":1},"bundle_id":{"type":"string","minLength":1},"name":{"type":"string","minLength":1}},"minProperties":1,"additionalProperties":false},
+            "app": {"description":"Select an application by pid, bundle_id or name from list_apps, or an exact {pid,window_id} from list_windows on window-target-v1 hosts. Optional on list_windows to filter; omit on app actions to keep the bound window. Example: {\"pid\":421}. A string is accepted only by open_file to choose its handler.", "anyOf":[
+                {"type":"object","properties":{"pid":{"type":"integer","minimum":1},"bundle_id":{"type":"string","minLength":1},"name":{"type":"string","minLength":1},"window_id":{"type":"integer","minimum":1,"description":"Exact window from list_windows; requires its owning pid and window-target-v1 capability"}},"minProperties":1,"additionalProperties":false},
                 {"type":"string","minLength":1}
             ]},
             "script_type": { "type": "string", "enum": ["applescript", "shell", "bash", "powershell", "cmd"], "description": "For `run_script`: script interpreter/type." },
             "timeout_ms": { "type": "integer", "description": "For run_script/app_wait_for: timeout in milliseconds; app_wait_for defaults to 8000." },
-            "max_output_bytes": { "type": "integer", "description": "For `run_script` / `clipboard_get`: maximum bytes to return." },
+            "max_output_bytes": { "type": "integer", "minimum": 1, "description": "For run_script/clipboard_get: maximum output bytes. clipboard_get defaults to 65536 and caps at 1048576; text ends at a UTF-8 boundary and truncated reports whether bytes were omitted." },
+            "max_bytes": { "type": "integer", "minimum": 1, "description": "Legacy alias for clipboard_get max_output_bytes; max_output_bytes takes precedence when both are supplied." },
             "clear_first": { "type": "boolean", "description": "For `paste`: select all before pasting." },
             "submit": { "type": "boolean", "description": "For `paste`: press submit keys after pasting." },
             "submit_keys": { "type": "array", "items": { "type": "string" }, "description": "For `paste`: key chord to submit, default `[\"return\"]`." },
             "display_id": { "type": ["integer", "null"], "description": "For `focus_display` or display-pinned desktop actions: display id, or null to clear the pin." },
             "include_hidden": { "type": "boolean", "description": "For `list_apps`: include hidden/background apps." },
             "focus_window_only": {"type":"boolean","description":"For get_app_state: restrict the AX tree to the target application window (default true). Does not activate the application."},
-            "include_image": {"type":"boolean","description":"For get_app_state and app_batch/app input results: include the final window image (default true). Set false when AX text is sufficient; keep true for visual, canvas or image-coordinate decisions. Does not change input capability or authorization."},
+            "include_image": {"type":"boolean","description":"For get_app_state and app_batch/app input results: include the final window image (default true). For describe_screen: default false; true attaches the same target image for vision models. Set false when AX text is sufficient; keep true for visual, canvas or image-coordinate decisions. Does not change input capability or authorization."},
             "only_visible": { "type": "boolean", "description": "For `list_apps`: list only visible apps when true." },
             "target": Self::app_target_schema(false),
             "focus": Self::app_target_schema(true),
@@ -597,6 +600,7 @@ Use ExecCommand for genuine shell work, never ad hoc GUI capture, clipboard or i
             "stop_control",
             "control_status",
             "list_apps",
+            "list_windows",
             "get_app_state",
             "describe_screen",
             "get_app_shortcuts",
@@ -638,11 +642,11 @@ Use ExecCommand for genuine shell work, never ad hoc GUI capture, clipboard or i
         compact(&mut schema, vision);
         let properties = schema["properties"].as_object_mut().unwrap();
         properties["app"]["description"] =
-            json!("Known app selector or identity from list_apps. Omit to keep the bound application; no repeated discovery needed.");
+            json!("Known app from list_apps, or exact {pid,window_id} from list_windows on window-target-v1 hosts. Omit to keep the bound window. Use list_windows when the title is wrong or a helper has no window.");
         properties["mode"]["description"] =
             json!("Default background. Foreground only for a user-requested takeover.");
         properties["app_name"]["description"] = json!("Application name, bundle identifier or path for open_app. Background mode requests a launch without activation where the host supports it; then observe the returned target.");
-        properties["include_image"]["description"] = json!("get_app_state and app_batch/app input results: default true. Set false for sufficient AX text or known semantic/keyboard flows; keep true for visual, canvas or image-coordinate decisions.");
+        properties["include_image"]["description"] = json!("get_app_state and app_batch/app input results: default true. describe_screen: default false, set true to attach the target image for a vision model. Keep images for canvas/game decisions; false when AX text suffices.");
         properties["steps"]["description"] = json!("Default for several already-decided inputs: one app, ordered steps, one final observation. Examples: known search+Return; several observed form fields with stable layout. End before new information is needed. No routine waits or duplicate reads; never replay completed steps after partial failure. Batch changes neither capability nor authorization.");
         let observed_focus = if vision {
             json!({"kind":"image_xy","x":120,"y":80,"screenshot_id":"observed-frame"})
@@ -707,8 +711,8 @@ Use ExecCommand for genuine shell work, never ad hoc GUI capture, clipboard or i
         let properties = Self::merge_with_shared_properties(json!({
             "action": {
                 "type": "string",
-                "enum": ["start_control", "stop_control", "control_status", "click_target", "move_to_target", "click_element", "move_to_text", "click", "mouse_move", "scroll", "drag", "locate", "key_chord", "type_text", "pointer_move_rel", "wait", "list_displays", "focus_display", "paste", "list_apps", "get_app_state", "get_app_shortcuts", "describe_screen", "app_batch", "app_drag", "app_click", "app_type_text", "app_scroll", "app_key_chord", "app_wait_for", "open_app", "open_url", "open_file", "clipboard_get", "clipboard_set", "run_script", "run_apple_script", "get_os_info"],
-                "description": "Select a ComputerUse action. This model is text-only: observe through describe_screen/get_app_state and read returned AX/OCR facts; screenshot and image-based targeting require image support. Observe the known target with get_app_state/describe_screen; list_apps is only needed to resolve an unknown target, and a first observation can start background control automatically. Use app_batch for decided app_click/app_type_text/app_scroll/app_key_chord inputs to fresh node_idx or observed ocr_text targets and one final observation. Consult get_app_shortcuts for unknown shortcuts. Keep the session active until the task is finished; control_status reports its scope and stop_control releases it. Foreground mode and global input require an explicit user request to take over the visible desktop. Never activate the target or switch modes just to fix an observation error. Do not replace missing GUI observations with ad hoc scripts in ExecCommand. Reuse the returned after-action observation; app_type_text with focus combines known targeting and exact Unicode input. Observe, act once, then verify the intended result; do not repeat a mutation merely because its digest is unchanged. Prefer ControlHub domain=\"browser\" for web content; ComputerUse supports native browser chrome and dialogs."
+                "enum": ["start_control", "stop_control", "control_status", "click_target", "move_to_target", "click_element", "move_to_text", "click", "mouse_move", "scroll", "drag", "locate", "key_chord", "type_text", "pointer_move_rel", "wait", "list_displays", "focus_display", "paste", "list_apps", "list_windows", "get_app_state", "get_app_shortcuts", "describe_screen", "app_batch", "app_drag", "app_click", "app_type_text", "app_scroll", "app_key_chord", "app_wait_for", "open_app", "open_url", "open_file", "clipboard_get", "clipboard_set", "run_script", "run_apple_script", "get_os_info"],
+                "description": "Select a ComputerUse action. This model is text-only: observe through describe_screen/get_app_state and read returned AX/OCR facts; screenshot and image-based targeting require image support. Observe the known target with get_app_state/describe_screen; list_apps resolves applications, while list_windows discovers native window titles across processes. Use app:{pid,window_id} from that inventory when a helper has no window or the default window is wrong. A first observation can start background control automatically. Use app_batch for decided app_click/app_type_text/app_scroll/app_key_chord inputs to fresh node_idx or observed ocr_text targets and one final observation. Consult get_app_shortcuts for unknown shortcuts. Keep the session active until the task is finished; control_status reports its scope and stop_control releases it. Foreground mode and global input require an explicit user request to take over the visible desktop. Never activate the target or switch modes just to fix an observation error. Do not replace missing GUI observations with ad hoc scripts in ExecCommand. Reuse the returned after-action observation; app_type_text with focus combines known targeting and exact Unicode input. Observe, act once, then verify the intended result; do not repeat a mutation merely because its digest is unchanged. Prefer ControlHub domain=\"browser\" for web content; ComputerUse supports native browser chrome and dialogs."
             },
             "use_screen_coordinates": { "type": "boolean", "description": "For `mouse_move`, `drag`: **must be true** — global display coordinates from `move_to_text`, `locate`, AX, or `pointer_global`. **Not** for `click`." },
             "delta_x": { "type": "integer", "description": "For `pointer_move_rel`: horizontal delta (negative=left); also accepted as `dx`. For `scroll`: horizontal wheel delta." },
@@ -895,16 +899,23 @@ Use ExecCommand for genuine shell work, never ad hoc GUI capture, clipboard or i
         Ok(vec![ToolResult::ok(body, Some(hint))])
     }
 
-    /// Text-only observation action: returns a structured text snapshot of
-    /// the desktop (frontmost app + AX tree + condensed UI tree text +
-    /// pointer + displays) with **no image bytes**. This is the observe and
-    /// verify step that closes the cowork loop for text-only primary models
-    /// that cannot consume `screenshot` JPEGs.
+    /// Observe the selected window's AX state, with optional pixels and desktop
+    /// metadata. Text-only models never receive image bytes; the legacy default
+    /// remains text-only.
     async fn describe_screen(
         host: &dyn ComputerUseHost,
         input: &Value,
         text_only: bool,
     ) -> OpenBitFunResult<Vec<ToolResult>> {
+        let include_image = match input.get("include_image") {
+            None => false,
+            Some(Value::Bool(value)) => *value && !text_only,
+            Some(_) => {
+                return Err(OpenBitFunError::tool(
+                    "[INVALID_PARAMS] include_image must be a boolean",
+                ))
+            }
+        };
         let session_snap = host.computer_use_session_snapshot().await;
         let interaction = host.computer_use_interaction_state();
         // The human's foreground application is metadata, never the source of
@@ -924,6 +935,7 @@ Use ExecCommand for genuine shell work, never ad hoc GUI capture, clipboard or i
                     name: fg.name.clone(),
                     bundle_id: fg.bundle_id.clone(),
                     pid: fg.process_id,
+                    window_id: None,
                 })
         };
         let mut target_application = None;
@@ -932,13 +944,17 @@ Use ExecCommand for genuine shell work, never ad hoc GUI capture, clipboard or i
         let mut ax_digest = None;
         let mut window_title = None;
         let mut ax_error = None;
+        let mut screenshot = None;
+        let mut observation_id = None;
         let ax_tree_status = match selector {
             None => "no_foreground_app",
             Some(app) => match host
-                .get_app_state(app, DESCRIBE_SCREEN_AX_DEPTH, true)
+                .get_app_state_with_options(app, DESCRIBE_SCREEN_AX_DEPTH, true, include_image)
                 .await
             {
                 Ok(snap) => {
+                    observation_id = snap.observation_id;
+                    screenshot = snap.screenshot.filter(|_| include_image);
                     target_application = Some(snap.app);
                     window_title = snap.window_title;
                     ax_nodes_count = Some(snap.nodes.len());
@@ -990,8 +1006,10 @@ Use ExecCommand for genuine shell work, never ad hoc GUI capture, clipboard or i
             "content_unavailable" | "empty_tree" => Some("The target does not expose accessible content controls. Read ocr_text or the same target's screenshot. An unchanged accessibility tree does not prove an input action failed."),
             _ => Some("Read ax_error for the failed target query. Use the available OCR facts; do not activate another application or repeat a mutation to repair an observation failure."),
         };
-        let body = json!({
-            "success": true, "action": "describe_screen", "image_bytes": false,
+        let mut body = json!({
+            "success": true, "action": "describe_screen", "image_bytes": screenshot.is_some(),
+            "observation_id": observation_id,
+            "capture_scope_note": "This observes one explicit or bound target window, not the entire desktop. Use list_windows for window discovery.",
             "foreground_application": session_snap.foreground_application,
             "target_application": target_application,
             "pointer_global": session_snap.pointer_global, "displays": interaction.displays,
@@ -1002,12 +1020,34 @@ Use ExecCommand for genuine shell work, never ad hoc GUI capture, clipboard or i
             "ocr_text": ocr_text, "ocr_status": ocr_status, "ocr_error": ocr_error,
             "output_is_complete": true,
         });
+        if let Some(shot) = &screenshot {
+            body["screenshot_meta"] = json!({
+                "screenshot_id": shot.screenshot_id,
+                "image_width": shot.image_width, "image_height": shot.image_height,
+                "native_width": shot.native_width, "native_height": shot.native_height,
+                "vision_scale": shot.vision_scale, "mime_type": shot.mime_type,
+                "image_content_rect": shot.image_content_rect,
+                "image_global_bounds": shot.image_global_bounds,
+                "coordinate_hint": "Use image_xy with this screenshot_id on the observed app window. Image pixels are not desktop coordinates.",
+            });
+        }
         let body =
             computer_use_augment_result_json(host, body, Some(json!({"kind": "describe_screen"})))
                 .await;
-        Ok(vec![ToolResult::ok(body, Some(format!(
+        let summary = Some(format!(
             "describe_screen: target observation returned (AX: {ax_tree_status}, OCR: {ocr_status}). Read the full observation, select app-scoped actions, and verify the resulting content."
-        )))])
+        ));
+        Ok(vec![match screenshot {
+            Some(shot) => ToolResult::ok_with_images(
+                body,
+                summary,
+                vec![ToolImageAttachment {
+                    mime_type: shot.mime_type,
+                    data_base64: B64.encode(&shot.bytes),
+                }],
+            ),
+            None => ToolResult::ok(body, summary),
+        }])
     }
 
     /// Screenshot tool results attach JPEGs via `tool_image_attachments`; only providers whose
@@ -1074,10 +1114,10 @@ Use ExecCommand for genuine shell work, never ad hoc GUI capture, clipboard or i
 
     fn key_chord_os_hint() -> &'static str {
         match std::env::consts::OS {
-            "macos" => "macOS app_key_chord uses command/option/control/shift. Clipboard and global key_chord operate on desktop focus and require foreground mode.",
+            "macos" => "macOS app_key_chord uses command/option/control/shift. Global key_chord and paste require foreground mode; clipboard_get/clipboard_set do not change focus.",
             "windows" => "Windows background typing supports validated native editable controls selected by observed node, image point or the bound window thread’s current focus; scrolling requires an observed scrollable node. App-scoped keyboard chords are unavailable; global key_chord requires foreground mode and uses meta, alt, control, shift.",
             "linux" => "Linux background actions use AT-SPI semantic nodes; text insertion requires an observed EditableText node in focus. Arbitrary background coordinates and app_key_chord are unavailable. Portal keyboard input requires foreground mode and uses control, alt, shift, meta/super.",
-            _ => "Match modifiers to the host OS. Use app-scoped capabilities where available; desktop clipboard and seat input require foreground mode.",
+            _ => "Match modifiers to the host OS. Use app-scoped capabilities where available; global seat input requires foreground mode; clipboard_get/clipboard_set do not change focus.",
         }
     }
 
@@ -1523,13 +1563,14 @@ impl Tool for ComputerUseTool {
         let keys = Self::key_chord_os_hint();
         Ok(format!(
             "Desktop application control on {}. {} \
-Observe a known app with get_app_state; use list_apps only when its identity is unknown. A first app observation can start background control automatically. Reuse the selector or omit app to follow the bound target. \
+Observe a known app with get_app_state. Use list_apps for application identity and list_windows for exact window titles and {{pid,window_id}}. A helper with no window or a screenshot of the wrong window calls for window discovery, not a conclusion that the task is closed. A first app observation can start background control automatically. Reuse the selector or omit app to keep the bound window. \
 Use app_batch by default for already-decided app_click/app_type_text/app_key_chord/app_scroll/app_drag steps. Focus and Unicode input fit in one app_type_text step. Batch known search input plus its submit key, or several observed form fields; end the batch when new information is needed. \
 One batch returns ordered receipts and one final observation. Use that result for the next decision, without a duplicate screenshot or routine delay; finish when the requested outcome is verified. \
 Set include_image=false when AX text is enough for the next decision; keep the default true for visual, canvas or image-coordinate work. Read tree_text, observation_id, screenshot_id, geometry and errors. Use observed image_xy with its exact screenshot_id; echo observation_id for node/index input when available. AX/OCR are optional precision aids for visible graphical controls. \
 A submitted event or changed digest does not prove completion. Verify intended content; never replay completed steps after partial failure, and check delivery before retrying a submission. \
 Keep background mode. Foreground takeover requires the user's explicit request; never activate an app or widen scope to repair an error. Respect Stop, cancellation and permission denial. start_control is needed for an authorized restart or mode choice; control_status is diagnostic, and stop_control releases the session when finished. \
-Capabilities describe available routes, not support for every control. Use supported recovery or report the limitation. Text-only models use describe_screen/get_app_state and AX/OCR targets. Use ExecCommand for genuine shell work, never ad hoc GUI capture, clipboard or input workarounds. Prefer available ControlHub browser actions for web content. Before an irreversible submission verify its target, content and user authorization, then verify the result.",
+Capabilities describe available routes, not support for every control. Use supported recovery or report the limitation. Text-only models use describe_screen/get_app_state and AX/OCR targets. Use clipboard_get to read plain text from the runtime host clipboard (optional max_output_bytes, default 65536), and clipboard_set with text to replace it; an empty string clears it. Clipboard actions do not activate or paste into an application and are unavailable during window-only sharing. \
+Use ExecCommand for genuine shell work, never ad hoc GUI capture, clipboard or input workarounds. Prefer available ControlHub browser actions for web content. Before an irreversible submission verify its target, content and user authorization, then verify the result.",
             os, keys,
         ))
     }
@@ -1560,8 +1601,8 @@ Capabilities describe available routes, not support for every control. Use suppo
         let properties = Self::merge_with_shared_properties(json!({
             "action": {
                 "type": "string",
-                "enum": ["start_control", "stop_control", "control_status", "screenshot", "describe_screen", "click_target", "move_to_target", "click_element", "move_to_text", "click", "mouse_move", "scroll", "drag", "locate", "key_chord", "type_text", "pointer_move_rel", "wait", "list_displays", "focus_display", "paste", "list_apps", "get_app_state", "get_app_shortcuts", "app_batch", "app_drag", "app_click", "app_type_text", "app_scroll", "app_key_chord", "app_wait_for", "build_interactive_view", "interactive_click", "interactive_type_text", "interactive_scroll", "build_visual_mark_view", "visual_click", "open_app", "open_url", "open_file", "clipboard_get", "clipboard_set", "run_script", "run_apple_script", "get_os_info"],
-                "description": "Select a ComputerUse action. Observe the known target with get_app_state/describe_screen/screenshot; list_apps is only needed to resolve an unknown target, and a first observation can start background control automatically. Use app_batch for decided app_click/app_type_text/app_scroll/app_key_chord inputs and one final observation. For app_click use a fresh node_idx, observed ocr_text, or image_xy/image_grid with the screenshot_id from that same app observation. Screenshot pixels are valid for these app-scoped targets; do not reinterpret them as global screen coordinates. Consult get_app_shortcuts for unknown shortcuts. Keep the session active across observations and actions; control_status reports its scope and stop_control releases it. Global click (at the current pointer), mouse_move, key_chord, type_text and paste require foreground mode and an explicit user request to take over the visible desktop. A parent-generated task plan is not user approval for foreground takeover; ordinary app tasks and confirmation of message content keep background mode. Never activate the target or switch modes merely to repair an observation error. Do not replace failed GUI observations with ad hoc scripts in ExecCommand. Reuse the returned after-action observation; app_type_text with focus combines known targeting and exact Unicode input. Observe, act once, then verify the intended result; do not repeat a mutation merely because its digest is unchanged. Prefer ControlHub domain=\"browser\" for web content; ComputerUse supports native browser chrome and dialogs."
+                "enum": ["start_control", "stop_control", "control_status", "screenshot", "describe_screen", "click_target", "move_to_target", "click_element", "move_to_text", "click", "mouse_move", "scroll", "drag", "locate", "key_chord", "type_text", "pointer_move_rel", "wait", "list_displays", "focus_display", "paste", "list_apps", "list_windows", "get_app_state", "get_app_shortcuts", "app_batch", "app_drag", "app_click", "app_type_text", "app_scroll", "app_key_chord", "app_wait_for", "build_interactive_view", "interactive_click", "interactive_type_text", "interactive_scroll", "build_visual_mark_view", "visual_click", "open_app", "open_url", "open_file", "clipboard_get", "clipboard_set", "run_script", "run_apple_script", "get_os_info"],
+                "description": "Select a ComputerUse action. Observe the known target with get_app_state/describe_screen/screenshot; list_apps resolves applications, while list_windows discovers native window titles across processes. Use app:{pid,window_id} from that inventory when a helper has no window or the default window is wrong. A first observation can start background control automatically. Use app_batch for decided app_click/app_type_text/app_scroll/app_key_chord inputs and one final observation. For app_click use a fresh node_idx, observed ocr_text, or image_xy/image_grid with the screenshot_id from that same app observation. Screenshot pixels are valid for these app-scoped targets; do not reinterpret them as global screen coordinates. Consult get_app_shortcuts for unknown shortcuts. Keep the session active across observations and actions; control_status reports its scope and stop_control releases it. Global click (at the current pointer), mouse_move, key_chord, type_text and paste require foreground mode and an explicit user request to take over the visible desktop. A parent-generated task plan is not user approval for foreground takeover; ordinary app tasks and confirmation of message content keep background mode. Never activate the target or switch modes merely to repair an observation error. Do not replace failed GUI observations with ad hoc scripts in ExecCommand. Reuse the returned after-action observation; app_type_text with focus combines known targeting and exact Unicode input. Observe, act once, then verify the intended result; do not repeat a mutation merely because its digest is unchanged. Prefer ControlHub domain=\"browser\" for web content; ComputerUse supports native browser chrome and dialogs."
             },
             "use_screen_coordinates": { "type": "boolean", "description": "For `mouse_move`, `drag`: **must be true** — global display coordinates (e.g. macOS points) from `move_to_text`, `locate`, AX, or `pointer_global`. **Not** for `click`." },
             "delta_x": { "type": "integer", "description": "For `pointer_move_rel`: horizontal delta (negative=left); also accepted as `dx`. **Not** allowed as the first move after `screenshot` (host). For `scroll`: horizontal wheel delta." },
@@ -1710,6 +1751,21 @@ impl ComputerUseTool {
             .computer_use_host
             .as_ref()
             .ok_or_else(|| OpenBitFunError::tool("Desktop control provider unavailable"))?;
+        if let Some(app) = input.get("app").filter(|app| app.is_object()) {
+            let app: AppSelector = serde_json::from_value(app.clone())
+                .map_err(|e| OpenBitFunError::tool(format!("Invalid app selector: {e}")))?;
+            app.validate_window_target()
+                .map_err(OpenBitFunError::tool)?;
+            if app.window_id.is_some()
+                && !host
+                    .control_snapshot()
+                    .capabilities
+                    .iter()
+                    .any(|cap| cap == "window-target-v1")
+            {
+                return Err(OpenBitFunError::tool("[WINDOW_TARGET_UNSUPPORTED] This host does not advertise window-target-v1; the exact window selector was not ignored. Use a compatible host or supported app observations."));
+            }
+        }
         let owner = match context.session_id.as_deref() {
             Some(owner) => owner,
             None if !host.control_snapshot().supported => "legacy-local-tool-context",
@@ -1759,12 +1815,14 @@ impl ComputerUseTool {
                     None => crate::agentic::tools::computer_use_host::AppSelector::default(),
                 };
                 let explicit_target = !app.is_empty();
+                let exact_window = app.window_id.is_some();
                 if let Err(error) = host.prepare_control_target(app).await {
                     // These reads resolve their own explicit selector and never
                     // consult the old capture's pixels, OCR or pointer map. An
                     // empty selector is deliberately not eligible: after failed
                     // preparation it could otherwise resolve the wrong app.
                     if explicit_target
+                        && !exact_window
                         && matches!(action, "get_app_state" | "get_app_shortcuts")
                         && Self::capture_failure_allows_ax_observation(&error)
                     {
@@ -1794,7 +1852,8 @@ impl ComputerUseTool {
                         data["control_target_available"] = json!(false);
                         data["capture_status"] = json!("unavailable");
                         data["background_input"] = json!(false);
-                        data["control_guidance"] = json!("Accessibility facts describe the explicitly requested app. Capture preparation failed; these facts do not establish a control binding or authorize input. Do not use a previously bound app's pixels or coordinates.");
+                        data["control_guidance"] = json!("Accessibility facts describe only the requested process. Capture failure or a menu-only tree does not prove the task window is closed or absent: it may belong to another process or another window. Use list_windows, match the task's title, then get_app_state with its pid and window_id. Do not use a previously bound app's pixels or coordinates; this failed observation does not authorize input.");
+                        data["suggested_next_action"] = json!({"action":"list_windows"});
                     }
                 }
             }
@@ -1887,6 +1946,9 @@ impl ComputerUseTool {
             // verify step that closes the cowork loop for text-only models.
             "describe_screen" => {
                 let text_only = !context.primary_model_supports_image_understanding();
+                if !text_only && input.get("include_image").and_then(Value::as_bool) == Some(true) {
+                    Self::require_multimodal_tool_output_for_screenshot(context)?;
+                }
                 return Self::describe_screen(host_ref, input, text_only).await;
             }
 
@@ -2548,15 +2610,14 @@ impl ComputerUseTool {
                         OpenBitFunError::tool("open_app requires `app_name` parameter.".to_string())
                     })?;
                 let result = host_ref.open_app(app_name).await?;
-                // A live process with zero windows is the one launch outcome
-                // that looks like success but leaves nothing to act on. Name it
-                // explicitly and say what to do, rather than letting the agent
-                // rediscover it through a chain of failing AX queries.
+                // A launcher's empty window list does not establish whether
+                // another process owns the task UI. Guide native discovery.
                 let windowless = result.success && result.window_count == Some(0);
                 let next_step = if windowless {
                     Some(format!(
-                        "'{}' is running (PID {}) but owns no window, so there is nothing on screen to click. \
-Inspect the application's current state and supported reopen or menu actions, then continue the task. \
+                        "'{}' is running (PID {}) but reports no window for this process. \
+Use list_windows without an app filter to find the task by title; a helper or another process may own its UI. \
+Select an observed window with its pid and window_id before continuing. \
 Do not send screen-coordinate clicks without an observed window or report launch as task completion.",
                         result.app_name,
                         result
@@ -2596,7 +2657,7 @@ Do not send screen-coordinate clicks without an observed window or report launch
                     )
                 } else if windowless {
                     format!(
-                        "Opened '{}'{} but it has NO window — nothing is on screen to act on.",
+                        "Opened '{}'{}; this process reports no window. Use list_windows to discover the task's owning window.",
                         result.app_name,
                         result
                             .process_id
@@ -4015,6 +4076,121 @@ mod tests {
     }
 
     #[test]
+    fn window_discovery_and_selection_survive_every_tool_schema() {
+        for schema in [
+            ComputerUseTool::new().input_schema(),
+            ComputerUseTool::input_schema_text_only(),
+            ComputerUseTool::new().model_input_schema(true),
+            ComputerUseTool::new().model_input_schema(false),
+        ] {
+            assert!(schema["properties"]["action"]["enum"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|action| action == "list_windows"));
+            assert!(schema["properties"]["app"]
+                .to_string()
+                .contains("window_id"));
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_window_is_never_ignored_by_an_older_host() {
+        let host = Arc::new(ControlRecordingHost::default());
+        let context = control_context(host.clone());
+        let error = ComputerUseTool::new()
+            .call_impl(
+                &json!({"action":"get_app_state","app":{"pid":421,"window_id":99}}),
+                &context,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("WINDOW_TARGET_UNSUPPORTED"));
+        assert!(host.events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_exact_window_does_not_observe_the_previous_window_of_the_same_pid() {
+        let host = Arc::new(ControlRecordingHost {
+            fail_capture: true,
+            capture_error: "TARGET_WINDOW_UNAVAILABLE: requested window closed",
+            ..Default::default()
+        });
+        host.state
+            .lock()
+            .unwrap()
+            .capabilities
+            .push("window-target-v1".into());
+        host.state.lock().unwrap().target = Some("pid:421/window:8".into());
+        let context = control_context(host.clone());
+        let error = ComputerUseTool::new()
+            .call_impl(
+                &json!({"action":"get_app_state","app":{"pid":421,"window_id":99}}),
+                &context,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("TARGET_WINDOW_UNAVAILABLE"));
+        assert_eq!(
+            host.control_snapshot().target.as_deref(),
+            Some("pid:421/window:8")
+        );
+        assert!(!host
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.starts_with("observe:")));
+    }
+
+    #[tokio::test]
+    async fn describe_screen_honors_requested_images_and_preserves_text_only_compatibility() {
+        for vision in [true, false] {
+            for requested in [None, Some(false), Some(true)] {
+                let host = Arc::new(ControlRecordingHost {
+                    observation_image: true,
+                    ..Default::default()
+                });
+                let mut context = control_context(host);
+                context.primary_model_facts.supports_image_inputs = vision;
+                context.primary_model_facts.api_format = "anthropic".into();
+                let mut input = json!({"action":"describe_screen","app":{"pid":421}});
+                if let Some(requested) = requested {
+                    input["include_image"] = json!(requested);
+                }
+                let result = ComputerUseTool::new()
+                    .call_impl(&input, &context)
+                    .await
+                    .unwrap();
+                let ToolResult::Result {
+                    data,
+                    image_attachments,
+                    result_for_assistant,
+                } = &result[0]
+                else {
+                    panic!("observation expected")
+                };
+                let expected = vision && requested == Some(true);
+                assert_eq!(data["image_bytes"], expected);
+                assert_eq!(
+                    image_attachments.as_ref().map_or(0, Vec::len),
+                    usize::from(expected)
+                );
+                assert_eq!(data.get("screenshot_meta").is_some(), expected);
+                if expected {
+                    assert_eq!(data["screenshot_meta"]["screenshot_id"], "fixture-image");
+                    assert_eq!(data["observation_id"], "fixture-current");
+                    assert_eq!(image_attachments.as_ref().unwrap()[0].data_base64, "AQID");
+                    assert!(result_for_assistant
+                        .as_ref()
+                        .unwrap()
+                        .contains("fixture-image"));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn every_advertised_action_has_explicit_admission_policy() {
         for schema in [
             ComputerUseTool::new().input_schema(),
@@ -4050,25 +4226,30 @@ mod tests {
             "Fixture".into(),
             identity,
         ));
-        let result = ComputerUseTool::new()
-            .call_impl(&json!({"action":"start_control"}), &remote)
-            .await;
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("workspace is remote"));
+        for input in [
+            json!({"action":"start_control"}),
+            json!({"action":"clipboard_get"}),
+            json!({"action":"clipboard_set","text":"must stay on the runtime host"}),
+        ] {
+            let result = ComputerUseTool::new().call_impl(&input, &remote).await;
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("workspace is remote"));
+        }
         assert!(host.events.lock().unwrap().is_empty());
         let headless = ToolUseContext::for_tool_listing(None, None);
-        let result = ComputerUseTool::new()
-            .call_impl(
-                &json!({"action":"get_app_state","app":{"pid":421}}),
-                &headless,
-            )
-            .await;
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("provider unavailable"));
+        for input in [
+            json!({"action":"get_app_state","app":{"pid":421}}),
+            json!({"action":"clipboard_get"}),
+            json!({"action":"clipboard_set","text":"must not touch the controller"}),
+        ] {
+            let result = ComputerUseTool::new().call_impl(&input, &headless).await;
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("provider unavailable"));
+        }
     }
 
     #[tokio::test]

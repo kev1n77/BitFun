@@ -56,6 +56,16 @@ fall through to a different tab. Ending a conversation releases its selection,
 not the user's browser pages. `open_builtin` and URL-bearing `read_article`
 remain compatible aliases, including their legacy result keys.
 
+External browser actions are background work. A conversation's tab is created in
+the background and selecting a page never raises the user's window; only an
+explicit `activate: true` request surfaces it, for steps that need the human
+(show or watch, sign-in, consent, payment, CAPTCHA, a native picker). Launch
+follows the same rule, so macOS starts the browser without activating it. The
+exceptions are the browser-owned approval prompt for a guarded real-profile
+connection and a user-initiated restart from Settings. A platform without a
+non-activating launch can let the initial browser start take focus; every later
+CDP action stays in the background.
+
 Browser permissions are independent of `ai.computer_use_enabled`. External
 browser identity/availability is exposed only after a Settings connection has
 succeeded (or an opted-in startup connection receives browser-owned consent).
@@ -148,6 +158,17 @@ the existing Runtime tool policy. Application changes invalidate old references;
 they do not require a user to select the next app. Background AT-SPI startup
 does not open a portal picker. Linux portal capture and foreground seat input
 still require compositor-owned consent.
+
+`list_windows` is read-only discovery independent of the active capture and AX
+tree. macOS returns WindowServer top-level windows including off-screen entries;
+Windows returns visible, non-minimized titled top-level windows. Titles and owner
+PIDs reveal multi-window and helper-process UIs that an application list cannot.
+Hosts advertising `window-target-v1` accept `app: {pid, window_id}` to select an
+exact native window. Both IDs must be positive, and native capture validates the
+window's ownership before binding it. Omitted window IDs retain an existing
+binding. Older hosts and Linux reject exact-window requests explicitly; Linux
+keeps its existing AT-SPI and portal selection contracts. No remote-workspace
+request falls back to the controller's desktop.
 
 The optional manual-sharing API uses `awaiting_share`, opaque process-bound
 choices, observe-first capture and a separate revocable input grant. Its scope
@@ -364,6 +385,13 @@ or screen-capture-permission failures, marked `capture_preparation_error`,
 create no binding and attach no prior target's pixels. Lock, stop, ownership,
 generation, revocation and unknown errors cannot use that fallback.
 
+An exact-window preparation failure cannot fall back to another window's AX
+tree, including a previously bound window of the same PID. App-only preparation
+failures suggest native window discovery instead of asserting that the task is
+absent. `describe_screen` keeps its text-only default and honors explicit
+`include_image: true` for vision-capable models, with the selected image's
+reference and geometry in the result. Text-only models receive no image bytes.
+
 A text-only screenshot request performs a real text observation. Tool results
 preserve structured identities, AX/OCR facts, errors and geometry in the model's
 actual result channel; a short summary is not a replacement. Image attachments
@@ -386,6 +414,39 @@ than decoding its own JPEG. Unchanged legitimate dark frames are preserved.
 Explicit action waits subscribe to session changes; Stop, revocation or target
 replacement interrupts them immediately, including waits between batch steps.
 
+### Host clipboard text
+
+`clipboard_get` and `clipboard_set` are existing ComputerUse actions backed by
+the Services Core local-system provider. They address the runtime host's desktop
+clipboard and do not activate an app, require a bound window, or send a paste.
+Both take the control owner lease; reads are allowed in observe mode, writes are
+not. Stop and owner changes invalidate reads. Window-only sharing authorizes
+neither action because the clipboard is a global desktop resource.
+
+The provider uses AppKit string types on macOS, an STA Windows Forms helper on
+Windows, and explicit UTF-8 text helpers for the selected Linux display server.
+Wayland uses `wl-copy`/`wl-paste`; X11 uses `xclip` or `xsel`. Missing desktop
+sessions/helpers fail explicitly, with no Wayland-to-XWayland fallback. Payloads
+travel through stdin/stdout, never interpolated scripts or command arguments.
+Reads/writes preserve Unicode and line endings; writes of empty text clear the
+text clipboard. NUL and text beyond the 16 MiB transport ceiling are rejected.
+
+Each helper has a ten-second deadline and bounded cleanup. A failed or timed-out
+write is an unknown outcome and is never automatically repeated through another
+helper. Linux owner processes may outlive a successful write to serve future
+paste requests, so write completion waits for the launcher, not pipe EOF from
+its descendants. Dropping the operation kills the launcher if it is still live.
+
+`clipboard_get.max_output_bytes` defaults to 64 KiB and caps at 1 MiB; the old
+`max_bytes` alias remains readable and the canonical field wins when both occur.
+The result keeps `text`, original UTF-8 `byte_length`, and `truncated`; truncation
+does not add marker text to the clipboard content. Both model schemas expose the
+same actions and parameters. No persisted or protocol shape is renamed.
+
+Remote workspace and headless dispatch paths reject these tools before native
+IO. Remote control and peer desktop sessions execute against their runtime host;
+they never read/write the driving surface's clipboard as a fallback.
+
 ## Native input rules
 
 Background actions capture desktop witnesses before and after submission.
@@ -403,8 +464,8 @@ operation or prove all transient or later application behavior.
 ### macOS
 
 Retain the selected content window across observations. A sharing-indicator
-window appearing earlier in WindowServer order must not replace it. Conflicting
-explicit window selection fails; validate a replacement before releasing a live
+window appearing earlier in WindowServer order must not replace it. An explicit
+window ID can select another window, including within the same PID; validate a replacement before releasing a live
 capture. AX focused-window observation resolves the actual bound window, not an
 unrelated Sharing dialog. Missing exact identity is an error.
 
@@ -412,8 +473,12 @@ For one unmodified left ImageXy click, native application-root AX hit testing ma
 select an explicitly pressable button, checkbox, radio button or link. The hit
 must belong to the exact bound window and contain the point. Do not rank nearby
 rectangles, climb ancestors or replace double/right/modifier clicks with AXPress.
-Only explicit ActionUnsupported permits a different delivery path; unknown AX
-outcomes stop without a duplicate click.
+For an attempted AX mutation, only explicit ActionUnsupported permits a different
+delivery path; unknown mutation outcomes stop without a duplicate click. The
+optional read-only point lookup has a local 300 ms messaging timeout. An absent,
+unsupported or temporarily unresponsive AX hit test retains the independently
+validated window-coordinate route; permission, identity and unknown errors stay
+visible. This is a route choice before input, never a retry of an uncertain action.
 
 Text/key `focus` uses retained AX identity or native hit testing and semantic
 focus for text controls. Other eligible targets use the exact-window directed
@@ -445,7 +510,10 @@ The directed mouse source is `CombinedSessionState`, with modifier flags set
 explicitly to the requested modifiers. A private mouse source itself caused
 AppKit to raise inactive windows in the strict fixture; changing only that source
 is therefore part of the routing contract, not a reason to add Command. Keyboard
-events retain a private source. Event field 58 is set to 1 for window routing; it
+events retain a private source. A chord uses one source, unique modifiers and
+cumulative press/release flags, ending with no modifiers held. Native modifier
+events are `FlagsChanged`, so cancellation tracks and releases them as well as
+ordinary keys. Event field 58 is set to 1 for window routing; it
 is not a click-group identifier and must not be repurposed as one. These event
 fields are native adapter details, not application-specific rules.
 
@@ -459,10 +527,15 @@ window-addressed down/up focus pair is placed outside the content frame at local
 observed target coordinates and original modifiers. There is no implicit Command,
 global foreground switch, window raise/restore or human-cursor warp.
 
-The preparation cache includes generation, PID, window ID, human foreground
-identity and activation epoch, so preparation is not repeated for every key or
-batch step while stale activation state cannot be reused. There is no app-name
-rule or guessed content-control coordinate. Preparation does not depend on an AX
+The preparation cache includes generation, PID, process-serial identity, window
+ID, human foreground identity, global activation epoch and target-local loss
+epoch. A PID-scoped, listen-only event tap invalidates preparation when native
+deactivation or key-focus loss occurs, even when the human foreground PID does
+not change. It returns every event unchanged and never suppresses input. A
+missing or disabled observer disables cache reuse while keeping directed input
+available; it does not trigger foreground takeover. Stop, target replacement and
+capture failure remove the matching observer. There is no app-name rule or
+guessed content-control coordinate. Preparation does not depend on an AX
 key-state acknowledgement, which normal AppKit windows can omit; fixtures inspect
 their own `NSWindow.keyWindow` directly.
 
@@ -499,10 +572,32 @@ capture errors. No unlock, wake or automatic activation is a recovery action.
 
 ### Windows
 
-Observation and semantic actions share a retained MTA UIA worker/cache. Validate
+Observation, semantic actions, locate, hit-testing and shortcut discovery share
+a retained MTA UIA worker/cache. Validate
 PID, HWND, generation, target revision, enabled state and geometry before supported Invoke,
 Toggle, SelectionItem or Scroll operations. Release retained COM references with
 the cache; do not rebuild indices during input.
+
+Use `CUIAutomation8` / `IUIAutomation2` with automatic focus disabled, a two-second
+connection timeout and a five-second transaction timeout. A separate ten-second
+caller deadline bounds providers that do not honor COM timeouts. Control-token
+cancellation is polled every 50 ms. An occupied worker rejects new requests with
+`AX_PROVIDER_BUSY` until its native call actually returns; caller timeout never
+creates replacement workers or queues more work. Stop and status do not wait on
+that worker. Recheck the request fence immediately before input so a late
+preflight cannot dispatch after abandonment. Once input enters a provider, a
+timeout, cancellation or provider error means `INPUT_OUTCOME_UNKNOWN`; never
+replay it or fall back to a coordinate click. Discard abandoned observations on
+the owning apartment. Idle cache cleanup runs asynchronously there; a new request
+waits for that cleanup within its deadline, without queuing input or blocking Stop.
+A retained observation also carries caller acceptance:
+publishing native cache entries before a rejected reply does not make their
+indices valid for subsequent input. Native input already submitted can still finish after
+Stop, and a permanently hung provider requires recovery or a host restart.
+
+The control card treats preview availability separately from control status.
+Missing AX-only images, capture failures and stale frames clear the preview
+without hiding valid status or disabling Stop.
 
 Standard Unicode Edit/RichEdit text insertion replaces the current selection
 through `EM_REPLACESEL`, preserving text outside that selection. An observed
@@ -578,6 +673,132 @@ port cleanup does not authorize changing persisted or cross-version wire shapes.
 Local fixtures and unsupported-host unit tests are not remote end-to-end evidence.
 
 ## Verification and acceptance
+
+### Background input evidence, 2026-10-17
+
+REA inspected the installed Codex 26.1013.31256 artifact and its `@oai/sky`
+0.7.8 macOS client. The native `SkyComputerUseService` SHA-256 is
+`f21c31c0ee5df419dbd165bf76ebd65c64d864c6fec5b6c6c3a23c42ff3d2e13`.
+JavaScript inventory/analysis covered 41 files without parse failures; 1,513
+dynamic/external semantic relationships remained unknown. Native evidence is
+Mach-O metadata plus symbol-correlated ARM64 disassembly, not recovered Swift
+source: a configured native decompiler was unavailable.
+
+The inspected paths establish these implementation facts:
+
+- The macOS client keeps a transport per API version, serializes requests and
+  uses length-prefixed JSON messages over a Unix socket, with request IDs and
+  deadlines. Input receipts and subsequent application-state reads are separate.
+- `SynthesizedEvent.send(to:)` at `0x10075ad0c` calls the PID-directed event
+  wrapper. Mouse construction supplies a window number and window-local point.
+  PID targeting alone is not the entire background-input mechanism.
+- `SyntheticAppFocusEnforcer` distinguishes actual foreground ownership from
+  whether the target believes itself active/focused. `enforceActiveState` at
+  `0x1007479fc` constructs target-local activation events; `startMonitoring` at
+  `0x100747348` observes target-process events and updates that local state.
+- `safelyEnforceActiveState` at `0x1007482a8` also contains temporary event taps
+  and conditional foreground restoration: `0x100748c64` calls
+  `activateWithOptions:` on the saved foreground application. Its tap callbacks
+  include event suppression/redirection. Static inspection does not establish
+  that every Codex route avoids foreground changes. OpenBitFun retains its
+  stricter background contract and does not adopt those branches.
+
+The REA JavaScript parent Evidence ID is
+`ev_a10e7629df3bce8ec8fe8be5d0d9a870f775b7d798e8eb363f4b718c31a9de02`;
+the Mach-O Evidence ID is
+`ev_299cc4d31a7f4b5776f8c39358856b799661ae9229faee6e45abcb2bc5c13f20`.
+These are static shipped-artifact findings, separate from the real-application
+trials below. They do not recover hidden model prompts or establish a general
+success rate. Third-party artifacts are not build or runtime dependencies.
+
+The focused Desktop Computer Use unit suite passed 181 tests with nine opt-in
+native tests ignored. These cover the new optional AX read policy, actual native
+chord event flags and cancellation bookkeeping, target-loss cache invalidation,
+and foreground-admission guidance. Objective-C strict syntax checking also
+passed. This does not establish native delivery or application compatibility.
+
+Both local native acceptance commands passed: `--orchestration` and `--busy-ax`.
+The full Tool fixture induces real target-local deactivation without a global
+foreground switch. Subsequent ordinary input prepares focus again and reaches
+the original canvas, without repeating its content click or changing another
+field. The `--busy-ax` fixture pauses only its disposable target to trigger real
+AX messaging failure; after resumption, exactly one pointer down/up pair reaches
+the button and activates it once. The mouse witness records dequeued events,
+including those consumed inside standard controls' tracking loops, without
+changing their input behavior or overriding `acceptsFirstMouse`.
+
+Both runs retained independent foreground/key, stacking, observer-input and
+physical-cursor assertions. The full fixture also passed semantic Unicode input,
+modifier shortcuts, scroll, preview revocation and Stop cleanup. Earlier runs
+blocked by the hardware-idle gate were inconclusive and are not counted as
+passes. This is native evidence for the dedicated fixtures on this macOS host,
+not a broad application success-rate benchmark or cross-Space guarantee.
+Windows/Linux native delivery and all four remote scenarios were not exercised
+by this change.
+
+The subsequent systematic native comparison also covered capture selection,
+helper-process target resolution, first-click policy, scrolling, dragging,
+menus/sheets and cancellation. The reference uses desktop-independent window
+capture on an inspected ScreenCaptureKit path; it also has other capture routes.
+Its input target resolver can follow out-of-process AX targets, whereas
+OpenBitFun keeps input within the authorized captured PID/window. Copying that
+resolver would require an explicit authority design. Reference menu/window
+observers and drag APIs do not establish equivalent coverage of system popups,
+all helper processes or cancellation races.
+
+For text, `+[SAIVirtualKeyPress keyPressesForString:]` at `0x10024c2e4` searches
+the current keyboard layout with `UCKeyTranslate`. At `0x10024c428`, an unmatched
+UTF-16 unit is logged and skipped; this method has no Unicode-only fallback.
+The later event converter's optional Unicode field does not remove that
+limitation. OpenBitFun retains direct Unicode scalar delivery and a private
+keyboard source. Fixed US-keyboard shortcut mapping and the local 8 ms text
+pacing policy are not claims of reference parity or non-US layout coverage.
+
+Real-application trials used disposable local documents and isolated browser /
+editor profiles. OpenBitFun actions went through the production
+`ComputerUseTool` and real main-thread run loop using the devtools JSONL probe.
+Reference actions used the installed Codex public native app API; the two
+backends never sent input concurrently to the same application. Results were
+checked in the returned AX tree and, for editors, the saved file, rather than
+inferred from successful action receipts.
+
+| Application / UI family | OpenBitFun observed result | Codex observed result |
+|---|---|---|
+| TextEdit 1.20 / AppKit | Image-coordinate focus, select-all, full `OpenBitFun background 文本🙂`, and save | Click, select-all and save worked; `typeText` retained only `Codex background ` in this trial |
+| Microsoft Edge 155.0.4283.60 / Chromium | One additional button activation, full Unicode input, and anchored scroll | One button activation and anchored scroll; `typeText` retained only ASCII |
+| VS Code 1.117.0 / Electron | Image-coordinate editor focus, full Unicode, Command+Shift+Left replacement and save produced exactly `OpenBitFun shortcut 文本🙂` | Editor click, select-all and save worked; the saved text contained only ASCII |
+| Calculator 11.0 / native controls | Background clear plus directed key sequence `17 + 25` produced `42` | Background clear plus the equivalent key sequence produced `42` |
+
+These are individual compatibility observations on this host/version, not a
+success-rate benchmark or a claim that every Codex text path drops Unicode.
+The reference's static layout-lookup branch is consistent with the observed
+loss, but those actions were not instruction-traced. A planned LibreOffice
+trial could not launch and is not counted as acceptance.
+
+An independent passive witness sampled frontmost PID, physical cursor, AX
+focused-window identity and relative stacking at a requested 10 ms interval,
+with activation notifications and sampling-gap records. It requested no OS
+permissions, created no window and posted no input. No trial recorded the
+target application becoming the human foreground. During the OpenBitFun Edge
+and Calculator intervals, foreground PID and cursor were unchanged and the
+target stayed below the foreground window; available AX focus samples retained
+the same window ID. Some AX reads timed out or became stale and remain unknown.
+TextEdit / VS Code intervals also contained real user cursor movement or
+switches among other foreground applications, so they are not an unchanged-
+desktop proof. The Codex Edge click/text interval contained one target-above-
+foreground stacking sample between below samples with the same foreground PID
+and AX window ID. Its cause was not isolated; it is not evidence of invariant
+window order. Polling can miss transients; the controlled fixture's independent
+observer-input, key-window and exact-delivery checks remain necessary.
+
+Cancellation cleanup now retains and revalidates process identity, confirms the
+original window still belongs to that process, and uses current window geometry
+for mouse release routing. A missing target or failed window-local route cannot
+fall back to an unbound event. These checks reduce stale-target delivery; they
+do not make the identity-check-to-post interval atomic. The focused unit tests
+cover identity changes, routing failure, window changes and serialized cleanup
+before capture teardown, while native Stop
+acceptance exercises ordinary cleanup.
 
 ### Latency design evidence, 2026-10-13
 

@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::Mutex;
 
-use openbitfun_core::agentic::tools::computer_use_host::AppInfo;
+use openbitfun_core::agentic::tools::computer_use_host::{AppInfo, AppWindowInfo};
 use openbitfun_core::util::errors::OpenBitFunResult;
 use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, LPARAM, TRUE};
@@ -103,6 +103,22 @@ pub(super) fn list_share_targets() -> Vec<openbitfun_agent_tools::computer_use_c
                 selection_required: false,
             },
         )
+        .collect()
+}
+
+/// Available visible, non-minimized titled top-level windows. Unlike the app
+/// list this preserves every window of a process and its exact native handle.
+pub(super) fn list_windows() -> Vec<AppWindowInfo> {
+    enumerate_windows()
+        .into_iter()
+        .map(|window| AppWindowInfo {
+            pid: window.pid as i32,
+            window_id: window.hwnd as u64,
+            application: exe_basename_for_pid(window.pid).unwrap_or_default(),
+            title: window.title,
+            bundle_id: None,
+            is_on_screen: Some(true),
+        })
         .collect()
 }
 

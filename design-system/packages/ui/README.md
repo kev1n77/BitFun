@@ -34,6 +34,18 @@ dismissal. Floating menus and dialogs within either pane continue to use the
 document overlay coordinator. Owners control visibility with `mode` and persist
 split and overlay sizes independently when those preferences differ.
 
+For movable tab hosts, pass a flat keyed deck through `surfaces` and render each
+view inside `SplitViewSurface pane="primary" | "secondary"`. Changing `pane` keeps
+the same React/DOM host. Inactive surfaces stay mounted but are inert and hidden
+from accessibility; F6 navigates visible surfaces. Do not reparent portals between
+pane containers to simulate a move.
+
+Use the `header` render function for chrome aligned with the divider. Its
+`columnClassName` supplies layout-owned columns tied to live resizing and clamping,
+not a second stored width. Apply it to a three-column header (primary, separator,
+secondary); keep padding inside those columns. Header layout works without CSS
+subgrid. The primitive remains independent of product tabs and stores.
+
 Place `SplitViewPrimaryDock` inside the primary content's positioned container
 for an absolute input or toolbar that must avoid the secondary overlay. Its
 width and placement follow the displayed pane size, including pointer drags and
@@ -116,6 +128,15 @@ Keep `outline` for ordinary toolbar utilities and secondary choices. A neutral
 `tone="danger"` for destructive actions. Disabled and loading states belong to
 the same variant; do not switch a primary action to outline when it is disabled.
 
+Use `quiet` for compact toolbar text actions such as refresh, submit, and open
+in browser. It uses neutral secondary text, a transparent surface and border at
+rest, then primary text and a subtle border on hover or press, without an
+underline. It shares native focus, disabled, and loading behavior with other
+variants, uses the base corner radius and `space.3` inline padding, and keeps
+the selected size's height and typography. Use `text` for link-like emphasis.
+Consumers should select this variant instead of recreating its colors and
+hover border in product CSS.
+
 Button outline and text variants have transparent resting surfaces. Fill and
 primary state colors come from the theme's `component.button.*` contract, with
 variant-specific disabled content. The secondary variant keeps its opaque
@@ -161,6 +182,64 @@ the native scrollbar while preserving scrolling. `Menu`, `Listbox`, and
 `NavigationPanelBody` forward the same contract. Product styles own layout and
 `scrollbar-gutter`, not local scrollbar colors or show/hide handlers. Monaco
 and terminal renderers keep their own scrollbar APIs.
+
+## Guided configuration
+
+`SetupWizard` provides the split-pane layout for complex, staged configuration.
+It includes the split header, a tinted guide pane, one compact current-step
+indicator, a content viewport, and an independent footer. It has no divider lines.
+The same component can sit inside a `Dialog` or an inline card. Its container
+query stacks the guide above the form when the available width is narrow.
+
+```tsx
+import { Button, Dialog, DialogClose, SetupWizard } from "@openbitfun/ui";
+import { useId } from "react";
+
+const titleId = useId();
+
+<Dialog open={open} onOpenChange={close} size="2xl" aria-labelledby={titleId}>
+  <SetupWizard
+    title="Configure workflow"
+    titleId={titleId}
+    headerActions={<DialogClose />}
+    guideLabel="Configuration guidance"
+    step={{
+      id: step.id,
+      label: step.label,
+      title: step.guideTitle,
+      description: step.guideDescription,
+      progress: formatProgress(current + 1, steps.length),
+    }}
+    contentMode={step.hasEditor ? "contained" : "scroll"}
+    footer={<>
+      <Button onClick={close}>Cancel</Button>
+      {current > 0 && <Button onClick={back}>Back</Button>}
+      <Button type="submit" form={formId} loading={saving}>Next</Button>
+    </>}
+  >
+    <form id={formId} onSubmit={validateAndAdvance}>{stepContent}</form>
+  </SetupWizard>
+</Dialog>
+```
+
+The consumer controls the current step, any number of stages, field drafts,
+validation, focus after navigation, asynchronous work, and submission. A stable
+`step.id` resets only the content scroll position when the stage changes;
+ordinary field updates do not reset scrolling or remount the content. Supply
+localized copy and progress; the package imports no locale catalog or product
+state. The guide announces the new explanation and current step together.
+
+Write the left-hand guide about consequences, scope, or decision criteria.
+Keep field instructions beside their controls on the right. Avoid a second
+step list or repeating the right-hand heading on the left.
+
+Use `contentMode="scroll"` for ordinary forms. `contained` bounds the content
+viewport and delegates scrolling to an editor or other child. In that mode,
+intermediate wrappers must use a flex column with `flex: 1` and `min-height: 0`.
+Size the root through `className` or `style` when its default viewport height
+does not suit the host. Keep validation and loading states in the content and
+action slots. `Dialog` continues to own focus trapping, dismissal, and portals;
+connect its `aria-labelledby` to `SetupWizard.titleId` explicitly.
 
 ## Text overflow
 
@@ -401,7 +480,7 @@ focus ring. Use it for toolbar, dialog, and row utilities. `fill` and `primary`
 keep an opaque backing surface for persistent emphasis. Disabled quiet actions
 remain transparent and do not show hover or pressed feedback.
 
-`IconButton variant="glass"` is a translucent, blurred action over existing
+`Button variant="glass"` and `IconButton variant="glass"` share a translucent, blurred action over existing
 content. It uses a low-opacity tint of the shared raised surface, a softened
 subtle border and subtle blur, without an outer shadow. Hover and pressed states
 retain translucency. Unsupported blur, increased contrast and reduced transparency
@@ -488,7 +567,10 @@ and ref interface, using the same Lucide MessageCircle glyph.
 ## Advanced selection and menus
 
 Use `Select` for simple options; its hidden native control preserves form
-participation. `Combobox` adds searchable single
+participation. `width="content"` fits the collapsed control to the selected label;
+`popupWidth="content"` independently fits the expanded surface to its options,
+within the viewport. The defaults remain a full-width control and a popup that
+matches the trigger. `Combobox` adds searchable single
 selection, grouped options, explicit custom-value creation and async loading
 states. `MultiSelect` owns multiple selection, removable tags and select-all.
 Controlled values are authoritative; option discovery remains host-owned.
@@ -734,6 +816,8 @@ Extra-large (`xl`) dialogs have an 800px maximum width and continue shrinking wi
 Keep `Dialog` and `Sheet` mounted and set `open={false}` to close them. They retain the last committed children, size, placement, classes, and styles during the exit animation, with interaction disabled, so clearing an owner selection does not resize the surface. Reopening uses the latest presentation and cancels the pending exit. Owners that conditionally mount an editor can remove it in `onExitComplete`, which runs once after the surface unmounts.
 
 PageHeader `md` uses the settings title with a primary 15px description; `display` uses the welcome heading and medium 17px introduction with a 12px gap. ActionCard uses 12px padding, section-heading typography (15px semibold), and a primary 13px single-line action description. Its inset outline does not inflate the 62px medium minimum height; longer content keeps the independent sibling actions and OverflowText behavior.
+
+`ActionCard actionPlacement="floating"` overlays its independent action buttons without reserving text width. It shares the circular glass material, pointer-hover and keyboard-focus reveal, touch visibility, and reduced-transparency fallback used by tab-close actions and Capsules. Cards use the larger standard icon-button size; tabs and Capsules retain the compact xs size. The default `inline` placement keeps actions in the layout. Each action can provide `loading`, `disabled`, `tone`, and an optional `tooltip` while the main card remains a separate native button.
 
 KeyHint uses 10px text on a 10px line and 2px block padding. StatusPill uses a 14px line with 2px block padding; opt into `emphasis` for short mode labels such as Ask, while ordinary status descriptions retain readable content colors. LauncherButton owns a 72px minimum width, 40px height, 10px side padding, 4px gap, 12px icon and 11px monospace text. Product shells may retain a deliberate compact greeting that expands into this geometry.
 

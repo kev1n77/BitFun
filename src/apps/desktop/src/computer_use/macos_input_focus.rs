@@ -12,6 +12,26 @@ use openbitfun_core::util::errors::{OpenBitFunError, OpenBitFunResult};
 use std::sync::Mutex;
 use std::time::Duration;
 
+unsafe extern "C" {
+    fn obf_focus_loss_epoch(
+        pid: i32,
+        window: u32,
+        generation: u64,
+        identity_high: u32,
+        identity_low: u32,
+        start: bool,
+    ) -> u64;
+    fn obf_focus_loss_stop(
+        pid: i32,
+        window: u32,
+        generation: u64,
+        identity_high: u32,
+        identity_low: u32,
+    );
+    #[cfg(test)]
+    fn obf_focus_event_is_loss(event_type: u32, subtype: i64) -> bool;
+}
+
 #[derive(Clone, Copy)]
 struct Focus {
     pid: i32,
@@ -20,16 +40,45 @@ struct Focus {
     generation: u64,
     foreground: i32,
     activation_epoch: u64,
+    loss_epoch: u64,
 }
 impl Focus {
-    fn reusable(self, next: Self) -> bool {
+    fn same_target(self, next: Self) -> bool {
         self.pid == next.pid
             && self.identity == next.identity
             && self.window == next.window
             && self.generation == next.generation
+    }
+    fn reusable(self, next: Self) -> bool {
+        self.same_target(next)
             && self.foreground == next.foreground
             && next.activation_epoch != 0
             && self.activation_epoch == next.activation_epoch
+            && next.loss_epoch != 0
+            && self.loss_epoch == next.loss_epoch
+    }
+    fn observed_loss_epoch(self, start: bool) -> u64 {
+        unsafe {
+            obf_focus_loss_epoch(
+                self.pid,
+                self.window,
+                self.generation,
+                self.identity.0[0],
+                self.identity.0[1],
+                start,
+            )
+        }
+    }
+    fn stop_observer(self) {
+        unsafe {
+            obf_focus_loss_stop(
+                self.pid,
+                self.window,
+                self.generation,
+                self.identity.0[0],
+                self.identity.0[1],
+            )
+        }
     }
 }
 static FOCUS: Mutex<Option<Focus>> = Mutex::new(None);
@@ -47,6 +96,7 @@ fn cleanup(focus: Focus) {
 pub(super) fn stop() {
     if let Ok(mut state) = FOCUS.lock() {
         if let Some(focus) = state.take() {
+            focus.stop_observer();
             cleanup(focus);
         }
     }
@@ -82,19 +132,18 @@ pub(super) fn prepare(pid: i32) -> OpenBitFunResult<()> {
     let mut state = FOCUS
         .lock()
         .map_err(|_| OpenBitFunError::tool("Background input focus lock poisoned"))?;
-    let focus = Focus {
+    let mut focus = Focus {
         pid,
         identity,
         window,
         generation,
         foreground,
         activation_epoch,
+        loss_epoch: 0,
     };
+    focus.loss_epoch = focus.observed_loss_epoch(false);
     if state.is_some_and(|previous| previous.reusable(focus)) {
         return Ok(());
-    }
-    if let Some(old) = state.take() {
-        cleanup(old);
     }
     if ![x, y, width, height].iter().all(|v| v.is_finite()) || width <= 0.0 || height <= 0.0 {
         return Err(OpenBitFunError::tool(
@@ -122,14 +171,26 @@ pub(super) fn prepare(pid: i32) -> OpenBitFunResult<()> {
         pair.push(event);
     }
     check(pid, window)?;
+    if let Some(old) = state.take() {
+        if !old.same_target(focus) {
+            old.stop_observer();
+            cleanup(old);
+        }
+    }
+    // Observe only this process, without suppressing or changing its events.
+    // An unavailable/disabled tap returns zero, which disables cache reuse but
+    // does not prevent normal directed input. No main-thread wait is involved.
+    focus.loss_epoch = focus.observed_loss_epoch(true);
     // Register cleanup before attempting any native state mutation.
     *state = Some(focus);
     if !super::macos_skylight::set_local_activation(identity, window, true) {
+        focus.stop_observer();
         state.take();
         return Err(OpenBitFunError::tool("[BACKGROUND_INPUT_UNAVAILABLE] Target-local input activation failed; no content input was sent"));
     }
     std::thread::sleep(Duration::from_millis(20));
     if let Err(error) = check(pid, window) {
+        focus.stop_observer();
         cleanup(focus);
         state.take();
         return Err(error);
@@ -144,6 +205,7 @@ pub(super) fn prepare(pid: i32) -> OpenBitFunResult<()> {
     // missing AX attribute into a blanket rejection of visual-only controls.
     std::thread::sleep(Duration::from_millis(10));
     if let Err(error) = check(pid, window) {
+        focus.stop_observer();
         cleanup(focus);
         state.take();
         return Err(error);
@@ -165,6 +227,7 @@ mod tests {
             generation: 1,
             foreground: 33,
             activation_epoch: 4,
+            loss_epoch: 1,
         };
         assert!(original.reusable(original));
         assert!(!original.reusable(Focus {
@@ -193,7 +256,43 @@ mod tests {
             generation: 1,
             foreground: 33,
             activation_epoch: 0,
+            loss_epoch: 1,
         };
         assert!(!pending.reusable(pending));
+    }
+
+    #[test]
+    fn target_loss_invalidates_focus_without_a_foreground_switch() {
+        let prepared = Focus {
+            pid: 11,
+            identity: super::super::macos_skylight::ProcessIdentity([0, 11]),
+            window: 22,
+            generation: 1,
+            foreground: 33,
+            activation_epoch: 4,
+            loss_epoch: 1,
+        };
+        assert!(prepared.reusable(prepared));
+        assert!(!prepared.reusable(Focus {
+            loss_epoch: 2,
+            ..prepared
+        }));
+        assert!(!prepared.reusable(Focus {
+            loss_epoch: 0,
+            ..prepared
+        }));
+    }
+
+    #[test]
+    fn only_native_focus_loss_events_invalidate_preparation() {
+        // AppKit app deactivation, process deactivation and key-focus loss.
+        for (kind, subtype) in [(13, 2), (19, 0), (21, 0x1000), (21, 0x4000)] {
+            assert!(unsafe { super::obf_focus_event_is_loss(kind, subtype) });
+        }
+        // Our own activation, focus-return notifications and content input are
+        // not losses and therefore cannot force preparation on every action.
+        for (kind, subtype) in [(13, 1), (20, 0), (21, 0x8000), (1, 0), (10, 0)] {
+            assert!(!unsafe { super::obf_focus_event_is_loss(kind, subtype) });
+        }
     }
 }

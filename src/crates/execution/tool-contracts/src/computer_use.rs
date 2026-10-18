@@ -391,6 +391,10 @@ pub struct AppSelector {
     pub bundle_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<i32>,
+    /// Exact native window from `list_windows`. Requires its owning PID and a
+    /// host advertising `window-target-v1`; never silently ignore this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_id: Option<u64>,
 }
 
 impl AppSelector {
@@ -400,6 +404,7 @@ impl AppSelector {
             name: Some(name.into()),
             bundle_id: None,
             pid: None,
+            window_id: None,
         }
     }
 
@@ -409,6 +414,7 @@ impl AppSelector {
             name: None,
             bundle_id: None,
             pid: Some(pid),
+            window_id: None,
         }
     }
 
@@ -418,13 +424,41 @@ impl AppSelector {
             name: None,
             bundle_id: Some(bundle_id.into()),
             pid: None,
+            window_id: None,
         }
     }
 
     /// True when no selector field is populated.
     pub fn is_empty(&self) -> bool {
-        self.name.is_none() && self.bundle_id.is_none() && self.pid.is_none()
+        self.name.is_none()
+            && self.bundle_id.is_none()
+            && self.pid.is_none()
+            && self.window_id.is_none()
     }
+
+    pub fn validate_window_target(&self) -> Result<(), &'static str> {
+        if self.window_id.is_some()
+            && (self.window_id == Some(0) || !self.pid.is_some_and(|pid| pid > 0))
+        {
+            return Err("[INVALID_PARAMS] window_id requires a positive owning pid and a positive window_id from list_windows");
+        }
+        Ok(())
+    }
+}
+
+/// Read-only native window discovery, independent of AX content and of the
+/// application launcher's identity. Discovery does not select or activate it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AppWindowInfo {
+    pub pid: i32,
+    pub window_id: u64,
+    pub application: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_id: Option<String>,
+    /// Native visibility fact, not a guarantee that capture or input works.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_on_screen: Option<bool>,
 }
 
 /// One running application, returned by `ComputerUseHost::list_apps`.
@@ -1686,6 +1720,44 @@ mod input_tests {
         let input = json!({});
         let (params, _) = parse_screenshot_params(&input).expect("parse");
         assert!(!params.crop_to_focused_window);
+    }
+}
+
+#[cfg(test)]
+mod window_selector_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_app_selectors_round_trip_without_new_fields() {
+        for value in [
+            json!({"pid":421}),
+            json!({"name":"Example"}),
+            json!({"bundle_id":"example.app"}),
+        ] {
+            let selector: AppSelector = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(selector.window_id, None);
+            assert!(selector.validate_window_target().is_ok());
+            assert_eq!(serde_json::to_value(selector).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn exact_window_requires_its_owning_process() {
+        for value in [
+            json!({"window_id":42}),
+            json!({"name":"Example","window_id":42}),
+            json!({"pid":0,"window_id":42}),
+            json!({"pid":421,"window_id":0}),
+        ] {
+            let selector: AppSelector = serde_json::from_value(value).unwrap();
+            assert!(!selector.is_empty());
+            assert!(selector.validate_window_target().is_err());
+        }
+        let value = json!({"pid":421,"window_id":42});
+        let selector: AppSelector = serde_json::from_value(value.clone()).unwrap();
+        assert!(selector.validate_window_target().is_ok());
+        assert_eq!(serde_json::to_value(selector).unwrap(), value);
     }
 }
 

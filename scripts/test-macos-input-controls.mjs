@@ -6,9 +6,10 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 assert.equal(process.platform, 'darwin', 'directed input fixture requires macOS');
 const latency = process.argv.includes('--latency');
-const orchestration = process.argv.includes('--orchestration') || process.argv.includes('--semantic') || latency;
+const busyAx = process.argv.includes('--busy-ax');
+const orchestration = process.argv.includes('--orchestration') || process.argv.includes('--semantic') || latency || busyAx;
 const semantic = process.argv.includes('--semantic') || orchestration;
-assert.ok(process.argv.length === 2 || (process.argv.length === 3 && semantic), 'Usage: node scripts/test-macos-input-controls.mjs [--semantic | --orchestration | --latency]');
+assert.ok(process.argv.length === 2 || (process.argv.length === 3 && semantic), 'Usage: node scripts/test-macos-input-controls.mjs [--semantic | --orchestration | --latency | --busy-ax]');
 const root = fileURLToPath(new URL('../', import.meta.url));
 const run = (command, args, env = process.env, onSpawn) => new Promise((resolve, reject) => {
   const child = spawn(command, args, { cwd: root, stdio: 'inherit', windowsHide: true, env });
@@ -118,6 +119,7 @@ try {
     OPENBITFUN_INPUT_FIXTURE_APP: join(directory, 'OpenBitFun Input Target.app'),
     OPENBITFUN_INPUT_FIXTURE_RESULT: result, OPENBITFUN_INPUT_OBSERVER_RESULT: `${result}.observer`,
     OPENBITFUN_INPUT_HOST_READY: hostReady,
+    ...(busyAx ? { OPENBITFUN_INPUT_BUSY_AX: '1' } : {}),
   };
   // Initialize AppKit before creating the foreground observer. Otherwise the
   // test host's own startup can deactivate it before the first tool action.
@@ -173,7 +175,7 @@ try {
       assert.equal(event.flags & (1 << 20), 0, 'focus preparation must not add Command');
     }
   }
-  console.log(semantic ? 'PASS: native AX hit testing and semantic input operate on covered controls without raising the target' : 'PASS: standard controls and non-AX canvas preserve input semantics and foreground state');
+  console.log(busyAx ? 'PASS: real AX timeout retains one directed click with foreground and cursor unchanged' : semantic ? 'PASS: native AX hit testing and semantic input operate on covered controls without raising the target' : 'PASS: standard controls and non-AX canvas preserve input semantics and foreground state');
 } finally {
   if (harness && harness.exitCode === null) await new Promise(resolve => { harness.once('exit', resolve); harness.kill('SIGTERM'); });
   if (observer && observer.exitCode === null) await new Promise(resolve => { observer.once('exit', resolve); observer.kill('SIGTERM'); });

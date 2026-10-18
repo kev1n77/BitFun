@@ -249,12 +249,16 @@ they do not exercise live SSH, relay, peer, or dispatch connections.
 
 For disk-backed history paging and legacy sessions without a catalog:
 `cargo test --locked -p openbitfun-core --no-default-features --features remote-connect,git --lib history_page_`.
+
 Also run the `staged_revert_catalog_projection` and `load_relay_session_turns_`
 filters for the same target when changing visibility. Paging must not parse
 unrelated turn bodies or rewrite history. To compare real-file first-page work
 against full materialization locally, use the same target with
 `history_page_benchmark -- --ignored --nocapture`; it checks content equivalence
 and reports timings without asserting a machine-dependent latency in CI.
+
+For workspace metadata catalog paging, cache reuse and cross-process invalidation:
+`cargo test --locked -p openbitfun-core --no-default-features --features external-sources,git,product-search --lib -- catalog_snapshot_ catalog_query_pages_`.
 
 For host-stream history reads and abandoned execution after a runtime restart:
 `cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib load_relay_session_turns_`.
@@ -375,6 +379,32 @@ local versus remote instruction composition:
 cargo test --locked -p openbitfun-core --no-default-features --features external-sources,git --lib instruction_
 ```
 
+For external session indexing, immutable source views, viewed-version forks,
+legacy materialization, workspace ownership and cancellation (including the full-text search build):
+
+```bash
+cargo test -p openbitfun-core --no-default-features --features external-sources,git,product-search --lib external_session_import::
+cargo test -p openbitfun-core --no-default-features --features external-sources,git,product-search --lib agentic::persistence::manager::tests
+cargo test -p openbitfun-core --no-default-features --features external-sources,git,product-search --lib session_fork_
+cargo test -p openbitfun-core --no-default-features --features external-sources,git,product-search --lib agentic::persistence::session_branch::tests
+cargo test -p openbitfun-core --no-default-features --features external-sources,git,product-search --lib agentic::session::session_manager::tests::restore_session_
+```
+
+Optional read-only Zcode-to-temporary-native-store verification uses the same
+target with `inspect_installed_zcode_native_import -- --ignored --nocapture`.
+It reads the installed source and writes only inside a temporary test directory.
+
+For immutable external-history cache/window reads, byte-budget eviction, v1
+snapshot compatibility and viewed-version isolation, use the same target with
+`history_cache_`. The fixtures count real-file snapshot reads, derived catalog
+builds and copied turns; they do not measure native WebView or remote latency.
+
+The same target also supports `inspect_installed_codex_history_repair -- --ignored --nocapture`.
+Set `OPENBITFUN_TEST_NATIVE_SESSIONS_ROOT` and `OPENBITFUN_TEST_NATIVE_SESSION_ID`
+to an existing answerless Codex import. It reads the installed native copy and
+Codex source, exercises the repair in a temporary copy, and verifies the original
+native history is unchanged.
+
 Detached Dispatch controller, target query compatibility, and managed-baseline checks:
 
 ```bash
@@ -437,4 +467,11 @@ For plain-prompt goal activation and remote goal storage routing:
 
 ```bash
 cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git,remote-workspace --lib thread_goal_
+```
+
+Assistant naming, concurrent host allocation, and user-title protection:
+
+```bash
+cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib service::workspace::service::tests::assistant_
+cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib title_
 ```

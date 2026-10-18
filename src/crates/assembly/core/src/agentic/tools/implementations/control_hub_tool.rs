@@ -290,12 +290,36 @@ impl ControlHubTool {
         }
     }
 
-    async fn create_browser_page(port: u16, url: Option<&str>) -> OpenBitFunResult<CdpPageInfo> {
+    /// Create a new page/tab for an external browser session.
+    ///
+    /// Browser control is background work by default: the tab is created
+    /// without activating it so the user's window and focus stay where they
+    /// are. Only an explicit `activate` request creates a foreground tab.
+    async fn create_browser_page(
+        port: u16,
+        url: Option<&str>,
+        activate: bool,
+    ) -> OpenBitFunResult<CdpPageInfo> {
         if let Some(connection) = CdpClient::browser_connection(port).await {
-            connection.client.create_browser_page(url).await
-        } else {
+            connection.client.create_browser_page(url, !activate).await
+        } else if activate {
             CdpClient::create_page(port, url).await
+        } else {
+            CdpClient::create_page_in_background(port, url).await
         }
+    }
+
+    /// Whether this call asked the browser to surface the page to the user.
+    ///
+    /// Background is the default for every browser action. `activate: true` is
+    /// the opt-in for the cases that genuinely need the visible window: the
+    /// user asked to watch or be shown the page, or a human step (sign-in,
+    /// consent, CAPTCHA) has to happen in it.
+    fn browser_activation_requested(params: &Value) -> bool {
+        params
+            .get("activate")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
     }
 
     async fn connect_page(port: u16, page: &CdpPageInfo) -> OpenBitFunResult<CdpClient> {
@@ -470,6 +494,7 @@ impl ControlHubTool {
 ### domain: "browser"
 - `navigate { url, target?, session_id?, observe? }` opens a URL/domain and creates a page when needed. No preliminary connect/open/list call is needed. Default `target: "builtin"` uses Desktop's built-in browser; subsequent calls retain this conversation's page. `observe: "snapshot"` returns controls/@eN refs; `observe: "article"` returns readable text. Omit observe to only show the page; reuse returned observations.
 - For account/login-dependent work, prefer `target: "external"` only when a user-authorized connection is available. `connect { mode: "default", session_id? | target_url?, target_title?, activate? }` selects an existing tab without navigating; filters must match uniquely. Settings owns browser/profile selection and consent. Unavailable/disconnected access requires the user to connect there; never enable permissions or switch profiles yourself.
+- External tabs are created and selected in the background: the browser window, its z-order, and the user's focus stay untouched. Pass `activate: true` (navigate/connect/tab_new/switch_page) only when the user asked to watch or be shown the page, or when the next step needs them to act inside it (sign-in, consent, payment, CAPTCHA, a native picker). Background control still reads and drives the page; never raise the window just to make an action "look" like it ran.
 - `connect { mode: "headless", port? }` only attaches to an already-running headless test browser (default 9223). It never launches or falls back to the user's browser. External calls inherit the selected page's port.
 - Both targets share the same action contract. Keep returned session_id across pages; stale ids never select another tab. To show the browser surface without a URL, use OpenBitFunControl `{ action: "open", capability_id: "feature.browser" }`. Do not invent `about:blank`.
 
@@ -477,7 +502,7 @@ Actions (`selector` accepts observed @eN refs or CSS; `ref` is an alias):
 - Observe: `snapshot`, `read_article`, `get { selector, attribute? }` (text/html/value/href), `evaluate { expression, await_promise?, max_value_bytes? }` for structured extraction. Refresh only when the next decision needs new state.
 - Input: `click/hover/check/uncheck { selector }`, `fill { selector, value }` replaces text, `type { text }` appends at focus, `select { selector, option_text }`, `press_key { key }`, `scroll { direction?, amount? }`, `auto_scroll { direction?, max_scrolls?, delay_ms? }`.
 - Wait/capture: `wait { condition, timeout_ms? }` accepts a selector, load, domcontentloaded or networkidle; prefer the needed element. Built-in networkidle means native load completion. `screenshot { format?, quality?, full_page? }`: full-page requires CDP; text-only models use snapshot.
-- Tabs: `list_pages`, `tab_query { url_contains?, title_contains?, limit? }`, `tab_new { url }`, `switch_page { page_id, activate? }`, `back/forward/reload/close`.
+- Tabs: `list_pages`, `tab_query { url_contains?, title_contains?, limit? }`, `tab_new { url, activate? }`, `switch_page { page_id, activate? }`, `back/forward/reload/close`.
 - Page context: `fetch { url, method?, headers?, body? }` uses page credentials and CORS; `cookies { urls? }`, `set_cookies { cookies }`. WebFetch reads public HTTP without browser state; WebSearch discovers URLs.
 - CDP only: `set_file_input_files { selector, files }`, `cdp { method, params? }`, `network/console/errors { sub_command?, filter?, since?, limit? }`, `trace { sub_command }`, `dialog { response, prompt_text? }` arms the next dialog.
 
@@ -1230,6 +1255,11 @@ Results: `{ok, domain, action, data? , error?: {code, message, hints}}`. Check o
             Err(error) => return Ok(err_response("browser", action, error)),
         };
         let requested_id = params.get("session_id").and_then(Value::as_str);
+        // Browser control is background work: navigation reuses or creates a
+        // tab without touching the user's window unless the caller explicitly
+        // asked to show it.
+        let activate_on_create =
+            kind == BrowserTargetKind::External && Self::browser_activation_requested(params);
         let mut created = false;
         let mut opened_with_url = false;
         let target = if kind == BrowserTargetKind::BuiltIn {
@@ -1341,7 +1371,8 @@ Results: `{ok, domain, action, data? , error?: {code, message, hints}}`. Check o
                 {
                     // A first URL visit must not overwrite an arbitrary user's
                     // tab (or another conversation's selected page).
-                    let page = Self::create_browser_page(connected.port, None).await?;
+                    let page =
+                        Self::create_browser_page(connected.port, None, activate_on_create).await?;
                     let client = Self::connect_page(connected.port, &page).await?;
                     let session = BrowserSession {
                         session_id: page.id,
@@ -1403,6 +1434,25 @@ Results: `{ok, domain, action, data? , error?: {code, message, hints}}`. Check o
         data["target"] = json!(kind.as_str());
         data["session_id"] = json!(target.session_id());
         data["created"] = json!(created);
+        if kind == BrowserTargetKind::External {
+            // A freshly created foreground tab is already visible; an existing
+            // page the caller asked to surface still needs the explicit raise.
+            let activated = if activate_on_create && !created {
+                target
+                    .client()
+                    .send("Page.bringToFront", None)
+                    .await
+                    .is_ok()
+            } else {
+                activate_on_create
+            };
+            data["activated"] = json!(activated);
+            data["activation"] = json!(if activate_on_create {
+                "foreground"
+            } else {
+                "background"
+            });
+        }
         if data["loaded"] == false && data.get("warning").is_none() {
             data["warning"] = json!("Navigation was submitted, but loading is not confirmed. Inspect this page or wait for the needed element; do not repeat navigation to repair an observation.");
         }
@@ -1744,8 +1794,9 @@ Results: `{ok, domain, action, data? , error?: {code, message, hints}}`. Check o
                 // (3 round-trips and one chance to pick the wrong id). With
                 // `target_url` / `target_title` we collapse those into a
                 // single `connect` call: pick the unique page whose URL or
-                // title contains the substring, register it as the default
-                // session, and bring it to the front.
+                // title contains the substring and register it as the default
+                // session. Selecting a tab stays a background operation; only
+                // `activate: true` surfaces it in the user's window.
                 let target_url = params
                     .get("target_url")
                     .and_then(|v| v.as_str())
@@ -1754,10 +1805,7 @@ Results: `{ok, domain, action, data? , error?: {code, message, hints}}`. Check o
                     .get("target_title")
                     .and_then(|v| v.as_str())
                     .map(str::to_lowercase);
-                let activate = params
-                    .get("activate")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true);
+                let activate = Self::browser_activation_requested(params);
 
                 let version = Self::browser_version(port).await?;
                 if mode == "headless" {
@@ -1771,7 +1819,7 @@ Results: `{ok, domain, action, data? , error?: {code, message, hints}}`. Check o
                     && target_url.is_none()
                     && target_title.is_none();
                 if created_page {
-                    pages.push(Self::create_browser_page(port, None).await?);
+                    pages.push(Self::create_browser_page(port, None, activate).await?);
                 }
                 let connected_browser = if mode == "headless" {
                     "Headless test browser".to_string()
@@ -1866,14 +1914,13 @@ Results: `{ok, domain, action, data? , error?: {code, message, hints}}`. Check o
                     .enable_observers()
                     .await;
 
-                // If the model targeted a specific tab AND wants it
-                // foregrounded (default), bring it to front the same
-                // way switch_page does. Failure here is non-fatal —
-                // we still return the connected session.
+                // Selecting a tab is background work. Only an explicit
+                // `activate: true` raises the browser window; a failed raise is
+                // still non-fatal because the session itself is connected.
                 let mut activated = false;
                 let mut activate_warning: Option<String> = None;
                 let targeted = matched_by_target.is_some();
-                if targeted && activate {
+                if activate && !created_page {
                     match session.client.send("Page.bringToFront", None).await {
                         Ok(_) => activated = true,
                         Err(e) => {
@@ -1883,6 +1930,9 @@ Results: `{ok, domain, action, data? , error?: {code, message, hints}}`. Check o
                                     ));
                         }
                     }
+                } else if activate {
+                    // The tab was just created in the foreground for this call.
+                    activated = true;
                 }
 
                 let mut result = json!({
@@ -1899,6 +1949,7 @@ Results: `{ok, domain, action, data? , error?: {code, message, hints}}`. Check o
                     "matched_by_target": targeted,
                     "created": created_page,
                     "activated": activated,
+                    "activation": if activate { "foreground" } else { "background" },
                     "status": if mode == "headless" {
                         "attached"
                     } else if uses_user_profile {
@@ -2170,11 +2221,8 @@ Results: `{ok, domain, action, data? , error?: {code, message, hints}}`. Check o
                     )]);
                 }
                 let url = params.get("url").and_then(|v| v.as_str());
-                let activate = params
-                    .get("activate")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true);
-                let page = Self::create_browser_page(port, url).await?;
+                let activate = Self::browser_activation_requested(params);
+                let page = Self::create_browser_page(port, url, activate).await?;
                 let client = Self::connect_page(port, &page).await?;
                 let session = BrowserSession {
                     session_id: page.id.clone(),
@@ -2189,9 +2237,13 @@ Results: `{ok, domain, action, data? , error?: {code, message, hints}}`. Check o
                 let _ = BrowserActions::new(session.client.as_ref())
                     .enable_observers()
                     .await;
-                if activate {
-                    let _ = session.client.send("Page.bringToFront", None).await;
-                }
+                let activated = if activate {
+                    // New tabs stay in the background unless the caller asked
+                    // to hand this one to the user.
+                    session.client.send("Page.bringToFront", None).await.is_ok()
+                } else {
+                    false
+                };
                 Ok(vec![ToolResult::ok(
                     json!({
                         "success": true,
@@ -2199,7 +2251,8 @@ Results: `{ok, domain, action, data? , error?: {code, message, hints}}`. Check o
                         "session_id": session.session_id,
                         "page_url": page.url,
                         "page_title": page.title,
-                        "activated": activate,
+                        "activated": activated,
+                        "activation": if activate { "foreground" } else { "background" },
                     }),
                     Some(format!(
                         "New tab opened: {} (session {})",
@@ -2242,16 +2295,11 @@ Results: `{ok, domain, action, data? , error?: {code, message, hints}}`. Check o
                         )),
                     )]);
                 }
-                // Phase 2: by default ALSO surface the chosen tab in the
-                // user's actual browser window via `Page.bringToFront`. The
-                // legacy behavior only swapped the CDP session under the
-                // hood, leaving the user staring at the old tab while the
-                // model "drove" an invisible one. Models can opt out by
-                // passing `activate: false` for headless background tabs.
-                let activate = params
-                    .get("activate")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true);
+                // Switching the agent's target page is a background operation.
+                // `activate: true` additionally surfaces the tab in the user's
+                // window, which is only wanted when they asked to watch or when
+                // the next step needs them to interact with it.
+                let activate = Self::browser_activation_requested(params);
 
                 let registry = browser_sessions();
                 let mut reused = false;
@@ -2304,6 +2352,7 @@ Results: `{ok, domain, action, data? , error?: {code, message, hints}}`. Check o
                     "session_id": session.session_id,
                     "reused": reused,
                     "activated": activated,
+                    "activation": if activate { "foreground" } else { "background" },
                 });
                 if let Some(w) = &activate_warning {
                     body["warning"] = json!(w);
@@ -3507,6 +3556,7 @@ impl Tool for ControlHubTool {
                         "session_id": { "type": "string", "description": "Exact browser page id returned by navigation, connection or inventory. Not the conversation id." },
                         "url": { "type": "string", "description": "Destination URL for navigate/tab_new, request URL for fetch." },
                         "observe": { "type": "string", "enum": ["none", "snapshot", "article"], "description": "Navigation's optional final observation; reuse it instead of a separate read." },
+                        "activate": { "type": "boolean", "description": "External browser only; false by default. When true, the created or selected tab is brought in front of the user's window. Use it only when the user must see the page or act in it." },
                         "selector": { "type": "string", "description": "Observed @eN ref or CSS selector for a page element." },
                         "value": { "type": "string", "description": "Replacement text for fill." },
                         "text": { "type": "string", "description": "Text to type into the focused control." },
@@ -4688,6 +4738,39 @@ mod control_hub_tests {
         assert!(
             desc.contains("mode: \"headless\"") && desc.contains("mode: \"default\""),
             "description must mention both browser connect modes"
+        );
+    }
+
+    #[test]
+    fn browser_activation_is_opt_in() {
+        // Browser control must not steal the user's window or focus unless the
+        // caller asked for it, so every missing or non-boolean value is
+        // background.
+        assert!(!ControlHubTool::browser_activation_requested(&json!({})));
+        assert!(!ControlHubTool::browser_activation_requested(&json!({
+            "activate": false
+        })));
+        assert!(!ControlHubTool::browser_activation_requested(&json!({
+            "activate": "true"
+        })));
+        assert!(ControlHubTool::browser_activation_requested(&json!({
+            "activate": true
+        })));
+    }
+
+    #[tokio::test]
+    async fn description_documents_background_browser_control() {
+        let desc = ControlHubTool::new().description().await.unwrap();
+        assert!(
+            desc.contains("created and selected in the background")
+                && desc.contains("`activate: true`"),
+            "description must state that external tabs stay in the background and when activation is allowed"
+        );
+        let schema = ControlHubTool::new().input_schema();
+        assert_eq!(
+            schema.pointer("/properties/params/properties/activate/type"),
+            Some(&json!("boolean")),
+            "activate must be discoverable in the tool schema"
         );
     }
 

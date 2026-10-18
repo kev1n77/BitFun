@@ -19,6 +19,7 @@ export const ALL_NAMESPACES = [
   'scenes/ecosystem-compatibility',
   'scenes/miniapp',
   'scenes/pages',
+  'scenes/personal-overview',
   'scenes/profile',
   'scenes/skills',
   'scenes/todos',

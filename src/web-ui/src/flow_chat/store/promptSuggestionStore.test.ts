@@ -9,17 +9,33 @@ import {
 } from './promptSuggestionStore';
 
 const candidate = { suggestion: 'Run the tests', sourceTurnId: 't1' };
-const idle = { editorEmpty: true, value: '', canCompose: true, processing: false, latestTurnId: 't1', latestTurnStatus: 'completed' };
+const idle = { enabled: true, editorEmpty: true, value: '', canCompose: true, processing: false, latestTurnId: 't1', latestTurnStatus: 'completed' };
 const key = (name: string, modifiers: Partial<Record<'shiftKey' | 'ctrlKey' | 'metaKey' | 'altKey', boolean>> = {}) => ({
   key: name, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, ...modifiers,
 });
 
 afterEach(() => {
-  usePromptSuggestionStore.setState({ suggestions: {} });
+  usePromptSuggestionStore.setState({ suggestions: {}, enabledBySurface: {} });
   activateSurface(LOCAL_SURFACE_ID);
 });
 
 describe('prompt suggestion store', () => {
+  it('clears disabled host hints, rejects late results, and keeps other hosts independent', () => {
+    const store = usePromptSuggestionStore.getState();
+    store.setSuggestion('a', candidate, LOCAL_SURFACE_ID);
+    store.setSuggestion('b', candidate, LOCAL_SURFACE_ID);
+    store.setSuggestion('a', candidate, 'peer');
+    store.setEnabled(false, LOCAL_SURFACE_ID);
+    store.setSuggestion('a', candidate, LOCAL_SURFACE_ID);
+    expect(usePromptSuggestionStore.getState().suggestions).toEqual({
+      [promptSuggestionKey('a', 'peer')]: candidate,
+    });
+    store.setEnabled(true, LOCAL_SURFACE_ID);
+    expect(usePromptSuggestionStore.getState().suggestions[promptSuggestionKey('a')]).toBeUndefined();
+    store.setSuggestion('a', candidate, LOCAL_SURFACE_ID);
+    expect(usePromptSuggestionStore.getState().suggestions[promptSuggestionKey('a')]).toEqual(candidate);
+  });
+
   it('keeps one suggestion per session and clears only the requested one', () => {
     const store = usePromptSuggestionStore.getState();
     store.setSuggestion('a', { suggestion: 'Run the tests', sourceTurnId: 't1' });
@@ -52,6 +68,7 @@ describe('prompt suggestion store', () => {
 describe('visiblePromptSuggestion', () => {
   it('shows the suggestion only for an empty idle composer that can submit', () => {
     expect(visiblePromptSuggestion(candidate, idle)).toBe('Run the tests');
+    expect(visiblePromptSuggestion(candidate, { ...idle, enabled: false })).toBeNull();
     expect(visiblePromptSuggestion(undefined, idle)).toBeNull();
     expect(visiblePromptSuggestion(candidate, { ...idle, value: 'R' })).toBeNull();
     expect(visiblePromptSuggestion(candidate, { ...idle, editorEmpty: false })).toBeNull();

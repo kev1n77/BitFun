@@ -6,6 +6,7 @@
 #import <CoreVideo/CoreVideo.h>
 #import <CoreImage/CoreImage.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <stdatomic.h>
 #include <string.h>
 extern void obf_control_native_stopped(uint64_t generation, uint64_t revision, int32_t pid, uint32_t windowID, const char *reason);
@@ -33,6 +34,148 @@ static void obf_install_activation_observer(void) {
 }
 uint64_t obf_capture_activation_epoch(void) {
     return atomic_load_explicit(&obfActivationEpoch, memory_order_acquire);
+}
+
+// WindowServer can remove a target's internal focus without changing the
+// human's foreground application. Observe that target's events passively; this
+// tap never suppresses, edits, reroutes or posts an event. Native event subtype
+// field 83 distinguishes AppKit activation and process focus notifications.
+bool obf_focus_event_is_loss(uint32_t type, int64_t subtype) {
+    return (type == 13 && subtype == 2) || type == 19 ||
+        (type == 21 && (subtype == 0x1000 || subtype == 0x4000));
+}
+
+@interface OBFFocusLossObserver : NSObject {
+@public
+    _Atomic(uint64_t) epoch;
+    _Atomic(bool) ready;
+    CFMachPortRef tap;
+    CFRunLoopSourceRef source;
+}
+@property(nonatomic) int32_t pid;
+@property(nonatomic) uint32_t windowID;
+@property(nonatomic) uint64_t generation;
+@property(nonatomic) uint32_t identityHigh;
+@property(nonatomic) uint32_t identityLow;
+- (void)install;
+- (void)invalidate;
+@end
+
+static CGEventRef obf_focus_loss_event(CGEventTapProxy proxy, CGEventType type,
+                                     CGEventRef event, void *context) {
+    (void)proxy;
+    OBFFocusLossObserver *observer = (__bridge OBFFocusLossObserver *)context;
+    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+        // Missing events make the cached state unknown. Keep input available,
+        // but never reuse preparation against this observer again.
+        atomic_store_explicit(&observer->ready, false, memory_order_release);
+    } else if (event && obf_focus_event_is_loss(type,
+                   CGEventGetIntegerValueField(event, (CGEventField)83))) {
+        atomic_fetch_add_explicit(&observer->epoch, 1, memory_order_release);
+    }
+    return event;
+}
+
+@implementation OBFFocusLossObserver
+- (instancetype)init {
+    if ((self = [super init])) {
+        atomic_init(&epoch, 1);
+        atomic_init(&ready, false);
+    }
+    return self;
+}
+- (void)install {
+    CGEventMask mask = CGEventMaskBit(13) | CGEventMaskBit(19) | CGEventMaskBit(21);
+    tap = CGEventTapCreateForPid(self.pid, kCGTailAppendEventTap,
+        kCGEventTapOptionListenOnly, mask, obf_focus_loss_event, (__bridge void *)self);
+    if (!tap) return;
+    source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0);
+    if (!source) {
+        CFMachPortInvalidate(tap);
+        CFRelease(tap);
+        tap = NULL;
+        return;
+    }
+    // CFRunLoop source registration is thread-safe. It does not synchronously
+    // dispatch to AppKit, so callers may hold Rust FOCUS or CAPTURE locks.
+    atomic_store_explicit(&ready, CGEventTapIsEnabled(tap), memory_order_release);
+    CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
+    CFRunLoopWakeUp(CFRunLoopGetMain());
+}
+- (void)invalidate {
+    // The callback and final removal run on the main runloop. The queued block
+    // retains this observer until no callback can use its unretained context.
+    if (source) {
+        CFRunLoopRemoveSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
+        CFRelease(source);
+        source = NULL;
+    }
+    if (tap) {
+        CFMachPortInvalidate(tap);
+        CFRelease(tap);
+        tap = NULL;
+    }
+}
+@end
+
+static NSLock *obf_focus_loss_lock(void) {
+    static NSLock *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [[NSLock alloc] init]; });
+    return lock;
+}
+static OBFFocusLossObserver *obfFocusLossObserver;
+
+static void obf_focus_loss_dispose(OBFFocusLossObserver *observer) {
+    if (!observer) return;
+    atomic_store_explicit(&observer->ready, false, memory_order_release);
+    dispatch_async(dispatch_get_main_queue(), ^{ [observer invalidate]; });
+}
+
+uint64_t obf_focus_loss_epoch(int32_t pid, uint32_t windowID, uint64_t generation,
+                            uint32_t identityHigh, uint32_t identityLow, bool start) {
+    NSLock *lock = obf_focus_loss_lock();
+    [lock lock];
+    OBFFocusLossObserver *observer = obfFocusLossObserver;
+    BOOL matches = observer && observer.pid == pid && observer.windowID == windowID &&
+        observer.generation == generation && observer.identityHigh == identityHigh &&
+        observer.identityLow == identityLow;
+    OBFFocusLossObserver *old = nil;
+    if (!matches && start) {
+        old = observer;
+        observer = [[OBFFocusLossObserver alloc] init];
+        observer.pid = pid;
+        observer.windowID = windowID;
+        observer.generation = generation;
+        observer.identityHigh = identityHigh;
+        observer.identityLow = identityLow;
+        obfFocusLossObserver = observer;
+        [observer install];
+        matches = YES;
+    }
+    uint64_t value = matches && atomic_load_explicit(&observer->ready, memory_order_acquire)
+        ? atomic_load_explicit(&observer->epoch, memory_order_acquire) : 0;
+    [lock unlock];
+    obf_focus_loss_dispose(old);
+    return value;
+}
+
+static void obf_focus_loss_stop_matching(int32_t pid, uint32_t windowID, uint64_t generation,
+                                        bool checkIdentity, uint32_t identityHigh, uint32_t identityLow) {
+    NSLock *lock = obf_focus_loss_lock();
+    [lock lock];
+    OBFFocusLossObserver *observer = obfFocusLossObserver;
+    BOOL matches = observer && observer.pid == pid && observer.windowID == windowID &&
+        observer.generation == generation && (!checkIdentity ||
+        (observer.identityHigh == identityHigh && observer.identityLow == identityLow));
+    if (matches) obfFocusLossObserver = nil;
+    [lock unlock];
+    if (matches) obf_focus_loss_dispose(observer);
+}
+
+void obf_focus_loss_stop(int32_t pid, uint32_t windowID, uint64_t generation,
+                         uint32_t identityHigh, uint32_t identityLow) {
+    obf_focus_loss_stop_matching(pid, windowID, generation, true, identityHigh, identityLow);
 }
 
 @interface OBFWindowCapture : NSObject <SCStreamOutput, SCStreamDelegate>
@@ -75,6 +218,7 @@ uint64_t obf_capture_activation_epoch(void) {
     self.pixels = nil;
     [self.condition broadcast];
     [self.condition unlock];
+    obf_focus_loss_stop_matching(self.pid, self.windowID, self.generation, false, 0, 0);
 }
 - (void)stream:(SCStream *)stream didStopWithError:(NSError *)error {
     [self fail:[NSString stringWithFormat:@"CAPTURE_STOPPED: %@", error.localizedDescription]];
@@ -463,15 +607,34 @@ void obf_capture_stop(void *handle) {
     [arrow lineToPoint:NSMakePoint(15, 8)];
     [arrow curveToPoint:NSMakePoint(8, 8) controlPoint1:NSMakePoint(12, 7) controlPoint2:NSMakePoint(10, 6)];
     [arrow closePath];
-    [NSGraphicsContext saveGraphicsState];
-    NSShadow *shadow = [[NSShadow alloc] init];
-    shadow.shadowColor = [NSColor colorWithWhite:0 alpha:0.45];
-    shadow.shadowBlurRadius = 3;
-    shadow.shadowOffset = NSMakeSize(0, -2);
-    [shadow set];
-    [[NSColor colorWithSRGBRed:166.0/255 green:166.0/255 blue:166.0/255 alpha:1] setFill];
-    [arrow fill];
-    [NSGraphicsContext restoreGraphicsState];
+    // Shrink around the hotspot, leaving room for the fixed 3pt white outline.
+    NSAffineTransform *size = [NSAffineTransform transform];
+    [size translateXBy:8 yBy:8];
+    [size scaleBy:0.7];
+    [size translateXBy:-8 yBy:-8];
+    [arrow transformUsingAffineTransform:size];
+    arrow.lineWidth = 3;
+    arrow.lineJoinStyle = NSLineJoinStyleRound;
+    // A broad halo plus a denser contact shadow, both centered on the complete
+    // silhouette. Zero offset keeps the falloff even around every white edge.
+    const CGFloat blur[] = {5, 1.5};
+    const CGFloat opacity[] = {0.5, 0.8};
+    for (NSUInteger layer = 0; layer < 2; ++layer) {
+        [NSGraphicsContext saveGraphicsState];
+        NSShadow *shadow = [[NSShadow alloc] init];
+        shadow.shadowColor = [NSColor colorWithWhite:0 alpha:opacity[layer]];
+        shadow.shadowBlurRadius = blur[layer];
+        shadow.shadowOffset = NSZeroSize;
+        [shadow set];
+        CGContextRef context = NSGraphicsContext.currentContext.CGContext;
+        CGContextBeginTransparencyLayer(context, NULL);
+        [[NSColor colorWithSRGBRed:64.0/255 green:64.0/255 blue:64.0/255 alpha:1] setFill];
+        [arrow fill];
+        [NSColor.whiteColor setStroke];
+        [arrow stroke];
+        CGContextEndTransparencyLayer(context);
+        [NSGraphicsContext restoreGraphicsState];
+    }
 }
 @end
 static NSPanel *obfPointerPanel;

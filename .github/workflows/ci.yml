@@ -322,6 +322,12 @@ jobs:
         if: runner.os != 'Windows'
         run: cargo test --locked -p openbitfun-desktop --lib
 
+      # Exercise production UIA/control code even if the Tauri test executable
+      # cannot load. Interactive delivery fixtures remain explicitly ignored.
+      - name: Run Windows Computer Use provider regressions
+        if: runner.os == 'Windows'
+        run: node scripts/test-windows-computer-use-native.mjs
+
       # Tauri issue #13419 prevents some Windows MSVC lib-test harnesses from
       # entering Rust's test runner at all. Keep probing on every run so the
       # full suite resumes automatically when upstream fixes it. Only the exact
@@ -366,6 +372,20 @@ jobs:
       # regressions in worker interruption, relay storage, or OAuth handling.
       - name: Run Page Functions runtime tests
         run: cargo test --locked -p openbitfun-page-function-runtime
+
+      - name: Run Computer Use clipboard contracts
+        run: cargo test --locked -p openbitfun-services-core --no-default-features --features process-runtime --lib system::local_actions
+
+      - name: Run Windows clipboard round trip
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p openbitfun-services-core --no-default-features --features process-runtime --lib system::local_actions::clipboard::tests::native_clipboard_roundtrip -- --ignored --exact
+
+      - name: Run Linux clipboard round trips
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get install -y --no-install-recommends xvfb xauth xclip xsel wl-clipboard sway
+          bash scripts/test-linux-clipboard.sh
 
       - name: Run Relay service tests
         run: cargo test --locked -p openbitfun-relay-service

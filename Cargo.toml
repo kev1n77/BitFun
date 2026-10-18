@@ -3,6 +3,7 @@ members = [
     "src/apps/cli",
     "src/apps/sdk-host",
     "src/apps/desktop",
+    "src/apps/miniapp-shell",
     "src/apps/data-tools",
     "src/apps/server",
     "src/apps/relay-server",
@@ -14,6 +15,7 @@ members = [
     "src/crates/interfaces/app-server-protocol",
     "src/crates/interfaces/sdk-host",
     "src/crates/adapters/agent-runtime-ipc",
+    "src/crates/adapters/miniapp-ipc",
     "src/crates/assembly/agent-content",
     "src/crates/assembly/core",
     "src/crates/assembly/external-sources",
@@ -24,6 +26,7 @@ members = [
     "src/crates/adapters/opencode-plugin-host",
     "src/crates/adapters/claude-code-adapter",
     "src/crates/adapters/codex-adapter",
+    "src/crates/adapters/zcode-adapter",
     "src/crates/adapters/static-hook-support",
     "src/crates/adapters/webdriver",
     "src/crates/adapters/transport",
@@ -56,6 +59,7 @@ exclude = [
     "OpenBitFun-Installer/src-tauri",
     "third_party/eioc",
     "third_party/tao",
+    "third_party/wry",
 ]
 
 resolver = "2"
@@ -308,6 +312,9 @@ eioc = { path = "third_party/eioc" }
 # Restore macOS traffic-light geometry after the queued native style reset.
 # See third_party/tao/OPENBITFUN-PATCH.md for the upstream source and removal condition.
 tao = { path = "third_party/tao" }
+# Keep macOS HTML drags in WebKit while preserving native file-drop paths.
+# See third_party/wry/OPENBITFUN-PATCH.md for source and removal conditions.
+wry = { path = "third_party/wry" }
 # Tauri 2.11 loses keyboard focus for child webviews after Windows reactivates
 # an `unstable` multi-webview window. Use the upstream fix until released;
 # this revision also adopts tao 0.36, which includes the Windows input deadlock fix.
@@ -342,3 +349,12 @@ lto = false
 codegen-units = 16
 strip = false
 incremental = true
+
+# Build the window-only sidecar independently, including during Desktop dev.
+# Never inherit Desktop's large debug artifact or its unified dependency features.
+[profile.miniapp-shell]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+debug = false
+strip = true

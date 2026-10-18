@@ -6,6 +6,7 @@ import { flowChatEn, flowChatZhCN, flowChatZhTW } from "./flowChatMessages";
 import { subagentMotionEn, subagentMotionZhCN, subagentMotionZhTW } from "./subagentMotionMessages";
 import { thinkingIndicatorEn, thinkingIndicatorZhCN, thinkingIndicatorZhTW } from "./thinkingIndicatorMessages";
 import { splitViewEn, splitViewZhCN, splitViewZhTW } from "./splitViewMessages";
+import { setupWizardEn, setupWizardZhCN, setupWizardZhTW } from "./setupWizardMessages";
 import type { DesignLabLocale } from "./core.mjs";
 
 export const enUSMessages = {
@@ -16,6 +17,7 @@ export const enUSMessages = {
   ...subagentMotionEn,
   ...thinkingIndicatorEn,
   ...splitViewEn,
+  ...setupWizardEn,
   ...flowChatEn,
   "component.OpenBitFunSolidMark.description": "The original silver solid mark on a transparent canvas, preserving its material and shading.",
   "component.OpenBitFunAppIcon.description": "The application icon used by the installed product: silver mark, black rounded-square tile, and assets for different display sizes.",
@@ -838,6 +840,7 @@ export const zhCNMessages = {
   ...subagentMotionZhCN,
   ...thinkingIndicatorZhCN,
   ...splitViewZhCN,
+  ...setupWizardZhCN,
   ...flowChatZhCN,
   "component.OpenBitFunSolidMark.description": "透明底的银色实体标志，保留原稿的材质、光泽与立体明暗。",
   "component.OpenBitFunAppIcon.description": "实际应用使用的图标：银色实体标志、黑色圆角底板，以及适配不同显示尺寸的资源。",
@@ -1658,6 +1661,7 @@ export const zhTWMessages = {
   ...subagentMotionZhTW,
   ...thinkingIndicatorZhTW,
   ...splitViewZhTW,
+  ...setupWizardZhTW,
   ...flowChatZhTW,
   "patterns.description": "查看元件在常見介面中的組合與互動。",
   "patterns.title": "組合範例",

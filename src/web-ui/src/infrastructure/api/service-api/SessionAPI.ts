@@ -27,12 +27,20 @@ export type UiSessionMetadataField =
   | 'needsUserAttention'
   | 'titleMetadata';
 
+export interface SessionCatalogQuery {
+  workspaceId: string;
+  ordering: 'created' | 'updated';
+  source: string;
+  sortTimestamps?: Record<string, number>;
+}
+
 export interface SessionMetadataPageRequest {
   workspaceId: string;
   limit: number;
   cursor?: string;
   /** Read only these summaries (max 128), without returning metadata rows. */
   sessionIds?: string[];
+  query?: SessionCatalogQuery;
 }
 
 export interface SessionMetadataPage {
@@ -43,6 +51,13 @@ export interface SessionMetadataPage {
   hasMore: boolean;
   /** Absent on older hosts; never interpret absence as an empty snapshot. */
   activities?: SessionActivitySummary[];
+  discoveryWarnings?: string[];
+  discoveryPending?: boolean;
+  /** Present only when the host applied this complete query before paging. */
+  catalogQuery?: SessionCatalogQuery;
+  catalogRevision?: string;
+  /** The cursor belonged to another query/version; this page restarts at zero. */
+  catalogReset?: boolean;
 }
 
 export interface SessionLineageRequest {
@@ -409,6 +424,7 @@ export class SessionAPI {
           limit: request.limit,
           ...(request.cursor ? { cursor: request.cursor } : {}),
           ...(request.sessionIds ? { session_ids: request.sessionIds } : {}),
+          ...(request.query ? { query: request.query } : {}),
         }
       }));
     } catch (error) {

@@ -65,6 +65,12 @@ node --test OpenBitFun-Installer/scripts/build-installer.test.cjs scripts/data-t
 cargo test --manifest-path OpenBitFun-Installer/src-tauri/Cargo.toml --lib installer::commands::tests
 ```
 
+For ZIP dependency or extraction changes, verify compatibility with old installer payloads:
+
+```bash
+cargo test --manifest-path OpenBitFun-Installer/src-tauri/Cargo.toml --lib installer::extract::tests
+```
+
 Run the full installer build only for packaging, payload, native bundling,
 install/uninstall flow, registry, shortcut, or extraction changes:
 

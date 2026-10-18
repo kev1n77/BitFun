@@ -143,6 +143,7 @@ import { IconCompositionPreview } from "../preview/IconCompositionPreview";
 import { RollingTextPreview } from "../preview/RollingTextPreview";
 import { ThinkingIndicatorPreview } from "../preview/ThinkingIndicatorPreview";
 import { SplitViewPreview } from "../preview/SplitViewPreview";
+import { SetupWizardPreview } from "../preview/SetupWizardPreview";
 import { NestedMenuPattern } from "./ReferencePatterns";
 import { useI18n, type MessageKey } from "../i18n";
 import {
@@ -209,7 +210,7 @@ function ReferenceDisclosure({ label, children }: { label: string; children: Rea
   );
 }
 
-const buttonVariants = ["outline", "fill", "secondary", "primary", "text"] as const;
+const buttonVariants = ["outline", "fill", "secondary", "primary", "quiet", "text"] as const;
 const iconButtonVariants = ["annotation", "quiet", "glass", "outline", "fill", "primary"] as const;
 const iconButtonSizes = ["xs", "standard", "sm", "md", "lg"] as const;
 const buttonInspectorStates = ["default", "hover", "active"] as const;
@@ -224,6 +225,8 @@ const iconSizes = ["2xs", "xs", "sm", "md", "lg"] as const;
 const iconTones = ["inherit", "primary", "secondary", "muted", "disabled", "info", "success", "warning", "danger"] as const;
 
 const optionLabelKeys: Readonly<Record<string, MessageKey>> = {
+  form: "setupWizard.state.form",
+  contained: "setupWizard.state.contained",
   ...Object.fromEntries(Object.keys(previewEn).filter(key => key.startsWith("preview.state.")).map(key => [key.slice("preview.state.".length), key as MessageKey])),
   collapsed: "detail.option.collapsed",
   streaming: "detail.option.streaming",
@@ -493,6 +496,9 @@ export function ComponentDetailPage({
   const inspectorStates = states;
 
   const codeSample = useMemo(() => {
+    if (component.name === "SetupWizard") {
+      return 'import { SetupWizard } from "@openbitfun/ui";\n\n// The host owns step state, drafts, validation, and saving.\n<SetupWizard\n  title={title}\n  titleId={titleId}\n  headerActions={<CloseButton />}\n  guideLabel={guideLabel}\n  step={{ ...steps[current], progress: formatProgress(current + 1, steps.length) }}\n  contentMode={steps[current].hasEditor ? "contained" : "scroll"}\n  footer={<StepActions />}\n>\n  <StepForm />\n</SetupWizard>\n\n// For a modal, connect Dialog aria-labelledby to the same titleId.\n';
+    }
     if (component.name === "SplitView") {
       return `import { SplitView } from "@openbitfun/ui";\n\n<SplitView\n  primary={<Chat />}\n  secondary={<Content />}\n  mode={mode}\n  secondarySide={contentSide}\n  rightSize={rightSize}\n  onRightSizeChange={setRightSize}\n  dividerLabel="${t('splitView.resize')}"\n  dividerActions={<SwapButton onClick={swapPanes} />}\n/>`;
     }
@@ -972,6 +978,7 @@ export function ComponentDetailPage({
       return <ThinkingIndicatorPreview key={state} state={state} />;
     }
     if (component.name === "SplitView") return <SplitViewPreview state={state} />;
+    if (component.name === "SetupWizard") return <SetupWizardPreview state={state} />;
 
     if (component.name === "MobileButton") {
       return <MobileButton data-openbitfun-preview-state={state} disabled={state === "disabled"} loading={state === "loading"}>{t("components.preview.actionCardTitle")}</MobileButton>;

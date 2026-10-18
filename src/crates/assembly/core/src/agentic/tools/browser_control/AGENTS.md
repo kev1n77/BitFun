@@ -16,6 +16,11 @@ observation/targeting helpers, used by both built-in and external browser client
   duplicate refs are errors, not successful empty snapshots.
 - Bounded text/value projections declare truncation. Inaccessible frames and
   offscreen elements are reported so absence is not mistaken for nonexistence.
+- External browser control is background work. Creating or selecting a tab must
+  not raise the user's window or take focus: pass `background: true` to
+  `Target.createTarget` and keep `Page.bringToFront` behind an explicit
+  `activate` request. Launch paths follow the same rule (`open -g` on macOS), and
+  only a browser-owned consent prompt or a user-visible launch may activate.
 
 ## Focused verification
 

@@ -392,17 +392,19 @@ impl DesktopSessionApplication {
         cursor: Option<&str>,
         limit: usize,
         session_ids: Option<&[String]>,
+        query: Option<&openbitfun_services_core::session::page::SessionCatalogQuery>,
     ) -> DesktopSessionApplicationResult<SessionMetadataPage> {
         let scope = self.resolved_scope(request).await?;
         let storage_path = self.storage_path(&scope);
         let mut page = self
             .compatibility
-            .list_persisted_sessions_page_with_activity(
+            .list_persisted_sessions_page_with_activity_and_query(
                 &self.agent_runtime,
                 &storage_path,
                 cursor,
                 limit,
                 session_ids,
+                query.filter(|query| query.workspace_id == scope.workspace_id),
             )
             .await
             .map_err(|error| DesktopSessionApplicationError::Core(error.to_string()))?;

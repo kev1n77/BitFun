@@ -165,6 +165,7 @@ fn projected(r: &Resource) -> ControlSnapshot {
     s.capabilities.extend(
         [
             "window-capture",
+            "window-target-v1",
             "background-ax-semantic-input",
             "background-directed-keyboard",
             "background-directed-scroll",
@@ -177,6 +178,7 @@ fn projected(r: &Resource) -> ControlSnapshot {
     s.capabilities.extend(
         [
             "window-capture",
+            "window-target-v1",
             "background-uia-semantic-input",
             "background-window-messages",
             "foreground-seat-input",
@@ -322,9 +324,7 @@ pub(crate) fn input_allowed() -> Result<(), String> {
 pub(crate) fn foreground_allowed() -> Result<(), String> {
     input_allowed()?;
     if locked()?.admission.snapshot.mode != ControlMode::Foreground {
-        return Err(
-            "[FOREGROUND_REQUIRED] Seat input requires start_control with mode=foreground".into(),
-        );
+        return Err(admission::FOREGROUND_REQUIRED.into());
     }
     Ok(())
 }

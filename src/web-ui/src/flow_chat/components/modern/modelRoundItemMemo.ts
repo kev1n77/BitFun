@@ -13,6 +13,7 @@ export interface ModelRoundItemProps {
   turnStartedAt?: number;
   turnEndedAt?: number;
   turnDurationMs?: number;
+  turnOutputDurationMs?: number;
   turnTokenUsage?: TokenUsage;
   canvasArtifactItems?: FlowToolItem[];
   expandedThinkingItemIds?: string[];
@@ -59,6 +60,7 @@ export function areModelRoundItemPropsEqual(prev: ModelRoundItemProps, next: Mod
     prev.turnStartedAt === next.turnStartedAt &&
     prev.turnEndedAt === next.turnEndedAt &&
     prev.turnDurationMs === next.turnDurationMs &&
+    prev.turnOutputDurationMs === next.turnOutputDurationMs &&
     prev.turnTokenUsage === next.turnTokenUsage &&
     prev.canvasArtifactItems === next.canvasArtifactItems
   );

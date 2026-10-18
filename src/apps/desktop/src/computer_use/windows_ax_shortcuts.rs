@@ -22,14 +22,11 @@ use openbitfun_core::agentic::tools::computer_use_host::{
 };
 use openbitfun_core::util::errors::{OpenBitFunError, OpenBitFunResult};
 use windows::Win32::Foundation::HWND;
-use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
-};
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationCacheRequest, IUIAutomationElement,
-    IUIAutomationTogglePattern, ToggleState_On, TreeScope_Subtree, UIA_AcceleratorKeyPropertyId,
-    UIA_ControlTypePropertyId, UIA_IsEnabledPropertyId, UIA_MenuBarControlTypeId,
-    UIA_MenuItemControlTypeId, UIA_NamePropertyId, UIA_TogglePatternId,
+    IUIAutomation, IUIAutomationCacheRequest, IUIAutomationElement, IUIAutomationTogglePattern,
+    ToggleState_On, TreeScope_Subtree, UIA_AcceleratorKeyPropertyId, UIA_ControlTypePropertyId,
+    UIA_IsEnabledPropertyId, UIA_MenuBarControlTypeId, UIA_MenuItemControlTypeId,
+    UIA_NamePropertyId, UIA_TogglePatternId,
 };
 
 /// Menu-tree recursion depth cap (menu bar → menu → item → submenu → …).
@@ -221,16 +218,10 @@ fn find_menu_bar(root: &IUIAutomationElement) -> Option<IUIAutomationElement> {
 /// found — modern Fluent/Electron apps frequently have no classic menu
 /// bar, which is a legitimate "no shortcuts (via this mechanism)" answer.
 pub(super) fn get_app_menu_shortcuts(hwnd: HWND) -> OpenBitFunResult<(Vec<AppMenuShortcut>, u32)> {
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-
-        let automation: IUIAutomation =
-            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).map_err(|e| {
-                OpenBitFunError::tool(format!(
-                    "UI Automation (CoCreateInstance CUIAutomation): {}.",
-                    e
-                ))
-            })?;
+    let hwnd = hwnd.0 as isize;
+    super::windows_ax_ui::run_read("shortcuts", move || unsafe {
+        let hwnd = HWND(hwnd as *mut _);
+        let automation = super::windows_ax_ui::create_automation()?;
 
         let cache_req = build_shortcuts_cache_request(&automation)?;
 
@@ -251,7 +242,7 @@ pub(super) fn get_app_menu_shortcuts(hwnd: HWND) -> OpenBitFunResult<(Vec<AppMen
         };
         walk(&menu_bar, &[], 0, &mut state);
         Ok((state.out, state.without_shortcut))
-    }
+    })
 }
 
 #[cfg(test)]

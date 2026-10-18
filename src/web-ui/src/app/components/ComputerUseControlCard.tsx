@@ -72,8 +72,10 @@ export function ComputerUseControlCard() {
               && (previous.snapshot.target_revision ?? 0) === (next.target_revision ?? 0)
               ? { ...previous, frame, framePointer: next.pointer } : previous);
           } catch {
+            // Preview is optional (for example, an AX-only observation). A
+            // missing, stale or failed frame does not invalidate live status.
             if (!disposed && scope.isCurrent() && revision === mutation.current) setView(previous => previous && {
-              ...previous, frame: undefined, framePointer: undefined, error: true,
+              ...previous, frame: undefined, framePointer: undefined,
             });
           }
         }

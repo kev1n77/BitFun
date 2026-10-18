@@ -5,6 +5,7 @@ import { validateUrl } from './browserUrlCheck';
 import { BrowserPreviewCache, prepareBrowserPreview, type BrowserPreviewResponse } from './browserPreviewCache';
 import { alignBrowserViewport, type BrowserViewportBounds } from './browserViewportGeometry';
 import { api } from '@/infrastructure/api/service-api/ApiClient';
+import { observeCurrentWindowVisibility } from '@/infrastructure/runtime/windowVisibility';
 import { createNativeWebviewVisibility, hasNativeWebviewOccluder } from './nativeWebviewVisibility';
 import { observeNativeWebviewOcclusion } from './nativeWebviewOcclusionObserver';
 export { NATIVE_WEBVIEW_OCCLUSION_SELECTOR, rectanglesIntersect } from './nativeWebviewVisibility';
@@ -183,6 +184,7 @@ export function useEmbeddedBrowserWebview(options: UseEmbeddedBrowserWebviewOpti
   const mountedRef = useRef(true);
   const toolbarSuspendedRef = useRef(false);
   const nativeVisibleRef = useRef(false);
+  const hostVisibleRef = useRef(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewBounds, setPreviewBounds] = useState<BrowserViewportBounds | null>(null);
   const preview = useMemo(() => new BrowserPreviewCache({
@@ -193,7 +195,7 @@ export function useEmbeddedBrowserWebview(options: UseEmbeddedBrowserWebviewOpti
   }), [log]);
   const visibility = useMemo(() => createNativeWebviewVisibility(target => {
     const viewport = viewportRef.current;
-    if (!mountedRef.current || !activeRef.current || toolbarSuspendedRef.current
+    if (!mountedRef.current || !hostVisibleRef.current || !activeRef.current || toolbarSuspendedRef.current
       || target !== webviewRef.current || !viewport?.isConnected) return false;
     const rect = viewport.getBoundingClientRect();
     // Keep the last valid geometry during transient layout swaps, but still
@@ -210,7 +212,7 @@ export function useEmbeddedBrowserWebview(options: UseEmbeddedBrowserWebviewOpti
   }, (target, visible) => {
     if (target !== webviewRef.current) return;
     nativeVisibleRef.current = visible;
-    preview.setVisible(visible && document.visibilityState !== 'hidden');
+    preview.setVisible(visible && hostVisibleRef.current);
   }), [preview]);
 
   const syncVisibility = useCallback(async (focus = false) => {
@@ -501,12 +503,21 @@ export function useEmbeddedBrowserWebview(options: UseEmbeddedBrowserWebviewOpti
   useEffect(() => {
     mountedRef.current = true;
     preview.resume();
-    const handleDocumentVisibility = () => preview.setVisible(nativeVisibleRef.current && document.visibilityState !== 'hidden');
-    document.addEventListener('visibilitychange', handleDocumentVisibility);
+    const stopObservingWindow = observeCurrentWindowVisibility(visible => {
+      hostVisibleRef.current = visible;
+      // Stop scheduling immediately; native hide may wait for a pending show.
+      if (!visible) preview.setVisible(false);
+      const handle = webviewRef.current;
+      if (handle) void visibility(handle).then(() => {
+        preview.setVisible(hostVisibleRef.current && nativeVisibleRef.current);
+      }).catch(syncError => {
+        log.warn('Update browser webview host visibility failed', syncError);
+      });
+    }, windowError => log.warn('Read browser host window visibility failed', windowError));
     return () => {
       mountedRef.current = false;
       preview.dispose();
-      document.removeEventListener('visibilitychange', handleDocumentVisibility);
+      stopObservingWindow();
       pageLoadUnlistenRef.current?.();
       pageLoadUnlistenRef.current = null;
       if (resizeTimerRef.current !== null) {
@@ -519,7 +530,7 @@ export function useEmbeddedBrowserWebview(options: UseEmbeddedBrowserWebviewOpti
         void visibility(handle).catch(() => {}).then(() => closeWebview(handle));
       }
     };
-  }, [closeWebview, preview, visibility]);
+  }, [closeWebview, log, preview, visibility]);
 
   useEffect(() => {
     if (!isTauri || !isVisible) return;

@@ -317,18 +317,37 @@ pub(crate) async fn list_persisted_sessions_page(
         .map(|value| serde_json::from_value::<Vec<String>>(value.clone()))
         .transpose()
         .map_err(|error| format!("Invalid session activity ids: {error}"))?;
+    let query = session_catalog_query(request)?;
     let page = state
         .compatibility
-        .list_persisted_sessions_page_with_activity(
+        .list_persisted_sessions_page_with_activity_and_query(
             &state.agent_runtime,
             &workspace_path,
             cursor.as_deref(),
             limit,
             session_ids.as_deref(),
+            query.as_ref(),
         )
         .await
         .map_err(|e| format!("Failed to list persisted session page: {e}"))?;
     serde_json::to_value(page).map_err(|e| format!("serialize session page: {e}"))
+}
+
+fn session_catalog_query(
+    request: &Value,
+) -> Result<Option<openbitfun_services_core::session::page::SessionCatalogQuery>, String> {
+    let query = request
+        .get("query")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            serde_json::from_value::<openbitfun_services_core::session::page::SessionCatalogQuery>(
+                value.clone(),
+            )
+        })
+        .transpose()
+        .map_err(|error| format!("Invalid session catalog query: {error}"))?;
+    let workspace_id = optional_string(request, "workspaceId");
+    Ok(query.filter(|query| Some(query.workspace_id.as_str()) == workspace_id.as_deref()))
 }
 
 pub(crate) async fn list_persisted_sessions_count(
@@ -998,6 +1017,39 @@ mod tests {
     };
     use openbitfun_core::util::errors::OpenBitFunError;
     use openbitfun_events::AgenticEvent;
+
+    #[test]
+    fn session_catalog_query_keeps_legacy_peers_and_workspace_identity_compatible() {
+        let query =
+            serde_json::json!({"workspaceId": "main", "ordering": "updated", "source": "codex"});
+        for field in ["workspace_id", "workspaceId"] {
+            let mut request = serde_json::json!({"query": query});
+            request[field] = serde_json::json!("main");
+            assert_eq!(
+                super::session_catalog_query(&request)
+                    .unwrap()
+                    .unwrap()
+                    .workspace_id,
+                "main"
+            );
+            request[field] = serde_json::json!("another-workspace");
+            assert!(super::session_catalog_query(&request).unwrap().is_none());
+        }
+        assert!(
+            super::session_catalog_query(&serde_json::json!({"workspace_path": "/old/peer"}))
+                .unwrap()
+                .is_none()
+        );
+        assert!(super::session_catalog_query(
+            &serde_json::json!({"workspace_path": "/old/peer", "query": query})
+        )
+        .unwrap()
+        .is_none());
+        assert!(
+            super::session_catalog_query(&serde_json::json!({"query": {"source": "codex"}}))
+                .is_err()
+        );
+    }
 
     #[test]
     fn peer_writer_conflicts_keep_the_stable_transport_code() {

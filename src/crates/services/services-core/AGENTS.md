@@ -95,6 +95,8 @@ cargo test -p openbitfun-services-core --no-default-features --features workspac
 cargo test -p openbitfun-services-core --no-default-features --features workspace-runtime --lib workspace::tests::
 cargo test -p openbitfun-services-core --no-default-features --features local-storage --test session_contracts session_metadata_contracts::
 cargo test -p openbitfun-services-core --no-default-features --features local-storage --lib session::metadata
+cargo test -p openbitfun-services-core --no-default-features --features local-storage --lib session::page::tests
+cargo test -p openbitfun-services-core --no-default-features --features local-storage --lib session::offline_import
 cargo test -p openbitfun-services-core --no-default-features --features local-storage --test session_write_lock_contracts
 cargo test -p openbitfun-services-core --no-default-features --features local-storage --test exclusive_file_lease_contracts
 cargo test -p openbitfun-services-core --no-default-features --features memory-store --lib memory_store::tests::
@@ -107,6 +109,26 @@ pnpm run check:core-boundaries
 
 Other capability-specific target names remain in `Cargo.toml`; document a new
 command here only when it becomes a recurring owner workflow.
+
+For Computer Use clipboard text transport, helper deadlines and native round trips:
+
+```bash
+cargo test --locked -p openbitfun-services-core --no-default-features --features process-runtime --lib system::local_actions
+# Linux: disposable Xvfb and headless Sway seats; requires xvfb/xauth, xclip,
+# xsel, wl-clipboard and sway. Never uses the user's current clipboard.
+bash scripts/test-linux-clipboard.sh
+# Windows: opt-in, disposable desktop/CI host only; replaces its clipboard.
+cargo test --locked -p openbitfun-services-core --no-default-features --features process-runtime --lib system::local_actions::clipboard::tests::native_clipboard_roundtrip -- --ignored --exact
+```
+
+The ordinary macOS suite uses a named AppKit pasteboard, not the general user
+pasteboard. The OS CI matrix runs all three native routes, including Linux X11
+and Wayland. Windows clipboard helpers must use STA and byte-preserving UTF-8
+stdin/stdout; never put clipboard contents into scripts or command arguments.
+Linux clipboard owners may keep serving after the parent exits: do not wait for
+inherited stdout/stderr pipes after a write. Only an executable that never
+started permits write fallback. A timeout or error after launch has an unknown
+write outcome and must not trigger another helper.
 
 For workspace instruction family selection, non-empty fallback, and local/port
 resolution parity:

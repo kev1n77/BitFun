@@ -6,9 +6,10 @@ fn main() {
     use std::time::{Duration, Instant};
     if std::env::var_os("OPENBITFUN_ROUNDTRIP_FIXTURE_PID").is_none()
         && std::env::var_os("OPENBITFUN_INPUT_FIXTURE_PID").is_none()
+        && std::env::var_os("OPENBITFUN_CUA_PROBE_PID").is_none()
     {
         eprintln!(
-            "Run node scripts/test-macos-control-roundtrip.mjs to launch the isolated fixture"
+            "Run node scripts/test-macos-control-roundtrip.mjs, or set OPENBITFUN_CUA_PROBE_PID for the scoped JSONL probe"
         );
         std::process::exit(2);
     }
@@ -38,7 +39,17 @@ fn main() {
         });
         let _ = sender.send(result.is_ok());
     });
-    let deadline = Instant::now() + Duration::from_secs(45);
+    let limit = if std::env::var_os("OPENBITFUN_CUA_PROBE_PID").is_some() {
+        std::env::var("OPENBITFUN_CUA_PROBE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|seconds| (1..=1800).contains(seconds))
+            .unwrap_or(600)
+            + 15 // Leave the worker time to revoke control and clean up.
+    } else {
+        45
+    };
+    let deadline = Instant::now() + Duration::from_secs(limit);
     loop {
         match receiver.try_recv() {
             Ok(true) => return,
@@ -46,7 +57,7 @@ fn main() {
             Err(mpsc::TryRecvError::Empty) => {}
         }
         if Instant::now() >= deadline {
-            eprintln!("FAIL native tool roundtrip exceeded 45 seconds while the real main run loop was active");
+            eprintln!("FAIL native tool driver exceeded {limit} seconds while the real main run loop was active");
             std::process::exit(1);
         }
         unsafe {

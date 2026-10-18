@@ -6186,12 +6186,14 @@ dependencies = [
 name = "openbitfun-codex-adapter"
 version = "1.0.6"
 dependencies = [
+ "chrono",
  "dirs 6.0.0",
  "dunce",
  "hex",
  "openbitfun-product-domains",
  "openbitfun-services-core",
  "openbitfun-static-hook-support",
+ "rusqlite",
  "serde_json",
  "sha2",
  "tempfile",
@@ -6265,6 +6267,7 @@ dependencies = [
  "openbitfun-services-core",
  "openbitfun-services-integrations",
  "openbitfun-tool-packs",
+ "openbitfun-zcode-adapter",
  "regex",
  "reqwest",
  "rusqlite",
@@ -6360,6 +6363,7 @@ dependencies = [
  "openbitfun-core",
  "openbitfun-core-types",
  "openbitfun-events",
+ "openbitfun-miniapp-ipc",
  "openbitfun-product-domains",
  "openbitfun-relay-service",
  "openbitfun-runtime-ports",
@@ -6496,6 +6500,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "openbitfun-miniapp-ipc"
+version = "1.0.6"
+dependencies = [
+ "openbitfun-product-domains",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "openbitfun-miniapp-market-server"
 version = "1.0.6"
 dependencies = [
@@ -6538,6 +6554,28 @@ dependencies = [
  "url",
  "uuid",
  "zip 4.6.1",
+]
+
+[[package]]
+name = "openbitfun-miniapp-shell"
+version = "1.0.6"
+dependencies = [
+ "image 0.25.10",
+ "objc2 0.6.4",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "openbitfun-miniapp-ipc",
+ "openbitfun-services-core",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "tokio",
+ "uuid",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -7013,6 +7051,19 @@ dependencies = [
  "webview2-com",
  "windows 0.61.3",
  "windows-core 0.61.2",
+]
+
+[[package]]
+name = "openbitfun-zcode-adapter"
+version = "1.0.6"
+dependencies = [
+ "dirs 6.0.0",
+ "hex",
+ "openbitfun-product-domains",
+ "rusqlite",
+ "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]
@@ -12988,8 +13039,6 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 [[package]]
 name = "wry"
 version = "0.56.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1730ab21a962e7ff44df17d20804572beee66d998afc7fcbc3f846a3a12dbda7"
 dependencies = [
  "base64 0.22.1",
  "block2 0.6.2",

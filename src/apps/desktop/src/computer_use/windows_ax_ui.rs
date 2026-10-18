@@ -12,13 +12,9 @@
 //!     SelectionItem / ExpandCollapse / Value / RangeValue / Text / Scroll).
 //!   * Transient `E_FAIL` provider errors retried (3 attempts, 40ms backoff).
 //!
-//! Unlike the cua daemon, OpenBitFun is a Tauri GUI app, so COM is initialized with
-//! `COINIT_APARTMENTTHREADED` (correct for the main thread). VARIANT-based
-//! property reads are deliberately avoided: they require the
-//! `Win32_System_Ole` + `Win32_System_Variant` features which the desktop
-//! crate does not enable. The typed cached accessors (`CachedName`,
-//! `CachedControlType`, `CachedIsEnabled`, ...) and `GetCachedPatternAs`
-//! cover the same data without VARIANT and without extra Cargo features.
+//! Every provider call runs on one dedicated MTA thread, including locate,
+//! hit-testing and shortcut discovery. Callers have a deadline independent of
+//! COM timeouts; a blocked provider retains its slot until it really returns.
 
 // Symbols here are wired up by the desktop host / ControlHub dispatch layer in a
 // follow-up step. Until then, suppress dead-code lints without weakening real
@@ -35,10 +31,10 @@ use openbitfun_core::util::errors::{OpenBitFunError, OpenBitFunResult};
 use windows::core::Interface;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationCacheRequest, IUIAutomationElement,
+    CUIAutomation8, IUIAutomation, IUIAutomation2, IUIAutomationCacheRequest, IUIAutomationElement,
     IUIAutomationValuePattern, TreeScope_Subtree, UIA_AutomationIdPropertyId,
     UIA_BoundingRectanglePropertyId, UIA_ControlTypePropertyId, UIA_ExpandCollapsePatternId,
     UIA_HelpTextPropertyId, UIA_InvokePatternId, UIA_IsEnabledPropertyId,
@@ -203,11 +199,14 @@ pub(crate) unsafe fn build_updated_cache_with_retry(
     loop {
         // SAFETY: both COM interfaces are live for the call and `cache_req`
         // was constructed by the same UI Automation instance.
+        checkpoint("build_updated_cache")?;
         match unsafe { uncached.BuildUpdatedCache(cache_req) } {
             Ok(e) => return Ok(e),
             Err(e) => {
                 attempt += 1;
-                if attempt >= BUILD_CACHE_MAX_ATTEMPTS {
+                if attempt >= BUILD_CACHE_MAX_ATTEMPTS
+                    || e.code() != windows::Win32::Foundation::E_FAIL
+                {
                     return Err(OpenBitFunError::tool(format!(
                         "UI Automation BuildUpdatedCache failed after {} attempts: {}.",
                         attempt, e
@@ -432,22 +431,13 @@ unsafe fn walk_tree_full(
     max_elements: usize,
     max_depth: usize,
 ) -> OpenBitFunResult<(String, Vec<UiaNode>)> {
-    // SAFETY: initializes COM for the current thread and creates the documented
-    // in-process UI Automation class; failures are handled below.
-    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-
-    let automation: IUIAutomation =
-        unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }.map_err(|e| {
-            OpenBitFunError::tool(format!(
-                "UI Automation (CoCreateInstance CUIAutomation): {}.",
-                e
-            ))
-        })?;
+    let automation = create_automation()?;
 
     let cache_req = unsafe { build_cache_request(&automation) }?;
 
     // SAFETY: `hwnd` is the caller-provided target handle. UIA reports an
     // error for an invalid or stale handle, which is propagated here.
+    checkpoint("element_from_handle")?;
     let uncached = unsafe { automation.ElementFromHandle(hwnd) }.map_err(|e| {
         OpenBitFunError::tool(format!("UI Automation ElementFromHandle failed: {}.", e))
     })?;
@@ -488,7 +478,10 @@ unsafe fn walk_cached_bounded(
     max_elements: usize,
     max_depth: usize,
 ) {
-    if depth > max_depth || *total >= max_elements {
+    if depth > max_depth
+        || *total >= max_elements
+        || request_checkpoint("walk_cached_tree").is_err()
+    {
         return;
     }
     *total += 1;
@@ -771,6 +764,17 @@ pub(super) fn locate_ui_element_center_for_window(
     expected_pid: u32,
     query: &UiElementLocateQuery,
 ) -> OpenBitFunResult<UiElementLocateResult> {
+    let query = query.clone();
+    run_read("locate", move || {
+        locate_ui_element_center_for_window_native(hwnd_raw, expected_pid, &query)
+    })
+}
+
+fn locate_ui_element_center_for_window_native(
+    hwnd_raw: isize,
+    expected_pid: u32,
+    query: &UiElementLocateQuery,
+) -> OpenBitFunResult<UiElementLocateResult> {
     ui_locate_common::validate_query(query)?;
 
     let max_depth = query.max_depth.unwrap_or(48).clamp(1, 200) as usize;
@@ -870,6 +874,17 @@ pub(super) fn accessibility_hit_at_global_point_for_window(
     gx: f64,
     gy: f64,
 ) -> OpenBitFunResult<Option<OcrAccessibilityHit>> {
+    run_read("hit_test", move || {
+        accessibility_hit_at_global_point_for_window_native(hwnd_raw, expected_pid, gx, gy)
+    })
+}
+
+fn accessibility_hit_at_global_point_for_window_native(
+    hwnd_raw: isize,
+    expected_pid: u32,
+    gx: f64,
+    gy: f64,
+) -> OpenBitFunResult<Option<OcrAccessibilityHit>> {
     let hwnd = HWND(hwnd_raw as *mut _);
     if !gx.is_finite() || !gy.is_finite() || !target_window_matches(hwnd, expected_pid) {
         return Ok(None);
@@ -896,9 +911,8 @@ pub(super) fn accessibility_hit_at_global_point_for_window(
     if unsafe { element.CurrentProcessId() }.ok() != Some(expected_pid as i32) {
         return Ok(None);
     }
-    let automation: IUIAutomation =
-        unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }
-            .map_err(|error| OpenBitFunError::tool(format!("UI Automation: {error}")))?;
+    let automation = create_automation()?;
+    checkpoint("hit_test_root")?;
     let root = unsafe { automation.ElementFromHandle(hwnd) }
         .map_err(|error| OpenBitFunError::tool(format!("UI Automation target root: {error}")))?;
     let walker = unsafe { automation.RawViewWalker() }
@@ -906,6 +920,7 @@ pub(super) fn accessibility_hit_at_global_point_for_window(
     let mut current = element;
     let mut belongs_to_window = false;
     for _ in 0..200 {
+        checkpoint("hit_test_ancestry")?;
         if unsafe { automation.CompareElements(&current, &root) }.is_ok_and(|same| same.as_bool()) {
             belongs_to_window = true;
             break;
@@ -970,6 +985,7 @@ fn snapshot_and_nodes(
     {
         Ok((text, nodes)) if !nodes.is_empty() => (text, nodes),
         primary => {
+            checkpoint("legacy_observation_fallback")?;
             if crate::computer_use::windows_msaa::is_sal_vcl_window(hwnd_raw) {
                 match crate::computer_use::windows_msaa::walk_msaa_tree(hwnd_raw) {
                     Ok(msaa_nodes) if !msaa_nodes.is_empty() => {
@@ -1102,129 +1118,236 @@ enum SemanticAction {
     Scroll(u32, i32, i32),
     Center(u32),
 }
-enum UiaRequest {
-    Clear,
-    InsertNative(
-        isize,
-        Option<(f64, f64)>,
-        String,
-        super::control_session::ControlToken,
-        std::sync::mpsc::SyncSender<OpenBitFunResult<()>>,
-    ),
-    Observe(
-        isize,
-        u32,
-        bool,
-        super::control_session::ControlToken,
-        std::sync::mpsc::SyncSender<OpenBitFunResult<AppStateSnapshot>>,
-    ),
-    Act(
-        isize,
-        SemanticAction,
-        super::control_session::ControlToken,
-        std::sync::mpsc::SyncSender<OpenBitFunResult<(f64, f64)>>,
-    ),
-}
 struct ObservedWindow {
     hwnd: isize,
     scope: openbitfun_agent_tools::computer_use_control::ObservationScope,
     pid: u32,
     nodes: Vec<UiaNode>,
+    response: std::sync::Arc<super::provider_worker::Request>,
 }
-static UIA_WORKER: std::sync::OnceLock<std::sync::mpsc::Sender<UiaRequest>> =
+struct WorkerState {
+    initialized: bool,
+    observed: Option<ObservedWindow>,
+}
+impl Drop for WorkerState {
+    fn drop(&mut self) {
+        self.observed = None;
+        if self.initialized {
+            unsafe { windows::Win32::System::Com::CoUninitialize() };
+        }
+    }
+}
+// Two seconds for connection, five for one provider transaction and ten for
+// the complete request (including retries). COM limits alone do not bound a
+// misbehaving Invoke provider, so the caller also enforces the outer deadline.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+static UIA_WORKER: std::sync::OnceLock<super::provider_worker::Worker<WorkerState>> =
     std::sync::OnceLock::new();
+static CLEAR_OBSERVATIONS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+thread_local! {
+    static CURRENT_REQUEST: std::cell::RefCell<Option<std::sync::Arc<super::provider_worker::Request>>> = const { std::cell::RefCell::new(None) };
+}
 
 pub(super) fn clear_observations() {
+    // Never enqueue behind a stuck provider, and never release COM on the
+    // cancelling thread. Idle cleanup releases cached references promptly;
+    // occupied workers consume the flag when their current call returns.
+    CLEAR_OBSERVATIONS.store(true, std::sync::atomic::Ordering::Release);
     if let Some(worker) = UIA_WORKER.get() {
-        let _ = worker.send(UiaRequest::Clear);
+        worker.try_cleanup(|state| {
+            if CLEAR_OBSERVATIONS.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                state.observed = None;
+            }
+        });
     }
 }
 
-fn uia_worker() -> &'static std::sync::mpsc::Sender<UiaRequest> {
-    UIA_WORKER.get_or_init(|| {
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            // UIA client work belongs on an MTA thread separate from the UI.
-            let initialized = unsafe { CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED) }.is_ok();
-            let mut observed: Option<ObservedWindow> = None;
-            while let Ok(request) = rx.recv() {
-                match request {
-                    UiaRequest::Clear => { observed = None; },
-                    UiaRequest::InsertNative(hwnd, point, text, token, reply) => {
-                        let result = super::control_session::with_token(token, || insert_native_target(hwnd, point, &text));
-                        let _ = reply.send(result);
-                    }
-                    UiaRequest::Observe(hwnd, depth, focus, token, reply) => {
-                        let result = super::control_session::with_token(token, || {
-                            super::control_session::capture_allowed().map_err(OpenBitFunError::tool)?;
-                            let scope = super::control_session::observation_scope().map_err(OpenBitFunError::tool)?;
-                            let handle = windows::Win32::Foundation::HWND(hwnd as *mut _);
-                            let (snapshot, nodes) = snapshot_and_nodes(handle, depth, focus)?;
-                            super::control_session::capture_allowed().map_err(OpenBitFunError::tool)?;
-                            super::control_session::validate_observation_scope(&scope).map_err(OpenBitFunError::tool)?;
-                            observed = Some(ObservedWindow { hwnd, scope,
-                                pid: window_pid_for(handle).unwrap_or(0), nodes });
-                            Ok(snapshot)
-                        });
-                        if result.is_err() { observed = None; }
-                        let _ = reply.send(result);
-                    }
-                    UiaRequest::Act(hwnd, action, token, reply) => {
-                        let result = super::control_session::with_token(token, || {
-                            let cache = observed.as_ref().ok_or_else(|| OpenBitFunError::tool(
-                                "[AX_OBSERVATION_REQUIRED] Read the target window before using a node index"))?;
-                            apply_semantic(cache, hwnd, action)
-                        });
-                        let _ = reply.send(result);
-                    }
-                }
-            }
-            drop(observed);
-            if initialized { unsafe { windows::Win32::System::Com::CoUninitialize() }; }
-        });
-        tx
+pub(super) fn checkpoint(phase: &'static str) -> OpenBitFunResult<()> {
+    super::control_session::capture_allowed().map_err(OpenBitFunError::tool)?;
+    request_checkpoint(phase)
+}
+
+// Cached traversal checks the caller's fence without repeatedly opening the
+// authorized process. Full authority is rechecked before publication and input.
+fn request_checkpoint(phase: &'static str) -> OpenBitFunResult<()> {
+    CURRENT_REQUEST.with_borrow(|request| {
+        request
+            .as_ref()
+            .ok_or_else(|| {
+                OpenBitFunError::tool("[AX_WORKER_REQUIRED] UIA requires the provider worker")
+            })?
+            .checkpoint(phase)
+            .map_err(OpenBitFunError::tool)
     })
 }
+fn begin_input(phase: &'static str) -> OpenBitFunResult<()> {
+    super::control_session::input_allowed().map_err(OpenBitFunError::tool)?;
+    CURRENT_REQUEST.with_borrow(|request| {
+        request
+            .as_ref()
+            .ok_or_else(|| {
+                OpenBitFunError::tool("[AX_WORKER_REQUIRED] UIA input requires the provider worker")
+            })?
+            .begin_input(phase)
+            .map_err(OpenBitFunError::tool)
+    })
+}
+
+fn current_pattern<T: Interface>(
+    element: &IUIAutomationElement,
+    pattern_id: windows::Win32::UI::Accessibility::UIA_PATTERN_ID,
+    phase: &'static str,
+) -> OpenBitFunResult<Option<T>> {
+    checkpoint(phase)?;
+    let pattern = unsafe { element.GetCurrentPatternAs::<T>(pattern_id) };
+    // A failed lookup can return long after cancellation. Do not proceed to
+    // another pattern lookup (or another native input route) in that case.
+    checkpoint(phase)?;
+    Ok(pattern.ok())
+}
+
+pub(super) fn create_automation() -> OpenBitFunResult<IUIAutomation> {
+    checkpoint("create_automation")?;
+    let configured: IUIAutomation2 =
+        unsafe { CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) }.map_err(
+            |error| OpenBitFunError::tool(format!("UI Automation initialization: {error}")),
+        )?;
+    unsafe {
+        configured
+            .SetAutoSetFocus(false)
+            .and_then(|_| configured.SetConnectionTimeout(2000))
+            .and_then(|_| configured.SetTransactionTimeout(5000))
+    }
+    .map_err(|error| {
+        OpenBitFunError::tool(format!(
+            "UI Automation timeout/focus configuration: {error}"
+        ))
+    })?;
+    configured
+        .cast()
+        .map_err(|error| OpenBitFunError::tool(format!("UI Automation interface: {error}")))
+}
+
+fn run_uia<T: Send + 'static>(
+    operation: &'static str,
+    work: impl FnOnce(&mut WorkerState) -> OpenBitFunResult<T> + Send + 'static,
+) -> OpenBitFunResult<T> {
+    let token = super::control_session::capture_token().map_err(OpenBitFunError::tool)?;
+    let worker = UIA_WORKER.get_or_init(|| {
+        super::provider_worker::Worker::new(|| WorkerState {
+            initialized: unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok(),
+            observed: None,
+        })
+    });
+    let result = worker
+        .run(
+            operation,
+            REQUEST_TIMEOUT,
+            || super::control_session::with_token(token, super::control_session::capture_allowed),
+            move |state, request| {
+                super::control_session::with_token(token, || {
+                    struct Reset;
+                    impl Drop for Reset {
+                        fn drop(&mut self) {
+                            CURRENT_REQUEST.with_borrow_mut(|r| *r = None);
+                        }
+                    }
+                    CURRENT_REQUEST.with_borrow_mut(|r| *r = Some(request.clone()));
+                    let _reset = Reset;
+                    if CLEAR_OBSERVATIONS.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                        state.observed = None;
+                    }
+                    let result = (|| {
+                        if !state.initialized {
+                            return Err(OpenBitFunError::tool(
+                                "UI Automation MTA initialization failed",
+                            ));
+                        }
+                        checkpoint("started")?;
+                        log::debug!("UIA request started: operation={operation}");
+                        let output = work(state)?;
+                        checkpoint("completed")?;
+                        Ok(output)
+                    })()
+                    .map_err(|error| {
+                        if let Some(reason) = request.input_failure() {
+                            log::warn!("UIA input failed after submission: {reason}");
+                            OpenBitFunError::tool(format!("{reason}; provider error: {error}"))
+                        } else {
+                            error
+                        }
+                    });
+                    if (result.is_err() && request.input_failure().is_some())
+                        || request.check().is_err()
+                        || super::control_session::capture_allowed().is_err()
+                        || CLEAR_OBSERVATIONS.swap(false, std::sync::atomic::Ordering::AcqRel)
+                    {
+                        state.observed = None;
+                    }
+                    result
+                })
+            },
+        )
+        .map_err(|reason| {
+            log::warn!("UIA request did not complete: {reason}");
+            OpenBitFunError::tool(reason)
+        })?;
+    if result.is_ok() {
+        log::debug!("UIA request completed: operation={operation}");
+    }
+    result
+}
+
+pub(super) fn run_read<T: Send + 'static>(
+    operation: &'static str,
+    work: impl FnOnce() -> OpenBitFunResult<T> + Send + 'static,
+) -> OpenBitFunResult<T> {
+    run_uia(operation, move |_| work())
+}
+
 pub(super) fn get_app_state_snapshot_for_window(
-    hwnd: windows::Win32::Foundation::HWND,
+    hwnd: HWND,
     max_depth: u32,
     focus_window_only: bool,
 ) -> OpenBitFunResult<AppStateSnapshot> {
-    let token = super::control_session::capture_token().map_err(OpenBitFunError::tool)?;
-    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    uia_worker()
-        .send(UiaRequest::Observe(
-            hwnd.0 as isize,
-            max_depth,
-            focus_window_only,
-            token,
-            tx,
-        ))
-        .map_err(|_| OpenBitFunError::tool("UIA worker unavailable"))?;
-    rx.recv()
-        .map_err(|_| OpenBitFunError::tool("UIA worker stopped"))?
+    let hwnd = hwnd.0 as isize;
+    run_uia("observe", move |state| {
+        state.observed = None;
+        let scope = super::control_session::observation_scope().map_err(OpenBitFunError::tool)?;
+        let handle = HWND(hwnd as *mut _);
+        let (snapshot, nodes) = snapshot_and_nodes(handle, max_depth, focus_window_only)?;
+        checkpoint("publish_observation")?;
+        super::control_session::validate_observation_scope(&scope)
+            .map_err(OpenBitFunError::tool)?;
+        let response = CURRENT_REQUEST
+            .with_borrow(|request| request.clone())
+            .ok_or_else(|| {
+                OpenBitFunError::tool(
+                    "[AX_WORKER_REQUIRED] Observation requires the provider worker",
+                )
+            })?;
+        state.observed = Some(ObservedWindow {
+            hwnd,
+            scope,
+            pid: window_pid_for(handle).unwrap_or(0),
+            nodes,
+            response,
+        });
+        Ok(snapshot)
+    })
 }
 /// Resolve an image-derived point inside the bound native window, or that
-/// window thread's existing focus. This never asks the desktop which app is
-/// under the real pointer, and never moves keyboard focus.
+/// window thread's existing focus, without moving keyboard focus.
 pub(super) fn insert_text_at_bound_target(
     hwnd: isize,
     point: Option<(f64, f64)>,
     text: &str,
 ) -> OpenBitFunResult<()> {
-    let token = super::control_session::capture_token().map_err(OpenBitFunError::tool)?;
-    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    uia_worker()
-        .send(UiaRequest::InsertNative(
-            hwnd,
-            point,
-            text.into(),
-            token,
-            tx,
-        ))
-        .map_err(|_| OpenBitFunError::tool("UIA worker unavailable"))?;
-    rx.recv()
-        .map_err(|_| OpenBitFunError::tool("UIA worker stopped"))?
+    let text = text.to_owned();
+    run_read("insert_native", move || {
+        insert_native_target(hwnd, point, &text)
+    })
 }
 
 fn point_in_window(point: (f64, f64), rect: (i32, i32, i32, i32)) -> bool {
@@ -1303,17 +1426,19 @@ fn insert_native_target(
             }
             info.hwndFocus
         };
-        let automation: IUIAutomation =
-            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).map_err(native_error)?;
+        let automation = create_automation()?;
+        checkpoint("native_text_element")?;
         let element = automation.ElementFromHandle(child).map_err(native_error)?;
         // The retained UIA element must still identify the precise child that
         // was hit or focused; providers must not redirect us to another HWND.
+        checkpoint("native_text_identity")?;
         if element.CurrentNativeWindowHandle().map_err(native_error)? != child {
             return Err(OpenBitFunError::tool(
                 "[AX_STALE_ELEMENT] UIA native identity differs from the resolved text control",
             ));
         }
         if let Some(point) = point {
+            checkpoint("native_text_geometry")?;
             let rect = element.CurrentBoundingRectangle().map_err(native_error)?;
             if !point_in_window(point, (rect.left, rect.top, rect.right, rect.bottom)) {
                 return Err(OpenBitFunError::tool(
@@ -1363,12 +1488,14 @@ fn replace_native_edit_selection(
         ES_READONLY, GA_ROOT, GWL_STYLE, SMTO_ABORTIFHUNG, SMTO_BLOCK,
     };
     let buffer = edit_replacement_utf16(text).map_err(OpenBitFunError::tool)?;
+    checkpoint("native_edit_preflight")?;
     unsafe {
         let child = element.CurrentNativeWindowHandle().map_err(|_| {
             OpenBitFunError::tool(
                 "[BACKGROUND_TEXT_UNAVAILABLE] Observed UIA element has no native edit window",
             )
         })?;
+        checkpoint("native_edit_process")?;
         if element
             .CurrentProcessId()
             .map_err(|e| OpenBitFunError::tool(format!("[AX_ACTION_FAILED] {e}")))?
@@ -1395,9 +1522,12 @@ fn replace_native_edit_selection(
                 "[BACKGROUND_TEXT_UNAVAILABLE] Native edit control is disabled or read-only",
             ));
         }
-        if let Ok(pattern) =
-            element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
-        {
+        if let Some(pattern) = current_pattern::<IUIAutomationValuePattern>(
+            element,
+            UIA_ValuePatternId,
+            "native_edit_value_pattern",
+        )? {
+            checkpoint("native_edit_read_only")?;
             if pattern
                 .CurrentIsReadOnly()
                 .map_err(|e| OpenBitFunError::tool(format!("[AX_ACTION_FAILED] {e}")))?
@@ -1416,6 +1546,7 @@ fn replace_native_edit_selection(
             .map_err(OpenBitFunError::tool)?;
         // This system message is marshalled by Windows across processes. Its
         // result has no success value; only the transport completion is known.
+        begin_input("native_edit_replace_selection")?;
         let completed = SendMessageTimeoutW(
             child,
             0x00C2,
@@ -1438,13 +1569,20 @@ fn replace_native_edit_selection(
 }
 
 fn dispatch_semantic(hwnd: isize, action: SemanticAction) -> OpenBitFunResult<(f64, f64)> {
-    let token = super::control_session::capture_token().map_err(OpenBitFunError::tool)?;
-    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    uia_worker()
-        .send(UiaRequest::Act(hwnd, action, token, tx))
-        .map_err(|_| OpenBitFunError::tool("UIA worker unavailable"))?;
-    rx.recv()
-        .map_err(|_| OpenBitFunError::tool("UIA worker stopped"))?
+    let operation = match &action {
+        SemanticAction::Invoke(_) => "invoke",
+        SemanticAction::Insert(_, _) => "insert",
+        SemanticAction::Scroll(_, _, _) => "scroll",
+        SemanticAction::Center(_) => "center",
+    };
+    run_uia(operation, move |state| {
+        let cache = state.observed.as_ref().ok_or_else(|| {
+            OpenBitFunError::tool(
+                "[AX_OBSERVATION_REQUIRED] Read the target window before using a node index",
+            )
+        })?;
+        apply_semantic(cache, hwnd, action)
+    })
 }
 pub(super) fn invoke_cached_node(hwnd: isize, idx: u32) -> OpenBitFunResult<()> {
     dispatch_semantic(hwnd, SemanticAction::Invoke(idx)).map(|_| ())
@@ -1469,6 +1607,11 @@ fn apply_semantic(
         ScrollAmount_SmallIncrement,
     };
     super::control_session::capture_allowed().map_err(OpenBitFunError::tool)?;
+    if !cache.response.response_accepted() {
+        return Err(OpenBitFunError::tool(
+            "[AX_OBSERVATION_REQUIRED] The previous observation was not delivered; read the target again before input",
+        ));
+    }
     if cache.hwnd != hwnd
         || super::control_session::validate_observation_scope(&cache.scope).is_err()
         || window_pid_for(windows::Win32::Foundation::HWND(hwnd as *mut _)) != Some(cache.pid)
@@ -1499,14 +1642,16 @@ fn apply_semantic(
             )
         })?;
     let native = |e: windows::core::Error| OpenBitFunError::tool(format!("[AX_ACTION_FAILED] {e}"));
+    checkpoint("semantic_preflight")?;
     unsafe {
-        if element.CurrentProcessId().map_err(native)? as u32 != cache.pid
-            || !element.CurrentIsEnabled().map_err(native)?.as_bool()
-        {
+        let pid = element.CurrentProcessId().map_err(native)? as u32;
+        checkpoint("semantic_enabled")?;
+        if pid != cache.pid || !element.CurrentIsEnabled().map_err(native)?.as_bool() {
             return Err(OpenBitFunError::tool(
                 "[AX_STALE_ELEMENT] The observed control is no longer available",
             ));
         }
+        checkpoint("semantic_geometry")?;
         let rect = element.CurrentBoundingRectangle().map_err(native)?;
         if node.rect != Some((rect.left, rect.top, rect.right, rect.bottom)) {
             return Err(OpenBitFunError::tool(
@@ -1524,22 +1669,29 @@ fn apply_semantic(
         let clicked = matches!(action, SemanticAction::Invoke(_));
         match action {
             SemanticAction::Invoke(_) => {
-                if let Ok(pattern) =
-                    element.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
-                {
+                if let Some(pattern) = current_pattern::<IUIAutomationInvokePattern>(
+                    &element,
+                    UIA_InvokePatternId,
+                    "invoke_pattern",
+                )? {
                     super::control_session::input_allowed().map_err(OpenBitFunError::tool)?;
+                    begin_input("invoke")?;
                     pattern.Invoke().map_err(native)?;
-                } else if let Ok(pattern) =
-                    element.GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
-                {
+                } else if let Some(pattern) = current_pattern::<IUIAutomationTogglePattern>(
+                    &element,
+                    UIA_TogglePatternId,
+                    "toggle_pattern",
+                )? {
                     super::control_session::input_allowed().map_err(OpenBitFunError::tool)?;
+                    begin_input("toggle")?;
                     pattern.Toggle().map_err(native)?;
-                } else if let Ok(pattern) = element
-                    .GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
-                        UIA_SelectionItemPatternId,
-                    )
-                {
+                } else if let Some(pattern) = current_pattern::<IUIAutomationSelectionItemPattern>(
+                    &element,
+                    UIA_SelectionItemPatternId,
+                    "selection_pattern",
+                )? {
                     super::control_session::input_allowed().map_err(OpenBitFunError::tool)?;
+                    begin_input("select")?;
                     pattern.Select().map_err(native)?;
                 } else {
                     return Err(OpenBitFunError::tool("[AX_ACTION_UNSUPPORTED] Control exposes no invoke, toggle or selection pattern"));
@@ -1549,13 +1701,16 @@ fn apply_semantic(
                 replace_native_edit_selection(&element, HWND(hwnd as *mut _), cache.pid, &text)?;
             }
             SemanticAction::Scroll(_, dx, dy) => {
-                let pattern = element
-                    .GetCurrentPatternAs::<IUIAutomationScrollPattern>(UIA_ScrollPatternId)
-                    .map_err(|_| {
-                        OpenBitFunError::tool(
-                            "[AX_ACTION_UNSUPPORTED] Control has no background Scroll pattern",
-                        )
-                    })?;
+                let pattern = current_pattern::<IUIAutomationScrollPattern>(
+                    &element,
+                    UIA_ScrollPatternId,
+                    "scroll_pattern",
+                )?
+                .ok_or_else(|| {
+                    OpenBitFunError::tool(
+                        "[AX_ACTION_UNSUPPORTED] Control has no background Scroll pattern",
+                    )
+                })?;
                 let amount = |delta: i32| {
                     if delta > 0 {
                         ScrollAmount_SmallIncrement
@@ -1566,10 +1721,12 @@ fn apply_semantic(
                     }
                 };
                 super::control_session::input_allowed().map_err(OpenBitFunError::tool)?;
+                begin_input("scroll")?;
                 pattern.Scroll(amount(dx), amount(dy)).map_err(native)?;
             }
             SemanticAction::Center(_) => unreachable!(),
         }
+        checkpoint("record_pointer")?;
         super::control_session::record_pointer(center.0, center.1, clicked);
         Ok(center)
     }
@@ -1810,54 +1967,35 @@ mod control_native_tests {
         // RichEdit may expose a Text provider without a Value pattern. The
         // same native edit message still preserves its exact selection.
         unsafe {
-            use windows::Win32::System::Com::{CoUninitialize, COINIT_MULTITHREADED};
-            CoInitializeEx(None, COINIT_MULTITHREADED).ok().unwrap();
-            let automation: IUIAutomation =
-                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).unwrap();
-            let rich_element = automation.ElementFromHandle(HWND(rich as *mut _)).unwrap();
-            replace_native_edit_selection(
-                &rich_element,
-                HWND(hwnd as *mut _),
-                std::process::id(),
-                "prefix \u{4e2d}\u{6587}",
-            )
-            .unwrap();
-            replace_native_edit_selection(
-                &rich_element,
-                HWND(hwnd as *mut _),
-                std::process::id(),
-                "\u{1f642}",
-            )
-            .unwrap();
+            let replace_rich = |top: isize, text: &str| {
+                let text = text.to_owned();
+                run_read("rich_edit_fixture", move || {
+                    let automation = create_automation()?;
+                    let element = automation.ElementFromHandle(HWND(rich as *mut _)).unwrap();
+                    replace_native_edit_selection(
+                        &element,
+                        HWND(top as *mut _),
+                        std::process::id(),
+                        &text,
+                    )
+                })
+            };
+            replace_rich(hwnd, "prefix \u{4e2d}\u{6587}").unwrap();
+            replace_rich(hwnd, "\u{1f642}").unwrap();
             SendMessageW(
                 HWND(rich as *mut _),
                 0x00B1,
                 Some(WPARAM(0)),
                 Some(LPARAM(7)),
             );
-            replace_native_edit_selection(
-                &rich_element,
-                HWND(hwnd as *mut _),
-                std::process::id(),
-                "selected ",
-            )
-            .unwrap();
+            replace_rich(hwnd, "selected ").unwrap();
             let mut buffer = [0u16; 64];
             let count = GetWindowTextW(HWND(rich as *mut _), &mut buffer);
             assert_eq!(
                 String::from_utf16_lossy(&buffer[..count as usize]),
                 "selected \u{4e2d}\u{6587}\u{1f642}"
             );
-            assert!(replace_native_edit_selection(
-                &rich_element,
-                HWND(toggle as *mut _),
-                std::process::id(),
-                "wrong bound window"
-            )
-            .is_err());
-            drop(rich_element);
-            drop(automation);
-            CoUninitialize();
+            assert!(replace_rich(toggle, "wrong bound window").is_err());
         }
         let mut thread_state = GUITHREADINFO {
             cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,

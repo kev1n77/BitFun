@@ -119,7 +119,8 @@ unsafe extern "system" {
 
 // Rasterize the shared 40x40 cubic contour at four samples per axis. Alpha is
 // premultiplied for AC_SRC_ALPHA: black shadow pixels retain alpha, unlike a
-// color-key surface. The blur is independent of the solid, unstroked arrow.
+// color-key surface. The contour shrinks around its hotspot before adding a
+// fixed 3px white stroke; the complete silhouette casts the shadow.
 fn pointer_pixels(clicked: bool) -> Vec<u32> {
     type P = (f64, f64);
     fn cubic(points: &mut Vec<P>, a: P, b: P, c: P, d: P) {
@@ -172,51 +173,82 @@ fn pointer_pixels(clicked: bool) -> Vec<u32> {
         (10.0, 6.0),
         (8.0, 8.0),
     );
+    for point in &mut outline {
+        point.0 = 8.0 + (point.0 - 8.0) * 0.7;
+        point.1 = 8.0 + (point.1 - 8.0) * 0.7;
+    }
     let mut mask = vec![0.0; 1600];
+    let mut stroke_mask = vec![0.0; 1600];
     for y in 0..40 {
         for x in 0..40 {
             let mut coverage = 0;
+            let mut stroke_coverage = 0;
             for sy in 0..4 {
                 for sx in 0..4 {
                     let px = x as f64 + (f64::from(sx) + 0.5) / 4.0;
                     let py = y as f64 + (f64::from(sy) + 0.5) / 4.0;
                     let mut inside = false;
+                    let mut on_stroke = false;
                     for edge in outline.windows(2) {
                         let (a, b) = (edge[0], edge[1]);
+                        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                        let length_squared = dx * dx + dy * dy;
+                        let t = if length_squared > 0.0 {
+                            (((px - a.0) * dx + (py - a.1) * dy) / length_squared).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        on_stroke |= (px - a.0 - t * dx).powi(2) + (py - a.1 - t * dy).powi(2)
+                            <= 1.5_f64.powi(2);
                         if (a.1 > py) != (b.1 > py)
                             && px < (b.0 - a.0) * (py - a.1) / (b.1 - a.1) + a.0
                         {
                             inside = !inside;
                         }
                     }
-                    if inside {
+                    if inside || on_stroke {
                         coverage += 1;
+                    }
+                    if on_stroke {
+                        stroke_coverage += 1;
                     }
                 }
             }
             mask[y * 40 + x] = f64::from(coverage) / 16.0;
+            stroke_mask[y * 40 + x] = f64::from(stroke_coverage) / 16.0;
         }
     }
     let weights: Vec<f64> = (-5..=5)
-        .map(|n| (-(f64::from(n).powi(2)) / (2.0 * 1.5 * 1.5)).exp())
+        .map(|n| (-(f64::from(n).powi(2)) / (2.0 * 2.0 * 2.0)).exp())
+        .collect();
+    let edge_weights: Vec<f64> = (-5..=5)
+        .map(|n| (-(f64::from(n).powi(2)) / (2.0 * 0.65 * 0.65)).exp())
         .collect();
     let sum: f64 = weights.iter().sum();
+    let edge_sum: f64 = edge_weights.iter().sum();
     let mut pixels = vec![0u32; 1600];
     for y in 0..40i32 {
         for x in 0..40i32 {
             let mut shadow = 0.0;
+            let mut edge_shadow = 0.0;
             for dy in -5..=5 {
                 for dx in -5..=5 {
-                    let (mx, my) = (x - dx, y - 2 - dy);
+                    let (mx, my) = (x - dx, y - dy);
                     if (0..40).contains(&mx) && (0..40).contains(&my) {
-                        shadow += mask[(my * 40 + mx) as usize]
-                            * weights[(dx + 5) as usize]
-                            * weights[(dy + 5) as usize]
-                            / (sum * sum);
+                        let coverage = mask[(my * 40 + mx) as usize];
+                        shadow +=
+                            coverage * weights[(dx + 5) as usize] * weights[(dy + 5) as usize]
+                                / (sum * sum);
+                        edge_shadow += coverage
+                            * edge_weights[(dx + 5) as usize]
+                            * edge_weights[(dy + 5) as usize]
+                            / (edge_sum * edge_sum);
                     }
                 }
             }
-            let fill = mask[(y * 40 + x) as usize];
+            let silhouette = mask[(y * 40 + x) as usize];
+            let stroke = stroke_mask[(y * 40 + x) as usize];
+            let fill = silhouette - stroke;
             let radius =
                 ((f64::from(x) + 0.5 - 8.0).powi(2) + (f64::from(y) + 0.5 - 8.0).powi(2)).sqrt();
             let ring = if clicked {
@@ -224,9 +256,12 @@ fn pointer_pixels(clicked: bool) -> Vec<u32> {
             } else {
                 0.0
             };
-            let behind = ring + shadow * 0.45 * (1.0 - ring);
-            let alpha = fill + behind * (1.0 - fill);
-            let channel = (166.0 * fill + 166.0 * ring * (1.0 - fill)).round() as u32;
+            // Center both layers: dark beside the white edge, softer farther out.
+            let halo = edge_shadow * 0.8 + shadow * 0.5 * (1.0 - edge_shadow * 0.8);
+            let behind = ring + halo * (1.0 - ring);
+            let alpha = silhouette + behind * (1.0 - silhouette);
+            let channel =
+                (64.0 * fill + 255.0 * stroke + 166.0 * ring * (1.0 - silhouette)).round() as u32;
             pixels[(y * 40 + x) as usize] =
                 ((alpha * 255.0).round() as u32) << 24 | channel << 16 | channel << 8 | channel;
         }
@@ -398,15 +433,36 @@ pub(super) fn show_pointer(target: usize, x: i32, y: i32, clicked: bool) {
 mod tests {
     use super::pointer_pixels;
     #[test]
-    fn rounded_cursor_has_grey_fill_and_translucent_black_shadow() {
+    fn rounded_cursor_has_dark_fill_white_edge_and_translucent_black_shadow() {
         let pixels = pointer_pixels(false);
         assert_eq!(pixels.len(), 1600);
-        assert_eq!(pixels[16 * 40 + 16], 0xffa6a6a6);
+        assert_eq!(pixels[16 * 40 + 16], 0xff404040);
+        assert!(pixels.contains(&0xffffffff));
         assert!(pixels
             .iter()
             .any(|p| p & 0xffffff == 0 && p >> 24 > 0 && p >> 24 < 115));
         assert!(pixels.iter().all(|p| p & 255 <= p >> 24));
         assert_eq!(pixels[0], 0);
         assert_ne!(pixels, pointer_pixels(true));
+        // The contour is diagonal-symmetric; directional shadow offsets must
+        // not bias one side. Outside each edge, black fades toward transparency.
+        for y in 0..40 {
+            for x in 0..40 {
+                assert_eq!(pixels[y * 40 + x], pixels[x * 40 + y]);
+            }
+        }
+        for ray in [
+            [(12, 5), (12, 4), (12, 3)],
+            [(5, 12), (4, 12), (3, 12)],
+            [(28, 16), (29, 16), (30, 16)],
+            [(16, 28), (16, 29), (16, 30)],
+        ] {
+            let alpha = ray.map(|(x, y)| {
+                let pixel = pixels[y * 40 + x];
+                assert_eq!(pixel & 0xffffff, 0);
+                pixel >> 24
+            });
+            assert!(alpha[0] > alpha[1] && alpha[1] > alpha[2] && alpha[2] > 0);
+        }
     }
 }

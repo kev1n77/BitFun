@@ -1982,6 +1982,7 @@ export function runManifestParserSelfTest({
   for (const dependencyName of [
     'openbitfun-claude-code-adapter',
     'openbitfun-codex-adapter',
+    'openbitfun-zcode-adapter',
     'openbitfun-static-hook-support',
   ]) {
     if (!forbiddenManifestDependencyRules.some(
@@ -3406,6 +3407,7 @@ export function runManifestParserSelfTest({
         'SessionStorageLayout',
         'list_metadata',
         'list_metadata_page',
+        'list_metadata_page_with_query',
         'list_metadata_including_internal',
         'rebuild_index',
         'save_metadata',
@@ -3437,7 +3439,7 @@ export function runManifestParserSelfTest({
         'SessionMetadataStore',
         'session_metadata_store',
         'list_metadata',
-        'list_metadata_page',
+        'list_metadata_page_with_query',
         'list_metadata_including_internal',
         'save_metadata',
         'load_metadata',

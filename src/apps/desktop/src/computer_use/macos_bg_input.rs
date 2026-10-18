@@ -148,12 +148,160 @@ fn flags_from(mods: &[BgModifier]) -> CGEventFlags {
         .fold(CGEventFlags::CGEventFlagNull, |acc, m| acc | m.flag())
 }
 
-#[derive(Clone, Copy, PartialEq)]
+/// Build one complete chord before dispatch. Modifier flags describe the keys
+/// still held at each event, so releasing several modifiers cannot reintroduce
+/// a previously released key. Aliases must never produce duplicate presses.
+fn key_chord_events(
+    modifiers: &[BgModifier],
+    key: u16,
+    label: &str,
+) -> OpenBitFunResult<Vec<CGEvent>> {
+    let mut unique = Vec::with_capacity(modifiers.len());
+    for modifier in modifiers {
+        if !unique.contains(modifier) {
+            unique.push(*modifier);
+        }
+    }
+    let source = private_source(label)?;
+    let mut events = Vec::with_capacity(unique.len() * 2 + 2);
+    let mut append = |keycode, down, flags| -> OpenBitFunResult<()> {
+        let event = CGEvent::new_keyboard_event(source.clone(), keycode, down).map_err(|_| {
+            OpenBitFunError::tool(format!("CGEvent chord creation failed ({label})"))
+        })?;
+        event.set_flags(flags);
+        events.push(event);
+        Ok(())
+    };
+    for (index, modifier) in unique.iter().enumerate() {
+        append(modifier.keycode(), true, flags_from(&unique[..=index]))?;
+    }
+    let flags = flags_from(&unique);
+    append(key, true, flags)?;
+    append(key, false, flags)?;
+    for (index, modifier) in unique.iter().enumerate().rev() {
+        append(modifier.keycode(), false, flags_from(&unique[..index]))?;
+    }
+    Ok(events)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum HeldInput {
     Key(u16, bool),
-    Mouse(u8, f64, f64, u32, f64, f64),
+    Mouse {
+        button: u8,
+        point: [f64; 2],
+        window: u32,
+    },
 }
-static HELD_INPUTS: std::sync::Mutex<Vec<(i32, HeldInput)>> = std::sync::Mutex::new(Vec::new());
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InputOwner {
+    pid: i32,
+    identity: super::macos_skylight::ProcessIdentity,
+}
+
+static HELD_INPUTS: std::sync::Mutex<Vec<(InputOwner, HeldInput)>> =
+    std::sync::Mutex::new(Vec::new());
+static INPUT_RELEASE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn verify_input_identity(
+    owner: InputOwner,
+    current: Option<super::macos_skylight::ProcessIdentity>,
+) -> OpenBitFunResult<()> {
+    if current != Some(owner.identity) {
+        return Err(OpenBitFunError::tool(
+            "[CONTROL_TARGET_CHANGED] The input target process identity changed or is unavailable",
+        ));
+    }
+    Ok(())
+}
+
+fn record_keyboard_input(
+    held: &mut Vec<(InputOwner, HeldInput)>,
+    target: InputOwner,
+    event: &CGEvent,
+    authenticated: bool,
+) {
+    let code = event
+        .get_integer_value_field(core_graphics::event::EventField::KEYBOARD_EVENT_KEYCODE)
+        as u16;
+    let down = match event.get_type() {
+        CGEventType::KeyDown => true,
+        CGEventType::KeyUp => false,
+        CGEventType::FlagsChanged => {
+            // CoreGraphics creates FlagsChanged for modifier key-down AND
+            // key-up. The flag for that key identifies the transition.
+            let modifier = match code {
+                54 | 55 => BgModifier::Command,
+                56 | 60 => BgModifier::Shift,
+                58 | 61 => BgModifier::Option,
+                59 | 62 => BgModifier::Control,
+                63 => BgModifier::Fn,
+                _ => return,
+            };
+            event.get_flags().contains(modifier.flag())
+        }
+        _ => return,
+    };
+    if down {
+        if !held.iter().any(|(owner, input)| {
+            *owner == target && matches!(input, HeldInput::Key(c, _) if *c == code)
+        }) {
+            held.push((target, HeldInput::Key(code, authenticated)));
+        }
+    } else {
+        held.retain(|(owner, input)| {
+            !(*owner == target && matches!(input, HeldInput::Key(c, _) if *c == code))
+        });
+    }
+}
+
+fn record_mouse_input(
+    held: &mut Vec<(InputOwner, HeldInput)>,
+    target: InputOwner,
+    event: &CGEvent,
+    window: u32,
+) {
+    let kind = event.get_type();
+    let button = match kind {
+        CGEventType::LeftMouseDown | CGEventType::LeftMouseDragged | CGEventType::LeftMouseUp => 0,
+        CGEventType::RightMouseDown
+        | CGEventType::RightMouseDragged
+        | CGEventType::RightMouseUp => 1,
+        CGEventType::OtherMouseDown
+        | CGEventType::OtherMouseDragged
+        | CGEventType::OtherMouseUp => 2,
+        _ => return,
+    };
+    let point = event.location();
+    let latest = HeldInput::Mouse {
+        button,
+        point: [point.x, point.y],
+        window,
+    };
+    match kind {
+        CGEventType::LeftMouseDown | CGEventType::RightMouseDown | CGEventType::OtherMouseDown => {
+            held.push((target, latest));
+        }
+        CGEventType::LeftMouseDragged
+        | CGEventType::RightMouseDragged
+        | CGEventType::OtherMouseDragged => {
+            for (owner, input) in held.iter_mut() {
+                if *owner == target
+                    && matches!(input, HeldInput::Mouse { button: held_button, .. } if *held_button == button)
+                {
+                    // Cancellation keeps the last global point actually sent;
+                    // its window-local route is rebuilt from current geometry.
+                    *input = latest;
+                }
+            }
+        }
+        _ => held.retain(|(owner, input)| {
+            !(*owner == target
+                && matches!(input, HeldInput::Mouse { button: held_button, .. } if *held_button == button))
+        }),
+    }
+}
 
 /// Every gesture releases its own unfinished presses on error or cancellation.
 /// Actions hold an exclusive control lease, so no other action can own entries.
@@ -167,42 +315,98 @@ impl Drop for InputReleaseGuard {
 /// Cleanup is allowed after revocation: it only releases events actually posted
 /// by this host, using the same directed delivery backend.
 pub(super) fn release_held_inputs() {
-    let Ok(mut held) = HELD_INPUTS.lock() else {
-        return;
-    };
-    if held.is_empty() {
-        return;
-    }
-    let Ok(source) = private_source("cancel_release") else {
-        return;
-    };
-    for (pid, input) in held.drain(..) {
-        let event = match input {
-            HeldInput::Key(code, _) => CGEvent::new_keyboard_event(source.clone(), code, false),
-            HeldInput::Mouse(button, x, y, _, _, _) => {
-                let (kind, button) = match button {
-                    0 => (CGEventType::LeftMouseUp, CGMouseButton::Left),
-                    1 => (CGEventType::RightMouseUp, CGMouseButton::Right),
-                    _ => (CGEventType::OtherMouseUp, CGMouseButton::Center),
-                };
-                mouse_source("cancel_mouse_release")
-                    .map_err(|_| ())
-                    .and_then(|source| {
-                        CGEvent::new_mouse_event(source, kind, CGPoint::new(x, y), button)
-                    })
-            }
-        };
-        if let Ok(event) = event {
-            if let HeldInput::Mouse(_, _, _, window, wx, wy) = input {
-                let _ = route_mouse_to_window(&event, window, wx, wy);
-            }
-            event.set_flags(CGEventFlags::CGEventFlagNull);
-            let auth = matches!(input, HeldInput::Key(_, true));
-            if !auth || !super::macos_skylight::post_to_pid(pid, event.as_ptr().cast(), true) {
-                event.post_to_pid(pid);
-            }
+    drain_and_release_inputs(&INPUT_RELEASE, &HELD_INPUTS, |owner, input| {
+        if let Err(error) = release_held_input(
+            owner,
+            input,
+            super::macos_skylight::process_identity,
+            super::macos_capture::window_bounds,
+            route_mouse_to_window,
+            |pid, event, authenticated| {
+                if !authenticated
+                    || !super::macos_skylight::post_to_pid(pid, event.as_ptr().cast(), true)
+                {
+                    event.post_to_pid(pid);
+                }
+            },
+        ) {
+            warn!(
+                target: "computer_use::bg_input",
+                "Skipped directed input release for pid={}: {}",
+                owner.pid,
+                error
+            );
         }
+    });
+}
+
+fn drain_and_release_inputs(
+    release: &std::sync::Mutex<()>,
+    held: &std::sync::Mutex<Vec<(InputOwner, HeldInput)>>,
+    mut release_input: impl FnMut(InputOwner, HeldInput),
+) {
+    // Stop calls cleanup before destroying capture. Even an empty second
+    // cleanup must wait for a prior drain to finish its window lookup and post.
+    // This mutex protects sequencing only, so poisoning must not bypass it.
+    let _release = release.lock().unwrap_or_else(|error| error.into_inner());
+    // Lock order is release -> held (drain only) -> capture. No capture caller
+    // holds its lock while entering cleanup, and posting never takes release.
+    let held = match held.lock() {
+        Ok(mut held) => std::mem::take(&mut *held),
+        Err(_) => return,
+    };
+    for (owner, input) in held {
+        release_input(owner, input);
     }
+}
+
+fn release_held_input(
+    owner: InputOwner,
+    input: HeldInput,
+    mut identity: impl FnMut(i32) -> Option<super::macos_skylight::ProcessIdentity>,
+    window_bounds: impl FnOnce(i32, u32) -> Result<[f64; 4], String>,
+    route: impl FnOnce(&CGEvent, u32, f64, f64) -> OpenBitFunResult<()>,
+    post: impl FnOnce(i32, &CGEvent, bool),
+) -> OpenBitFunResult<()> {
+    verify_input_identity(owner, identity(owner.pid))?;
+    let event = match input {
+        HeldInput::Key(code, _) => {
+            CGEvent::new_keyboard_event(private_source("cancel_release")?, code, false).map_err(
+                |_| OpenBitFunError::tool("Cancellation keyboard release creation failed"),
+            )?
+        }
+        HeldInput::Mouse {
+            button,
+            point: [x, y],
+            window,
+        } => {
+            let current = window_bounds(owner.pid, window).map_err(OpenBitFunError::tool)?;
+            let (kind, button) = match button {
+                0 => (CGEventType::LeftMouseUp, CGMouseButton::Left),
+                1 => (CGEventType::RightMouseUp, CGMouseButton::Right),
+                _ => (CGEventType::OtherMouseUp, CGMouseButton::Center),
+            };
+            let event = CGEvent::new_mouse_event(
+                mouse_source("cancel_mouse_release")?,
+                kind,
+                CGPoint::new(x, y),
+                button,
+            )
+            .map_err(|_| OpenBitFunError::tool("Cancellation mouse release creation failed"))?;
+            // Moving or resizing the same window must not strand a posted
+            // button-down. Keep the last global point instead of translating
+            // it with the window: its new local point can be outside content,
+            // so cancellation does not follow a moved control to click it.
+            route(&event, window, current[0], current[1])?;
+            event
+        }
+    };
+    event.set_flags(CGEventFlags::CGEventFlagNull);
+    // Event construction and routing can cross a process exit. Check again
+    // immediately before PID-directed delivery; never release into a reused PID.
+    verify_input_identity(owner, identity(owner.pid))?;
+    post(owner.pid, &event, matches!(input, HeldInput::Key(_, true)));
+    Ok(())
 }
 
 fn route_mouse_to_window(event: &CGEvent, window: u32, wx: f64, wy: f64) -> OpenBitFunResult<()> {
@@ -231,6 +435,13 @@ fn post_directed(pid: i32, event: &CGEvent, authenticated: bool) -> OpenBitFunRe
         .lock()
         .map_err(|_| OpenBitFunError::tool("Input state lock poisoned"))?;
     super::control_session::input_allowed().map_err(OpenBitFunError::tool)?;
+    let identity = super::macos_skylight::process_identity(pid).ok_or_else(|| {
+        OpenBitFunError::tool("[CONTROL_TARGET_CHANGED] The input target process is unavailable")
+    })?;
+    let owner = InputOwner { pid, identity };
+    for (held_owner, _) in held.iter().filter(|(held_owner, _)| held_owner.pid == pid) {
+        verify_input_identity(*held_owner, Some(identity))?;
+    }
     let window_id = super::macos_capture::bound_window_id(pid).map_err(|_| {
         OpenBitFunError::tool(
             "[CONTROL_TARGET_CHANGED] The captured application window is unavailable",
@@ -238,8 +449,9 @@ fn post_directed(pid: i32, event: &CGEvent, authenticated: bool) -> OpenBitFunRe
     })?;
     super::control_session::target_allowed(&format!("pid:{pid}/window:{window_id}"))
         .map_err(OpenBitFunError::tool)?;
-    let [wx, wy, width, height] =
+    let bounds =
         super::macos_capture::window_bounds(pid, window_id).map_err(OpenBitFunError::tool)?;
+    let [wx, wy, width, height] = bounds;
     if matches!(event.get_type(), CGEventType::ScrollWheel) {
         let point = super::control_session::snapshot()
             .pointer
@@ -259,70 +471,16 @@ fn post_directed(pid: i32, event: &CGEvent, authenticated: bool) -> OpenBitFunRe
     ) {
         route_mouse_to_window(event, window_id, wx, wy)?;
     }
+    verify_input_identity(owner, super::macos_skylight::process_identity(pid))?;
     if !authenticated || !super::macos_skylight::post_to_pid(pid, event.as_ptr().cast(), true) {
         event.post_to_pid(pid);
     }
     super::macos_capture::note_input(pid);
-    let point = event.location();
     match event.get_type() {
-        CGEventType::KeyDown => {
-            let code = event
-                .get_integer_value_field(core_graphics::event::EventField::KEYBOARD_EVENT_KEYCODE)
-                as u16;
-            if !held
-                .iter()
-                .any(|(p, i)| *p == pid && matches!(i, HeldInput::Key(c, _) if *c == code))
-            {
-                held.push((pid, HeldInput::Key(code, authenticated)));
-            }
+        CGEventType::KeyDown | CGEventType::KeyUp | CGEventType::FlagsChanged => {
+            record_keyboard_input(&mut held, owner, event, authenticated);
         }
-        CGEventType::KeyUp => {
-            let code = event
-                .get_integer_value_field(core_graphics::event::EventField::KEYBOARD_EVENT_KEYCODE)
-                as u16;
-            held.retain(|(p, i)| !(*p == pid && matches!(i, HeldInput::Key(c, _) if *c == code)));
-        }
-        CGEventType::LeftMouseDown | CGEventType::RightMouseDown | CGEventType::OtherMouseDown => {
-            let button = match event.get_type() {
-                CGEventType::LeftMouseDown => 0,
-                CGEventType::RightMouseDown => 1,
-                _ => 2,
-            };
-            held.push((
-                pid,
-                HeldInput::Mouse(button, point.x, point.y, window_id, wx, wy),
-            ));
-        }
-        CGEventType::LeftMouseDragged
-        | CGEventType::RightMouseDragged
-        | CGEventType::OtherMouseDragged => {
-            let button = match event.get_type() {
-                CGEventType::LeftMouseDragged => 0,
-                CGEventType::RightMouseDragged => 1,
-                _ => 2,
-            };
-            for (owner, input) in held.iter_mut() {
-                if *owner == pid {
-                    if let HeldInput::Mouse(held_button, x, y, _, _, _) = input {
-                        if *held_button == button {
-                            *x = point.x;
-                            *y = point.y;
-                        }
-                    }
-                }
-            }
-        }
-        CGEventType::LeftMouseUp | CGEventType::RightMouseUp | CGEventType::OtherMouseUp => {
-            let button = match event.get_type() {
-                CGEventType::LeftMouseUp => 0,
-                CGEventType::RightMouseUp => 1,
-                _ => 2,
-            };
-            held.retain(|(p, i)| {
-                !(*p == pid && matches!(i, HeldInput::Mouse(b, _, _, _, _, _) if *b == button))
-            });
-        }
-        _ => {}
+        _ => record_mouse_input(&mut held, owner, event, window_id),
     }
     Ok(())
 }
@@ -739,7 +897,7 @@ pub(super) fn bg_type_text(pid: i32, text: &str) -> OpenBitFunResult<()> {
         text.chars().count(),
         text.len()
     );
-    // Single source for the whole string (Codex parity): keeps the kernel
+    // Single private source for the whole string: keeps the synthetic
     // keyboard state coherent and avoids the per-char allocation cost.
     let src = private_source("type_text")?;
     // We send one event per Unicode scalar to keep individual events small
@@ -759,10 +917,8 @@ pub(super) fn bg_type_text(pid: i32, text: &str) -> OpenBitFunResult<()> {
         })?;
         ev2.set_string_from_utf16_unchecked(&buf);
         post_keyboard(pid, &ev2)?;
-        // 8ms inter-key gap matches Codex / native typing rates and avoids
-        // dropped chars in Chromium webviews and SwiftUI multi-line fields
-        // that throttle their keystroke handler. 1ms (the previous value)
-        // was reliably losing ~5–10% of CJK glyphs in informal smoke tests.
+        // Pace direct Unicode events so controls can process each scalar.
+        // This is the local delivery policy, not a reference-backend timing guarantee.
         thread::sleep(Duration::from_millis(8));
     }
     Ok(())
@@ -779,43 +935,8 @@ pub(super) fn bg_key_chord(pid: i32, modifiers: &[BgModifier], key: u16) -> Open
         "bg_key_chord.enter pid={} keycode={} modifiers={:?}",
         pid, key, modifiers
     );
-    let flags = flags_from(modifiers);
-    // Single source across the whole chord — required for the modifier
-    // latch state to survive between mod_down → key_down → key_up → mod_up.
-    let src = private_source("key_chord")?;
-
-    // Press modifiers.
-    for m in modifiers {
-        let ev = CGEvent::new_keyboard_event(src.clone(), m.keycode(), true)
-            .map_err(|_| OpenBitFunError::tool("CGEvent ModDown failed".to_string()))?;
-        ev.set_flags(flags);
-        post_keyboard(pid, &ev)?;
-    }
-    // Press main key.
-    {
-        let ev = CGEvent::new_keyboard_event(src.clone(), key, true)
-            .map_err(|_| OpenBitFunError::tool("CGEvent KeyDown failed".to_string()))?;
-        ev.set_flags(flags);
-        post_keyboard(pid, &ev)?;
-    }
-    {
-        let ev = CGEvent::new_keyboard_event(src.clone(), key, false)
-            .map_err(|_| OpenBitFunError::tool("CGEvent KeyUp failed".to_string()))?;
-        ev.set_flags(flags);
-        post_keyboard(pid, &ev)?;
-    }
-    // Release modifiers in reverse press order.
-    for m in modifiers.iter().rev() {
-        let ev = CGEvent::new_keyboard_event(src.clone(), m.keycode(), false)
-            .map_err(|_| OpenBitFunError::tool("CGEvent ModUp failed".to_string()))?;
-        // Drop this modifier from the flag set as we release it.
-        let remaining = modifiers
-            .iter()
-            .copied()
-            .filter(|x| x != m)
-            .collect::<Vec<_>>();
-        ev.set_flags(flags_from(&remaining));
-        post_keyboard(pid, &ev)?;
+    for event in key_chord_events(modifiers, key, "key_chord")? {
+        post_keyboard(pid, &event)?;
     }
     Ok(())
 }
@@ -1055,37 +1176,8 @@ pub(super) fn bg_key_chord_no_auth(
         "bg_key_chord_no_auth.enter pid={} keycode={} modifiers={:?}",
         pid, key, modifiers
     );
-    let flags = flags_from(modifiers);
-    let src = private_source("key_chord_no_auth")?;
-
-    for m in modifiers {
-        let ev = CGEvent::new_keyboard_event(src.clone(), m.keycode(), true)
-            .map_err(|_| OpenBitFunError::tool("CGEvent ModDown (no_auth) failed".to_string()))?;
-        ev.set_flags(flags);
-        post_keyboard_no_auth(pid, &ev)?;
-    }
-    {
-        let ev = CGEvent::new_keyboard_event(src.clone(), key, true)
-            .map_err(|_| OpenBitFunError::tool("CGEvent KeyDown (no_auth) failed".to_string()))?;
-        ev.set_flags(flags);
-        post_keyboard_no_auth(pid, &ev)?;
-    }
-    {
-        let ev = CGEvent::new_keyboard_event(src.clone(), key, false)
-            .map_err(|_| OpenBitFunError::tool("CGEvent KeyUp (no_auth) failed".to_string()))?;
-        ev.set_flags(flags);
-        post_keyboard_no_auth(pid, &ev)?;
-    }
-    for m in modifiers.iter().rev() {
-        let ev = CGEvent::new_keyboard_event(src.clone(), m.keycode(), false)
-            .map_err(|_| OpenBitFunError::tool("CGEvent ModUp (no_auth) failed".to_string()))?;
-        let remaining = modifiers
-            .iter()
-            .copied()
-            .filter(|x| x != m)
-            .collect::<Vec<_>>();
-        ev.set_flags(flags_from(&remaining));
-        post_keyboard_no_auth(pid, &ev)?;
+    for event in key_chord_events(modifiers, key, "key_chord_no_auth")? {
+        post_keyboard_no_auth(pid, &event)?;
     }
     Ok(())
 }
@@ -1183,7 +1275,9 @@ pub(super) fn parse_key_spec(spec: &str) -> OpenBitFunResult<(Vec<BgModifier>, u
     for p in head {
         let m = BgModifier::from_str(p)
             .ok_or_else(|| OpenBitFunError::tool(format!("unknown modifier in key spec: {}", p)))?;
-        mods.push(m);
+        if !mods.contains(&m) {
+            mods.push(m);
+        }
     }
     let kc = keycode_for_named(last)
         .or_else(|| {
@@ -1215,7 +1309,9 @@ pub(super) fn parse_key_sequence(keys: &[String]) -> OpenBitFunResult<(Vec<BgMod
         let m = BgModifier::from_str(p).ok_or_else(|| {
             OpenBitFunError::tool(format!("unknown modifier in key sequence: {}", p))
         })?;
-        mods.push(m);
+        if !mods.contains(&m) {
+            mods.push(m);
+        }
     }
     let kc = keycode_for_named(last)
         .or_else(|| {
@@ -1230,7 +1326,7 @@ pub(super) fn parse_key_sequence(keys: &[String]) -> OpenBitFunResult<(Vec<BgMod
     Ok((mods, kc))
 }
 
-/// Map common named keys (Codex parity) to AX / Carbon keycodes.
+/// Map common named keys to AX / Carbon virtual keycodes.
 pub(super) fn keycode_for_named(name: &str) -> Option<u16> {
     Some(match name.to_ascii_lowercase().as_str() {
         "return" | "enter" => 36,
@@ -1262,9 +1358,9 @@ pub(super) fn keycode_for_named(name: &str) -> Option<u16> {
     })
 }
 
-/// Map a single ASCII character to the **US-keyboard** keycode. This is the
-/// same table Codex / enigo use; the user's actual keymap is irrelevant for
-/// our chord injection because we set explicit modifier flags ourselves.
+/// Map a single ASCII character to a US-keyboard virtual keycode for chords.
+/// Text entry uses the separate Unicode path; these physical key positions
+/// do not establish layout-independent shortcut behavior.
 pub(super) fn keycode_for_char(c: char) -> Option<u16> {
     let upper = c.to_ascii_uppercase();
     Some(match upper {
@@ -1573,9 +1669,8 @@ const CHROMIUM_BUNDLE_KEYWORDS: &[&str] = &[
     "com.operasoftware.operaprofiles",
 ];
 
-/// Returns `true` when the bundle_id indicates a Chromium-based or
-/// Electron-based application. These apps need the `bg_click_chromium`
-/// 5-event recipe for reliable background clicks.
+/// Legacy classification used by the foreground-compatible click route.
+/// Background window-directed delivery must not depend on this application list.
 pub(super) fn is_chromium_electron(bundle_id: Option<&str>) -> bool {
     if let Some(bid) = bundle_id {
         let lc = bid.to_ascii_lowercase();
@@ -1613,6 +1708,454 @@ pub(super) fn bundle_id_for_pid(pid: i32) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn input_owner() -> InputOwner {
+        InputOwner {
+            pid: 42,
+            identity: super::super::macos_skylight::ProcessIdentity([0, 11]),
+        }
+    }
+
+    fn held_mouse() -> HeldInput {
+        HeldInput::Mouse {
+            button: 0,
+            point: [120.0, 140.0],
+            window: 17,
+        }
+    }
+
+    #[test]
+    fn cancellation_serializes_an_empty_stop_cleanup_after_an_inflight_release() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::{mpsc, Arc, Mutex, TryLockError};
+
+        let release = Arc::new(Mutex::new(()));
+        let held = Arc::new(Mutex::new(vec![(input_owner(), held_mouse())]));
+        let completed = Arc::new(AtomicBool::new(false));
+        let releases = Arc::new(AtomicUsize::new(0));
+        let (drained_tx, drained_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let (contending_tx, contending_rx) = mpsc::channel();
+
+        let first = {
+            let release = Arc::clone(&release);
+            let held = Arc::clone(&held);
+            let completed = Arc::clone(&completed);
+            let releases = Arc::clone(&releases);
+            thread::spawn(move || {
+                drain_and_release_inputs(&release, &held, |_, _| {
+                    // Pause at the exact original race: input was drained but
+                    // its geometry lookup and native release have not finished.
+                    drained_tx.send(()).unwrap();
+                    resume_rx.recv().unwrap();
+                    releases.fetch_add(1, Ordering::SeqCst);
+                    completed.store(true, Ordering::SeqCst);
+                });
+            })
+        };
+        drained_rx.recv().unwrap();
+        // The held-state lock is free while cleanup consults capture.
+        let drained_and_unlocked = held.try_lock().is_ok_and(|held| held.is_empty());
+        let second = {
+            let release = Arc::clone(&release);
+            let held = Arc::clone(&held);
+            let completed = Arc::clone(&completed);
+            thread::spawn(move || {
+                // This happens while the first callback is blocked on resume,
+                // proving contention without a sleep or scheduler deadline.
+                let blocked = matches!(release.try_lock(), Err(TryLockError::WouldBlock));
+                contending_tx.send(blocked).unwrap();
+                drain_and_release_inputs(&release, &held, |_, _| {
+                    panic!("The first cleanup already owns the only release")
+                });
+                // stop_capture may tear down the native capture only here.
+                completed.load(Ordering::SeqCst)
+            })
+        };
+        let blocked = contending_rx.recv().unwrap();
+        resume_tx.send(()).unwrap();
+        first.join().unwrap();
+        let teardown_follows_release = second.join().unwrap();
+        assert!(drained_and_unlocked);
+        assert!(blocked, "The cleanup lock must span drain through release");
+        assert!(teardown_follows_release);
+        assert_eq!(releases.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cancellation_never_posts_to_a_missing_or_reused_process() {
+        let owner = input_owner();
+        let replacement = super::super::macos_skylight::ProcessIdentity([0, 12]);
+        for current in [None, Some(replacement)] {
+            for input in [
+                HeldInput::Key(55, false),
+                HeldInput::Key(55, true),
+                held_mouse(),
+            ] {
+                let result = release_held_input(
+                    owner,
+                    input,
+                    |pid| {
+                        assert_eq!(pid, owner.pid);
+                        current
+                    },
+                    |_, _| panic!("Process identity must be checked before window lookup"),
+                    |_, _, _, _| panic!("A replacement process must not be routed"),
+                    |_, _, _| panic!("A replacement process must not receive a release"),
+                );
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("CONTROL_TARGET_CHANGED"));
+            }
+        }
+    }
+
+    #[test]
+    fn cancellation_skips_an_unavailable_original_window() {
+        let owner = input_owner();
+        let result = release_held_input(
+            owner,
+            held_mouse(),
+            |_| Some(owner.identity),
+            |pid, window| {
+                assert_eq!((pid, window), (owner.pid, 17));
+                Err("Original window is unavailable".to_string())
+            },
+            |_, _, _, _| panic!("An unavailable window must not be routed"),
+            |_, _, _| panic!("An unavailable window must not receive a release"),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cancellation_releases_once_after_window_move_or_resize() {
+        let owner = input_owner();
+        for current in [[200.0, 100.0, 800.0, 600.0], [100.0, 100.0, 10.0, 10.0]] {
+            let mut posts = 0;
+            release_held_input(
+                owner,
+                held_mouse(),
+                |_| Some(owner.identity),
+                |pid, window| {
+                    assert_eq!((pid, window), (owner.pid, 17));
+                    Ok(current)
+                },
+                |event, window, wx, wy| {
+                    assert_eq!((window, wx, wy), (17, current[0], current[1]));
+                    let point = event.location();
+                    let local = (point.x - wx, point.y - wy);
+                    assert!(local.0 < 0.0 || local.0 >= current[2] || local.1 >= current[3]);
+                    route_mouse_to_window(event, window, wx, wy)
+                },
+                |pid, event, authenticated| {
+                    posts += 1;
+                    assert_eq!(pid, owner.pid);
+                    assert!(!authenticated);
+                    assert_eq!(event.get_type() as u32, CGEventType::LeftMouseUp as u32);
+                    let point = event.location();
+                    assert_eq!((point.x, point.y), (120.0, 140.0));
+                },
+            )
+            .unwrap();
+            assert_eq!(posts, 1);
+        }
+    }
+
+    #[test]
+    fn cancellation_does_not_fall_back_after_window_routing_failure() {
+        let owner = input_owner();
+        let result = release_held_input(
+            owner,
+            held_mouse(),
+            |_| Some(owner.identity),
+            |_, _| Ok([100.0, 100.0, 800.0, 600.0]),
+            |event, window, wx, wy| {
+                assert_eq!(event.get_type() as u32, CGEventType::LeftMouseUp as u32);
+                assert_eq!((window, wx, wy), (17, 100.0, 100.0));
+                Err(OpenBitFunError::tool("Window-local routing unavailable"))
+            },
+            |_, _, _| panic!("An unrouted release must never be posted"),
+        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("routing unavailable"));
+    }
+
+    #[test]
+    fn cancellation_rechecks_process_identity_after_native_event_preparation() {
+        let owner = input_owner();
+        let replacement = super::super::macos_skylight::ProcessIdentity([0, 12]);
+        for current in [None, Some(replacement)] {
+            for input in [HeldInput::Key(55, true), held_mouse()] {
+                let mut reads = 0;
+                let result = release_held_input(
+                    owner,
+                    input,
+                    |_| {
+                        reads += 1;
+                        if reads == 1 {
+                            Some(owner.identity)
+                        } else {
+                            current
+                        }
+                    },
+                    |_, _| Ok([100.0, 100.0, 800.0, 600.0]),
+                    route_mouse_to_window,
+                    |_, _, _| panic!("Process exit during preparation must prevent posting"),
+                );
+                assert_eq!(reads, 2);
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("CONTROL_TARGET_CHANGED"));
+            }
+        }
+    }
+
+    #[test]
+    fn cancellation_keeps_last_drag_point_with_current_window_routing() {
+        use core_graphics::event::EventField;
+        let owner = input_owner();
+        let mut held = vec![];
+        let down = CGEvent::new_mouse_event(
+            mouse_source("held_down_test").unwrap(),
+            CGEventType::LeftMouseDown,
+            CGPoint::new(120.0, 140.0),
+            CGMouseButton::Left,
+        )
+        .unwrap();
+        record_mouse_input(&mut held, owner, &down, 17);
+        let drag = CGEvent::new_mouse_event(
+            mouse_source("held_drag_test").unwrap(),
+            CGEventType::LeftMouseDragged,
+            CGPoint::new(450.0, 260.0),
+            CGMouseButton::Left,
+        )
+        .unwrap();
+        record_mouse_input(&mut held, owner, &drag, 17);
+        let current_bounds = [600.0, 500.0, 900.0, 700.0];
+        assert_eq!(held.len(), 1);
+        let mut posts = 0;
+        release_held_input(
+            held[0].0,
+            held[0].1,
+            |_| Some(owner.identity),
+            |_, _| Ok(current_bounds),
+            |event, window, wx, wy| {
+                assert_eq!((window, wx, wy), (17, 600.0, 500.0));
+                route_mouse_to_window(event, window, wx, wy)
+            },
+            |pid, event, authenticated| {
+                posts += 1;
+                assert_eq!(pid, owner.pid);
+                assert!(!authenticated);
+                assert_eq!(event.get_type() as u32, CGEventType::LeftMouseUp as u32);
+                let point = event.location();
+                assert_eq!((point.x, point.y), (450.0, 260.0));
+                assert_eq!(event.get_flags(), CGEventFlags::CGEventFlagNull);
+                assert_eq!(
+                    event.get_integer_value_field(EventField::EVENT_SOURCE_STATE_ID),
+                    0
+                );
+                for field in [51, 91, 92] {
+                    assert_eq!(event.get_integer_value_field(field), 17);
+                }
+                assert_eq!(event.get_integer_value_field(58), 1);
+            },
+        )
+        .unwrap();
+        assert_eq!(posts, 1);
+    }
+
+    #[test]
+    fn cancellation_preserves_keyboard_backend_without_consulting_windows() {
+        use core_graphics::event::EventField;
+        let owner = input_owner();
+        for authenticated in [false, true] {
+            let mut posts = 0;
+            release_held_input(
+                owner,
+                HeldInput::Key(35, authenticated),
+                |_| Some(owner.identity),
+                |_, _| panic!("Keyboard cleanup does not require the original window"),
+                |_, _, _, _| panic!("Keyboard cleanup must not use mouse routing"),
+                |pid, event, backend| {
+                    posts += 1;
+                    assert_eq!((pid, backend), (owner.pid, authenticated));
+                    assert_eq!(event.get_type() as u32, CGEventType::KeyUp as u32);
+                    assert_eq!(
+                        event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE),
+                        35
+                    );
+                    assert_eq!(event.get_flags(), CGEventFlags::CGEventFlagNull);
+                    let source = event.get_integer_value_field(EventField::EVENT_SOURCE_STATE_ID);
+                    assert_ne!(source, CGEventSourceStateID::CombinedSessionState as i64);
+                    assert_ne!(source, CGEventSourceStateID::HIDSystemState as i64);
+                },
+            )
+            .unwrap();
+            assert_eq!(posts, 1);
+        }
+    }
+
+    fn chord_event_states(events: &[CGEvent]) -> Vec<(u32, i64, CGEventFlags)> {
+        use core_graphics::event::EventField;
+        // Private sources receive their own native ID; -1 is the constructor
+        // request, not the stored event ID. Neither shared source may be used.
+        let source_id = events[0].get_integer_value_field(EventField::EVENT_SOURCE_STATE_ID);
+        assert_ne!(source_id, CGEventSourceStateID::CombinedSessionState as i64);
+        assert_ne!(source_id, CGEventSourceStateID::HIDSystemState as i64);
+        events
+            .iter()
+            .map(|event| {
+                // Inspect the actual native events without posting to any app
+                // or the global input seat.
+                assert_eq!(
+                    event.get_integer_value_field(EventField::EVENT_SOURCE_STATE_ID),
+                    source_id
+                );
+                (
+                    event.get_type() as u32,
+                    event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE),
+                    event.get_flags(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn key_chord_events_release_only_still_held_modifiers() {
+        let command = CGEventFlags::CGEventFlagCommand;
+        let shift = CGEventFlags::CGEventFlagShift;
+        let option = CGEventFlags::CGEventFlagAlternate;
+        let none = CGEventFlags::CGEventFlagNull;
+        for label in ["key_chord", "key_chord_no_auth"] {
+            let events = key_chord_events(
+                &[BgModifier::Command, BgModifier::Shift, BgModifier::Option],
+                35,
+                label,
+            )
+            .unwrap();
+            assert_eq!(
+                chord_event_states(&events),
+                vec![
+                    (CGEventType::FlagsChanged as u32, 55, command),
+                    (CGEventType::FlagsChanged as u32, 56, command | shift),
+                    (
+                        CGEventType::FlagsChanged as u32,
+                        58,
+                        command | shift | option
+                    ),
+                    (CGEventType::KeyDown as u32, 35, command | shift | option),
+                    (CGEventType::KeyUp as u32, 35, command | shift | option),
+                    (CGEventType::FlagsChanged as u32, 58, command | shift),
+                    (CGEventType::FlagsChanged as u32, 56, command),
+                    (CGEventType::FlagsChanged as u32, 55, none),
+                ],
+                "{label} must finish with every modifier released"
+            );
+        }
+    }
+
+    #[test]
+    fn key_chord_events_normalize_duplicate_modifier_aliases() {
+        let (spec, key) = parse_key_spec("cmd+command+shift+SHIFT+p").unwrap();
+        let (sequence, sequence_key) = parse_key_sequence(&[
+            "cmd".into(),
+            "command".into(),
+            "shift".into(),
+            "SHIFT".into(),
+            "p".into(),
+        ])
+        .unwrap();
+        assert_eq!(spec, vec![BgModifier::Command, BgModifier::Shift]);
+        assert_eq!(sequence, spec);
+        assert_eq!(sequence_key, key);
+        let expected = key_chord_events(&spec, key, "unique").unwrap();
+        // Direct native callers also receive normalization, independently of
+        // how a model-facing key specification was parsed.
+        let duplicate = key_chord_events(
+            &[
+                BgModifier::Command,
+                BgModifier::Command,
+                BgModifier::Shift,
+                BgModifier::Shift,
+            ],
+            key,
+            "duplicate",
+        )
+        .unwrap();
+        assert_eq!(
+            chord_event_states(&duplicate),
+            chord_event_states(&expected)
+        );
+        assert_eq!(duplicate.len(), 6);
+    }
+
+    #[test]
+    fn key_chord_events_leave_following_unmodified_key_clear() {
+        let modified =
+            key_chord_events(&[BgModifier::Command, BgModifier::Shift], 35, "modified").unwrap();
+        assert_eq!(
+            modified.last().unwrap().get_flags(),
+            CGEventFlags::CGEventFlagNull
+        );
+        let following = key_chord_events(&[], 0, "following").unwrap();
+        assert_eq!(
+            chord_event_states(&following),
+            vec![
+                (
+                    CGEventType::KeyDown as u32,
+                    0,
+                    CGEventFlags::CGEventFlagNull
+                ),
+                (CGEventType::KeyUp as u32, 0, CGEventFlags::CGEventFlagNull),
+            ]
+        );
+    }
+
+    #[test]
+    fn key_chord_events_track_modifier_releases_for_cancellation() {
+        let owner = input_owner();
+        let events = key_chord_events(
+            &[BgModifier::Command, BgModifier::Shift, BgModifier::Option],
+            35,
+            "cancellation",
+        )
+        .unwrap();
+        for authenticated in [false, true] {
+            let mut held = vec![];
+            for event in &events[..3] {
+                record_keyboard_input(&mut held, owner, event, authenticated);
+            }
+            // If Stop arrives before the main key, cleanup must already own
+            // all modifier releases, using the exact delivery backend.
+            assert_eq!(
+                held,
+                vec![
+                    (owner, HeldInput::Key(55, authenticated)),
+                    (owner, HeldInput::Key(56, authenticated)),
+                    (owner, HeldInput::Key(58, authenticated)),
+                ]
+            );
+            for event in &events[3..6] {
+                record_keyboard_input(&mut held, owner, event, authenticated);
+            }
+            assert_eq!(
+                held,
+                vec![
+                    (owner, HeldInput::Key(55, authenticated)),
+                    (owner, HeldInput::Key(56, authenticated)),
+                ]
+            );
+            for event in &events[6..] {
+                record_keyboard_input(&mut held, owner, event, authenticated);
+            }
+            assert!(held.is_empty());
+        }
+    }
 
     /// Runs against scripts/fixtures/computer-use-directed-input.m only.
     #[test]

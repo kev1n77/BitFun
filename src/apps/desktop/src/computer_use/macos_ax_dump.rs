@@ -43,6 +43,7 @@ type AXValueRef = *const c_void;
 unsafe extern "C" {
     fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
     fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut i32) -> i32;
+    fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeout: f32) -> i32;
     fn AXUIElementCopyElementAtPosition(
         element: AXUIElementRef,
         x: f32,
@@ -263,6 +264,27 @@ pub(crate) fn is_application_menu_item(target: AxRef) -> bool {
     }
 }
 
+/// Hit testing is a read-only optimization for an independently addressed
+/// window coordinate. A busy app or missing AX implementation does not make
+/// directed pointer input unavailable. Never apply this policy to AX writes or
+/// observed node indices: their outcome/identity must remain authoritative.
+fn optional_point_hit_available(status: i32) -> OpenBitFunResult<bool> {
+    match status {
+        0 => Ok(true),
+        // Failure / CannotComplete / AttributeUnsupported / NoValue /
+        // NotImplemented. None of these read results submitted an action.
+        -25200 | -25204 | -25205 | -25208 | -25212 => {
+            log::debug!(target: "computer_use::ax", "Optional AX point lookup unavailable (status={status}); retaining window-directed pointer route");
+            Ok(false)
+        }
+        // Keep permission denial, invalid references/arguments and unknown
+        // errors visible instead of treating them as missing accessibility.
+        _ => Err(OpenBitFunError::tool(format!(
+            "AX_HIT_TEST_FAILED: Application hit testing failed (status={status})"
+        ))),
+    }
+}
+
 /// Native application-scoped hit testing ignores other applications' covering
 /// windows. The result must belong to the captured window; another same-app
 /// window is never substituted. Rectangle ranking is not a valid fallback.
@@ -282,21 +304,17 @@ pub(crate) fn retained_target_at_point(
         if app.is_null() {
             return Ok(None);
         }
+        // This optional query must not impose the AX default multi-second
+        // messaging timeout on every visual click into a busy application.
+        // The timeout is local to this temporary application reference.
+        AXUIElementSetMessagingTimeout(app, 0.3);
         let mut hit = std::ptr::null();
         let status = AXUIElementCopyElementAtPosition(app, x as f32, y as f32, &mut hit);
         ax_release(app as CFTypeRef);
         if status != 0 {
             ax_release(hit as CFTypeRef);
-            // Only a documented absence of hit-testing/content permits a
-            // visual fallback. Messaging/permission failures are not evidence
-            // that a pointer click will focus the intended text field.
-            return if matches!(status, -25208 | -25212) {
-                Ok(None)
-            } else {
-                Err(OpenBitFunError::tool(format!(
-                    "AX_HIT_TEST_FAILED: Application hit testing failed (status={status})"
-                )))
-            };
+            optional_point_hit_available(status)?;
+            return Ok(None);
         }
         if hit.is_null() {
             return Ok(None);
@@ -1115,6 +1133,23 @@ fn quote_clip(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_point_hit_read_failure_preserves_directed_input_route() {
+        assert!(optional_point_hit_available(0).unwrap());
+        for status in [-25200, -25204, -25205, -25208, -25212] {
+            assert!(!optional_point_hit_available(status).unwrap(), "{status}");
+        }
+    }
+
+    #[test]
+    fn optional_point_hit_keeps_denial_and_invalid_target_errors() {
+        for status in [-25201, -25202, -25203, -25211, -99999] {
+            let error = optional_point_hit_available(status).unwrap_err();
+            assert!(error.to_string().contains("AX_HIT_TEST_FAILED"));
+            assert!(error.to_string().contains(&status.to_string()));
+        }
+    }
 
     #[test]
     #[ignore = "run scripts/test-native-ax-context.mjs with macOS Accessibility permission"]

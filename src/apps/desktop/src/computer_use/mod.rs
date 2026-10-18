@@ -34,6 +34,8 @@ mod observation_cache;
 mod ocr_context;
 pub(crate) mod permissions;
 pub(crate) mod process_identity;
+#[cfg(any(target_os = "windows", test))]
+mod provider_worker;
 mod screen_ocr;
 pub(crate) mod share_grants;
 mod som_overlay;

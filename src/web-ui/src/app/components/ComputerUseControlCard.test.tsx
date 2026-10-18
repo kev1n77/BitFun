@@ -160,3 +160,39 @@ it('discards a preview from an earlier visit to the same target', async () => {
   expect(container.querySelector('img')).toBeNull();
   expect(container.textContent).toContain('computerControl.previewUnavailable');
 });
+
+it.each(['absent', 'rejected', 'wrong-target', 'stale-revision', 'invalid-image'])(
+  'keeps live control status and Stop available when the preview is %s', async kind => {
+    mocks.status.mockResolvedValue({ ...active('Window A'), target_revision: 2 });
+    const frame = { generation: 4, target: 'Window A', target_revision: 2,
+      image_base64: 'AA==', mime_type: 'image/png', width: 100, height: 100 };
+    if (kind === 'rejected') mocks.preview.mockRejectedValue(new Error('Capture unavailable'));
+    else mocks.preview.mockResolvedValue(kind === 'absent' ? null : {
+      ...frame,
+      ...(kind === 'wrong-target' ? { target: 'Window B' } : {}),
+      ...(kind === 'stale-revision' ? { target_revision: 1 } : {}),
+      ...(kind === 'invalid-image' ? { width: 0 } : {}),
+    });
+    mocks.stop.mockResolvedValue({ ...active('Window A', 5), state: 'stopped' });
+    await act(async () => root.render(<ComputerUseControlCard />));
+    await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === 'computerControl.showPreview')!.click());
+    await act(async () => vi.advanceTimersByTime(1000));
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.textContent).toContain('computerControl.previewUnavailable');
+    expect(container.textContent).toContain('computerControl.background');
+    expect(container.textContent).not.toContain('computerControl.unavailable');
+    await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === 'computerControl.stop')!.click());
+    expect(mocks.stop).toHaveBeenCalledWith(4);
+    expect(container.textContent).toContain('computerControl.stopped');
+  },
+);
+
+it('still reports a failed status read as unavailable and permits Stop', async () => {
+  mocks.status.mockResolvedValueOnce(active('Window A')).mockRejectedValue(new Error('Host unavailable'));
+  mocks.stop.mockResolvedValue({ ...active('Window A', 5), state: 'stopped' });
+  await act(async () => root.render(<ComputerUseControlCard />));
+  await act(async () => vi.advanceTimersByTime(1000));
+  expect(container.textContent).toContain('computerControl.unavailable');
+  await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === 'computerControl.stop')!.click());
+  expect(mocks.stop).toHaveBeenCalledWith(4);
+});

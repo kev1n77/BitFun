@@ -2379,6 +2379,14 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             self.ensure_runtime_ownership(&workspace.root_path, None, None)?;
         }
         let workspace = workspace_service.open_workspace_by_id(workspace_id).await?;
+        #[cfg(feature = "external-sources")]
+        for warning in
+            crate::external_session_import::auto_discovery::discover_workspace(&workspace, true)
+                .await
+                .warnings
+        {
+            log::warn!("External session discovery: {warning}");
+        }
         if workspace.workspace_kind != WorkspaceKind::Remote {
             if let Err(error) = crate::service::snapshot::initialize_snapshot_manager_for_workspace(
                 &workspace.id,
@@ -6250,6 +6258,14 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             None => None,
         };
 
+        #[cfg(feature = "external-sources")]
+        if let Some(restore) = requested_restore.as_ref() {
+            self.session_manager
+                .persistence_manager()
+                .assert_native_history_mutation(&restore.effective_storage_path, &session_id)
+                .await?;
+        }
+
         // Get latest session, restoring from persistence on demand so every entry
         // point can use the same start_dialog_turn flow. A loaded session must keep
         // the same storage identity as this invocation.
@@ -8663,6 +8679,11 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         session_id: &str,
         undo: bool,
     ) -> OpenBitFunResult<(AgentSessionComposerUpdate, bool, usize)> {
+        #[cfg(feature = "external-sources")]
+        self.session_manager
+            .persistence_manager()
+            .assert_native_history_mutation(session_storage_path, session_id)
+            .await?;
         let workspace = self.local_revert_workspace(session_id).await?;
         let snapshot_manager =
             crate::service::snapshot::get_or_create_snapshot_manager(&workspace.id, None)
@@ -8809,6 +8830,11 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         Vec<String>,
         Vec<String>,
     )> {
+        #[cfg(feature = "external-sources")]
+        self.session_manager
+            .persistence_manager()
+            .assert_native_history_mutation(session_storage_path, session_id)
+            .await?;
         let workspace = self.local_revert_workspace(session_id).await?;
         let persistence = self.session_manager.persistence_manager();
         let current = persistence
@@ -9061,6 +9087,11 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         turn_id: Option<&str>,
         history: Option<Option<usize>>,
     ) -> OpenBitFunResult<(Vec<DialogTurnData>, Option<usize>)> {
+        #[cfg(feature = "external-sources")]
+        self.session_manager
+            .persistence_manager()
+            .assert_relay_history_supported(storage, session_id)
+            .await?;
         let _mutation = self
             .session_manager
             .acquire_session_mutation(session_id)
@@ -13651,10 +13682,34 @@ async fn create_agent_session_from_runtime_request(
         )
     })?;
     let created_by = resolve_agent_session_create_created_by(&request.metadata);
+    let uses_default_title = request.session_name.trim().is_empty()
+        || (request.metadata.get("titleSource").and_then(|v| v.as_str()) == Some("i18n")
+            && request.metadata.get("titleKey").and_then(|v| v.as_str())
+                == Some("flow-chat:session.new")
+            && request
+                .metadata
+                .get("titleParams")
+                .and_then(|v| v.get("defaultTitleText"))
+                .and_then(|v| v.as_str())
+                == Some(request.session_name.as_str()));
+    let explicit_remote_title = matches!(
+        request.metadata.get("source").and_then(|v| v.as_str()),
+        Some("remote_relay" | "bot")
+    );
+    let session_name = if uses_default_title {
+        crate::service::i18n::generated_locale_contract::generated_shared_term(
+            crate::service::config::app_language::get_app_language().await,
+            "sessions.new",
+        )
+        .unwrap_or("New Session")
+        .to_string()
+    } else {
+        request.session_name
+    };
     let session = coordinator
         .create_session_with_workspace_and_creator_internal(
             session_id,
-            request.session_name,
+            session_name,
             request.agent_type,
             SessionConfig {
                 agent_route_key: request.agent_route_key,
@@ -13674,6 +13729,30 @@ async fn create_agent_session_from_runtime_request(
         .await
         .map_err(map_core_error)?;
 
+    if !transient && (uses_default_title || explicit_remote_title) {
+        let title_metadata = if uses_default_title {
+            serde_json::json!({
+                "titleSource": "i18n", "titleKey": "flow-chat:session.new",
+                "titleParams": { "defaultTitleText": session.session_name }
+            })
+        } else {
+            // Explicit remote titles are user input. Desktop defaults use
+            // their explicit title descriptor through the existing creation API.
+            serde_json::json!({ "titleSource": "text", "titleUserEdited": true })
+        };
+        if let Err(error) = coordinator
+            .session_manager
+            .merge_session_custom_metadata(&session.session_id, title_metadata)
+            .await
+        {
+            // Session creation has committed; a projection failure must not
+            // report a failed create and encourage a duplicate retry.
+            warn!(
+                "Failed to persist created session title provenance: session_id={} error={}",
+                session.session_id, error
+            );
+        }
+    }
     Ok(session.into())
 }
 
@@ -16445,6 +16524,110 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("candidate_unavailable"));
+    }
+
+    #[tokio::test]
+    async fn legacy_imported_primary_branches_resolve_real_turn_modes() {
+        use crate::agentic::persistence::SessionBranchRequest;
+        use openbitfun_services_core::session::{
+            DialogTurnData, DialogTurnKind, OfflineSessionBundle, OfflineSessionImportStore,
+            SessionBranchBoundary, SessionMetadata, TurnStatus, UserMessageData,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let workspace =
+            crate::service::workspace::legacy_compat::register_local_fixture_blocking(&project);
+        let paths = Arc::new(PathManager::with_user_root_for_tests(
+            temp.path().join("user"),
+        ));
+        let root = paths.project_sessions_dir(&workspace.root_path);
+        let persistence = PersistenceManager::new(paths).unwrap();
+        let store = OfflineSessionImportStore::new(&root);
+        for ecosystem in ["codex", "zcode"] {
+            let id = format!("legacy-{ecosystem}-branch");
+            let turn_id = format!("{id}-turn-0");
+            let metadata: SessionMetadata = serde_json::from_value(serde_json::json!({
+                "session_id": id, "session_name": "Existing native branch", "agent_type": "primary", "model_name": "primary",
+                "created_at": 1, "last_active_at": 2, "turn_count": 1, "message_count": 1, "tool_call_count": 0, "status": "completed",
+                "workspace_id": workspace.id, "workspace_path": workspace.root_path,
+                "project_workspace_id": workspace.id, "project_workspace_path": workspace.root_path,
+                "custom_metadata": {"externalBranchOf": {"sessionId": "source-view", "ecosystemId": ecosystem, "sourceSessionId": "source", "contentVersion": "pinned"}}
+            })).unwrap();
+            let mut turn = DialogTurnData::new_with_kind(
+                DialogTurnKind::UserDialog,
+                turn_id.clone(),
+                0,
+                id.clone(),
+                Some("primary".into()),
+                UserMessageData {
+                    id: format!("{id}-user"),
+                    content: "Preserved imported question".into(),
+                    timestamp: 1,
+                    metadata: None,
+                },
+            );
+            turn.status = TurnStatus::Completed;
+            store
+                .write_bundle_atomic(&OfflineSessionBundle {
+                    metadata,
+                    turns: vec![turn],
+                })
+                .await
+                .unwrap();
+            let metadata_path = root.join(&id).join("metadata.json");
+            let before = std::fs::read(&metadata_path).unwrap();
+            let restored = persistence
+                .load_session(&workspace.root_path, &id)
+                .await
+                .unwrap();
+
+            let admitted = ConversationCoordinator::resolve_session_agent_for_turn(
+                &restored,
+                &restored.agent_type,
+                &None,
+            )
+            .await
+            .expect("legacy native branches must pass the same mode admission as a message send");
+            assert_eq!(admitted.runtime_agent_key, "Standard");
+            assert_eq!(restored.config.model_id.as_deref(), Some("primary"));
+            assert_eq!(std::fs::read(&metadata_path).unwrap(), before);
+
+            let branch = persistence
+                .branch_session(
+                    &workspace.root_path,
+                    &SessionBranchRequest {
+                        source_session_id: id.clone(),
+                        source_turn_id: turn_id,
+                        boundary: SessionBranchBoundary::ThroughTurn,
+                    },
+                )
+                .await
+                .unwrap();
+            let continued = persistence
+                .load_session(&workspace.root_path, &branch.session_id)
+                .await
+                .unwrap();
+            let admitted = ConversationCoordinator::resolve_session_agent_for_turn(
+                &continued,
+                &continued.agent_type,
+                &None,
+            )
+            .await
+            .expect("forking an existing legacy branch must retain a valid runtime mode");
+            assert_eq!(admitted.runtime_agent_key, "Standard");
+            let copied = store
+                .load_bundle(&branch.session_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                copied.turns[0].user_message.content,
+                "Preserved imported question"
+            );
+            assert_eq!(copied.turns[0].agent_type.as_deref(), Some("primary"));
+        }
     }
 
     #[tokio::test]
@@ -21002,6 +21185,86 @@ mod tests {
             .expect("explicit-model normal session should be created");
         assert_eq!(explicit.config.model_id.as_deref(), Some("explicit-model"));
 
+        let _ = std::fs::remove_dir_all(workspace_path);
+    }
+
+    #[tokio::test]
+    async fn runtime_default_title_is_shared_and_explicit_remote_titles_stay_literal() {
+        let (coordinator, session_manager) = test_persistent_coordinator();
+        let workspace_path = std::env::temp_dir().join(format!(
+            "openbitfun-title-contract-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&workspace_path).unwrap();
+        crate::service::workspace::legacy_compat::register_local_fixture_blocking(&workspace_path);
+        let expected = crate::service::i18n::generated_locale_contract::generated_shared_term(
+            crate::service::config::app_language::get_app_language().await,
+            "sessions.new",
+        )
+        .unwrap();
+        for (agent_type, title, descriptor) in [
+            ("Standard", "", false),
+            ("Cowork", "  ", false),
+            ("Claw", "", false),
+            ("Claw", "Remote Claw Session", false),
+            ("Standard", expected, false),
+            ("Standard", "New Session", true),
+        ] {
+            let created = AgentSubmissionPort::create_session(
+                &coordinator,
+                AgentSessionCreateRequest {
+                    session_name: title.into(),
+                    agent_type: agent_type.into(),
+                    agent_route_key: None,
+                    workspace_path: Some(workspace_path.to_string_lossy().into_owned()),
+                    project_workspace_path: None,
+                    execution_target: None,
+                    workspace_id: None,
+                    remote_connection_id: None,
+                    remote_ssh_host: None,
+                    model_id: None,
+                    metadata: serde_json::from_value(
+                        if descriptor {
+                            serde_json::json!({ "titleSource": "i18n", "titleKey": "flow-chat:session.new", "titleParams": { "defaultTitleText": title } })
+                        } else { serde_json::json!({ "source": "remote_relay" }) },
+                    )
+                    .unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+            let path = session_manager
+                .resolve_session_workspace_binding(&created.session_id)
+                .await
+                .unwrap()
+                .session_storage_dir();
+            let metadata = session_manager
+                .persistence_manager()
+                .load_session_metadata(&path, &created.session_id)
+                .await
+                .unwrap()
+                .unwrap();
+            let is_default = descriptor || title.trim().is_empty();
+            assert_eq!(
+                created.session_name,
+                if is_default { expected } else { title }
+            );
+            assert_eq!(
+                openbitfun_services_core::session::naming::is_default_title(&metadata),
+                is_default
+            );
+            assert_eq!(
+                session_manager
+                    .update_session_title_if_current(
+                        &created.session_id,
+                        &created.session_name,
+                        "Generated topic"
+                    )
+                    .await
+                    .unwrap(),
+                is_default
+            );
+        }
         let _ = std::fs::remove_dir_all(workspace_path);
     }
 

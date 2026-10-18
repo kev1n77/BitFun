@@ -1,4 +1,20 @@
 {
+  "externalHistory": {
+    "removed": "來源對話已從 OpenBitFun 移除，目前分支保留獨立歷史。",
+    "restoreSource": "重新新增來源對話",
+    "sourceMissing": "來源對話已無法使用，目前分支保留獨立歷史。",
+    "openFailed": "無法開啟來源對話。目前分支可正常使用，請稍後重試。",
+    "restoreFailed": "無法重新新增來源對話。目前分支不受影響，請稍後重試。",
+    "unavailableWithoutCache": "來源無法使用，且沒有可用的快取歷史。請恢復來源後重新開啟對話。",
+    "unsupportedSurface": "Peer 模式暫不支援跟隨來源會話。請在來源主機上開啟，或繼續已有的 OpenBitFun 分支。",
+    "forkBeforeEdit": "請先分叉此來源會話，再編輯或回退歷史。",
+    "followHint": "來自 {{source}} · 傳送後在 OpenBitFun 新分支中繼續",
+    "branchHint": "繼續自 {{source}}",
+    "openSource": "開啟來源會話",
+    "unavailable": "來源暫時無法使用，顯示上次快取",
+    "incomplete": "來源對話尚未完成，目前顯示已讀取的歷史",
+    "openBeforeContinue": "請先開啟來源會話並等待歷史載入完成，再繼續對話。"
+  },
   "subagentIdentity": {
     "names": {
       "bouncyBean": "豆豆",
@@ -524,14 +540,14 @@
     }
   },
   "session": {
-    "new": "新會話",
+    "new": "$t(shared:sessions.new)",
     "newCode": "新增 Code 會話",
     "newCowork": "新增 Cowork 會話",
-    "newClaw": "新增 Claw 會話",
+    "newClaw": "新增助理會話",
     "newWithIndex": "新增會話 {{count}}",
     "newCodeWithIndex": "新增 Code 會話 {{count}}",
     "newCoworkWithIndex": "新增 Cowork 會話 {{count}}",
-    "newClawWithIndex": "新增 Claw 會話 {{count}}",
+    "newClawWithIndex": "新增助理會話 {{count}}",
     "title": "會話",
     "chatWithAgent": "與{{name}}的對話",
     "rename": "重新命名會話",
@@ -831,21 +847,21 @@
       "fixedTooltip": "本工作階段使用 {{name}}，開始後已固定。",
       "compatibilityShort": "相容模式",
       "comingSoon": "開發中",
-      "comingSoonNotice": "「{{name}}」執行框架正在開發中。",
-      "legacySessionNotice": "該舊會話繼續使用原智能體執行模式；請新增會話使用智能體執行框架。",
-      "sessionStartedNotice": "執行框架與主智能體在首輪開始前確定；如需切換，請新增會話。",
+      "comingSoonNotice": "「{{name}}」執行模式正在開發中。",
+      "legacySessionNotice": "舊會話沿用原有智能體；如需選擇新的執行模式，請新增會話。",
+      "sessionStartedNotice": "執行模式或主智能體在首輪開始前確定；如需切換，請新增會話。",
       "newSessionConfirmation": {
         "title": "使用「{{name}}」建立新工作階段？",
         "message": "目前工作階段不會變更；新工作階段將使用「{{name}}」。",
         "confirm": "建立新工作階段"
       },
-      "unsupportedProfile": "不支援的執行框架（{{id}}）",
-      "unsupportedProfileNotice": "該工作階段使用目前版本無法執行的 {{id}}。請選擇受支援的執行框架。",
-      "profileChangeBusy": "請等待目前回合結束後再切換執行框架。",
-      "profileChangeOutcomeUnknown": "暫時無法確認執行框架是否已切換，請重新整理工作階段後再重試。",
-      "profileUnavailable": "目前 OpenBitFun Host 不支援該執行框架。",
-      "profileChangeFailed": "切換執行框架失敗，請重試。",
-      "rememberFailed": "執行框架已切換，但無法記住本次選擇。之後的新工作階段可能繼續使用原預設值。",
+      "unsupportedProfile": "不支援的執行模式（{{id}}）",
+      "unsupportedProfileNotice": "該工作階段使用目前版本無法執行的 {{id}}。請選擇受支援的執行模式。",
+      "profileChangeBusy": "請等待目前回合結束後再切換執行模式。",
+      "profileChangeOutcomeUnknown": "暫時無法確認執行模式是否已切換，請重新整理工作階段後再重試。",
+      "profileUnavailable": "目前 OpenBitFun Host 不支援該執行模式。",
+      "profileChangeFailed": "切換執行模式失敗，請重試。",
+      "rememberFailed": "執行模式已切換，但無法記住本次選擇。之後的新工作階段可能繼續使用原預設值。",
       "otherAgentsTitle": "智能體",
       "otherAgentsEmpty": "目前沒有可用的主智能體",
       "unavailable": "無法使用",
@@ -867,7 +883,7 @@
           "name": "$t(shared:agents.Creative)"
         }
       },
-      "activateStandard": "切換到標準執行框架"
+      "activateStandard": "切換到標準執行模式"
     },
     "agents": {
       "available": "可用",
@@ -1716,7 +1732,7 @@
       "averageRate": "平均輸出",
       "speedLevel": "速度檔位",
       "rateValue": "{{value}} t/s",
-      "rateBasis": "輸出 Token 除以本輪總耗時，包含工具執行與等待；檔位分界為 15、40、80 Token/秒",
+      "rateBasis": "輸出 Token 除以從首個 Token 到流結束的時長，不含工具執行、排隊與等待；檔位分界為 15、40、80 Token/秒",
       "slow": "慢",
       "normal": "一般",
       "fast": "快",
@@ -2200,6 +2216,7 @@
       "awaitingTimeoutConfirmation": "等待後端確認逾時",
       "cancelCountdown": "取消計時",
       "timeoutSettingsHint": "點擊可取消計時。可在設定 → 執行與權限 → 工具執行 → 提問逾時中調整逾時時間。",
+      "unlimitedWait": "不限時",
       "questionsCount": "{{count}} 個問題",
       "answerAllBeforeSubmit": "請回答所有問題後再提交",
       "submit": "提交",
@@ -2509,7 +2526,7 @@
       "resultCount": "{{count}} 個工作階段",
       "title": "會話",
       "currentWorkspace": "目前工作區",
-      "defaultSessionName": "新會話",
+      "defaultSessionName": "$t(shared:sessions.new)",
       "unknownSession": "未知會話",
       "preparingCreate": "準備建立會話 {{session}}",
       "creatingSession": "正在建立會話 {{session}}",
@@ -3309,6 +3326,22 @@
     "projectCowork": "項目裡工作。"
   },
   "modelSelector": {
+    "home": {
+      "context": "上下文",
+      "effort": "思考強度",
+      "unknownContext": "未提供",
+      "contextReadOnly": "上下文視窗由執行端管理",
+      "editContext": "編輯上下文視窗",
+      "contextTokens": "上下文視窗（Token 數）",
+      "saveContext": "儲存上下文視窗",
+      "contextInvalid": "請輸入 {{min}} 到 {{max}} 之間的整數 Token 數",
+      "contextSaveFailed": "儲存失敗，請重試。",
+      "availablePoolModels": "模型池可用模型",
+      "mode": "模式",
+      "currentModel": "目前使用模型",
+      "poolConnections": "電池接入列表",
+      "modelPool": "模型池清單"
+    },
     "modes": {
       "selection": "選擇模式",
       "manual": "手動指定",
@@ -3323,6 +3356,12 @@
     "modelExplanation": "模型說明",
     "modelSettings": "模型設定",
     "modelSelection": "選擇模型",
+    "searchModels": "搜尋模型",
+    "collapseSearch": "收合搜尋",
+    "searchPlaceholder": "搜尋模型或供應商",
+    "noSearchResults": "沒有匹配的模型或供應商",
+    "filterProvider": "依服務商篩選模型",
+    "allProviders": "全部服務商",
     "primaryModel": "主力模型",
     "primaryModelDesc": "使用已設定的主力模型",
     "fastModel": "快速模型",

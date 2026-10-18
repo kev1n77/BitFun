@@ -53,6 +53,7 @@ function repositoryPath(root, path) {
 const VENDORED_EXTERNAL_PACKAGES = new Map([
   ['third_party/eioc/Cargo.toml', { name: 'eioc', version: '0.5.0' }],
   ['third_party/tao/Cargo.toml', { name: 'tao', version: '0.36.0' }],
+  ['third_party/wry/Cargo.toml', { name: 'wry', version: '0.56.0' }],
 ]);
 
 function isVendoredExternalManifest(root, manifestPath) {
@@ -562,6 +563,8 @@ const THIRD_PARTY_CAPABILITY_PROFILES = new Map([
       })],
       // Desktop owns bounded controller-local drag thumbnail decoding.
       // Keep only its raster input formats and PNG/JPEG output codecs.
+      // Independent MiniApp windows decode only their host-generated PNG icon.
+      ['openbitfun-miniapp-shell', dependencyProfile(['png'], { useDefaultFeatures: false })],
       ['openbitfun-desktop', dependencyProfile(['bmp', 'gif', 'jpeg', 'png', 'webp'], {
         useDefaultFeatures: false,
       })],

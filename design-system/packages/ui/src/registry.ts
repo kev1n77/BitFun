@@ -28,6 +28,7 @@ import { navigationPanelMeta } from "./components/NavigationPanel/NavigationPane
 import { numberInputMeta } from "./components/NumberInput/NumberInput.meta";
 import { numberBadgeMeta } from "./components/NumberBadge/NumberBadge.meta";
 import { pageHeaderMeta } from "./components/PageHeader/PageHeader.meta";
+import { setupWizardMeta } from "./components/SetupWizard/SetupWizard.meta";
 import { radioMeta } from "./components/Radio/Radio.meta";
 import { rollingTextMeta } from "./components/RollingText/RollingText.meta";
 import { shimmerTextMeta } from "./components/ShimmerText/ShimmerText.meta";
@@ -217,6 +218,7 @@ export const componentRegistry = [
   numberBadgeMeta,
   pageDeployToolCardMeta,
   pageHeaderMeta,
+  setupWizardMeta,
   radioMeta,
   pagePublishToolCardMeta,
   prominentToolCardMeta,

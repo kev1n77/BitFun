@@ -180,6 +180,10 @@ pub struct AppConfig {
     /// the frontend owns the versioned format (StoredKeybindingsV1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keybindings: Option<serde_json::Value>,
+    /// Preferred assistant entry sessions, keyed by owning workspace ID on this host.
+    /// An empty map also advertises support to older/newer controller surfaces.
+    #[serde(default)]
+    pub assistant_default_sessions: HashMap<String, String>,
     /// Global, user-defined groups used to organize Agent tool pickers.
     #[serde(default, skip_serializing_if = "UserToolGroupsConfig::is_empty")]
     pub user_tool_groups: UserToolGroupsConfig,
@@ -199,6 +203,10 @@ pub struct AppConfig {
     /// Defaults for opt-in managed Git worktrees.
     #[serde(default)]
     pub worktrees: WorktreeSettings,
+    /// Opt-in discovery of external session history on the serving host.
+    /// Unknown ecosystem keys survive upgrades; only installed readers consume them.
+    #[serde(default)]
+    pub external_session_discovery: HashMap<String, bool>,
 }
 
 /// An explicit empty source list stays empty; defaults apply only to absent settings.
@@ -1921,12 +1929,14 @@ impl Default for AppConfig {
             ai_experience: AIExperienceConfig::default(),
             voice_call: VoiceCallConfig::default(),
             keybindings: None,
+            assistant_default_sessions: HashMap::new(),
             user_tool_groups: UserToolGroupsConfig::default(),
             user_skill_groups: UserSkillGroupsConfig::default(),
             skill_market: SkillMarketConfig::default(),
             close_button_behavior: default_close_button_behavior(),
             hooks: AgentHooksConfig::default(),
             worktrees: WorktreeSettings::default(),
+            external_session_discovery: HashMap::new(),
         }
     }
 }
@@ -2712,6 +2722,38 @@ mod tests {
         assert_eq!(upgraded.language, config.app.language);
         assert_eq!(upgraded.telemetry, config.app.telemetry);
         assert_eq!(upgraded.skill_market.sources[0].provider, "skills-sh");
+    }
+
+    #[test]
+    fn assistant_default_sessions_preserve_legacy_config_and_round_trip() {
+        let mut old_payload = current_global_config_with(serde_json::json!({}));
+        old_payload["app"]
+            .as_object_mut()
+            .unwrap()
+            .remove("assistant_default_sessions");
+        let mut upgraded: GlobalConfig = serde_json::from_value(old_payload).unwrap();
+        assert!(upgraded.app.assistant_default_sessions.is_empty());
+        upgraded
+            .app
+            .assistant_default_sessions
+            .insert("assistant-a".into(), "session-a".into());
+        let serialized = serde_json::to_value(&upgraded).unwrap();
+        let restored: GlobalConfig = serde_json::from_value(serialized.clone()).unwrap();
+        assert_eq!(
+            restored.app.assistant_default_sessions["assistant-a"],
+            "session-a"
+        );
+        #[derive(serde::Deserialize, serde::Serialize)]
+        struct LegacyApp {
+            language: String,
+            telemetry: bool,
+        }
+        let legacy: LegacyApp = serde_json::from_value(serialized["app"].clone()).unwrap();
+        let old_round_trip: super::AppConfig =
+            serde_json::from_value(serde_json::to_value(legacy).unwrap()).unwrap();
+        assert_eq!(old_round_trip.language, upgraded.app.language);
+        assert_eq!(old_round_trip.telemetry, upgraded.app.telemetry);
+        assert!(old_round_trip.assistant_default_sessions.is_empty());
     }
 
     #[test]
@@ -4165,5 +4207,27 @@ mod user_question_timeout_tests {
                 value
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod external_session_discovery_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_configuration_stays_opted_out_and_unknown_agent_preferences_round_trip() {
+        let mut legacy = serde_json::to_value(AppConfig::default()).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("external_session_discovery");
+        legacy["language"] = serde_json::json!("en-US");
+        let old: AppConfig = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(old.external_session_discovery.is_empty());
+        assert_eq!(old.language, "en-US");
+        legacy["external_session_discovery"] =
+            serde_json::json!({"codex": true, "zcode": false, "future-agent": true});
+        let config: AppConfig = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(serde_json::to_value(config).unwrap(), legacy);
     }
 }

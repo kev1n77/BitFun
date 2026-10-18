@@ -1,14 +1,19 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useI18n } from '@/infrastructure/i18n';
 import { useWorkspaceContext } from '@/infrastructure/contexts/WorkspaceContext';
+import { useSceneStore } from '@/app/stores/sceneStore';
+import { useContentResourceStore } from '@/app/workbench/contentResourceStore';
+import { getActiveSurfaceId, onSurfaceActivated } from '@/infrastructure/peer-device/deviceSurface';
 import { notificationService } from '@/shared/notification-system';
 import WorkspaceItem from './WorkspaceItem';
 import SessionsSection, { type WorkspaceSessionScope } from '../sessions/SessionsSection';
 import { useWorkspaceSessionViewStore } from '../../workspaceSessionView';
 import {
   isWorkspaceBackedSessionGroupActive,
+  isWorkspaceBackedSessionGroupSelected,
   projectWorkspaceBackedSessionGroups,
   type SessionNavigationScope,
+  type WorkspaceBackedSessionGroup,
 } from '../../sessionNavigationProjection';
 import './WorkspaceListSection.scss';
 
@@ -27,6 +32,13 @@ const WORKSPACE_DRAG_MIME_TYPE = 'application/x-openbitfun-workspace';
 const WORKSPACE_DROP_SETTLE_MS = 160;
 const WORKSPACE_DROP_EASING = 'cubic-bezier(0.22, 1, 0.36, 1)';
 
+/**
+ * WorkspaceListSection — the session section's group list.
+ *
+ * Projects and assistants are both workspace-backed, but they are not peers in
+ * navigation: the assistant identity is pinned above the workspace list and
+ * never joins the workspace order (see `pinnedGroups`).
+ */
 
 const WorkspaceListSection: React.FC<WorkspaceListSectionProps> = ({ variant }) => {
   const { t } = useI18n('common');
@@ -43,6 +55,11 @@ const WorkspaceListSection: React.FC<WorkspaceListSectionProps> = ({ variant }) 
     position: WorkspaceDragPosition;
   } | null>(null);
   const grouping = useWorkspaceSessionViewStore(state => state.grouping);
+  const activeTab = useSceneStore(state => state.openTabs.find(tab => tab.id === state.activeTabId));
+  const contentScope = useContentResourceStore(state => (
+    activeTab?.contentId ? state.resources[activeTab.contentId]?.scope : undefined
+  ));
+  const surfaceId = useSyncExternalStore(onSurfaceActivated, getActiveSurfaceId, getActiveSurfaceId);
 
   // Refs for values that must be read inside event handlers without stale closures
   const draggedWorkspaceIdRef = useRef<string | null>(null);
@@ -71,12 +88,38 @@ const WorkspaceListSection: React.FC<WorkspaceListSectionProps> = ({ variant }) 
       : t('nav.workspaces.emptySessionGroups');
   const workspaceScopes = useMemo<WorkspaceSessionScope[]>(() => (
     variant !== 'assistants'
-      ? workspaces.map(workspace => ({
+      ? sessionGroups.filter(group => group.kind === 'project').map(({ workspace }) => ({
           workspaceId: workspace.id,
           workspaceName: workspace.name,
         }))
       : []
-  ), [variant, workspaces]);
+  ), [variant, sessionGroups]);
+  /**
+   * The assistant is a product-level identity, not one workspace among many. It
+   * is pinned above the workspace list and stays out of the workspace order, so
+   * the persisted and draggable order only ever describes project workspaces.
+   *
+   * A hidden, deleted, or never-created assistant has no opened workspace and
+   * therefore produces no pinned row: the pin appears and disappears with the
+   * assistant itself, and the workspace list is untouched either way.
+   */
+  const pinnedGroups = variant === 'all'
+    ? sessionGroups.filter(group => group.kind === 'assistant')
+    : [];
+  const reorderableGroups = variant === 'all'
+    ? sessionGroups.filter(group => group.kind === 'project')
+    : sessionGroups;
+  // The flat view folds every project session into one aggregate list, so only
+  // the pinned assistant rows stay above it.
+  const visibleReorderableGroups = grouping === 'all' && variant !== 'assistants'
+    ? []
+    : reorderableGroups;
+  const canReorderGroups = visibleReorderableGroups.length > 1;
+  /**
+   * Pinned assistants sit outside the drag order, so a project drag rewrites
+   * project positions only and leaves the assistant's stored slot untouched.
+   */
+  const reorderSection = variant === 'all' ? 'projects' : variant;
 
   const workspaceSignature = sessionGroups.map(group => group.groupId).join(':');
 
@@ -215,7 +258,7 @@ const WorkspaceListSection: React.FC<WorkspaceListSectionProps> = ({ variant }) 
     );
 
     try {
-      await reorderOpenedWorkspacesInSection(variant, payload.workspaceId, workspaceId, position);
+      await reorderOpenedWorkspacesInSection(reorderSection, payload.workspaceId, workspaceId, position);
     } catch (error) {
       pendingDropRectsRef.current = null;
       notificationService.error(
@@ -225,7 +268,62 @@ const WorkspaceListSection: React.FC<WorkspaceListSectionProps> = ({ variant }) 
     } finally {
       setDraggedWorkspaceId(null);
     }
-  }, [reorderOpenedWorkspacesInSection, t, variant]);
+  }, [reorderOpenedWorkspacesInSection, reorderSection, t, variant]);
+
+  /**
+   * One session-group row. Pinned assistants and project workspaces share the
+   * same box, but only project rows join the drag group: an assistant row never
+   * becomes a drop target, so dropping a project near it cannot reorder it.
+   */
+  const renderGroupRow = (group: WorkspaceBackedSessionGroup, pinned: boolean) => {
+    const workspace = group.workspace;
+    const isActive = isWorkspaceBackedSessionGroupActive(workspace, activeWorkspace);
+    const isSelected = isWorkspaceBackedSessionGroupSelected(workspace, {
+      activeTab, contentScope, surfaceId, activeWorkspaceId,
+    });
+    const draggable = !pinned && canReorderGroups;
+    return (
+      <div
+        data-openbitfun-component="workspace-list-section"
+        data-openbitfun-part="item"
+        data-openbitfun-state={isSelected ? 'selected' : undefined}
+        key={workspace.id}
+        ref={pinned ? undefined : (element) => {
+          if (element) workspaceRowRefs.current.set(workspace.id, element);
+          else workspaceRowRefs.current.delete(workspace.id);
+        }}
+        className={[
+          'openbitfun-nav-panel__workspace-drop-target',
+          draggable && draggedWorkspaceId && draggedWorkspaceId !== workspace.id && 'is-drag-active',
+          dropTarget?.workspaceId === workspace.id && 'is-drop-target',
+          dropTarget?.workspaceId === workspace.id && dropTarget.position === 'before' && 'is-before',
+          dropTarget?.workspaceId === workspace.id && dropTarget.position === 'after' && 'is-after',
+        ].filter(Boolean).join(' ')}
+        data-testid={pinned ? 'nav-workspace-pinned-item' : 'nav-workspace-drop-target'}
+        data-workspace-id={workspace.id}
+        data-workspace-list={variant}
+        data-session-group-kind={group.kind}
+        data-session-group-pinned={pinned ? 'true' : undefined}
+        onDragOver={draggable ? handleDragOver(workspace.id) : undefined}
+        onDragLeave={draggable ? handleDragLeave(workspace.id) : undefined}
+        onDrop={draggable ? (event) => { void handleDrop(workspace.id)(event); } : undefined}
+      >
+        <WorkspaceItem
+          workspace={workspace}
+          isActive={isActive}
+          isSelected={isSelected}
+          isSingle={!draggable}
+          draggable={draggable}
+          isDragging={draggedWorkspaceId === workspace.id}
+          onDragStart={draggable ? handleDragStart(workspace.id) : undefined}
+          onDragEnd={draggable ? handleDragEnd : undefined}
+        />
+        {dropTarget?.workspaceId === workspace.id ? (
+          <div data-openbitfun-component="workspace-list-section" data-openbitfun-part="dropLine" className="openbitfun-nav-panel__workspace-drop-line" aria-hidden="true" />
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <div data-openbitfun-component="workspace-list-section" data-openbitfun-part="root" data-openbitfun-state={draggedWorkspaceId ? 'dragging' : undefined}
@@ -233,16 +331,7 @@ const WorkspaceListSection: React.FC<WorkspaceListSectionProps> = ({ variant }) 
       data-testid="nav-workspace-list"
       data-workspace-list={variant}
     >
-      {variant !== 'assistants' && grouping === 'all' && workspaces.length > 0 ? (
-        <div className="openbitfun-nav-panel__workspace-all-sessions" data-testid="nav-workspace-all-sessions">
-          <SessionsSection
-            workspaceScopes={workspaceScopes}
-            isVisible
-            layout="flat"
-            useWorkspaceViewPreferences
-          />
-        </div>
-      ) : workspaces.length === 0 ? (
+      {workspaces.length === 0 ? (
         <div
           data-openbitfun-component="workspace-list-section"
           data-openbitfun-part="empty"
@@ -253,48 +342,20 @@ const WorkspaceListSection: React.FC<WorkspaceListSectionProps> = ({ variant }) 
           {emptyLabel}
         </div>
       ) : (
-        sessionGroups.map(group => {
-          const workspace = group.workspace;
-          return (
-            <div
-              data-openbitfun-component="workspace-list-section"
-              data-openbitfun-part="item"
-              data-openbitfun-state={workspace.id === activeWorkspaceId ? 'selected' : undefined}
-              key={workspace.id}
-              ref={(element) => {
-                if (element) workspaceRowRefs.current.set(workspace.id, element);
-                else workspaceRowRefs.current.delete(workspace.id);
-              }}
-              className={[
-                'openbitfun-nav-panel__workspace-drop-target',
-                draggedWorkspaceId && draggedWorkspaceId !== workspace.id && 'is-drag-active',
-                dropTarget?.workspaceId === workspace.id && 'is-drop-target',
-                dropTarget?.workspaceId === workspace.id && dropTarget.position === 'before' && 'is-before',
-                dropTarget?.workspaceId === workspace.id && dropTarget.position === 'after' && 'is-after',
-              ].filter(Boolean).join(' ')}
-              data-testid="nav-workspace-drop-target"
-              data-workspace-id={workspace.id}
-              data-workspace-list={variant}
-              data-session-group-kind={group.kind}
-              onDragOver={handleDragOver(workspace.id)}
-              onDragLeave={handleDragLeave(workspace.id)}
-              onDrop={(event) => { void handleDrop(workspace.id)(event); }}
-            >
-              <WorkspaceItem
-                workspace={workspace}
-                isActive={isWorkspaceBackedSessionGroupActive(workspace, activeWorkspace)}
-                isSingle={workspaces.length === 1}
-                draggable={workspaces.length > 1}
-                isDragging={draggedWorkspaceId === workspace.id}
-                onDragStart={handleDragStart(workspace.id)}
-                onDragEnd={handleDragEnd}
-              />
-              {dropTarget?.workspaceId === workspace.id ? (
-                <div data-openbitfun-component="workspace-list-section" data-openbitfun-part="dropLine" className="openbitfun-nav-panel__workspace-drop-line" aria-hidden="true" />
-              ) : null}
-            </div>
-          );
-        })
+        <>
+          {pinnedGroups.map(group => renderGroupRow(group, true))}
+          {visibleReorderableGroups.map(group => renderGroupRow(group, false))}
+        </>
+      )}
+      {grouping === 'all' && workspaceScopes.length > 0 && (
+        <div className="openbitfun-nav-panel__workspace-all-sessions" data-testid="nav-workspace-all-sessions">
+          <SessionsSection
+            workspaceScopes={workspaceScopes}
+            isVisible
+            layout="flat"
+            useWorkspaceViewPreferences
+          />
+        </div>
       )}
     </div>
   );

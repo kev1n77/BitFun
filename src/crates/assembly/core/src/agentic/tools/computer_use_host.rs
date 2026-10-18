@@ -5,20 +5,21 @@ pub use crate::agentic::tools::computer_use_optimizer::{ActionRecord, LoopDetect
 pub use openbitfun_agent_tools::computer_use::{
     clamp_point_crop_half_extent, parse_windows_accelerator_display,
     suggested_point_crop_half_extent_from_native_bounds, AppClickParams, AppInfo, AppInputAction,
-    AppMenuShortcut, AppSelector, AppShortcutsSnapshot, AppStateSnapshot, AppWaitPredicate, AxNode,
-    ClickIndexTarget, ClickTarget, ComputerScreenshot, ComputerUseDisplayInfo,
-    ComputerUseForegroundApplication, ComputerUseImageContentRect, ComputerUseImageGlobalBounds,
-    ComputerUseImplicitScreenshotCenter, ComputerUseInteractionScreenshotKind,
-    ComputerUseInteractionState, ComputerUseLastMutationKind, ComputerUseNavigateQuadrant,
-    ComputerUseNavigationRect, ComputerUsePermissionSnapshot, ComputerUsePointerGlobal,
-    ComputerUseScreenshotParams, ComputerUseScreenshotRefinement, ComputerUseSessionSnapshot,
-    InteractiveActionResult, InteractiveClickParams, InteractiveElement, InteractiveScrollParams,
-    InteractiveTypeTextParams, InteractiveView, InteractiveViewOpts, OcrAccessibilityHit,
-    OcrRegionNative, OcrTextMatch, OpenAppResult, ScreenshotCropCenter, UiElementLocateQuery,
-    UiElementLocateResult, VisualActionResult, VisualClickParams, VisualImageRegion, VisualMark,
-    VisualMarkView, VisualMarkViewOpts, COMPUTER_USE_POINT_CROP_HALF_DEFAULT,
-    COMPUTER_USE_POINT_CROP_HALF_MAX, COMPUTER_USE_POINT_CROP_HALF_MIN,
-    COMPUTER_USE_QUADRANT_CLICK_READY_MAX_LONG_EDGE, COMPUTER_USE_QUADRANT_EDGE_EXPAND_PX,
+    AppMenuShortcut, AppSelector, AppShortcutsSnapshot, AppStateSnapshot, AppWaitPredicate,
+    AppWindowInfo, AxNode, ClickIndexTarget, ClickTarget, ComputerScreenshot,
+    ComputerUseDisplayInfo, ComputerUseForegroundApplication, ComputerUseImageContentRect,
+    ComputerUseImageGlobalBounds, ComputerUseImplicitScreenshotCenter,
+    ComputerUseInteractionScreenshotKind, ComputerUseInteractionState, ComputerUseLastMutationKind,
+    ComputerUseNavigateQuadrant, ComputerUseNavigationRect, ComputerUsePermissionSnapshot,
+    ComputerUsePointerGlobal, ComputerUseScreenshotParams, ComputerUseScreenshotRefinement,
+    ComputerUseSessionSnapshot, InteractiveActionResult, InteractiveClickParams,
+    InteractiveElement, InteractiveScrollParams, InteractiveTypeTextParams, InteractiveView,
+    InteractiveViewOpts, OcrAccessibilityHit, OcrRegionNative, OcrTextMatch, OpenAppResult,
+    ScreenshotCropCenter, UiElementLocateQuery, UiElementLocateResult, VisualActionResult,
+    VisualClickParams, VisualImageRegion, VisualMark, VisualMarkView, VisualMarkViewOpts,
+    COMPUTER_USE_POINT_CROP_HALF_DEFAULT, COMPUTER_USE_POINT_CROP_HALF_MAX,
+    COMPUTER_USE_POINT_CROP_HALF_MIN, COMPUTER_USE_QUADRANT_CLICK_READY_MAX_LONG_EDGE,
+    COMPUTER_USE_QUADRANT_EDGE_EXPAND_PX,
 };
 
 use crate::util::errors::{OpenBitFunError, OpenBitFunResult};
@@ -428,6 +429,17 @@ pub trait ComputerUseHost: Send + Sync + std::fmt::Debug {
     /// empty result as "not available on this host".
     async fn list_apps(&self, _include_hidden: bool) -> OpenBitFunResult<Vec<AppInfo>> {
         Ok(vec![])
+    }
+
+    /// Native window inventory. Omit `app` to discover windows across process
+    /// boundaries; explicit selectors filter the inventory without binding it.
+    async fn list_windows(
+        &self,
+        _app: Option<AppSelector>,
+    ) -> OpenBitFunResult<Vec<AppWindowInfo>> {
+        Err(OpenBitFunError::tool(
+            "[WINDOW_DISCOVERY_UNSUPPORTED] This host cannot enumerate native windows; use list_apps and supported app observations",
+        ))
     }
 
     /// Dump the accessibility tree of a target application, returning a

@@ -44,6 +44,6 @@ export function PreviewCursor({ x, y, immediate = false }: { x: number; y: numbe
   useEffect(() => { update.current?.(); }, [x, y, immediate]);
   return <span ref={element} className="computer-control-card__pointer computer-control-card__pointer--physical"
     data-openbitfun-component="computer-control" data-openbitfun-part="pointer" aria-hidden="true">
-    <svg viewBox="0 0 40 40" focusable="false"><path d="M8 8 C6 10 7 12 8 15 L14 31 C15.5 35 19 35 20.5 31.5 L23 26 C23.6 24.5 24.5 23.6 26 23 L31.5 20.5 C35 19 35 15.5 31 14 L15 8 C12 7 10 6 8 8 Z" /></svg>
+    <svg viewBox="0 0 40 40" focusable="false"><path transform="translate(8 8) scale(0.7) translate(-8 -8)" vectorEffect="non-scaling-stroke" d="M8 8 C6 10 7 12 8 15 L14 31 C15.5 35 19 35 20.5 31.5 L23 26 C23.6 24.5 24.5 23.6 26 23 L31.5 20.5 C35 19 35 15.5 31 14 L15 8 C12 7 10 6 8 8 Z" /></svg>
   </span>;
 }

@@ -102,6 +102,51 @@ impl CdpClient {
             .map_err(|error| OpenBitFunError::tool(error.to_string()))
     }
 
+    /// Create a new page/tab on a legacy fixed debug port without raising the
+    /// browser window.
+    ///
+    /// `PUT /json/new` always creates a foreground tab. Background creation
+    /// therefore goes through the browser-level WebSocket that `/json/version`
+    /// advertises and falls back to the HTTP endpoint when that WebSocket is
+    /// unavailable, so an old or restricted endpoint keeps working.
+    pub async fn create_page_in_background(
+        port: u16,
+        url: Option<&str>,
+    ) -> OpenBitFunResult<CdpPageInfo> {
+        let Some(ws_url) = Self::get_version(port)
+            .await
+            .ok()
+            .and_then(|version| version.web_socket_debugger_url)
+        else {
+            return Self::create_page(port, url).await;
+        };
+        let Ok(browser) = Self::connect(&ws_url).await else {
+            return Self::create_page(port, url).await;
+        };
+        let created = browser.create_browser_page(url, true).await;
+        browser.disconnect().await;
+        let page = created?;
+
+        // A browser-level create response carries no page WebSocket URL, but
+        // legacy callers attach through it. Resolve the same target from `/json`
+        // so both creation paths return the identical shape.
+        for _ in 0..10 {
+            if let Ok(pages) = Self::list_pages(port).await {
+                if let Some(page) = pages.into_iter().find(|candidate| {
+                    candidate.id == page.id && candidate.web_socket_debugger_url.is_some()
+                }) {
+                    return Ok(page);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        Err(OpenBitFunError::tool(format!(
+            "Created tab {} but its page WebSocket never appeared on port {}. Connect to that page by id instead of creating another tab.",
+            page.id, port
+        )))
+    }
+
     /// Connect to a specific page by its legacy WebSocket debugger URL.
     pub async fn connect(ws_url: &str) -> OpenBitFunResult<Self> {
         info!("CDP connecting to page WebSocket");
@@ -426,12 +471,24 @@ impl CdpClient {
     }
 
     /// Create a target through the browser WebSocket and return its metadata.
-    pub async fn create_browser_page(&self, url: Option<&str>) -> OpenBitFunResult<CdpPageInfo> {
+    ///
+    /// `background` asks the browser not to activate the new tab.
+    /// `Target.createTarget` defaults to a foreground tab, and a foreground tab
+    /// raises the browser window and takes focus away from whatever the user is
+    /// doing. Browsers that ignore the parameter degrade to the old behavior
+    /// instead of failing the call.
+    pub async fn create_browser_page(
+        &self,
+        url: Option<&str>,
+        background: bool,
+    ) -> OpenBitFunResult<CdpPageInfo> {
         self.require_browser_connection()?;
         let target_url = url.unwrap_or("about:blank");
-        let result = self
-            .send("Target.createTarget", Some(json!({ "url": target_url })))
-            .await?;
+        let mut request = json!({ "url": target_url });
+        if background {
+            request["background"] = json!(true);
+        }
+        let result = self.send("Target.createTarget", Some(request)).await?;
         let target_id = result
             .get("targetId")
             .and_then(Value::as_str)
@@ -726,6 +783,90 @@ mod tests {
         assert_eq!(pages[0].id, "page-1");
         assert_eq!(pages[0].page_type.as_deref(), Some("page"));
         assert_eq!(pages[0].web_socket_debugger_url, None);
+    }
+
+    #[tokio::test]
+    async fn page_creation_only_asks_for_a_background_tab_when_requested() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind mock CDP server");
+        let address = listener.local_addr().expect("mock CDP address");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept CDP client");
+            let mut socket = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("accept WebSocket");
+            let mut requested_background = Vec::new();
+            let mut created = 0;
+            let mut listed = 0;
+
+            while let Some(message) = socket.next().await {
+                let Message::Text(text) = message.expect("read CDP command") else {
+                    continue;
+                };
+                let command: Value = serde_json::from_str(&text).expect("parse CDP command");
+                let id = command
+                    .get("id")
+                    .and_then(Value::as_i64)
+                    .expect("command id");
+
+                let result = match command
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .expect("command method")
+                {
+                    "Target.createTarget" => {
+                        created += 1;
+                        requested_background.push(command["params"]["background"].clone());
+                        json!({ "targetId": format!("page-{created}") })
+                    }
+                    "Target.getTargets" => {
+                        listed += 1;
+                        json!({
+                            "targetInfos": [{
+                                "targetId": format!("page-{created}"),
+                                "type": "page",
+                                "title": "",
+                                "url": "about:blank"
+                            }]
+                        })
+                    }
+                    other => panic!("unexpected CDP command: {other}"),
+                };
+
+                socket
+                    .send(Message::Text(
+                        json!({ "id": id, "result": result }).to_string().into(),
+                    ))
+                    .await
+                    .expect("send CDP response");
+
+                if listed == 2 {
+                    break;
+                }
+            }
+
+            requested_background
+        });
+
+        let browser = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .expect("connect browser WebSocket");
+        browser
+            .create_browser_page(None, true)
+            .await
+            .expect("create background page");
+        browser
+            .create_browser_page(None, false)
+            .await
+            .expect("create foreground page");
+
+        let requested_background = server.await.expect("mock CDP server");
+        assert_eq!(
+            requested_background,
+            vec![json!(true), Value::Null],
+            "background creation asks for a background tab; foreground creation keeps the browser default"
+        );
     }
 
     #[tokio::test]
