@@ -31,6 +31,11 @@ on:
         required: false
         default: true
         type: boolean
+      linux_bundles:
+        description: "Comma-separated bundle formats produced by the linux-* platforms."
+        required: false
+        default: "deb,rpm,appimage"
+        type: string
 permissions:
   contents: read
 
@@ -107,6 +112,7 @@ jobs:
       desktop_platforms: ${{ inputs.desktop_platforms || '["linux-x64","linux-arm64","macos-arm64","macos-x64","windows-x64"]' }}
       build_linux_binaries: ${{ github.event_name != 'workflow_dispatch' || inputs.build_linux_binaries }}
       build_relay_image: ${{ github.event_name != 'workflow_dispatch' || inputs.build_relay_image }}
+      linux_bundles: ${{ inputs.linux_bundles || 'deb,rpm,appimage' }}
       upload_artifacts: true
       # Fork validation is intentionally cache-read-only. Only the upstream
       # repository may seed long-lived Nightly caches.

@@ -30,6 +30,11 @@ on:
         required: false
         default: '["linux-x64","linux-arm64","macos-arm64","macos-x64","windows-x64"]'
         type: string
+      linux_bundles:
+        description: "Comma-separated bundle formats produced by the linux-* platforms."
+        required: false
+        default: "deb,rpm,appimage"
+        type: string
       build_linux_binaries:
         description: "Whether to build Linux CLI and Relay archives."
         required: false
@@ -77,6 +82,7 @@ jobs:
       # Nightly relay archives are signed too (linux-binaries.yml receives the
       # key), so nightly Desktop needs the same trust root to verify them.
       OPENBITFUN_RELEASE_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+      LINUX_BUNDLES: ${{ inputs.linux_bundles }}
       PACKAGE_TARGET: ${{ fromJSON('{"linux-x64":"x86_64-unknown-linux-gnu","linux-arm64":"aarch64-unknown-linux-gnu","macos-arm64":"aarch64-apple-darwin","macos-x64":"x86_64-apple-darwin","windows-x64":"x86_64-pc-windows-msvc"}')[matrix.platform] }}
 
     strategy:
@@ -237,10 +243,10 @@ jobs:
         run: |
           case "${{ matrix.platform }}" in
             linux-x64)
-              pnpm run desktop:build:linux -- --target x86_64-unknown-linux-gnu --bundles deb,rpm,appimage
+              pnpm run desktop:build:linux -- --target x86_64-unknown-linux-gnu --bundles "$LINUX_BUNDLES"
               ;;
             linux-arm64)
-              CARGO_PROFILE_RELEASE_LTO=thin pnpm run desktop:build:linux -- --target aarch64-unknown-linux-gnu --bundles deb,rpm,appimage
+              CARGO_PROFILE_RELEASE_LTO=thin pnpm run desktop:build:linux -- --target aarch64-unknown-linux-gnu --bundles "$LINUX_BUNDLES"
               ;;
             macos-arm64)
               pnpm run desktop:build:arm64
@@ -284,7 +290,7 @@ jobs:
             "${{ steps.macos-cli.outputs.checksum }}"
 
       - name: Verify AppImage fcitx5 GTK module
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && contains(inputs.linux_bundles, 'appimage')
         shell: bash
         run: bash scripts/ci/verify-appimage-fcitx.sh "${{ env.PACKAGE_TARGET }}"
 
@@ -330,9 +336,20 @@ jobs:
 
           case "${{ matrix.platform }}" in
             linux-*)
-              find_bundle_file '*.deb'
-              find_bundle_file '*.rpm'
-              find_bundle_file '*.AppImage'
+              shopt -s nullglob
+              IFS=',' read -r -a requested_bundles <<< "${LINUX_BUNDLES}"
+              [[ ${#requested_bundles[@]} -gt 0 ]]
+              for bundle_format in "${requested_bundles[@]}"; do
+                case "${bundle_format// /}" in
+                  deb) find_bundle_file '*.deb' ;;
+                  rpm) find_bundle_file '*.rpm' ;;
+                  appimage) find_bundle_file '*.AppImage' ;;
+                  *)
+                    echo "Unsupported Linux bundle format: ${bundle_format}" >&2
+                    exit 1
+                    ;;
+                esac
+              done
               ;;
             macos-*)
               find_bundle_dir '*.app'
@@ -351,6 +368,30 @@ jobs:
               exit 1
               ;;
           esac
+
+      # Tauri leaves the bundler staging trees (the unpacked AppDir and the
+      # unpacked deb payload) next to the finished packages. They are not
+      # consumable artifacts, so dropping them keeps the uploaded bundle close
+      # to the size of the packages themselves.
+      - name: Prune bundler staging trees
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for root in \
+            "target/${PACKAGE_TARGET}/release/bundle" \
+            "target/release/bundle" \
+            "src/apps/desktop/target/${PACKAGE_TARGET}/release/bundle" \
+            "src/apps/desktop/target/release/bundle"; do
+            [[ -d "$root" ]] || continue
+            if [[ -d "$root/appimage" ]]; then
+              rm -rf "$root"/appimage/*.AppDir
+            fi
+            if [[ -d "$root/deb" ]]; then
+              rm -rf "$root"/deb/*/
+            fi
+          done
 
       - name: Upload bundles
         if: ${{ inputs.upload_artifacts }}
