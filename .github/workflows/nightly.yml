@@ -16,6 +16,21 @@ on:
         required: false
         default: 7
         type: number
+      desktop_platforms:
+        description: 'JSON array of Desktop/Installer platforms to package.'
+        required: false
+        default: '["linux-x64","linux-arm64","macos-arm64","macos-x64","windows-x64"]'
+        type: string
+      build_linux_binaries:
+        description: "Build the Linux CLI and Relay archives."
+        required: false
+        default: true
+        type: boolean
+      build_relay_image:
+        description: "Validate the Relay runtime image."
+        required: false
+        default: true
+        type: boolean
 permissions:
   contents: read
 
@@ -89,9 +104,9 @@ jobs:
       artifact_prefix: nightly
       artifact_retention_days: ${{ fromJSON(inputs.artifact_retention_days || '7') }}
       build_desktop_packages: true
-      desktop_platforms: '["linux-x64","linux-arm64","macos-arm64","macos-x64","windows-x64"]'
-      build_linux_binaries: true
-      build_relay_image: true
+      desktop_platforms: ${{ inputs.desktop_platforms || '["linux-x64","linux-arm64","macos-arm64","macos-x64","windows-x64"]' }}
+      build_linux_binaries: ${{ github.event_name != 'workflow_dispatch' || inputs.build_linux_binaries }}
+      build_relay_image: ${{ github.event_name != 'workflow_dispatch' || inputs.build_relay_image }}
       upload_artifacts: true
       # Fork validation is intentionally cache-read-only. Only the upstream
       # repository may seed long-lived Nightly caches.
