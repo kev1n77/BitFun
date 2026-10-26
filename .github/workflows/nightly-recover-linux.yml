@@ -1,0 +1,183 @@
+name: Nightly Linux Recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Original main-branch nightly run providing successful Windows and macOS arm64 artifacts."
+        required: true
+        type: string
+      nightly_version:
+        description: "Original full nightly version, including +source commit."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-linux-recovery-${{ github.repository }}-${{ inputs.source_run_id }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      nightly_version: ${{ steps.source.outputs.nightly_version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Resolve original nightly source
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          NIGHTLY_VERSION: ${{ inputs.nightly_version }}
+        run: node scripts/nightly-linux-recovery.mjs resolve
+
+  build-linux:
+    needs: resolve
+    uses: ./.github/workflows/nightly-artifacts.yml
+    permissions:
+      contents: read
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+    with:
+      checkout_ref: ${{ needs.resolve.outputs.source_sha }}
+      version: ${{ needs.resolve.outputs.nightly_version }}
+      artifact_prefix: nightly-recovery
+      artifact_retention_days: 7
+      build_desktop_packages: true
+      desktop_platforms: '["linux-x64"]'
+      linux_bundles: deb
+      build_macos_cli: false
+      build_linux_binaries: false
+      build_relay_image: false
+      upload_artifacts: true
+      cache_write: false
+
+  publish:
+    name: Publish recovered three-platform nightly
+    needs: [resolve, build-linux]
+    runs-on: ubuntu-24.04
+    # Wait for the original nightly (including its Mac producer), then serialize
+    # all changes to the shared nightly release and tag with normal publication.
+    concurrency:
+      group: nightly-${{ github.repository }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+      NIGHTLY_VERSION: ${{ needs.resolve.outputs.nightly_version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Validate successful original Windows and Mac producers
+        id: reused
+        run: node scripts/nightly-linux-recovery.mjs ready
+      - name: Download original successful packages
+        uses: actions/download-artifact@v7
+        with:
+          artifact-ids: ${{ steps.reused.outputs.artifact_ids }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: release-assets
+      - name: Download recovered DEB
+        uses: actions/download-artifact@v7
+        with:
+          name: openbitfun-nightly-recovery-linux-x64-bundle
+          path: release-assets
+      - name: Stage and verify three installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/prepare-windows-installer-asset.mjs --assets-dir release-assets \
+            --version "${NIGHTLY_VERSION%%+*}" --out-dir nightly-release-assets
+          node scripts/nightly-linux-recovery.mjs stage
+          test "$(dpkg-deb --field nightly-release-assets/*.deb Architecture)" = amd64
+          (cd nightly-release-assets && sha256sum *.exe *.dmg *.deb > SHA256SUMS)
+      - name: Sign recovered release assets
+        shell: bash
+        env:
+          OPENBITFUN_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          OPENBITFUN_SIGNING_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          OPENBITFUN_SIGNING_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+          bash scripts/sign-release-assets.sh nightly-release-assets/*.exe \
+            nightly-release-assets/*.dmg nightly-release-assets/*.deb nightly-release-assets/SHA256SUMS
+          node scripts/write-minisign-public-key.mjs --out nightly-release-assets/minisign.pub
+          test "$(find nightly-release-assets -name '*.sig' | wc -l)" -eq 4
+      - name: Publish recovered nightly
+        shell: bash
+        run: |
+          set -euo pipefail
+          previous_sha="$(git ls-remote origin refs/tags/nightly | cut -f1)"
+          if [[ "$previous_sha" != "$SOURCE_SHA" ]]; then
+            git tag --force nightly "$SOURCE_SHA"
+            git push --force-with-lease="refs/tags/nightly:${previous_sha}" origin refs/tags/nightly
+          fi
+          cat > nightly-recovery-notes.md <<EOF
+          Nightly installers for Windows x64, macOS arm64, and Linux amd64.
+
+          **Version**: ${NIGHTLY_VERSION}
+          **Source commit**: ${SOURCE_SHA}
+          **Original Windows and macOS build**: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}
+          **Linux recovery build**: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          SHA-256 checksums and detached minisign signatures accompany all three installers.
+          EOF
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --paginate --slurp > release-pages.json
+          count="$(node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            console.log(JSON.parse(readFileSync("release-pages.json", "utf8")).flat().filter(r => r.tag_name === "nightly").length);
+          ')"
+          case "$count" in
+            1) gh release edit nightly --repo "$GITHUB_REPOSITORY" --draft ;;
+            0) gh release create nightly --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+                 --title "Nightly Build ($NIGHTLY_VERSION)" --notes-file nightly-recovery-notes.md ;;
+            *) echo 'Expected at most one nightly release.' >&2; exit 1 ;;
+          esac
+          gh release upload nightly --repo "$GITHUB_REPOSITORY" --clobber nightly-release-assets/*
+          release_id="$(gh release view nightly --repo "$GITHUB_REPOSITORY" --json uploadUrl --jq '.uploadUrl | split("/")[-2]')"
+          [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" > release-state.json
+          node --input-type=module -e '
+            import { readFileSync, readdirSync } from "node:fs";
+            const names = new Set(readdirSync("nightly-release-assets"));
+            for (const asset of JSON.parse(readFileSync("release-state.json", "utf8")).assets) {
+              if (!names.has(asset.name)) console.log(asset.id);
+            }
+          ' > obsolete-assets.txt
+          while IFS= read -r id; do
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${id}"
+          done < obsolete-assets.txt
+          gh release edit nightly --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false \
+            --title "Nightly Build ($NIGHTLY_VERSION)" --notes-file nightly-recovery-notes.md
+      - name: Verify published packages and signatures
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release download nightly --repo "$GITHUB_REPOSITORY" --dir published-assets
+          for file in nightly-release-assets/*; do cmp "$file" "published-assets/$(basename "$file")"; done
+          (cd published-assets && sha256sum --check SHA256SUMS)
+          for file in published-assets/*.exe published-assets/*.dmg published-assets/*.deb published-assets/SHA256SUMS; do
+            base64 -d "${file}.sig" > "${file}.minisig"
+            minisign -Vm "$file" -p published-assets/minisign.pub -x "${file}.minisig"
+          done
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/nightly" --jq .object.sha)" = "$SOURCE_SHA"

@@ -76,7 +76,9 @@ jobs:
   package:
     name: Package (${{ matrix.platform }})
     if: ${{ inputs.build_desktop_packages }}
-    runs-on: ${{ fromJSON('{"linux-x64":"ubuntu-latest","linux-arm64":"ubuntu-24.04-arm","macos-arm64":"macos-15","macos-x64":"macos-15-intel","windows-x64":"windows-latest"}')[matrix.platform] }}
+    # Keep the DEB build ABI and native OCR headers on a stable Ubuntu baseline.
+    # ubuntu-latest moved to 26.04 and breaks leptonica-sys bindgen's atomic_int.
+    runs-on: ${{ fromJSON('{"linux-x64":"ubuntu-24.04","linux-arm64":"ubuntu-24.04-arm","macos-arm64":"macos-15","macos-x64":"macos-15-intel","windows-x64":"windows-latest"}')[matrix.platform] }}
     env:
       NODE_OPTIONS: --max-old-space-size=6144
       OPENBITFUN_RELEASE_CHANNEL: nightly
