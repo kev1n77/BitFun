@@ -30,6 +30,7 @@ describe('PeerConnectionManager attach', () => {
         targetedSessionRollback: false,
         tokenUsageStatistics: true,
         miniAppAgentContextFilesV1: true,
+        miniAppAgentImagesV1: true,
         productControlV1: true,
         productControlNativeV1: false,
         productControlPresentationV1: false,
@@ -90,6 +91,7 @@ describe('PeerConnectionManager attach', () => {
             user_question_response: true,
             user_question_interaction_v1: true,
             miniapp_agent_context_files_v1: true,
+            miniapp_agent_images_v1: true,
             wsl_workspaces_v1: true,
             whole_session_copy_v1: true,
             btw_initial_model_selection_v1: true,
@@ -106,6 +108,7 @@ describe('PeerConnectionManager attach', () => {
     expect(caps.toolCatalog).toBe(true);
     expect(caps.chatMcpCatalogV1).toBe(true);
     expect(caps.miniAppAgentContextFilesV1).toBe(true);
+    expect(caps.miniAppAgentImagesV1).toBe(true);
     expect(caps.wslWorkspacesV1).toBe(true);
     expect(caps.wholeSessionCopyV1).toBe(true);
     expect(caps.btwInitialModelSelectionV1).toBe(true);
@@ -658,6 +661,7 @@ function createRpc(options: { failCommands?: Set<string> } = {}) {
             inline_image_attachments_v1: true,
             token_usage_statistics: true,
             miniapp_agent_context_files_v1: true,
+            miniapp_agent_images_v1: true,
             wsl_workspaces_v1: true,
             product_control_v1: true,
             cancel_tool: true,

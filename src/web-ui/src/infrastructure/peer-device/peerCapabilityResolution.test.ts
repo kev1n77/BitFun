@@ -14,6 +14,7 @@ function caps(overrides: Partial<PeerHostCapabilities>): PeerHostCapabilities {
     targetedSessionRollback: false,
     tokenUsageStatistics: false,
     miniAppAgentContextFilesV1: false,
+    miniAppAgentImagesV1: false,
     cancelTool: null,
     toolCatalog: null,
     userQuestionResponse: null,

@@ -42,6 +42,7 @@
             "session-lifecycle": "重命名、归档、恢复、删除、复制、分叉与导出会话",
             "model-mode-permissions": "为会话选择模型、工作模式、记忆模式与权限模式",
             "creative-frontend-authoring": "让创造模式扩展客户端界面与运行时能力",
+            "image-generation": "通过已配置的默认图像模型生成图片",
             "turn-control": "开始、引导、打断、取消或恢复一次智能体运行",
             "permission-mailbox": "查看并逐个或批量回答等待中的权限请求",
             "history-search": "分页加载、搜索和回填历史消息与会话内容",
@@ -467,7 +468,7 @@
               "available-models": "让智能体查看当前配置下可用的模型",
               "model-catalog": "查看 models.dev 目录状态、手动刷新并定位本地缓存",
               "advanced-request": "为供应商添加自定义 Header、请求体字段与 SSL 行为",
-              "connection-test": "保存前测试供应商或模型连接并刷新运行时客户端",
+              "connection-test": "测试模型连接或图像生成，并刷新运行时客户端",
               "model-pools": "管理模型池、路由策略与会话模型选择"
             }
           },

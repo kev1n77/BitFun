@@ -669,6 +669,7 @@
     "retry": "重试",
     "addImage": "添加图片",
     "maxImagesWarning": "最多只能选择{{count}}张图片",
+    "imageOnlyPrompt": "请参考附带的图片。",
     "imagePasteFailed": "图片粘贴失败",
     "clipboardImageToolsUnavailable": "无法读取剪贴板图片：请安装 wl-clipboard（Wayland）或 xclip（X11）后重试。",
     "externalFiles": {
@@ -3024,6 +3025,7 @@
         "AgentDelete": "删除子代理",
         "SessionHistory": "导出会话历史",
         "analyze_image": "分析图片",
+        "generate_image": "生成图片",
         "GetTime": "读取时间",
         "ListMCPResources": "发现资源",
         "ReadMCPResource": "读取资源",
@@ -3059,6 +3061,7 @@
         "includeToolInputs": "包含工具参数",
         "includeThinking": "包含思考",
         "model": "视觉模型",
+        "service": "服务",
         "dimensions": "图片尺寸",
         "question": "分析问题",
         "analysis": "分析结果",
@@ -3282,6 +3285,7 @@
       "imageCurrent": "当前源图像",
       "imageUnavailable": "无法预览图像，可打开记录的路径查看源文件。",
       "imageLoading": "正在读取源图像…",
+      "generatedImages": "已生成图片：{{value}} 张",
       "hostUnavailable": "这条记录来自被派发任务的主机，请在该主机打开资源；当前无法从本机跳转。",
       "remoteLoopback": "这个回环地址属于执行主机，请在该主机上打开。",
       "desktopCard": {
@@ -3648,6 +3652,7 @@
     "send": "发送"
   },
   "miniAppComposer": {
+    "imagesUnsupportedPeer": "连接的设备暂不支持向 MiniApp 发送图片。请更新该设备上的 OpenBitFun 后重试。",
     "placeholder": "把需求发给 {{app}}…",
     "send": "发送",
     "hint": "消息将由 {{app}} 处理"

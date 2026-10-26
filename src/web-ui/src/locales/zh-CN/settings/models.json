@@ -241,8 +241,8 @@
       "name": "OpenBitFun 服务",
       "description": "OpenBitFun 大模型平台",
       "urlOptions": {
-        "default": "Anthropic格式-默认",
-        "openai": "OpenAI兼容格式"
+        "default": "Anthropic格式",
+        "openai": "OpenAI兼容格式-默认"
       }
     },
     "gemini": {
@@ -282,7 +282,8 @@
         "anthropic": "国内-Anthropic格式",
         "intl": "海外-OpenAI格式",
         "intlAnthropic": "海外-Anthropic格式",
-        "kimiForCoding": "Kimi For Coding 套餐（模型 k3 / kimi-for-coding）"
+        "kimiForCoding": "Kimi For Coding 套餐（模型 k3 / kimi-for-coding）",
+        "kimiForCodingAnthropic": "Kimi For Coding 套餐 - Anthropic格式"
       }
     },
     "deepseek": {
@@ -498,7 +499,7 @@
   },
   "proxy": {
     "enable": "启用代理",
-    "enableHint": "启用后所有 AI 请求将通过代理发送（需重启 OpenBitFun 生效）",
+    "enableHint": "留空代理地址时，请求会跟随操作系统代理（例如本地代理软件设置的系统代理）。填写地址并启用后，所有 AI 请求都通过该代理发送；填写地址但关闭开关表示强制直连。",
     "url": "代理地址",
     "urlPlaceholder": "http://127.0.0.1:7890 或 socks5://127.0.0.1:1080",
     "urlHint": "支持 HTTP/HTTPS/SOCKS5 代理，格式：协议://地址:端口",

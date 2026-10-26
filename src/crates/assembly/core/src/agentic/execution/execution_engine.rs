@@ -5718,18 +5718,67 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tools-image-analysis")]
+    #[tokio::test]
+    async fn builtin_miniapp_image_input_keeps_the_normal_analysis_tool_path() {
+        use crate::agentic::agents::{Agent, CoworkMode};
+        use crate::agentic::tools::{implementations::AnalyzeImageTool, Tool};
+
+        let messages = vec![Message::user_multimodal(
+            "Compare these references".into(),
+            vec![crate::agentic::image_analysis::attachments::test_image(); 5],
+        )];
+        let agent = CoworkMode::new();
+        // Select the real image tool explicitly: the minimal runtime test
+        // registry deliberately excludes optional product tool groups.
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(AnalyzeImageTool::new())];
+        let mut context = crate::agentic::tools::ToolUseContext::for_tool_listing(None, None);
+        context.agent_type = Some("Cowork".into());
+        let miniapp_restrictions = crate::agentic::tools::miniapp_agent_run_tool_restrictions(
+            Some(&serde_json::json!({ "surface": "miniapp_agent" })),
+            Some("miniapp-agent:builtin-ppt-live:run-1"),
+        );
+        for restrictions in [ToolRuntimeRestrictions::default(), miniapp_restrictions] {
+            context.runtime_tool_restrictions = restrictions;
+            let visible = openbitfun_agent_tools::resolve_contextual_visible_tools(
+                &tools,
+                &agent.default_tools(),
+                agent.tool_exposure_overrides(),
+                &context,
+                openbitfun_agent_tools::GET_TOOL_SPEC_TOOL_NAME,
+            )
+            .await;
+            let analysis_available = visible
+                .direct_tools
+                .iter()
+                .chain(&visible.deferred_tools)
+                .any(|tool| tool.name() == "analyze_image");
+            assert_eq!(
+                ExecutionEngine::image_input_requirement(&messages, analysis_available),
+                super::ImageInputRequirement::NativeOrAnalysisTool,
+            );
+        }
+    }
+
     #[tokio::test]
     async fn image_inputs_keep_pixels_for_native_models_and_tool_paths_for_text_models() {
-        let mut image = crate::agentic::image_analysis::attachments::test_image();
-        image.image_path =
-            Some("openbitfun://runtime/current/attachments/images/example.png".into());
+        let images: Vec<_> = (0..5)
+            .map(|index| {
+                let mut image = crate::agentic::image_analysis::attachments::test_image();
+                image.id = format!("reference-{index}");
+                image.image_path = Some(format!(
+                    "openbitfun://runtime/current/attachments/images/reference-{index}.png"
+                ));
+                image
+            })
+            .collect();
         let messages = vec![
-            Message::user_multimodal("Read this screenshot".into(), vec![image.clone()])
+            Message::user_multimodal("Compare these five screenshots".into(), images.clone())
                 .with_turn_id("turn".into()),
             Message::internal_reminder_multimodal(
                 crate::agentic::core::InternalReminderKind::UserSteering,
                 "Also check the second image",
-                vec![image.clone()],
+                vec![images[1].clone()],
             )
             .with_turn_id("turn".into()),
         ];
@@ -5746,14 +5795,20 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(native.len(), 2);
-            for message in native {
+            for (message, expected_count) in native.into_iter().zip([5, 1]) {
                 let parts: serde_json::Value =
                     serde_json::from_str(message.content.as_deref().unwrap()).unwrap();
-                assert!(
-                    parts.as_array().unwrap().iter().any(|part| {
-                        matches!(part["type"].as_str(), Some("image") | Some("image_url"))
-                            || part.get("inline_data").is_some()
-                    }),
+                assert_eq!(
+                    parts
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter(|part| {
+                            matches!(part["type"].as_str(), Some("image") | Some("image_url"))
+                                || part.get("inline_data").is_some()
+                        })
+                        .count(),
+                    expected_count,
                     "{provider}: {parts}"
                 );
             }
@@ -5770,10 +5825,16 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(text_only.len(), 2);
-        for message in text_only {
+        for (message, expected_images) in text_only
+            .into_iter()
+            .zip([images.as_slice(), &images[1..2]])
+        {
             let text = message.content.unwrap();
             assert!(text.contains("analyze_image"));
-            assert!(text.contains(image.image_path.as_deref().unwrap()));
+            for image in expected_images {
+                assert!(text.contains(image.image_path.as_deref().unwrap()));
+                assert!(text.contains(&format!("image_id={}", image.id)));
+            }
             assert!(!text.contains("base64"));
         }
         assert!(messages.iter().all(|message| matches!(&message.content, crate::agentic::core::MessageContent::Multimodal { images, .. } if images[0].data_url.is_some())));

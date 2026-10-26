@@ -43,12 +43,15 @@ pub fn build_bridge_script(
   // the same acknowledgement without invoking MiniApp business logic twice.
   const _chatUserMessagePending = new Map();
   const _chatUserMessageOutcomes = new Map();
+  const _chatUserMessageInputs = new Map();
   const _CHAT_USER_MESSAGE_OUTCOME_LIMIT = 128;
   const _runChatUserMessage = (requestId, payload, handlers) => {{
     const completed = _chatUserMessageOutcomes.get(requestId);
     if (completed) return Promise.resolve(completed);
     const pending = _chatUserMessagePending.get(requestId);
     if (pending) return pending;
+
+    _chatUserMessageInputs.set(requestId, {{ requestId, payload, sessions: new Set() }});
 
     const execution = (handlers.length
       ? Promise.all(handlers.map((handler) => {{
@@ -64,6 +67,7 @@ pub fn build_bridge_script(
       : Promise.resolve({{ error: 'MiniApp has no chat:userMessage handler.' }}))
       .then((outcome) => {{
         _chatUserMessagePending.delete(requestId);
+        _chatUserMessageInputs.delete(requestId);
         _chatUserMessageOutcomes.set(requestId, outcome);
         while (_chatUserMessageOutcomes.size > _CHAT_USER_MESSAGE_OUTCOME_LIMIT) {{
           const oldestRequestId = _chatUserMessageOutcomes.keys().next().value;
@@ -74,6 +78,38 @@ pub fn build_bridge_script(
       }});
     _chatUserMessagePending.set(requestId, execution);
     return execution;
+  }};
+
+  // Existing MiniApps often forward only text. While their onUserMessage
+  // Promise is alive, inherit its attachments on the first accepted turn in
+  // that session. Never guess between concurrent messages; explicit request
+  // ids or imageContexts let apps with parallel work select their own input.
+  const _runAgent = async (prompt, opts = {{}}) => {{
+    let input;
+    if (opts.chatRequestId !== undefined) {{
+      input = _chatUserMessageInputs.get(opts.chatRequestId);
+      if (!input) throw new Error('MiniApp chat request is no longer active.');
+    }} else {{
+      const candidates = [..._chatUserMessageInputs.values()].filter(entry =>
+        !opts.sessionId || !entry.payload.sessionId || entry.payload.sessionId === opts.sessionId);
+      if (opts.imageContexts === undefined && candidates.length > 1
+        && candidates.some(entry => entry.payload.imageContexts?.length)) {{
+        throw new Error('Concurrent MiniApp image messages require an explicit chatRequestId or imageContexts.');
+      }}
+      if (candidates.length === 1) input = candidates[0];
+    }}
+    const images = opts.imageContexts === undefined && input
+      && (!opts.sessionId || !input.sessions.has(opts.sessionId))
+      ? input.payload.imageContexts : undefined;
+    const result = await _rpc('agent.run', {{
+      prompt, ...opts,
+      ...(input ? {{ chatRequestId: input.requestId }} : {{}}),
+      ...(images?.length ? {{ imageContexts: images }} : {{}}),
+    }});
+    // Explicit attachments (including []) also settle this message's choice
+    // for the session; a later implicit follow-up must not re-attach them.
+    if (input && result?.sessionId) input.sessions.add(result.sessionId);
+    return result;
   }};
 
   function _applyAppearanceVars(vars) {{
@@ -161,12 +197,15 @@ pub fn build_bridge_script(
     // chat surface while `prompt` remains the MiniApp's internal agent protocol.
     // `opts.contextFiles` may carry bounded context published by the host as a
     // per-run virtual read-only snapshot.
+    // Forward `payload.imageContexts` from chat.onUserMessage as
+    // `opts.imageContexts` to preserve user image attachments. These contain
+    // inline pixels, never authority to read an arbitrary host path.
     agent: {{
       ensureSession:  (opts) => _rpc('agent.ensureSession', opts || {{}}),
       // Explicit fresh conversation. Uses the existing host operation, so it
       // also works across older peers. Existing sessions/history are retained.
       createSession:  (opts) => _rpc('agent.ensureSession', {{ ...(opts || {{}}), sessionId: undefined }}),
-      run:            (prompt, opts) => _rpc('agent.run', {{ prompt, ...(opts || {{}}) }}),
+      run:            (prompt, opts) => _runAgent(prompt, opts || {{}}),
       cancel:         (sessionId, turnId) => _rpc('agent.cancel', {{ sessionId, turnId }}),
       turnText:       (sessionId, turnId) => _rpc('agent.turnText', {{ sessionId, turnId }}),
       cancelStaleRuns: () => _rpc('agent.cancelStaleRuns', {{}}),

@@ -582,6 +582,33 @@ describe('PeerDeviceTransportAdapter queue', () => {
     expect(deviceRpc).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [{ id: 'image-1', data_url: 'data:image/png;base64,YQ==', mime_type: 'image/png' }],
+    'malformed',
+  ])('rejects MiniApp images before an older peer can silently drop them', async imageContexts => {
+    const deviceRpc = vi.fn();
+    const adapter = new PeerDeviceTransportAdapter('peer-1', deviceRpc);
+    await expect(adapter.request('miniapp_agent_run', {
+      request: { appId: 'ppt', prompt: 'Look', imageContexts },
+    })).rejects.toThrow('miniapp_agent_images_v1_unsupported');
+    expect(deviceRpc).not.toHaveBeenCalled();
+  });
+
+  it('forwards negotiated MiniApp images intact and revokes support after a host downgrade', async () => {
+    const outcome = { sessionId: 'session-1', turnId: 'turn-1' };
+    const deviceRpc = vi.fn().mockResolvedValue(JSON.stringify({ resp: 'host_invoke_result', ok: true, value: outcome }));
+    const adapter = new PeerDeviceTransportAdapter('peer-1', deviceRpc, { supportsMiniAppAgentImagesV1: true });
+    const request = { appId: 'ppt', prompt: 'Look', imageContexts: [
+      { id: 'image-1', data_url: 'data:image/png;base64,YQ==', mime_type: 'image/png' },
+    ] };
+    await expect(adapter.request('miniapp_agent_run', { request })).resolves.toEqual(outcome);
+    expect(JSON.stringify(deviceRpc.mock.calls[0])).toContain('data:image/png;base64,YQ==');
+    adapter.setHostCapabilities({ supportsMiniAppAgentImagesV1: false });
+    await expect(adapter.request('miniapp_agent_run', { request })).rejects.toThrow('miniapp_agent_images_v1_unsupported');
+    expect(deviceRpc).toHaveBeenCalledTimes(1);
+    await expect(adapter.request('miniapp_agent_run', { request: { ...request, imageContexts: [] } })).resolves.toEqual(outcome);
+  });
+
   it('rejects malformed MiniApp Agent context files before an older Peer can ignore them', async () => {
     const deviceRpc = vi.fn();
     const adapter = new PeerDeviceTransportAdapter('peer-1', deviceRpc);

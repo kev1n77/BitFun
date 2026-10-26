@@ -164,12 +164,16 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function requiresMiniAppAgentContextFilesV1(params: unknown): boolean {
+  return hasMiniAppAgentPayload(params, ['contextFiles', 'context_files']);
+}
+
+function hasMiniAppAgentPayload(params: unknown, keys: string[]): boolean {
   const outer = asRecord(params);
   if (!outer) {
     return false;
   }
   const request = asRecord(outer.request) ?? outer;
-  for (const key of ['contextFiles', 'context_files']) {
+  for (const key of keys) {
     if (!Object.prototype.hasOwnProperty.call(request, key)) {
       continue;
     }
@@ -293,6 +297,8 @@ export interface PeerDeviceTransportHooks {
   supportsTokenUsageStatistics?: boolean;
   /** Enables MiniApp Agent runs with immutable virtual context files. */
   supportsMiniAppAgentContextFilesV1?: boolean;
+  /** Enables MiniApp Agent turns carrying inline image attachments. */
+  supportsMiniAppAgentImagesV1?: boolean;
   supportsWslWorkspacesV1?: boolean;
   supportsWholeSessionCopyV1?: boolean;
   supportsModelPoolSelectionV1?: boolean;
@@ -432,6 +438,7 @@ export class PeerDeviceTransportAdapter implements ITransportAdapter {
       | 'supportsTargetedSessionRollback'
       | 'supportsTokenUsageStatistics'
       | 'supportsMiniAppAgentContextFilesV1'
+      | 'supportsMiniAppAgentImagesV1'
       | 'supportsWslWorkspacesV1'
       | 'supportsWholeSessionCopyV1'
       | 'supportsModelPoolSelectionV1'
@@ -548,6 +555,16 @@ export class PeerDeviceTransportAdapter implements ITransportAdapter {
     ) {
       throw new PeerProductCommandError(
         'wsl_workspaces_v1_unsupported: The connected Peer host does not support native WSL workspaces',
+      );
+    }
+
+    if (
+      action === 'miniapp_agent_run' &&
+      hasMiniAppAgentPayload(params, ['imageContexts', 'image_contexts']) &&
+      this.hooks.supportsMiniAppAgentImagesV1 !== true
+    ) {
+      throw new PeerProductCommandError(
+        'miniapp_agent_images_v1_unsupported: The connected Peer host does not support MiniApp image attachments; update the executing Desktop host',
       );
     }
 

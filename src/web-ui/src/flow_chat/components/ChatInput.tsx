@@ -106,6 +106,7 @@ import {
 import { useThreadGoalController } from '../hooks/useThreadGoalController';
 import { useWorkspaceModeCatalog } from '../hooks/useWorkspaceModeCatalog';
 import { useSessionModeSelection } from '../hooks/useSessionModeSelection';
+import { useChatInputModeSync } from '../hooks/useChatInputModeSync';
 import { useComposerDefaultFocus } from '../hooks/useComposerDefaultFocus';
 import { ThreadGoalDialogs } from './thread-goal/ThreadGoalDialogs';
 import { getAppearanceOverlayHost } from '@/infrastructure/appearance/runtime/AppearanceOverlayHost';
@@ -145,7 +146,6 @@ import { resolveSessionRelationship } from '../utils/sessionMetadata';
 import {
   canSwitchSessionMainAgent,
   isChatInputActionVisibleForTarget,
-  resolveAvailableChatInputMode,
   resolveChatInputCanUseSkills,
   resolveChatInputCanUseMcp,
   resolveChatInputMainAgentModes,
@@ -790,15 +790,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     () => (effectiveTargetSessionId ? getSessionHistory(effectiveTargetSessionId) : []),
     [effectiveTargetSessionId, getSessionHistory],
   );
+  const imageOnlyMessage = registration?.onSubmit && imageContexts.length > 0
+    ? t('input.imageOnlyPrompt') : '';
   const derivedState = useSessionDerivedState(
     effectiveTargetSessionId,
     inputState.value.trim() || (contexts.some(isConversationExcerpt)
-      ? t('selection.submitAnnotations') : '')
+      ? t('selection.submitAnnotations') : imageOnlyMessage)
   );
   const currentReviewActivity = useSessionReviewActivity(currentSessionId);
   const annotationOnlyMessage = contexts.some(context => isConversationExcerpt(context) && context.comment?.trim())
     ? t('selection.submitAnnotations') : '';
-  const hasSendableInput = Boolean(inputState.value.trim() || annotationOnlyMessage);
+  const hasSendableInput = Boolean(inputState.value.trim() || annotationOnlyMessage || imageOnlyMessage);
   const focusExcerptComposer = useCallback(() => richTextInputRef.current?.focus(), []);
   useExcerptComposerActions({ mainSessionId: currentSessionId, targetSessionId: effectiveTargetSessionId,
     active: isSceneActive && !registration, selectTargetSession, focus: focusExcerptComposer });
@@ -1360,8 +1362,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     () => resolveChatInputMainAgentModes(modeState.available),
     [modeState.available]
   );
-  const publishModeSelectionRef = useRef<((modeId: string) => void) | null>(null);
-  const suppressNextUserDefaultModeApplicationRef = useRef(false);
 
   const openScene = useSceneStore(s => s.openScene);
   const [subagentToolInfo, setSubagentToolInfo] = useState<SubagentInfo | null>(null);
@@ -3217,61 +3217,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     };
   }, []);
 
-  React.useEffect(() => {
-    const handleSessionSwitched = (event: Event) => {
-      const customEvent = event as CustomEvent<{ sessionId: string; mode: string }>;
-      const { sessionId, mode } = customEvent.detail || {};
-      
-      if (sessionId && mode && sessionId === effectiveTargetSessionIdRef.current) {
-        log.debug('Session switched, syncing mode', { sessionId, mode });
-        dispatchMode({ type: 'SET_CURRENT_MODE', payload: mode });
-      }
-    };
-
-    window.addEventListener('openbitfun:session-switched', handleSessionSwitched);
-    
-    return () => {
-      window.removeEventListener('openbitfun:session-switched', handleSessionSwitched);
-    };
-  }, []);
-
-  React.useEffect(() => {
-    const suppressedUserDefaultApplication = suppressNextUserDefaultModeApplicationRef.current;
-    const userDefaultModeForResolution = suppressedUserDefaultApplication
-      ? null
-      : userDefaultModeId;
-    const nextMode = activeSessionMode === 'OpenBitFun' ? 'OpenBitFun' : resolveAvailableChatInputMode({
-      currentMode,
-      isAssistantWorkspace,
-      sessionMode: activeSessionMode,
-      userDefaultModeId: userDefaultModeForResolution,
-      availableModeIds,
-    });
-    suppressNextUserDefaultModeApplicationRef.current = false;
-
-    if (nextMode && nextMode !== currentMode) {
-      log.debug('Syncing mode with workspace, session, and available modes', {
-        sessionId: effectiveTargetSessionId,
-        mode: nextMode,
-        sessionMode: activeSessionMode,
-        isAssistantWorkspace,
-        availableModeCount: availableModeIds.size,
-      });
-      const publishModeSelection = publishModeSelectionRef.current;
-      if (publishModeSelection) {
-        publishModeSelection(nextMode);
-      } else {
-        dispatchMode({ type: 'SET_CURRENT_MODE', payload: nextMode });
-      }
-    }
-  }, [
-    activeSessionMode,
-    availableModeIds,
+  useChatInputModeSync({
+    sessionId: effectiveTargetSessionId,
     currentMode,
-    effectiveTargetSessionId,
     isAssistantWorkspace,
     userDefaultModeId,
-  ]);
+    availableModeIds,
+    dispatchMode,
+  });
 
   React.useEffect(() => {
     const queuedInput = derivedState?.queuedInput;
@@ -4714,7 +4667,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, [t]);
   const {
     isModeChangePending,
-    publishModeSelection,
     requestModeChange: requestSessionModeChange,
   } = useSessionModeSelection(
     sessionModeSelectionTarget,
@@ -5303,7 +5255,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const submissionScope = getActiveSurfaceScope();
     
     const { sendButtonMode } = derivedState;
-    const draftTrimmed = (messageOverride ?? (inputState.value.trim() || annotationOnlyMessage)).trim();
+    const draftTrimmed = (messageOverride ?? (inputState.value.trim() || annotationOnlyMessage || imageOnlyMessage)).trim();
 
     // While generating, an empty control in `cancel` mode means stop. If the user has typed a follow-up,
     // never treat this path as cancel — that would call cancel_dialog_turn and abort the current round early.
@@ -5559,6 +5511,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     isInterruptedTurnRecoveryInFlight,
     inputState.value,
     annotationOnlyMessage,
+    imageOnlyMessage,
     derivedState,
     dispatchInput,
     handleCancelCurrentTask,
@@ -5595,8 +5548,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     canUseThreadGoal,
     composerMutationRevision,
   ]);
-  
-  publishModeSelectionRef.current = publishModeSelection;
 
   const selectSlashCommandAction = useCallback((actionId: SlashActionId) => {
     const raw = inputState.value || '';

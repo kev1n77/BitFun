@@ -774,6 +774,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("terminal_write",                                             Routed,      Proxied,          HANDLED),
     op("test_ai_config_connection",                                  Unaudited,   Proxied,          HANDLED),
     op("test_ai_connection",                                         Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
+    op("test_image_generation_service",                              Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("toggle_main_window_fullscreen",                              LocalOnly,   ControllerLocal,  REFUSED),
     op("touch_session_activity",                                     Unaudited,   Proxied,          HANDLED),
     op("unarchive_session",                                          Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),

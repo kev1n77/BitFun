@@ -64,6 +64,8 @@ pub enum PeerHostCapability {
     SubscriptionAccountManagementV1,
     /// `miniapp_agent_run` accepts non-empty `contextFiles`.
     MiniappAgentContextFilesV1,
+    /// `miniapp_agent_run` accepts and durably prepares inline `imageContexts`.
+    MiniappAgentImagesV1,
     /// WSL profiles and discovery are understood; availability is probed on the host.
     WslWorkspacesV1,
     /// User-selected native window sharing and explicit permission receipts.
@@ -114,6 +116,7 @@ impl PeerHostCapability {
         Self::ModelChannelRoutingV1,
         Self::SubscriptionAccountManagementV1,
         Self::MiniappAgentContextFilesV1,
+        Self::MiniappAgentImagesV1,
         Self::WslWorkspacesV1,
         Self::ComputerUseSharingV1,
         Self::ProductControlV1,
@@ -152,6 +155,7 @@ impl PeerHostCapability {
             Self::ModelChannelRoutingV1 => "model_channel_routing_v1",
             Self::SubscriptionAccountManagementV1 => "subscription_account_management_v1",
             Self::MiniappAgentContextFilesV1 => "miniapp_agent_context_files_v1",
+            Self::MiniappAgentImagesV1 => "miniapp_agent_images_v1",
             Self::WslWorkspacesV1 => "wsl_workspaces_v1",
             Self::ComputerUseSharingV1 => "computer_use_sharing_v1",
             Self::ProductControlV1 => "product_control_v1",
@@ -278,6 +282,11 @@ mod tests {
         }
         let cli = capability_map(PeerHostKind::Cli);
         assert!(!cli.contains_key("miniapp_agent_context_files_v1"));
+        assert!(!cli.contains_key("miniapp_agent_images_v1"));
+        assert_eq!(
+            capability_map(PeerHostKind::Desktop)["miniapp_agent_images_v1"],
+            true
+        );
         assert!(!cli.contains_key("product_control_native_v1"));
         assert!(!cli.contains_key("product_control_presentation_v1"));
         assert!(!cli.contains_key("whole_session_copy_v1"));

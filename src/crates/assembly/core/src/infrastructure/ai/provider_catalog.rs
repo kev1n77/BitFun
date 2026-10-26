@@ -649,8 +649,8 @@ mod tests {
                 ))
                 .collect::<Vec<_>>(),
             [
-                ("default", "https://api.openbitfun.com", "anthropic", true,),
-                ("openai", "https://api.openbitfun.com/v1", "openai", false,),
+                ("openai", "https://api.openbitfun.com/v1", "openai", true,),
+                ("default", "https://api.openbitfun.com", "anthropic", false,),
             ]
         );
         let qwen = overlay

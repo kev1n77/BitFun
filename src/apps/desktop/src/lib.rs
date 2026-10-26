@@ -1496,6 +1496,7 @@ pub async fn run() {
             get_statistics,
             test_ai_connection,
             test_ai_config_connection,
+            test_image_generation_service,
             list_ai_models_by_config,
             list_subscription_accounts,
             list_subscription_account_instances,

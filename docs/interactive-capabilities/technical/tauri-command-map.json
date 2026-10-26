@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "65f1a11c6d994c382da25f2b9ad995ad0f443a5d352c2eafa10a8b9bcbf849e5",
-  "commandCount": 701,
+  "catalogDigest": "64bbd3571c458cdd0b67ba9337820e88f9b52d5edf4aefc8320874643dce7a77",
+  "commandCount": 702,
   "coverage": {
-    "commandCount": 701,
-    "documentedCommandCount": 644,
+    "commandCount": 702,
+    "documentedCommandCount": 645,
     "implementationCommandCount": 57,
     "implementationDigest": "503b48eebc37750e50e0427d861e884dfa353a81aae32236e4bc2d7e0f5310e2"
   },
@@ -10660,6 +10660,22 @@
       "sourceFile": "src/apps/desktop/src/api/commands.rs",
       "signature": "fn test_ai_connection(state: State<'_, AppState>) -> Result<bool, String>",
       "remoteWorkspacePolicy": "LegacyUnaudited"
+    },
+    {
+      "id": "test_image_generation_service",
+      "moduleId": "commands",
+      "capabilityId": "setting.ai.models",
+      "capabilityIds": [
+        "setting.ai.models"
+      ],
+      "documentedItemIds": [
+        "setting.ai.models:connection-test"
+      ],
+      "visibility": "documented",
+      "rustPath": "test_image_generation_service",
+      "sourceFile": "src/apps/desktop/src/api/commands.rs",
+      "signature": "fn test_image_generation_service( request: TestImageGenerationServiceRequest, ) -> Result<openbitfun_core::agentic::image_generation::ImageServiceTestOutcome, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "toggle_main_window_fullscreen",

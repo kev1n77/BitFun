@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:39cac84a6ae186a5",
+  "digest": "fnv1a64:d64185f2013646ad",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -30,6 +30,7 @@
       "model_channel_routing_v1",
       "subscription_account_management_v1",
       "miniapp_agent_context_files_v1",
+      "miniapp_agent_images_v1",
       "wsl_workspaces_v1",
       "computer_use_sharing_v1",
       "product_control_v1",
@@ -65,6 +66,7 @@
       "model_channel_routing_v1",
       "subscription_account_management_v1",
       "miniapp_agent_context_files_v1",
+      "miniapp_agent_images_v1",
       "wsl_workspaces_v1",
       "computer_use_sharing_v1",
       "product_control_v1",
@@ -8181,6 +8183,18 @@
       "id": "test_ai_connection",
       "surface": "tauri_command",
       "remoteWorkspace": "LegacyUnaudited",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host has no handler for this command"
+      }
+    },
+    {
+      "id": "test_image_generation_service",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
         "kind": "proxied"
       },

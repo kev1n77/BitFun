@@ -149,6 +149,15 @@ pnpm --dir src/web-ui run test:run src/flow_chat/selection/FlowChatSelectionBar.
 
 These DOM fixtures do not establish native WebView rendering or live remote behavior.
 
+For Hi-to-MiniApp image preparation, SDK inheritance, admission and peer compatibility:
+
+```bash
+pnpm --dir src/web-ui run test:run src/app/scenes/miniapps/miniAppComposerMessages.test.ts src/app/scenes/miniapps/miniAppBridgeImages.test.ts src/app/scenes/miniapps/hooks/useMiniAppBridge.test.tsx src/infrastructure/api/service-api/MiniAppAPI.test.ts src/flow_chat/utils/imagePayload.test.ts src/infrastructure/api/adapters/peer-device-adapter.test.ts
+```
+
+These tests exercise production JS with host/transport fixtures; they do not establish
+live model, SSH workspace, Remote Control, Peer Device or Detached Dispatch behavior.
+
 For Appearance descriptor changes, also exercise production registration; its ID
 and property validation goes beyond the static DOM audit:
 
@@ -162,6 +171,15 @@ also run the focused state contracts:
 ```bash
 pnpm --dir src/web-ui run test:run src/app/services/sessionSceneLifecycle.test.ts src/flow_chat/services/sessionActivation.test.ts src/flow_chat/services/storeSync.test.ts src/app/stores/sceneStore.test.ts
 ```
+
+For composer mode restoration, passive synchronization, or explicit mode selection:
+
+```bash
+pnpm --dir src/web-ui run test:run src/flow_chat/hooks/useChatInputModeSync.test.tsx src/flow_chat/hooks/useSessionModeSelection.test.tsx src/flow_chat/utils/chatInputMode.test.ts
+```
+
+These state/hook fixtures cover delayed session loading and selected peer-surface
+replacement; they do not establish native rendering or live remote behavior.
 
 For cross-device undo/redo/rollback history invalidation and settled-Turn fences,
 run `pnpm --dir src/web-ui run test:run src/flow_chat/services/flow-chat-manager/EventHandlerModule.test.ts`.

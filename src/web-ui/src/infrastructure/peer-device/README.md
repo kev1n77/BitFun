@@ -237,6 +237,13 @@ listener alone recovers an interaction emitted before attachment.
     controller fails before RPC. Never omit the files, fall back to a local
     Agent, or run the prompt without its declared context.
 
+    Image messages additionally require `miniapp_agent_images_v1`. Check before
+    delivering Hi input to a peer-supplied MiniApp SDK, since an older SDK could
+    discard images before calling the Agent. The transport also gates non-empty
+    `imageContexts` on `miniapp_agent_run`. Resolve user-selected images to inline
+    pixels on their owning host; MiniApps cannot provide arbitrary image paths.
+    The receiving Runtime owns attachment persistence and transcript replay.
+
 18. **WSL belongs to the selected Windows host.** `wsl_workspaces_v1` gates
     `ssh_list_wsl_distributions` and SSH profile requests with a `wsl` target
     before RPC. Missing capability means unsupported, including older Desktop

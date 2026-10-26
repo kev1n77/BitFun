@@ -84,3 +84,10 @@ For MiniApp bridge/session or embedded bundle changes, use the focused contracts
 cargo test --locked -p openbitfun-product-domains --no-default-features --features miniapp --lib miniapp::agent_bridge::tests
 cargo test --locked -p openbitfun-product-domains --no-default-features --features miniapp --test miniapp_contracts
 ```
+
+For the injected MiniApp SDK's request-scoped image inheritance and PPT Live input:
+
+```bash
+pnpm --dir src/web-ui run test:run src/app/scenes/miniapps/miniAppBridgeImages.test.ts
+node --test src/crates/contracts/product-domains/src/miniapp/builtin/assets/ppt-live/test/image-input.test.mjs
+```
