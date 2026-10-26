@@ -1,7 +1,12 @@
 # MiniApp desktop presentation
 
-The desktop host owns one instance registry per product data directory. Acquire
-its OS lease before initializing the Agent runtime. The separate
+The desktop host owns one instance registry per product data directory and host
+channel. Acquire its OS lease before initializing the Agent runtime. Installed
+hosts retain the original `miniapp-desktop` discovery and launcher paths.
+Development launchers select a debug/devtools-only `development` subdirectory
+for host coordination; they can share product configuration and sessions with
+the installed host without replacing its endpoint or launcher records. Existing
+session-writer and scheduler leases remain shared. The separate
 `src/apps/miniapp-shell` executable never links AppState or an Agent runtime.
 A macOS launcher copies only that compact executable into its locally signed
 bundle; Windows and Linux launch the installed sidecar with a persisted record.
@@ -10,7 +15,7 @@ Missing sidecars fail explicitly; never copy the full host as a fallback.
 
 Keep identity, lease, and transfer rules in the MiniApp contracts/services owners.
 This directory owns native launchers, icon conversion, the closed local IPC
-adapter and Desktop command wiring. Shared v1 wire/record mechanics belong to
+adapter and Desktop command wiring. Shared v1 wire and versioned launch-record mechanics belong to
 `adapters/miniapp-ipc`; shell presentation belongs to `apps/miniapp-shell`. IPC uses a private Unix
 socket or named pipe with bounded frames and per-host credentials. Never expose
 arbitrary Tauri invocation or arbitrary JS evaluation to MiniApps. Shell SDK

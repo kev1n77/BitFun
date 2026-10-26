@@ -14,6 +14,12 @@ externalBin and enforces a 16 MiB per-architecture artifact regression budget.
 macOS exported bundles copy this executable, not the Desktop host;
 Windows/Linux shortcuts point to the installed sidecar. No fallback copies the
 host when a sidecar is missing. The original v1 manifest remains compatible.
+v2 development launch records carry the host channel and optional product home.
+Read the matching channel's discovery record and restore both storage roots and
+the channel when starting a background host; never fall back to the installed
+host when the development host is unavailable. Older Shells reject v2 records.
+The headless diagnostic advertises supported launch-record versions separately
+from the unchanged v1 IPC protocol.
 
 Window chrome is declared by each MiniApp's optional `chrome.titlebar` metadata.
 Use the renderer and generated Lucide catalog in `src/shared/miniapp-chrome` for
@@ -69,6 +75,7 @@ pnpm --dir src/web-ui run icons:check
 pnpm --dir src/web-ui run test:run src/app/scenes/miniapps/components/MiniAppShell.test.ts src/app/scenes/miniapps/components/MiniAppTitlebar.test.tsx
 pnpm --dir src/web-ui run test:run src/app/scenes/miniapps/components/MiniAppShellChat.test.ts
 cargo test --locked -p openbitfun-miniapp-shell --profile miniapp-shell --bin openbitfun-miniapp-shell window_chrome
+cargo test --locked -p openbitfun-miniapp-shell --profile miniapp-shell --bin openbitfun-miniapp-shell host_tests
 pnpm run prepare:miniapp-shell
 target/debug/openbitfun-miniapp-shell --miniapp-shell-info
 node --test scripts/prepare-miniapp-shell.test.mjs

@@ -62,3 +62,11 @@
     min-width: 50px;
   }
 }
+
+.openbitfun-aux-pane__empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--openbitfun-space-2);
+}
+.openbitfun-aux-pane__empty-path { overflow-wrap: anywhere; }

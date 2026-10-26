@@ -300,6 +300,30 @@ describe('ecosystem compatibility scene presentation contract', () => {
     expect(scene).not.toContain('ecosystem-compatibility__import-action-placeholder');
   });
 
+  it('preserves design-system alert insets and consistent dialog spacing', () => {
+    const styles = source('./EcosystemCompatibilityScene.scss');
+    const block = (name: string) => styles.slice(styles.indexOf(`&__${name} {`)).split('\n  }')[0];
+
+    expect(block('notice')).not.toMatch(/(?:padding|border|background|font):/);
+    expect(block('batch-status')).toContain('var(--openbitfun-overlay-dialog-content-padding-lg)');
+    expect(block('content-expanded')).toContain('padding: 0 var(--openbitfun-space-4) var(--openbitfun-space-4)');
+    expect(block('import-action')).toContain('flex-wrap: wrap');
+    expect(block('metadata')).toContain('align-items: baseline');
+    expect(block('metadata')).toContain('margin: 0');
+    expect(block('content-detail')).not.toContain('margin-block-end:');
+  });
+
+  it('uses heading and action slots for every import dialog header', () => {
+    for (const file of ['ExternalAgentContent.tsx', 'EcosystemPets.tsx', 'EcosystemCompatibilityScene.tsx']) {
+      const headers = [...source(`./${file}`).matchAll(/<DialogHeader>([\s\S]*?)<\/DialogHeader>/g)];
+      expect(headers.length).toBeGreaterThan(0);
+      for (const [, header] of headers) {
+        expect(header).toContain('<DialogHeading>');
+        expect(header).toContain('<DialogHeaderActions>');
+      }
+    }
+  });
+
   it('lets the page inherit the surrounding scene surface', () => {
     const styles = source('./EcosystemCompatibilityScene.scss');
 

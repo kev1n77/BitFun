@@ -192,7 +192,9 @@
         "activationFailed": "Could not open that result",
         "remoteFileSearchUnavailable": "File search is unavailable for remote project {{workspace}}",
         "sessionUnavailable": "This session is no longer available"
-      }
+      },
+      "diagnosticTarget": "Search device: {{host}}",
+      "retrySource": "Retry this source"
     },
     "displayModes": {
       "pro": "Expert Mode",
@@ -798,7 +800,8 @@
     "hostDiscoveryFailed": "Could not load hosts. Try again.",
     "existingHostRequired": "Choose an existing SSH host.",
     "sshHost": "SSH host",
-    "sourceUnsupported": "This host does not support this environment."
+    "sourceUnsupported": "This host does not support this environment.",
+    "checkingWsl": "Checking WSL availability on this host…"
   },
   "newProject": {
     "title": "Create project",
@@ -828,6 +831,7 @@
     "emptyProjectHint": "Save on the current device:",
     "invalidDirectoryName": "Use a single folder name without slashes, . or ..",
     "sameHostRequired": "Project folders must be on the same host.",
+    "assistantFolderUnavailable": "This folder belongs to an assistant workspace and cannot be added as a project. Select a different folder, or remove it and enter a name to create a new project.",
     "remoteUnavailable": "Remote folder selection is unavailable here.",
     "remoteConnectionChanged": "The remote connection changed. Select the project folders again.",
     "defaultDirectoryUnavailable": "The target device did not provide its home directory. Update or reconnect to the device and try again.",
@@ -1294,7 +1298,7 @@
     "latestVersion": "Latest",
     "releaseNotes": "Release notes",
     "later": "Later",
-    "skipVersion": "Skip this version",
+    "skipVersion": "Skip",
     "cancel": "Cancel",
     "install": "Download and install",
     "backgroundInstall": "Download in background",
@@ -1328,7 +1332,7 @@
       "installMetadata": "The downloaded package is saved. Connect to the internet and retry installation."
     },
     "availableVersion": "Version {{version}} is available",
-    "downloadUpdate": "Download update",
+    "downloadUpdate": "Update",
     "releaseTitle": "{{name}} v{{version}}",
     "openReleaseNotes": "{{title}} — release notes",
     "noticeReady": "Update downloaded",

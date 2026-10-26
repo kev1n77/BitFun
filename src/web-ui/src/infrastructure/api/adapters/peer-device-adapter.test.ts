@@ -176,6 +176,7 @@ describe('isPeerLocalOnlyCommand', () => {
     // them to a peer would regress (peer host does not implement them, and
     // they drive the controller's own embedded surfaces).
     expect(isPeerLocalOnlyCommand('browser_webview_create')).toBe(true);
+    expect(isPeerLocalOnlyCommand('browser_get_url')).toBe(true);
     expect(isPeerLocalOnlyCommand('browser_webview_capture_preview')).toBe(true);
     expect(isPeerLocalOnlyCommand('browser_webview_eval')).toBe(true);
     expect(isPeerLocalOnlyCommand('browser_webview_navigate')).toBe(true);

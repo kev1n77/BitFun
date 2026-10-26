@@ -620,6 +620,7 @@ mod search_projection_tests {
             first_chunk_ms: None,
             first_visible_output_ms: None,
             stream_duration_ms: None,
+            ttft_ms: None,
             attempt_count: Some(2),
             attempt_diagnostics: Vec::new(),
             failure_category: None,

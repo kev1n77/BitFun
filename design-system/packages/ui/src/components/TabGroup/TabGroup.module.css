@@ -5,6 +5,11 @@
     --_tab-group-item-padding-inline: var(--openbitfun-control-tab-group-item-padding-inline);
     --_tab-group-item-gap: var(--openbitfun-control-tab-group-item-gap);
     --_tab-group-item-icon-size: var(--openbitfun-control-tab-group-item-icon-size);
+    --_tab-group-inline-direction: 1;
+    --_tab-group-action-padding: max(
+      var(--_tab-group-item-padding-inline),
+      calc((var(--_tab-group-item-height) + var(--openbitfun-control-tab-group-item-action-size)) / 2 + var(--_tab-group-item-gap))
+    );
 
     display: inline-flex;
     align-items: center;
@@ -18,6 +23,8 @@
     --_tab-group-item-gap: var(--openbitfun-control-tab-group-item-gap-sm);
     --_tab-group-item-icon-size: var(--openbitfun-control-tab-group-item-icon-size-sm);
   }
+
+  .tabGroup:dir(rtl) { --_tab-group-inline-direction: -1; }
 
   .item {
     --_floating-action-host-height: var(--_tab-group-item-height);
@@ -93,6 +100,30 @@
     cursor: not-allowed;
   }
 
+  /* The action owns a fixed slot inside the tab; hover never resizes either hit area. */
+  .item[data-has-end-action="true"] > .tab {
+    padding-inline-end: var(--_tab-group-action-padding);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .item[data-has-end-action="true"] > .tab > :is(.icon, .label, .labelSuffix) {
+      transform: translateX(calc(
+        (var(--_tab-group-action-padding) - var(--_tab-group-item-padding-inline)) / 2
+        * var(--_tab-group-inline-direction)
+      ));
+      transition: transform var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
+    }
+
+    .item[data-has-end-action="true"]:is(:hover, :focus-visible, :has(:focus-visible)) > .tab > :is(.icon, .label, .labelSuffix) {
+      transform: none;
+    }
+  }
+
+  .item[data-has-end-action="true"]:is(:focus-visible, :has(:focus-visible)) > .tab > :is(.icon, .label, .labelSuffix),
+  .item:is(:focus-visible, :has(:focus-visible)) > .endAction > button {
+    transition: none;
+  }
+
   .icon {
     --openbitfun-opacity-icon-artwork: 1;
     display: inline-flex;
@@ -143,6 +174,7 @@
     font: inherit;
     cursor: pointer;
     transition:
+      opacity var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard),
       background-color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard),
       color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
   }
@@ -163,6 +195,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .tab,
+    .item[data-has-end-action="true"] > .tab > :is(.icon, .label, .labelSuffix),
     .endAction,
     .endAction > :where(button, [role="button"]):where(:not([data-openbitfun-component="icon-button"])) {
       transition: none;

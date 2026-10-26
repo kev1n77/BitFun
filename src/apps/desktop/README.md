@@ -579,6 +579,16 @@ main Git checkout's target cache. If absent, curl downloads the version-specific
 archive, supporting HTTP and SOCKS proxies; Cargo handles extraction and linking.
 Explicit `SHERPA_ONNX_LIB_DIR` and `SHERPA_ONNX_ARCHIVE_DIR` overrides are preserved.
 
+Development uses separate data by default. Add `--shared-data` to run alongside
+the installed app and share its data:
+
+```sh
+pnpm run desktop:dev -- --shared-data
+pnpm run desktop:preview:debug -- --shared-data
+```
+
+Use `--isolated-data` for separate development data (the default).
+
 When another worktree uses the default ports, start a separate dev server:
 
 ```sh

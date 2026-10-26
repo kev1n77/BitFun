@@ -192,7 +192,9 @@
         "activationFailed": "无法打开该结果",
         "remoteFileSearchUnavailable": "远程项目 {{workspace}} 暂不支持文件搜索",
         "sessionUnavailable": "该会话已不可用"
-      }
+      },
+      "diagnosticTarget": "搜索设备：{{host}}",
+      "retrySource": "重试此来源"
     },
     "displayModes": {
       "pro": "专业模式",
@@ -523,7 +525,7 @@
         "workspacePath": "请输入工作区路径",
         "session": "请选择或输入会话 ID",
         "optionalSession": "留空则创建新会话后执行",
-        "agentType": "例如：Standard、Cowork 或 Claw",
+        "agentType": "例如：$t(shared:agents.Standard)、$t(shared:agents.Cowork) 或 $t(shared:agents.Claw)",
         "name": "例如：每日全球新闻简报",
         "anchorMs": "留空则使用创建时刻",
         "timezone": "例如：Asia/Shanghai",
@@ -798,7 +800,8 @@
     "hostDiscoveryFailed": "无法加载主机，请重试。",
     "existingHostRequired": "请选择已有的 SSH 主机。",
     "sshHost": "SSH 主机",
-    "sourceUnsupported": "当前主机不支持此环境。"
+    "sourceUnsupported": "当前主机不支持此环境。",
+    "checkingWsl": "正在检查当前主机的 WSL 支持…"
   },
   "newProject": {
     "title": "创建项目",
@@ -828,6 +831,7 @@
     "emptyProjectHint": "保存到当前设备：",
     "invalidDirectoryName": "请输入单个文件夹名称，不能包含斜杠，也不能为 . 或 ..",
     "sameHostRequired": "同一项目的文件夹必须位于同一台主机。",
+    "assistantFolderUnavailable": "此文件夹属于助理工作区，不能添加为项目。请选择其他文件夹，或移除此文件夹并输入名称以创建新项目。",
     "remoteUnavailable": "当前界面不支持选择远程文件夹。",
     "remoteConnectionChanged": "远程连接已改变，请重新选择项目文件夹。",
     "defaultDirectoryUnavailable": "目标设备未提供用户目录，请更新或重新连接该设备后重试。",

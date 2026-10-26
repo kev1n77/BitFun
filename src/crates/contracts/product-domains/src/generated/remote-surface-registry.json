@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:1f41015e75434c3c",
+  "digest": "fnv1a64:39cac84a6ae186a5",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -666,11 +666,11 @@
       "surface": "tauri_command",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "controller_local"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
       }
     },
     {

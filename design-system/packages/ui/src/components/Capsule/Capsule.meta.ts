@@ -2,12 +2,13 @@ import type { ComponentMeta } from "../../registry.types";
 
 export const capsuleMeta = {
   category: "action",
-  description: "A capsule composition with a circular glass action floating over its unmodified label. Pointer hover and keyboard focus reveal the action; touch keeps it available.",
+  description: "A capsule composition with a circular glass action that overlays the label or occupies reserved space inside its Button surface. Reserved content is centered at rest and shifts aside when the action appears, without changing layout; touch keeps the action available.",
   maturity: "stable",
   name: "Capsule",
   props: [
     { name: "children", type: "ReactNode" },
     { name: "action", type: "ReactNode" },
+    { name: "actionPlacement", type: "overlay | reserved", defaultValue: "overlay" },
     { name: "size", type: "xs | sm | md | lg", defaultValue: "sm" },
   ],
   states: ["default", "hover", "focus-visible", "disabled"],

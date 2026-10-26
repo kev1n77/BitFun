@@ -9,6 +9,7 @@ import { Portal } from "../../overlay/Portal";
 import { useDismissibleLayer } from "../../overlay/useDismissibleLayer";
 import { useFocusScope } from "../../overlay/useFocusScope";
 import { usePresence } from "../../overlay/usePresence";
+import { inertProps } from "../../internal/inert";
 import styles from "./MenuPopover.module.css";
 
 export interface MenuEntry {
@@ -204,7 +205,7 @@ function MenuLevel({ items, open, phase, treeId, onClose, onBack, anchorRef, pos
   return <>
     <MenuSurface {...props} ref={node => { (menuRef as { current: HTMLDivElement | null }).current = node; }} className={classNames(styles.popup, className)} inlineSize={inlineSize} autoFocusFirstItem={open && autoFocusFirstItem && Boolean(layout)} tabIndex={-1}
       style={{ ...layout?.style, ...style, visibility: layout ? undefined : "hidden" }} data-openbitfun-native-webview-occlusion data-openbitfun-menu-tree={treeId} data-placement={layout?.placement ?? placement} data-state={phase}
-      aria-hidden={!open || undefined} {...(!open ? { inert: "" } : {})} onContextMenu={event => event.preventDefault()}>
+      aria-hidden={!open || undefined} {...inertProps(!open)} onContextMenu={event => event.preventDefault()}>
       {items.map(item => item.separator ? <Separator key={item.id} /> : <Item key={item.id} data-menu-id={item.id} leading={item.icon ? <Leading className={styles.icon} data-openbitfun-icon-slot="true">{item.icon}</Leading> : undefined} shortcut={item.shortcut ? <Shortcut>{item.shortcut}</Shortcut> : undefined} tone={item.tone} role={item.role} checked={item.checked}
         disabled={item.disabled} aria-disabled={item.disabled || undefined} aria-haspopup={item.submenu?.length ? "menu" : undefined} aria-expanded={item.submenu?.length ? activeEntry?.id === item.id : undefined}
         aria-controls={activeEntry?.id === item.id ? submenuId : undefined} metadata={item.submenu?.length ? <Arrow className={styles.submenuArrow}><Icon name="chevron-right" size="sm" /></Arrow> : undefined}

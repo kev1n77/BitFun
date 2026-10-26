@@ -192,7 +192,9 @@
         "activationFailed": "無法開啟該結果",
         "remoteFileSearchUnavailable": "遠端項目 {{workspace}} 暫不支援檔案搜尋",
         "sessionUnavailable": "該會話已不可用"
-      }
+      },
+      "diagnosticTarget": "搜尋裝置：{{host}}",
+      "retrySource": "重試此來源"
     },
     "displayModes": {
       "pro": "專業模式",
@@ -523,7 +525,7 @@
         "workspacePath": "請輸入工作區路徑",
         "session": "請選擇或輸入會話 ID",
         "optionalSession": "留空則建立新會話後執行",
-        "agentType": "例如：Standard、Cowork 或 Claw",
+        "agentType": "例如：$t(shared:agents.Standard)、$t(shared:agents.Cowork) 或 $t(shared:agents.Claw)",
         "name": "例如：每日全球新聞簡報",
         "anchorMs": "留空則使用建立時刻",
         "timezone": "例如：Asia/Shanghai",
@@ -798,7 +800,8 @@
     "hostDiscoveryFailed": "無法載入主機，請重試。",
     "existingHostRequired": "請選擇現有的 SSH 主機。",
     "sshHost": "SSH 主機",
-    "sourceUnsupported": "目前主機不支援此環境。"
+    "sourceUnsupported": "目前主機不支援此環境。",
+    "checkingWsl": "正在檢查目前主機的 WSL 支援…"
   },
   "newProject": {
     "title": "建立專案",
@@ -828,6 +831,7 @@
     "emptyProjectHint": "儲存至目前裝置：",
     "invalidDirectoryName": "請輸入單一資料夾名稱，不可包含斜線，也不可為 . 或 ..",
     "sameHostRequired": "同一專案的資料夾必須位於同一台主機。",
+    "assistantFolderUnavailable": "此資料夾屬於助理工作區，無法新增為專案。請選擇其他資料夾，或移除此資料夾並輸入名稱以建立新專案。",
     "remoteUnavailable": "目前介面不支援選擇遠端資料夾。",
     "remoteConnectionChanged": "遠端連線已變更，請重新選擇專案資料夾。",
     "defaultDirectoryUnavailable": "目標裝置未提供使用者目錄，請更新或重新連線至該裝置後重試。",

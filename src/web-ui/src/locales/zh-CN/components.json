@@ -584,7 +584,17 @@
     "dropRight": "右",
     "dropTop": "上",
     "dropBottom": "下",
-    "dropCenter": "放置"
+    "dropCenter": "放置",
+    "empty": {
+      "title": "在会话旁打开工作内容",
+      "description": "文件、终端和预览都会显示在这里。",
+      "currentHost": "当前主机",
+      "workspaceUnavailable": "此工作区已断开连接。重新连接后可浏览文件或新建终端。",
+      "selectWorkspace": "选择工作区后可浏览文件或新建终端。",
+      "browseFiles": "浏览文件",
+      "newTerminal": "新建终端",
+      "reopen": "重新打开 {{title}}"
+    }
   },
   "flexiblePanel": {
     "empty": {
@@ -684,6 +694,14 @@
     },
     "checklist": {
       "empty": "暂无事项"
+    },
+    "chart": {
+      "empty": "暂无可绘制的数据",
+      "other": "其他",
+      "remaining": "剩余",
+      "ofTotal": "共 {{total}}",
+      "changeSince": "较 {{label}} {{change}}",
+      "range": "{{min}} – {{max}}"
     },
     "cron": {
       "failed": "无法加载定时任务。",

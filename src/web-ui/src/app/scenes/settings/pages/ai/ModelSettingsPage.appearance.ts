@@ -26,6 +26,7 @@ export const modelSettingsAppearanceDescriptor: AppearanceSurfaceDescriptor = {
     { id: 'subscriptionCode' },
     { id: 'subscriptionActions' },
     { id: 'subscriptionService' },
+    { id: 'subscriptionRegion' },
     { id: 'subscriptionAccounts' },
     { id: 'subscriptionAccount' },
     { id: 'subscriptionQuota' },

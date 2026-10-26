@@ -4,10 +4,14 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Editor } from '@tiptap/core';
 import CreateAgentDialog from './CreateAgentDialog';
+import CreateAgentPage from './CreateAgentPage';
 import { activateSurface } from '@/infrastructure/peer-device/deviceSurface';
 
 const mocks = vi.hoisted(() => ({
   create: vi.fn(),
+  detail: vi.fn(),
+  update: vi.fn(),
+  editingId: null as string | null,
   tools: vi.fn(),
   error: vi.fn(),
   success: vi.fn(),
@@ -20,7 +24,7 @@ vi.mock('@/infrastructure/contexts/WorkspaceContext', () => ({
   useCurrentWorkspace: () => ({ workspace: mocks.workspace, hasWorkspace: Boolean(mocks.workspace) }),
 }));
 vi.mock('@/infrastructure/api/service-api/CustomAgentAPI', () => ({
-  CustomAgentAPI: { createCustomAgent: mocks.create },
+  CustomAgentAPI: { createCustomAgent: mocks.create, getCustomAgentDetail: mocks.detail, updateCustomAgent: mocks.update },
 }));
 vi.mock('@/infrastructure/api/service-api/ToolAPI', () => ({
   toolAPI: { getAllToolsInfo: mocks.tools },
@@ -29,7 +33,7 @@ vi.mock('@/shared/notification-system', () => ({
   useNotification: () => ({ error: mocks.error, success: mocks.success }),
 }));
 vi.mock('../agentsStore', () => ({
-  useAgentsStore: () => ({ openHome: vi.fn(), agentEditorMode: 'create', editingAgentId: null }),
+  useAgentsStore: () => ({ openHome: vi.fn(), agentEditorMode: mocks.editingId ? 'edit' : 'create', editingAgentId: mocks.editingId }),
 }));
 vi.mock('./useUserToolGroups', () => ({
   useUserToolGroups: () => ({ groups: [], saveGroups: vi.fn() }),
@@ -95,6 +99,7 @@ beforeEach(() => {
   Range.prototype.getBoundingClientRect = () => new DOMRect();
   vi.clearAllMocks();
   mocks.workspace = { id: 'workspace-1' };
+  mocks.editingId = null;
   mocks.tools.mockReset().mockResolvedValue(tools);
   mocks.create.mockReset().mockResolvedValue(undefined);
   activateSurface('local');
@@ -116,9 +121,10 @@ describe('guided agent creation', () => {
     expect(dialog().querySelectorAll('[aria-current="step"]')).toHaveLength(1);
     expect(dialog().querySelector('textarea')).toBeNull();
     await submit();
-    expect(field('id').getAttribute('aria-invalid')).toBe('true');
+    expect(field('name').getAttribute('aria-invalid')).toBe('true');
+    expect(field('id').value).toMatch(/^agent-[a-f0-9]{8}$/);
     expect(field('description').getAttribute('aria-invalid')).toBe('true');
-    expect(document.activeElement).toBe(field('id'));
+    expect(document.activeElement).toBe(field('name'));
     fill('id', '9-invalid');
     fill('description', 'Research a topic');
     await submit();
@@ -157,6 +163,69 @@ describe('guided agent creation', () => {
     }));
     expect(onCreated).toHaveBeenCalledOnce();
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('opens and suggests an ID in a WebView without randomUUID', async () => {
+    vi.stubGlobal('crypto', {});
+    try {
+      await render();
+      fill('name', '中文智能体');
+      expect(field('id').value).toMatch(/^agent-[a-z0-9]+-[a-z0-9]*$/);
+      expect(document.activeElement).toBe(field('name'));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps advanced permissions collapsed in the full page and creates from the task template', async () => {
+    await act(async () => root.render(<div role="dialog"><CreateAgentPage /></div>));
+    await act(async () => { await vi.dynamicImportSettled(); });
+    expect(field('name').placeholder).toBe(copy('createNamePlaceholder'));
+    const permissions = [...dialog().querySelectorAll('summary')].find(summary => summary.textContent === copy('permissionsStandard'))!;
+    expect(permissions.closest('details')?.open).toBe(false);
+    fill('name', 'Research helper');
+    fill('description', 'Research a topic');
+    expect(field('id').value).toBe('research-helper');
+    await click(copy('usePromptTemplate'));
+    await submit();
+    expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'research-helper', name: 'Research helper', description: 'Research a topic',
+      prompt: copy('promptTemplate'), readonly: false,
+    }));
+  });
+
+  it('keeps an existing identifier when the display name changes', async () => {
+    mocks.editingId = 'legacy-id';
+    mocks.detail.mockResolvedValue({ kind: 'mode', level: 'user', agentId: 'legacy-id', name: 'Existing',
+      description: 'Existing goal', prompt: 'Existing instructions', readonly: false, review: false,
+      tools: ['Read'], userContextPolicy: ['workspace_context'] });
+    mocks.update.mockResolvedValue(undefined);
+    await act(async () => root.render(<div role="dialog"><CreateAgentPage /></div>));
+    await act(async () => { await vi.dynamicImportSettled(); });
+    fill('name', 'New display name');
+    expect(field('id').disabled).toBe(true);
+    expect(field('id').value).toBe('legacy-id');
+    await submit();
+    expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'legacy-id', name: 'New display name' }));
+    expect(mocks.create).not.toHaveBeenCalled();
+  });
+
+  it('starts with a name, generates a portable ID and preserves a manual override', async () => {
+    await render();
+    expect(document.activeElement).toBe(field('name'));
+    fill('name', 'Research helper');
+    expect(field('id').value).toBe('research-helper');
+    fill('id', 'my-stable-id');
+    fill('name', 'Renamed helper');
+    expect(field('id').value).toBe('my-stable-id');
+    fill('description', 'Research a topic');
+    await submit();
+    await act(async () => { await vi.dynamicImportSettled(); });
+    await click(copy('usePromptTemplate'));
+    expect(promptEditor().getText()).toContain(copy('promptTemplate'));
+    expect(button(copy('usePromptTemplate'))).toBeUndefined();
+    await submit();
+    expect(dialog().querySelector('[data-testid="custom-agent-tool-groups"]')?.closest('details')?.open).toBe(false);
   });
 
   it.each(['text', 'source-html', 'markdown-editor'])('renders pasted Markdown from %s and keeps its structure across steps', async (format) => {
@@ -276,7 +345,8 @@ describe('guided agent creation', () => {
     expect(onCreated).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
     expect(mocks.success).not.toHaveBeenCalled();
-    expect(field('id').value).toBe('');
+    expect(field('id').value).toMatch(/^agent-[a-f0-9]{8}$/);
+    expect(field('name').value).toBe('');
   });
 
   it('resets the draft when the workspace or peer surface changes', async () => {
@@ -284,11 +354,13 @@ describe('guided agent creation', () => {
     await completeBasics();
     mocks.workspace = { id: 'workspace-2' };
     await render();
-    expect(field('id').value).toBe('');
+    expect(field('id').value).toMatch(/^agent-[a-f0-9]{8}$/);
+    expect(field('name').value).toBe('');
     expect(dialog().querySelector('textarea')).toBeNull();
     await completeBasics();
     await act(async () => { activateSurface('peer-device'); });
-    expect(field('id').value).toBe('');
+    expect(field('id').value).toMatch(/^agent-[a-f0-9]{8}$/);
+    expect(field('name').value).toBe('');
     expect(dialog().querySelector('textarea')).toBeNull();
     expect(mocks.create).not.toHaveBeenCalled();
   });

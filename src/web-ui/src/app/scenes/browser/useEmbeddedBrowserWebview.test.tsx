@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   hostListeners: new Set<(visible: boolean) => void>(),
   pageLoadListeners: new Set<(event: { payload: PageLoadPayload }) => void>(),
   documentReadyListeners: new Set<(event: { payload: BrowserDocumentReadyPayload }) => void>(),
+  getByLabel: vi.fn(),
 }));
 vi.mock('./browserPageLifecycleScript', async importOriginal => {
   const actual = await importOriginal<typeof import('./browserPageLifecycleScript')>();
@@ -28,7 +29,7 @@ vi.mock('@/infrastructure/runtime/windowVisibility', () => ({
   },
 }));
 vi.mock('@/infrastructure/api/service-api/ApiClient', () => ({ api: { invoke: mocks.invoke } }));
-vi.mock('@tauri-apps/api/webview', () => ({ Webview: { getByLabel: async () => mocks.view } }));
+vi.mock('@tauri-apps/api/webview', () => ({ Webview: { getByLabel: mocks.getByLabel } }));
 vi.mock('@tauri-apps/api/event', () => ({
   listen: async (name: string, handler: (event: { payload: PageLoadPayload | BrowserDocumentReadyPayload }) => void) => {
     if (name === BROWSER_WEBVIEW_DOCUMENT_READY_EVENT) {
@@ -43,8 +44,9 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 const log = { warn: vi.fn(), error: vi.fn() };
 let browser: ReturnType<typeof useEmbeddedBrowserWebview>;
-function Harness({ active }: { active: boolean }) {
-  browser = useEmbeddedBrowserWebview({ defaultUrl: 'https://example.com', isVisible: active, labelPrefix: 'test', log });
+function Harness({ active, targetId, manual = false }: { active: boolean; targetId?: string; manual?: boolean }) {
+  browser = useEmbeddedBrowserWebview({ defaultUrl: 'https://example.com', isVisible: active, labelPrefix: 'test', log,
+    targetId, openRequestId: targetId && !manual ? 'open-request' : undefined, conversationId: targetId ? 'owner' : undefined });
   return <div ref={browser.viewportRef} />;
 }
 
@@ -58,6 +60,7 @@ beforeEach(() => {
   mocks.pageLoadListeners.clear();
   mocks.documentReadyListeners.clear();
   mocks.invoke.mockImplementation(async () => {});
+  mocks.getByLabel.mockReset().mockResolvedValue(mocks.view);
   vi.stubGlobal('__TAURI__', {});
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
@@ -99,6 +102,86 @@ function overlay() {
   node.getBoundingClientRect = () => new DOMRect(50, 50, 100, 100);
   return node;
 }
+
+it('reattaches the exact session page after unmount without closing, recreating or navigating it', async () => {
+  const label = mocks.view.label;
+  let currentUrl = 'https://example.com/form-in-progress';
+  mocks.invoke.mockImplementation(async command => command === 'browser_get_url' ? currentUrl : undefined);
+  await act(async () => root.render(<Harness active targetId={label} />));
+  expect(browser.currentUrl).toBe(currentUrl);
+  await act(async () => root.render(null));
+  expect(mocks.view.hide).toHaveBeenCalled();
+  expect(mocks.view.close).not.toHaveBeenCalled();
+  currentUrl = 'https://example.com/background-result';
+  await act(async () => root.render(<Harness active targetId={label} />));
+  expect(browser.currentUrl).toBe(currentUrl);
+  expect(mocks.getByLabel).toHaveBeenCalledTimes(2);
+  expect(mocks.invoke.mock.calls.some(([command]) => command === 'browser_webview_create' || command === 'browser_webview_navigate')).toBe(false);
+  expect(mocks.view.show).toHaveBeenCalledTimes(2);
+});
+
+it('switches presentation between independent native pages while retaining both', async () => {
+  const a = { ...mocks.view, label: 'page-a', show: vi.fn(async () => {}), hide: vi.fn(async () => {}) };
+  const b = { ...mocks.view, label: 'page-b', show: vi.fn(async () => {}), hide: vi.fn(async () => {}) };
+  mocks.getByLabel.mockImplementation(async label => label === a.label ? a : b);
+  await act(async () => root.render(<Harness key="a" active targetId={a.label} />));
+  await act(async () => root.render(<Harness key="b" active targetId={b.label} />));
+  expect(a.hide).toHaveBeenCalled();
+  expect(b.show).toHaveBeenCalledOnce();
+  expect(mocks.view.close).not.toHaveBeenCalled();
+  await act(async () => root.render(<Harness key="a" active targetId={a.label} />));
+  expect(b.hide).toHaveBeenCalled();
+  expect(a.show).toHaveBeenCalledTimes(2);
+});
+
+it('ignores a late attachment from an unmounted conversation', async () => {
+  let resolveA!: (view: typeof mocks.view) => void;
+  mocks.getByLabel.mockImplementation(label => label === 'page-a'
+    ? new Promise(resolve => { resolveA = resolve; }) : Promise.resolve(mocks.view));
+  await act(async () => root.render(<Harness key="a" active targetId="page-a" />));
+  await act(async () => root.render(<Harness key="b" active targetId="page-b" />));
+  const lateView = { ...mocks.view, show: vi.fn(async () => {}), hide: vi.fn(async () => {}) };
+  await act(async () => resolveA(lateView));
+  expect(lateView.show).not.toHaveBeenCalled();
+  expect(lateView.hide).not.toHaveBeenCalled();
+  expect(browser.webviewLabel).toBe('page-b');
+});
+
+it('does not recreate a host-owned target that was explicitly closed', async () => {
+  mocks.getByLabel.mockResolvedValue(null);
+  await act(async () => root.render(<Harness active targetId="closed-page" />));
+  expect(browser.error).toContain('Webview not found');
+  expect(mocks.invoke.mock.calls.some(([command]) => command === 'browser_webview_create')).toBe(false);
+});
+
+it('creates a manually opened session page with its stable identity and keeps it on unmount', async () => {
+  mocks.getByLabel.mockResolvedValueOnce(null).mockResolvedValue(mocks.view);
+  await act(async () => root.render(<Harness active targetId="manual-page" manual />));
+  expect(mocks.invoke).toHaveBeenCalledWith('browser_webview_create', expect.objectContaining({
+    request: expect.objectContaining({ label: 'manual-page', conversationId: 'owner' }),
+  }));
+  await act(async () => root.render(null));
+  expect(mocks.view.close).not.toHaveBeenCalled();
+});
+
+it('reattaches a manual page whose first creation finishes after a rapid session switch', async () => {
+  let finishCreation!: () => void;
+  let created = false;
+  mocks.getByLabel.mockImplementation(async () => created ? mocks.view : null);
+  mocks.invoke.mockImplementation(async command => {
+    if (command === 'browser_webview_create') {
+      await new Promise<void>(resolve => { finishCreation = resolve; });
+      created = true;
+    }
+  });
+  await act(async () => root.render(<Harness key="first" active targetId="pending-manual-page" manual />));
+  await act(async () => root.render(<Harness key="next" active targetId="pending-manual-page" manual />));
+  await act(async () => finishCreation());
+  expect(mocks.invoke.mock.calls.filter(([command]) => command === 'browser_webview_create')).toHaveLength(1);
+  expect(browser.error).toBeNull();
+  expect(mocks.view.show).toHaveBeenCalledOnce();
+  expect(mocks.view.close).not.toHaveBeenCalled();
+});
 
 async function hostVisibility(visible: boolean) {
   await mutate(() => {

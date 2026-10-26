@@ -308,3 +308,5 @@ export {
 export { LayersPlusIcon } from "./components/Icon";
 export { SplitView, SplitViewPrimaryDock, SplitViewSurface } from './components/SplitView';
 export type { SplitViewProps, SplitViewMode, SplitViewHeaderGeometry } from './components/SplitView';
+
+export { FieldAccessibilityProvider } from "./components/Field/FieldAccessibility";

@@ -224,6 +224,8 @@ export interface ModelRound {
   firstChunkMs?: number;
   firstVisibleOutputMs?: number;
   streamDurationMs?: number;
+  /** Request start to first effective output for the accepted model attempt. */
+  ttftMs?: number;
   attemptCount?: number;
   attemptDiagnostics?: ModelRoundAttemptDiagnostic[];
   failureCategory?: string;

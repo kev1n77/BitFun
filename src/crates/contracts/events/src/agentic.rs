@@ -342,6 +342,9 @@ pub enum AgenticEvent {
         first_visible_output_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stream_duration_ms: Option<u64>,
+        /// Request start to first effective output for the accepted model attempt.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttft_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         attempt_count: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -861,6 +864,7 @@ mod tests {
             first_chunk_ms: Some(10),
             first_visible_output_ms: Some(12),
             stream_duration_ms: Some(100),
+            ttft_ms: Some(35),
             attempt_count: Some(1),
             failure_category: None,
             token_details: Some(serde_json::json!({ "reasoningTokens": 7 })),
@@ -872,6 +876,7 @@ mod tests {
         assert_eq!(json["model_config_id"], "model-config");
         assert_eq!(json["effective_model_name"], "provider-model");
         assert_eq!(json["first_chunk_ms"], 10);
+        assert_eq!(json["ttft_ms"], 35);
         assert_eq!(json["token_details"]["reasoningTokens"], 7);
     }
 
@@ -887,11 +892,17 @@ mod tests {
             "effective_model_name": "provider-model"
         });
 
-        let event: AgenticEvent = serde_json::from_value(json).expect("event");
+        let event: AgenticEvent = serde_json::from_value(json.clone()).expect("event");
+        assert_eq!(serde_json::to_value(&event).unwrap(), json);
 
         match event {
-            AgenticEvent::ModelRoundCompleted { duration_ms, .. } => {
+            AgenticEvent::ModelRoundCompleted {
+                duration_ms,
+                ttft_ms,
+                ..
+            } => {
                 assert_eq!(duration_ms, None);
+                assert_eq!(ttft_ms, None);
             }
             _ => panic!("unexpected event"),
         }

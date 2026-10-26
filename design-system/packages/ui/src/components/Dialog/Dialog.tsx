@@ -23,6 +23,7 @@ import { useDismissibleLayer } from "../../overlay/useDismissibleLayer";
 import { useFocusScope } from "../../overlay/useFocusScope";
 import { usePresence } from "../../overlay/usePresence";
 import { IconButton, type IconButtonProps } from "../IconButton";
+import { inertProps } from "../../internal/inert";
 import styles from "./Dialog.module.css";
 
 const EXIT_DURATION_MS = 180;
@@ -183,7 +184,7 @@ const OverlaySurface = forwardRef<HTMLDivElement, OverlaySurfaceProps>(function 
         <DialogContext.Provider value={context}>
           <div
             {...surfaceProps}
-            {...(!open ? { inert: "" } : {})}
+            {...inertProps(!open)}
             aria-describedby={ariaDescribedBy ?? (hasDescription ? descriptionId : undefined)}
             aria-hidden={exiting || undefined}
             aria-label={ariaLabel}

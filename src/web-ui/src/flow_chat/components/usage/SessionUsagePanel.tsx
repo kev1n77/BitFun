@@ -15,6 +15,7 @@ import {
 import {
   calculateShare,
   buildSessionUsageExportMarkdown,
+  isUnusedSession,
   formatHitRatePercent,
   formatUsageDuration,
   formatUsageNumber,
@@ -39,6 +40,7 @@ import {
   subscribeUsageExportRedactPathsPreference,
   getDisplayTurnIndex,
 } from './usageReportUtils';
+import { SessionUsageEmptyState } from './SessionUsageEmptyState';
 import type { SessionUsagePanelTab } from './sessionUsagePanelTypes';
 import { sessionWorkspaceId } from '../../session-drivers/sessionFileNavigation';
 import './SessionUsagePanel.scss';
@@ -134,6 +136,10 @@ export const SessionUsagePanel: React.FC<SessionUsagePanelProps> = ({
         <MarkdownRenderer content={markdown} />
       </div>
     );
+  }
+
+  if (isUnusedSession(report)) {
+    return <SessionUsageEmptyState />;
   }
 
   const coverageTone = getCoverageTone(report.coverage.level);

@@ -55,6 +55,24 @@ Set `OPENBITFUN_E2E_FRONTEND_DIR` to a completed build directory with
 The runner also snapshots the executable; `OPENBITFUN_E2E_DESKTOP_BINARY` can
 select a freshly linked artifact when a development instance locks the default exe.
 
+For pet/bubble main-window activation after opening an embedded browser, build
+Desktop and run `node tests/e2e/scripts/run-browser-window-activation.mjs`.
+It uses completed frontend assets and isolated storage to exercise native window
+activation, focus, tray hiding, geometry persistence, main-view command routing
+and remote child-view ACL rejection with multiple browser children. The same
+binary/frontend snapshot overrides above are supported. This is native command
+coverage, not a pet-pointer or remote-session integration test.
+
+For conversation-owned browser pages, build Desktop and Web UI and run
+`node tests/e2e/scripts/run-browser-session-isolation.mjs`. The fixture uses
+isolated storage and loopback model/page servers. It drives the actual session
+controls and Agent tool dispatcher to check background opening, concurrent reads,
+native visibility and document preservation across repeated session switches.
+Inspect its `result.json`; local native coverage does not prove remote behavior.
+Full visibility coverage needs an unlocked desktop. For a locked/headless display,
+`OPENBITFUN_E2E_BACKGROUND_ONLY=1` runs background execution and panel binding;
+the report explicitly excludes foreground native visibility in that mode.
+
 Markdown editor browser interaction tests (no desktop binary required):
 
 ```bash

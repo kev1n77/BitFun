@@ -113,6 +113,7 @@ import {
   Card,
   CardFooter,
   CardHeader,
+  Checkbox,
   Combobox,
   ConfirmDialog,
   Dialog,
@@ -121,6 +122,7 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
+  DialogHeaderActions,
   DialogHeading,
   DialogTitle,
   Disclosure,
@@ -428,6 +430,7 @@ function getPoolProviderKey(model: AIModelConfigType): string {
 }
 
 const ModelSettingsPage: React.FC = () => {
+  const accountSelectionId = React.useId();
   const { t, i18n } = useI18n('settings/models');
   const { t: tDefault } = useI18n('settings/default-model');
   const { t: tComponents } = useI18n('components');
@@ -607,6 +610,10 @@ const ModelSettingsPage: React.FC = () => {
   const accountInstances = useMemo(
     () => accountDataCurrent ? storedAccountInstances : [],
     [accountDataCurrent, storedAccountInstances],
+  );
+  const availableSubscriptionAccounts = useMemo(
+    () => managedSubscriptionAccounts(subscriptionAccounts, accountInstances),
+    [subscriptionAccounts, accountInstances],
   );
   const [quotaRefreshVersions, setQuotaRefreshVersions] = useState<Partial<Record<SubscriptionProvider, number>>>({});
   const canQuerySubscriptionQuota = canQuerySubscriptionQuotaOnSurface(
@@ -840,20 +847,23 @@ const ModelSettingsPage: React.FC = () => {
     return unsubscribeCatalog;
   }, [loadConfig, loadProxyConfig, loadStreamTimeouts, loadModelCatalog, loadModelsDevStatus, modelDiscoverySurface, modelSeed, proxySeed, timeoutSeed]);
 
+  const subscriptionAccountsReadRef = React.useRef(0);
   const refreshSubscriptionAccounts = useCallback(async (forceQuota = false) => {
+    const requestId = ++subscriptionAccountsReadRef.current;
     const scope = getActiveSurfaceScope();
+    const isCurrent = () => scope.isCurrent() && requestId === subscriptionAccountsReadRef.current;
     setIsLoadingSubscriptions(true);
     setSubscriptionLoadError(false);
     try {
       const items = await aiApi.listSubscriptionAccounts();
-      if (!scope.isCurrent()) return;
+      if (!isCurrent()) return;
       // Older hosts lack account slots; the editor then keeps the single
       // default-account row instead of offering a pool it cannot save.
       const instances = await aiApi.listSubscriptionAccountInstances().catch((error) => {
         log.warn('list_subscription_account_instances failed', { error: String(error) });
         return [] as SubscriptionAccountInstance[];
       });
-      if (!scope.isCurrent()) return;
+      if (!isCurrent()) return;
       setSubscriptionAccounts(items);
       setAccountInstances(instances);
       setAccountDataKey(scope.key('subscription-accounts'));
@@ -868,16 +878,22 @@ const ModelSettingsPage: React.FC = () => {
         }));
       }
     } catch (e) {
-      if (!scope.isCurrent()) return;
+      if (!isCurrent()) return;
       setSubscriptionLoadError(true);
       log.warn('list_subscription_accounts failed', { error: String(e) });
     } finally {
-      if (scope.isCurrent()) setIsLoadingSubscriptions(false);
+      if (isCurrent()) setIsLoadingSubscriptions(false);
     }
   }, []);
 
   useEffect(() => {
-    refreshSubscriptionAccounts();
+    const refresh = () => { void refreshSubscriptionAccounts(); };
+    refresh();
+    window.addEventListener('focus', refresh);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      subscriptionAccountsReadRef.current += 1;
+    };
   }, [refreshSubscriptionAccounts, accountSurface]);
 
   useEffect(() => {
@@ -2585,6 +2601,10 @@ const ModelSettingsPage: React.FC = () => {
 
   const apiProviderGroups = providerGroups.filter(group => !subscriptionProviderOf(group.models[0].auth));
   const subscriptionProviderGroups = providerGroups.filter(group => !!subscriptionProviderOf(group.models[0].auth));
+  const editingProviderGroup = providerGroups.find(group => editingTargetKey === `provider:${group.key}`);
+  const unconfiguredSubscriptionAccounts = availableSubscriptionAccounts.filter(({ account, accountId }) => (
+    !modelsUsingSubscriptionAccount(aiModels, account.provider, accountId).length
+  ));
 
   const toggleProviderGroup = (groupKey: string) => {
     setExpandedProviderGroupKeys(previous => {
@@ -3395,7 +3415,7 @@ const ModelSettingsPage: React.FC = () => {
         <div className="openbitfun-model-settings__connection-row openbitfun-model-settings__connection-row--single openbitfun-model-settings__subscription-account-row">
           <ConfigPageRow label={t('subscriptionAuth.pool.label')} align="start" wide>
             <div className="openbitfun-model-settings__account-pool" data-testid="settings-model-account-pool">
-              <FieldGroup>
+              <FieldGroup appearance="plain">
                 {ordered.map(entry => {
                   const selectedIndex = selectedAccounts.indexOf(entry.account_id);
                   const checked = selectedIndex >= 0;
@@ -3408,55 +3428,64 @@ const ModelSettingsPage: React.FC = () => {
                     : state === 'missing'
                       ? t('subscriptionAuth.pool.missing')
                       : subscriptionStatusLabels[state];
+                  const accountName = instance ? instanceLabel(instance) : entry.account_id;
+                  const checkboxId = `${accountSelectionId}-${entry.account_id}`;
+                  const accountLabel = <label htmlFor={checkboxId} className="openbitfun-model-settings__account-pool-label">
+                    <OverflowText className="openbitfun-model-settings__subscription-account-name">{accountName}</OverflowText>
+                  </label>;
+                  const orderActions = checked && selectedAccounts.length > 1 ? (
+                    <ToolbarGroup>
+                      <IconButton
+                        size="xs"
+                        variant="quiet"
+                        aria-label={t('subscriptionAuth.pool.moveUp')}
+                        icon={<Icon name="arrow-up" size="sm" />}
+                        disabled={selectedIndex === 0}
+                        onClick={() => setSelectedAccounts(moveItem(selectedAccounts, selectedIndex, -1))}
+                      />
+                      <IconButton
+                        size="xs"
+                        variant="quiet"
+                        aria-label={t('subscriptionAuth.pool.moveDown')}
+                        icon={<Icon name="arrow-down" size="sm" />}
+                        disabled={selectedIndex === selectedAccounts.length - 1}
+                        onClick={() => setSelectedAccounts(moveItem(selectedAccounts, selectedIndex, 1))}
+                      />
+                    </ToolbarGroup>
+                  ) : null;
+                  const accountSelection = (
+                    <Checkbox
+                      className="openbitfun-model-settings__account-pool-choice"
+                      id={checkboxId}
+                      size="sm"
+                      aria-label={accountName}
+                      checked={checked}
+                      disabled={isEditorSaving || (checked && selectedAccounts.length === 1)}
+                      onChange={(event) => setSelectedAccounts(event.target.checked
+                        ? [...selectedAccounts, entry.account_id]
+                        : selectedAccounts.filter(id => id !== entry.account_id))}
+                    />
+                  );
                   return (
-                    <React.Fragment key={entry.account_id}>
-                    <div
-                      className="openbitfun-model-settings__account-pool-item"
-                      data-testid="settings-model-account-pool-item"
-                    >
-                      <label className="openbitfun-model-settings__account-pool-choice">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          disabled={isEditorSaving || (checked && selectedAccounts.length === 1)}
-                          onChange={(event) => setSelectedAccounts(event.target.checked
-                            ? [...selectedAccounts, entry.account_id]
-                            : selectedAccounts.filter(id => id !== entry.account_id))}
-                        />
-                        <OverflowText className="openbitfun-model-settings__subscription-account-name">
-                          {instance ? instanceLabel(instance) : entry.account_id}
-                        </OverflowText>
-                      </label>
-                      <StatusPill tone={state === 'connected' ? 'success' : 'warning'}>{stateLabel}</StatusPill>
-                      {checked && selectedAccounts.length > 1 && (
-                        <ToolbarGroup>
-                          <IconButton
-                            size="xs"
-                            variant="quiet"
-                            aria-label={t('subscriptionAuth.pool.moveUp')}
-                            icon={<Icon name="arrow-up" size="sm" />}
-                            disabled={selectedIndex === 0}
-                            onClick={() => setSelectedAccounts(moveItem(selectedAccounts, selectedIndex, -1))}
-                          />
-                          <IconButton
-                            size="xs"
-                            variant="quiet"
-                            aria-label={t('subscriptionAuth.pool.moveDown')}
-                            icon={<Icon name="arrow-down" size="sm" />}
-                            disabled={selectedIndex === selectedAccounts.length - 1}
-                            onClick={() => setSelectedAccounts(moveItem(selectedAccounts, selectedIndex, 1))}
-                          />
-                        </ToolbarGroup>
-                      )}
+                    <div key={entry.account_id} className="openbitfun-model-settings__account-pool-entry" data-testid="settings-model-account-pool-item">
+                      <div className="openbitfun-model-settings__account-pool-content">
+                        {checked && instance?.enabled && instance.account.connected ? (
+                          <SubscriptionQuotaPanel provider={instance.account.provider} accountId={instance.account_id}
+                            identity={`${instance.upstream_account_id || ''}:${instance.account.expires_at || ''}`}
+                            active={isEditing && checked && !managingSubscriptionProvider}
+                            supported={canQuerySubscriptionQuota && (instance.account.provider !== 'grok' || canQueryGrokQuotaOnSurface(Boolean(peerDevice?.peerMode.active), peerDevice?.currentPeerCapabilities ?? null))}
+                            refreshVersion={quotaRefreshVersions[instance.account.provider]} compact
+                            accountLabel={accountLabel} headerLeading={accountSelection} headerActions={orderActions} />
+                        ) : (
+                          <div className="openbitfun-model-settings__account-pool-item">
+                            {accountSelection}
+                            {accountLabel}
+                            {state !== 'connected' && <StatusPill tone="warning">{stateLabel}</StatusPill>}
+                            {orderActions}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                    {checked && instance?.enabled && instance.account.connected && (
-                      <SubscriptionQuotaPanel provider={instance.account.provider} accountId={instance.account_id}
-                        identity={`${instance.upstream_account_id || ''}:${instance.account.expires_at || ''}`}
-                        active={isEditing && checked && !managingSubscriptionProvider}
-                        supported={canQuerySubscriptionQuota && (instance.account.provider !== 'grok' || canQueryGrokQuotaOnSurface(Boolean(peerDevice?.peerMode.active), peerDevice?.currentPeerCapabilities ?? null))}
-                        refreshVersion={quotaRefreshVersions[instance.account.provider]} compact />
-                    )}
-                    </React.Fragment>
                   );
                 })}
               </FieldGroup>
@@ -3464,6 +3493,7 @@ const ModelSettingsPage: React.FC = () => {
                 <Button
                   size="sm"
                   variant="outline"
+                  leadingIcon={<Icon name="plus" size="sm" />}
                   disabled={!!loggingInProvider}
                   data-testid="settings-model-account-pool-add"
                   onClick={() => {
@@ -3487,9 +3517,11 @@ const ModelSettingsPage: React.FC = () => {
               </div>
             </div>
           </ConfigPageRow>
-          <div className="openbitfun-model-settings__subscription-account-hint" aria-live="polite">
-            {t(selectedAccounts.length > 1 ? 'subscriptionAuth.pool.rotationHint' : 'subscriptionAuth.pool.singleHint')}
-          </div>
+          {selectedAccounts.length > 1 && (
+            <div className="openbitfun-model-settings__subscription-account-hint" aria-live="polite">
+              {t('subscriptionAuth.pool.rotationHint')}
+            </div>
+          )}
         </div>
       );
     };
@@ -4186,7 +4218,7 @@ const ModelSettingsPage: React.FC = () => {
       );
     };
     return (
-      <>
+      <div className="openbitfun-model-settings__subscription-content">
         {subscriptionLoadError && (
           <ConfigRetryState message={t('acquisition.loadFailed')} retryLabel={t('messages.retry')}
             loading={isLoadingSubscriptions} onRetry={() => void refreshSubscriptionAccounts()} />
@@ -4233,16 +4265,19 @@ const ModelSettingsPage: React.FC = () => {
             <SubscriptionServiceGroup key={group[0].provider} title={`${subscriptionName(group[0])}${managed.some(item => item.account.provider === group[0].provider)
               ? ` · ${t('subscriptionAuth.accountsCount', { count: managed.filter(item => item.account.provider === group[0].provider).length })}` : ''}`}
               description={t(`subscriptionAuth.details.${group[0].provider}`)}
-              busy={!!loggingInProvider || isLoadingSubscriptions || !!subscriptionLoadError}
-              action={isRetiredSubscriptionProvider(group[0].provider) ? undefined
-                : t(managed.some(item => item.account.provider === group[0].provider) && canEditAccountPools ? 'subscriptionAuth.pool.addAccount' : 'subscriptionAuth.login')}
-              onAdd={isRetiredSubscriptionProvider(group[0].provider) ? undefined : () => startAccount(group[0].provider)}>
+              actions={isRetiredSubscriptionProvider(group[0].provider) ? undefined : (
+                <Button size="sm" variant="outline"
+                  disabled={!!loggingInProvider || isLoadingSubscriptions || !!subscriptionLoadError}
+                  onClick={() => startAccount(group[0].provider)}>
+                  {t(managed.some(item => item.account.provider === group[0].provider) && canEditAccountPools ? 'subscriptionAuth.pool.addAccount' : 'subscriptionAuth.login')}
+                </Button>
+              )}>
               <SubscriptionAccountList accounts={managed.filter(item => item.account.provider === group[0].provider)}
                 renderAccount={item => renderAccount(item.account, false, item.accountId, item.enabled)} />
             </SubscriptionServiceGroup>
           ))}
         </div>
-      </>
+      </div>
     );
   };
 
@@ -4592,7 +4627,7 @@ const ModelSettingsPage: React.FC = () => {
               <ul className="openbitfun-model-settings__import-summary" aria-label={t('acquisition.api')}>
                 {apiProviderGroups.map(group => (
                   <li key={group.key} className="openbitfun-model-settings__import-item">
-                    <Capsule size="sm" action={(
+                    <Capsule size="sm" actionPlacement="reserved" action={(
                       <Tooltip content={t('actions.deleteProvider')} trigger="hover-focus">
                         <IconButton
                           className="openbitfun-model-settings__source-pill-delete"
@@ -4639,34 +4674,54 @@ const ModelSettingsPage: React.FC = () => {
               </div>
             )}
           >
-            {!modelConfigReady ? pendingConfigSummary : subscriptionProviderGroups.length > 0 ? (
-              <ul className="openbitfun-model-settings__import-summary" aria-label={t('acquisition.subscriptions')}>
-                {subscriptionProviderGroups.map(group => (
-                  <li key={group.key} className="openbitfun-model-settings__import-item">
-                    <Capsule size="sm" action={(
-                      <Tooltip content={t('actions.deleteProvider')} trigger="hover-focus">
-                        <IconButton
-                          className="openbitfun-model-settings__source-pill-delete"
-                          aria-label={`${t('actions.deleteProvider')}: ${group.providerName}`}
-                          size="xs"
-                          shape="circle"
-                          variant="quiet"
-                          tone="danger"
-                          onClick={() => void requestProviderDelete(group)}
-                          icon={<Icon name="delete" size="xs" />}
-                        />
-                      </Tooltip>
-                    )}>
-                      <Button size="sm" variant="outline" className="openbitfun-model-settings__source-pill"
-                        aria-label={t('acquisition.configureProvider', { provider: group.providerName })}
-                        onClick={() => handleEditProvider(group.models[0])}>
-                        {group.providerName}
+            <div className="openbitfun-model-settings__subscription-summary" data-testid="settings-subscription-services">
+              {subscriptionLoadError && (
+                <ConfigRetryState message={t('acquisition.loadFailed')} retryLabel={t('messages.retry')}
+                  loading={isLoadingSubscriptions} onRetry={() => void refreshSubscriptionAccounts()} />
+              )}
+              {subscriptionProviderGroups.length > 0 || unconfiguredSubscriptionAccounts.length > 0 ? (
+                <ul className="openbitfun-model-settings__import-summary" aria-label={t('acquisition.subscriptions')}>
+                  {subscriptionProviderGroups.map(group => (
+                    <li key={group.key} className="openbitfun-model-settings__import-item">
+                      <Capsule size="sm" actionPlacement="reserved" action={(
+                        <Tooltip content={t('actions.deleteProvider')} trigger="hover-focus">
+                          <IconButton
+                            className="openbitfun-model-settings__source-pill-delete"
+                            aria-label={`${t('actions.deleteProvider')}: ${group.providerName}`}
+                            size="xs"
+                            shape="circle"
+                            variant="quiet"
+                            tone="danger"
+                            onClick={() => void requestProviderDelete(group)}
+                            icon={<Icon name="delete" size="xs" />}
+                          />
+                        </Tooltip>
+                      )}>
+                        <Button size="sm" variant="outline" className="openbitfun-model-settings__source-pill"
+                          aria-label={t('acquisition.configureProvider', { provider: group.providerName })}
+                          onClick={() => handleEditProvider(group.models[0])}>
+                          {group.providerName}
+                        </Button>
+                      </Capsule>
+                    </li>
+                  ))}
+                  {unconfiguredSubscriptionAccounts.map(({ account, accountId, enabled }) => (
+                    <li key={`${account.provider}:${accountId}`} className="openbitfun-model-settings__import-item" data-account-id={accountId}>
+                      <Button size="sm" variant="outline" onClick={() => setShowSubscriptionManager(true)}>
+                        {subscriptionName(account)} · {account.account || t('subscriptionAuth.accountIdentityUnavailable')}
+                        {accountId !== account.provider ? ` · ${t('subscriptionAuth.accountMarker', { marker: accountId.slice(-8) })}` : ''}
+                        {!enabled ? ` · ${t('subscriptionAuth.pool.disabled')}`
+                          : account.vault_unavailable ? ` · ${t('subscriptionAuth.accountState.vaultUnavailable')}`
+                            : account.reauthentication_required ? ` · ${t('subscriptionAuth.accountState.reauthenticationRequired')}`
+                              : !account.connected ? ` · ${t('subscriptionAuth.notSignedIn')}` : ''}
                       </Button>
-                    </Capsule>
-                  </li>
-                ))}
-              </ul>
-            ) : <span className="openbitfun-model-settings__pool-caption">{t('acquisition.noneImported')}</span>}
+                    </li>
+                  ))}
+                </ul>
+              ) : !modelConfigReady ? pendingConfigSummary
+                : isLoadingSubscriptions ? <ConfigLoadingState label={t('subscriptionAuth.loadingAccount')} variant="list" />
+                  : !subscriptionLoadError && <span className="openbitfun-model-settings__pool-caption">{t('acquisition.noneImported')}</span>}
+            </div>
           </ConfigPageRow>
         </ConfigPageSection>
 
@@ -4870,15 +4925,23 @@ const ModelSettingsPage: React.FC = () => {
       </ConfigPageContent>
 
       <Dialog open={showSubscriptionManager}
+        className="openbitfun-model-settings__subscription-dialog"
         onOpenChange={open => { if (!open && !loggingInProvider) setShowSubscriptionManager(false); }} size="xl">
         <DialogHeader>
-          <DialogHeading><DialogTitle>{t('acquisition.importTitle')}</DialogTitle></DialogHeading>
-          <IconButton size="sm" aria-label={t('subscriptionAuth.rescan')}
-            onClick={() => void refreshSubscriptionAccounts(true)} disabled={isLoadingSubscriptions}
-            icon={<Icon name="refresh" size="sm" />} />
-          <DialogClose disabled={!!loggingInProvider} />
+          <DialogHeading>
+            <DialogTitle>{t('acquisition.importTitle')}</DialogTitle>
+            <DialogDescription>{t('subscriptionAuth.sectionDescription')}</DialogDescription>
+          </DialogHeading>
+          <DialogHeaderActions>
+            <Tooltip content={t('subscriptionAuth.rescan')}>
+              <IconButton size="sm" aria-label={t('subscriptionAuth.rescan')}
+                onClick={() => void refreshSubscriptionAccounts(true)} disabled={isLoadingSubscriptions}
+                icon={<Icon name="refresh" size="sm" />} />
+            </Tooltip>
+            <DialogClose disabled={!!loggingInProvider} />
+          </DialogHeaderActions>
         </DialogHeader>
-        <DialogBody inset="none">
+        <DialogBody>
           {renderSubscriptionManagerContent()}
         </DialogBody>
       </Dialog>
@@ -5263,6 +5326,17 @@ const ModelSettingsPage: React.FC = () => {
               </Button>
             ) : (
               <>
+                {!modelPanelDraft && editingProviderGroup && (
+                  <Button
+                    variant="outline"
+                    tone="danger"
+                    size="sm"
+                    onClick={() => void requestProviderDelete(editingProviderGroup)}
+                    disabled={isEditorSaving}
+                  >
+                    {t('actions.deleteProvider')}
+                  </Button>
+                )}
                 <Button variant="fill" size="sm" onClick={modelPanelDraft ? cancelModelPanel : requestCloseEditingModal} disabled={isEditorSaving}>
                   {t('actions.cancel')}
                 </Button>

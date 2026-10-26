@@ -1333,6 +1333,7 @@ fn model_round_label(round: &ModelRoundData) -> String {
 
 fn has_model_timing_fact(round: &ModelRoundData) -> bool {
     model_round_duration_ms(round).is_some()
+        || round.ttft_ms.is_some()
         || round.first_chunk_ms.is_some()
         || round.first_visible_output_ms.is_some()
         || round.stream_duration_ms.is_some()
@@ -2803,6 +2804,7 @@ mod tests {
                 first_chunk_ms: None,
                 first_visible_output_ms: None,
                 stream_duration_ms: None,
+                ttft_ms: None,
                 attempt_count: None,
                 attempt_diagnostics: vec![],
                 failure_category: None,
@@ -2848,6 +2850,7 @@ mod tests {
             first_chunk_ms: Some(5),
             first_visible_output_ms: Some(8),
             stream_duration_ms: Some(duration_ms.saturating_sub(10)),
+            ttft_ms: None,
             attempt_count: Some(1),
             attempt_diagnostics: vec![],
             failure_category: None,

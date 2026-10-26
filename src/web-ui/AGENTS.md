@@ -220,3 +220,11 @@ establish visual or remote transport behavior):
 ```bash
 pnpm --dir src/web-ui run test:run src/shared/ui/OverlayStack.test.tsx src/shared/ui/OverlayOwnership.contract.test.ts src/shared/ui/Dialog.test.tsx src/shared/ui/MenuPopover.test.tsx src/infrastructure/appearance/runtime/AppearanceOverlayHost.test.ts src/shared/notification-system/components/NotificationContainer.test.tsx src/shared/context-menu-system/components/ui/ContextMenu.test.tsx
 ```
+
+For Markdown Mermaid rendering states and supported syntax:
+
+```bash
+pnpm --dir src/web-ui run test:run src/infrastructure/markdown/MermaidBlock.test.tsx src/tools/mermaid-editor/services/MermaidService.test.ts
+```
+
+The service tests use the real Mermaid parser; native SVG rendering still needs UI verification.

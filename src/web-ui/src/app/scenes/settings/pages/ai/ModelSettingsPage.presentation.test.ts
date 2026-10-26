@@ -27,6 +27,38 @@ describe('ModelSettingsPage presentation', () => {
     expect(source.match(/required=\{apiKeyRequired\}/g)).toHaveLength(2);
   });
 
+  it('does not add a second background around the editor account selection and quota', () => {
+    const start = source.indexOf('data-testid="settings-model-account-pool"');
+    const accountPool = source.slice(start, source.indexOf('</FieldGroup>', start));
+
+    expect(start).toBeGreaterThan(-1);
+    expect(accountPool).toContain('<FieldGroup appearance="plain">');
+    expect(accountPool).toContain('settings-model-account-pool-item');
+    expect(accountPool).toContain('<SubscriptionQuotaPanel');
+    expect(accountPool).toContain('<Checkbox');
+    expect(accountPool).not.toContain('<input');
+    expect(accountPool).toContain('account-pool-entry');
+    expect(accountPool).toContain('accountLabel={accountLabel} headerLeading={accountSelection} headerActions={orderActions}');
+    expect(accountPool).toContain("state !== 'connected'");
+    expect(styles).not.toMatch(/&__account-pool-entry\s*{\s*display: grid;/);
+    expect(styles).toMatch(/&__account-pool-choice\s*{\s*flex: none;\s*align-self: center;/);
+    const poolRow = source.slice(start, source.indexOf('const renderSubscriptionAccountRow', start));
+    expect(poolRow).not.toContain('variant="text"');
+    expect(poolRow).not.toContain('subscriptionAuth.pool.singleHint');
+    expect(poolRow).toContain('{selectedAccounts.length > 1 && (');
+  });
+
+  it('keeps inline quota values on the label baseline without nested card surfaces', () => {
+    const quotaStyles = readFileSync(fileURLToPath(new URL('./SubscriptionQuotaPanel.module.scss', import.meta.url)), 'utf8');
+    const compact = quotaStyles.slice(quotaStyles.indexOf('.compact {'), quotaStyles.indexOf('@container'));
+    expect(compact).toContain('align-items: baseline');
+    expect(compact).toContain('background: transparent');
+    expect(compact).toContain('border: 0');
+    expect(compact).toContain('grid-column: 1 / -1');
+    expect(compact).toContain('var(--openbitfun-type-label-md-font-size)');
+    expect(styles).toMatch(/&__account-pool-item\s*{[\s\S]*?flex-wrap: wrap;[\s\S]*?align-items: center;/);
+  });
+
   it('preserves the intrinsic width of design-system switches in edit rows', () => {
     expect(styles.match(/> :not\(\[data-openbitfun-component='switch'\]\)/g)).toHaveLength(2);
     expect(styles).not.toMatch(/> \* \{\s*min-width: 0;\s*width: 100%/);

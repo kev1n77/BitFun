@@ -22,6 +22,7 @@ import {
   normalizeReviewModeState,
   type SubagentEditorToolInfo,
 } from './subagentEditorUtils';
+import { createSuggestedAgentId, suggestAgentId } from './suggestAgentId';
 import { ToolGroupPicker, ToolGroupSummary } from './ToolGroupPicker';
 import { useUserToolGroups } from './useUserToolGroups';
 import '../AgentsView.scss';
@@ -111,7 +112,7 @@ const CreateAgentPage: React.FC<CreateAgentPageProps> = ({ standalone = false, t
   const closeEditor = onCancel ?? openHome;
   const formInstanceId = React.useId();
   const formId = `${formInstanceId}-custom-agent-form`;
-  const fieldId = (field: string) => `${formInstanceId}-custom-agent-${field}`;
+  const fieldId = useCallback((field: string) => `${formInstanceId}-custom-agent-${field}`, [formInstanceId]);
   const formRef = useRef<HTMLFormElement>(null);
   const promptControlRef = useRef<HTMLDivElement>(null);
   const [step, setStep] = useState(0);
@@ -158,9 +159,12 @@ const CreateAgentPage: React.FC<CreateAgentPageProps> = ({ standalone = false, t
 
   const [kind, setKind] = useState<CustomAgentKind>('mode');
   const [level, setLevel] = useState<CustomAgentLevel>('user');
-  const [agentId, setAgentId] = useState('');
+  const [generatedId] = useState(createSuggestedAgentId);
+  const [agentId, setAgentId] = useState(generatedId);
+  const agentIdCustomized = useRef(false);
   const [agentIdError, setAgentIdError] = useState<string | null>(null);
   const [name, setName] = useState('');
+  const [nameError, setNameError] = useState(false);
   const [description, setDescription] = useState('');
   const [descriptionError, setDescriptionError] = useState(false);
   const [prompt, setPrompt] = useState('');
@@ -381,22 +385,23 @@ const CreateAgentPage: React.FC<CreateAgentPageProps> = ({ standalone = false, t
     project_layout: t('agentsOverview.form.contextProjectLayoutTooltip'),
   };
 
-  const focusField = (field: string) => {
+  const focusField = useCallback((field: string) => {
     if (field === 'prompt') {
       promptControlRef.current?.querySelector<HTMLElement>('[contenteditable="true"], textarea')?.focus({ preventScroll: true });
       return;
     }
     const control = formRef.current?.elements.namedItem(fieldId(field));
     if (control instanceof HTMLElement) control.focus();
-  };
+  }, [fieldId]);
 
   const handleNext = () => {
     if (step === 0) {
       const idError = validateAgentId(agentId);
       setAgentIdError(idError);
+      setNameError(!name.trim());
       setDescriptionError(!description.trim());
-      if (idError || !description.trim()) {
-        focusField(idError ? 'id' : 'description');
+      if (!name.trim() || idError || !description.trim()) {
+        focusField(!name.trim() ? 'name' : idError ? 'id' : 'description');
         return;
       }
     }
@@ -414,6 +419,11 @@ const CreateAgentPage: React.FC<CreateAgentPageProps> = ({ standalone = false, t
     const nextAgentIdError = validateAgentId(agentId);
     setAgentIdError(nextAgentIdError);
     if (nextAgentIdError) {
+      return;
+    }
+    if (!isEdit && !name.trim()) {
+      setNameError(true);
+      focusField('name');
       return;
     }
     if (!description.trim()) {
@@ -492,6 +502,7 @@ const CreateAgentPage: React.FC<CreateAgentPageProps> = ({ standalone = false, t
     agentId,
     description,
     editingAgentId,
+    focusField,
     isEdit,
     kind,
     level,
@@ -595,6 +606,50 @@ const CreateAgentPage: React.FC<CreateAgentPageProps> = ({ standalone = false, t
         <h3>{t('agentsOverview.form.basicInformation')}</h3>
       </div>
 
+      <div className="th-create-panel__field">
+        <label className="th-create-panel__label" htmlFor={fieldId('name')}>
+          {t('agentsOverview.form.name')}
+        </label>
+        <Input
+          id={fieldId('name')}
+          value={name}
+          onChange={(event) => {
+            const nextName = event.target.value;
+            setName(nextName);
+            setNameError(false);
+            if (!isEdit && !agentIdCustomized.current) setAgentId(suggestAgentId(nextName, generatedId));
+          }}
+          invalid={nameError}
+          aria-describedby={nameError ? fieldId('name-error') : undefined}
+          placeholder={t(isEdit ? 'agentsOverview.form.namePlaceholder' : 'agentsOverview.form.createNamePlaceholder')}
+          size="sm"
+        />
+        {nameError && <span id={fieldId('name-error')} className="th-create-panel__error" role="alert">{t('agentsOverview.form.nameRequired')}</span>}
+      </div>
+
+      <div className="th-create-panel__field">
+        <label className="th-create-panel__label" htmlFor={fieldId('description')}>
+          {t('agentsOverview.form.description')}
+        </label>
+        <Input
+          id={fieldId('description')}
+          value={description}
+          onChange={(event) => {
+            setDescription(event.target.value);
+            setDescriptionError(false);
+          }}
+          invalid={descriptionError}
+          aria-describedby={descriptionError ? fieldId('description-error') : undefined}
+          placeholder={t('agentsOverview.form.descPlaceholder')}
+          size="sm"
+        />
+        {descriptionError && (
+          <span id={fieldId('description-error')} className="th-create-panel__error" role="alert">
+            {t('agentsOverview.form.descRequired')}
+          </span>
+        )}
+      </div>
+
       <div className="th-create-panel__field" data-openbitfun-component="create-agent-page" data-openbitfun-part="field">
         <span className="th-create-panel__label">{t('agentsOverview.form.kind')}</span>
         <div
@@ -633,7 +688,9 @@ const CreateAgentPage: React.FC<CreateAgentPageProps> = ({ standalone = false, t
         </div>
       </div>
 
-      <div className="th-create-panel__identity-fields">
+      <details className="th-create-panel__field" open={isEdit || !!agentIdError || undefined}>
+        <summary>{t('agentsOverview.form.identityDetails')}</summary>
+        <p className="th-create-panel__label-hint">{t('agentsOverview.form.idHelp')}</p>
         <div className="th-create-panel__field">
           <label className="th-create-panel__label" htmlFor={fieldId('id')}>
             {t('agentsOverview.form.id')}
@@ -642,6 +699,7 @@ const CreateAgentPage: React.FC<CreateAgentPageProps> = ({ standalone = false, t
             id={fieldId('id')}
             value={agentId}
             onChange={(event) => {
+              agentIdCustomized.current = true;
               setAgentId(event.target.value);
               setAgentIdError(validateAgentId(event.target.value));
             }}
@@ -657,42 +715,7 @@ const CreateAgentPage: React.FC<CreateAgentPageProps> = ({ standalone = false, t
           ) : null}
         </div>
 
-        <div className="th-create-panel__field">
-          <label className="th-create-panel__label" htmlFor={fieldId('name')}>
-            {t('agentsOverview.form.name')}
-          </label>
-          <Input
-            id={fieldId('name')}
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder={t('agentsOverview.form.namePlaceholder')}
-            size="sm"
-          />
-        </div>
-      </div>
-
-      <div className="th-create-panel__field">
-        <label className="th-create-panel__label" htmlFor={fieldId('description')}>
-          {t('agentsOverview.form.description')}
-        </label>
-        <Input
-          id={fieldId('description')}
-          value={description}
-          onChange={(event) => {
-            setDescription(event.target.value);
-            setDescriptionError(false);
-          }}
-          invalid={descriptionError}
-          aria-describedby={descriptionError ? fieldId('description-error') : undefined}
-          placeholder={t('agentsOverview.form.descPlaceholder')}
-          size="sm"
-        />
-        {descriptionError && (
-          <span id={fieldId('description-error')} className="th-create-panel__error" role="alert">
-            {t('agentsOverview.form.descRequired')}
-          </span>
-        )}
-      </div>
+      </details>
 
       {kind === 'subagent' ? (
         <div className="th-create-panel__field">
@@ -733,7 +756,6 @@ const CreateAgentPage: React.FC<CreateAgentPageProps> = ({ standalone = false, t
           </div>
         </div>
       ) : null}
-      {!standalone && permissionControls}
     </div>
   );
   const toolSelection = selectableTools.length > 0 ? (
@@ -798,6 +820,10 @@ const CreateAgentPage: React.FC<CreateAgentPageProps> = ({ standalone = false, t
         )}
       </div>
       {standalone ? (
+        <>
+          <ToolGroupSummary grouped={false} tools={selectableGroupTools} selectedToolNames={Array.from(selectedTools)} userGroups={userToolGroups} />
+          <details className="th-create-panel__field">
+            <summary>{t('agentsOverview.form.customizeTools')}</summary>
         <ToolGroupPicker
           grouped={false}
           tools={selectableGroupTools}
@@ -809,6 +835,8 @@ const CreateAgentPage: React.FC<CreateAgentPageProps> = ({ standalone = false, t
           disabled={submitting}
           testId="custom-agent-tool-groups"
         />
+          </details>
+        </>
       ) : toolsEditing ? (
         <ScrollArea className="th-create-panel__tool-editor" overscrollBehaviorY="contain">
           <ToolGroupPicker
@@ -844,6 +872,15 @@ const CreateAgentPage: React.FC<CreateAgentPageProps> = ({ standalone = false, t
           {t('agentsOverview.form.prompt')}
         </span>
       </h3>
+      {!isEdit && !prompt.trim() && (
+        <div className="th-create-panel__field">
+          <p className="th-create-panel__label-hint">{t('agentsOverview.form.promptGuide')}</p>
+          <Button type="button" size="sm" variant="outline" onClick={() => {
+            setPrompt(t('agentsOverview.form.promptTemplate', { goal: description.trim() }));
+            setPromptError(false);
+          }}>{t('agentsOverview.form.usePromptTemplate')}</Button>
+        </div>
+      )}
       <div
         className="th-create-panel__prompt-editor"
         data-openbitfun-component="create-agent-page"
@@ -982,7 +1019,10 @@ const CreateAgentPage: React.FC<CreateAgentPageProps> = ({ standalone = false, t
             {(!standalone || step === 0) && basicInformation}
             {(!standalone || step === 2) && (
               <>
-                {standalone && permissionControls}
+                <details className="th-create-panel__field">
+                  <summary>{t(readonly ? 'agentsOverview.form.permissionsReadonly' : 'agentsOverview.form.permissionsStandard')}</summary>
+                  {permissionControls}
+                </details>
                 {standalone && toolsLoading ? (
                   <p className="th__title-sub" role="status">{t('agentsOverview.form.wizard.loadingTools')}</p>
                 ) : standalone && toolsLoadError ? (

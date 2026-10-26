@@ -50,6 +50,17 @@
     list-style: none;
   }
 
+  &__subscription-summary {
+    display: grid;
+    gap: var(--openbitfun-space-3);
+    min-inline-size: 0;
+    inline-size: 100%;
+
+    > .openbitfun-model-settings__import-summary {
+      flex-wrap: wrap;
+    }
+  }
+
   &__import-item {
     display: inline-flex;
     min-width: 0;
@@ -1399,21 +1410,54 @@
     width: 100%;
   }
 
+  &__account-pool-entry {
+    min-inline-size: 0;
+    padding-block: var(--openbitfun-space-2);
+
+    & + & {
+      border-block-start: var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle);
+      margin-block-start: var(--openbitfun-space-2);
+      padding-block-start: var(--openbitfun-space-4);
+    }
+  }
+
+  &__account-pool > &__subscription-account-actions {
+    flex-wrap: wrap;
+    gap: var(--openbitfun-space-3);
+  }
+
   &__account-pool-item {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--openbitfun-space-2);
-    min-width: 0;
-    min-height: 32px;
+    min-inline-size: 0;
+    min-block-size: var(--openbitfun-control-height-sm);
+
+    > [data-openbitfun-component='status-pill'] {
+      flex: none;
+      max-inline-size: 100%;
+    }
   }
 
   &__account-pool-choice {
+    flex: none;
+    align-self: center;
+  }
+
+  &__account-pool-content {
+    min-inline-size: 0;
+  }
+
+  &__account-pool-label {
     display: flex;
-    flex: 1 1 auto;
-    align-items: center;
-    gap: var(--openbitfun-space-2);
-    min-width: 0;
+    min-inline-size: 0;
     cursor: pointer;
+  }
+
+  &__account-pool-item > &__account-pool-label {
+    flex: 1 1 12rem;
+    min-inline-size: 0;
   }
 
   &__channel-route-index {
@@ -2390,10 +2434,29 @@
 }
 
 .openbitfun-model-settings {
+  &__subscription-dialog {
+    max-block-size: min(
+      640px,
+      calc(100dvh - 2 * var(--openbitfun-overlay-dialog-viewport-gutter))
+    );
+  }
+
+  &__subscription-content {
+    container: config-panel / inline-size;
+    display: grid;
+    gap: var(--openbitfun-space-4);
+    min-inline-size: 0;
+  }
+
   &__cli-discovery {
     display: flex;
     flex-direction: column;
-    gap: var(--openbitfun-space-1);
+    gap: var(--openbitfun-space-3);
+    min-inline-size: 0;
+  }
+
+  &__cli-discovery [data-openbitfun-part='subscriptionQuota'] {
+    margin-inline: var(--openbitfun-layout-card-padding-md);
   }
 
   &__cli-empty {
@@ -2409,6 +2472,8 @@
 
   &__cli-account.openbitfun-config-page-row {
     grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--openbitfun-space-4);
+    padding: var(--openbitfun-layout-card-padding-md);
   }
 
   &__cli-description-line {
@@ -2431,14 +2496,15 @@
   &__subscription-login-panel {
     display: grid;
     gap: var(--openbitfun-space-3);
-    margin: 0 var(--openbitfun-space-3) var(--openbitfun-space-2);
+    margin: 0 var(--openbitfun-layout-card-padding-md) var(--openbitfun-layout-card-padding-md);
     padding: var(--openbitfun-space-3);
-    border: 1px solid var(--openbitfun-color-action-secondary-hover);
+    border: 1px solid var(--openbitfun-color-status-info-border);
     border-radius: var(--openbitfun-radius-base);
-    background: color-mix(in srgb, var(--openbitfun-color-content-on-dark) 4%, transparent);
+    background: var(--openbitfun-color-status-info-surface);
 
     &--failed {
-      border-color: var(--openbitfun-color-status-danger-emphasis);
+      border-color: var(--openbitfun-color-status-danger-border);
+      background: var(--openbitfun-color-status-danger-surface);
     }
   }
 

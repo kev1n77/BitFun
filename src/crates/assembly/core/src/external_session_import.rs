@@ -349,6 +349,7 @@ fn convert_document_turns(
             first_chunk_ms: None,
             first_visible_output_ms: None,
             stream_duration_ms: None,
+            ttft_ms: None,
             attempt_count: None,
             attempt_diagnostics: Vec::new(),
             failure_category: None,

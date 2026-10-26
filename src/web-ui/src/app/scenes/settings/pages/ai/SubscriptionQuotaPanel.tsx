@@ -1,8 +1,9 @@
+import type { ReactNode } from 'react';
 import type { SubscriptionQuotaMeter } from '@/infrastructure/api/service-api/AIApi';
 import type { SubscriptionProvider } from '@/infrastructure/config/types';
 import { useSubscriptionQuota } from '@/infrastructure/config/hooks/useSubscriptionQuota';
 import { i18nService, useI18n } from '@/infrastructure/i18n';
-import { Button, Icon, IconButton, StatusPill, Tooltip } from '@openbitfun/ui';
+import { Button, Card, Icon, IconButton, StatusPill, Tooltip } from '@openbitfun/ui';
 import { finiteQuota, quotaIsStale, quotaMeters, remainingPercent } from './subscriptionQuotaPresentation';
 import styles from './SubscriptionQuotaPanel.module.scss';
 import { systemAPI } from '@/infrastructure/api/service-api/SystemAPI';
@@ -16,9 +17,12 @@ interface Props {
   refreshVersion?: number;
   compact?: boolean;
   modelId?: string;
+  accountLabel?: ReactNode;
+  headerLeading?: ReactNode;
+  headerActions?: ReactNode;
 }
 
-export function SubscriptionQuotaPanel({ provider, accountId = provider, identity, active, supported, refreshVersion, compact, modelId }: Props) {
+export function SubscriptionQuotaPanel({ provider, accountId = provider, identity, active, supported, refreshVersion, compact, modelId, accountLabel, headerLeading, headerActions }: Props) {
   const { t } = useI18n('settings/models');
   const query = useSubscriptionQuota(provider, accountId, active, supported, identity, refreshVersion, modelId);
   const snapshot = query.value;
@@ -64,10 +68,10 @@ export function SubscriptionQuotaPanel({ provider, accountId = provider, identit
     return (
       <div className={styles.meter} data-openbitfun-component="model-settings" data-openbitfun-part="quotaMeter" key={meter.id} data-tone={tone} data-secondary={meter.secondary || undefined}>
         <div className={styles.meterHeading}><span>{name}</span></div>
-        <div className={styles.value} data-openbitfun-component="model-settings" data-openbitfun-part="quotaValue">
+        <div className={styles.value} data-openbitfun-component="model-settings" data-openbitfun-part="quotaValue" aria-label={compact ? t('quota.remainingFor', { name }) : undefined}>
           <strong>{meter.unlimited ? t('quota.unlimited') : left !== undefined ? number(left) : remaining !== undefined ? percent(remaining) : t('quota.noValue')}</strong>
           {!meter.unlimited && left !== undefined && unit && <span className={styles.unit}>{unit}</span>}
-          {!meter.unlimited && (left !== undefined || remaining !== undefined) && <span className={styles.remainingLabel}>{t('quota.remaining')}</span>}
+          {!compact && !meter.unlimited && (left !== undefined || remaining !== undefined) && <span className={styles.remainingLabel}>{t('quota.remaining')}</span>}
         </div>
         {remaining !== undefined && <div className={styles.track} data-openbitfun-component="model-settings" data-openbitfun-part="quotaTrack" role="progressbar" aria-label={t('quota.remainingFor', { name })}
           aria-valuemin={0} aria-valuemax={100} aria-valuenow={remaining} aria-valuetext={percent(remaining)}
@@ -85,18 +89,19 @@ export function SubscriptionQuotaPanel({ provider, accountId = provider, identit
     );
   };
   const initialLoading = query.loading && !snapshot && !query.failed && !query.unsupportedHost;
-  return (
-    <section className={`${styles.quota} ${compact ? styles.compact : ''}`} aria-label={t('quota.title')}
-      data-openbitfun-component="model-settings" data-openbitfun-part="subscriptionQuota"
-      aria-busy={query.loading} data-testid="subscription-quota" data-provider={provider} data-state={initialLoading ? 'loading' : snapshot?.state || 'unknown'}>
+  const content = (
+    <>
       <div className={styles.header} data-openbitfun-component="model-settings" data-openbitfun-part="quotaHeader">
+        {headerLeading}
         <div className={styles.title}>
-          <strong>{t('quota.title')}</strong>
-          {snapshot?.plan && <span className={styles.plan}>{snapshot.plan}</span>}
+          {accountLabel ? <span className={styles.accountLabel}>{accountLabel}</span>
+            : (!compact || (!snapshot?.plan && !meters.length)) && <strong>{t('quota.title')}</strong>}
+          {snapshot?.plan && <StatusPill tone="neutral">{snapshot.plan}</StatusPill>}
           {stale && meters.length > 0 && <StatusPill tone="warning">{t('quota.stale')}</StatusPill>}
         </div>
         <div className={styles.actions}>
-          {provider === 'opencode' && <Button size="xs" variant="text"
+          {headerActions}
+          {provider === 'opencode' && <Button size="xs" variant="outline"
             trailingIcon={<Icon name="arrow-up-right" size="xs" />}
             onClick={() => void systemAPI.openExternal('https://opencode.ai/console')}>
             {t('quota.openConsole')}
@@ -125,10 +130,16 @@ export function SubscriptionQuotaPanel({ provider, accountId = provider, identit
         {meters.filter(meter => meter.secondary).map(renderMeter)}
       </div>}
       {snapshot?.unlimited_credits && <p className={styles.notice}>{t('quota.unlimitedCredits')}</p>}
-      {snapshot && (date(snapshot.observed_at) || (snapshot.display?.version === 1 && date(snapshot.display.expires_at))) && <footer className={styles.footer} data-openbitfun-component="model-settings" data-openbitfun-part="quotaFooter">
-        {date(snapshot.observed_at) && <time dateTime={new Date(snapshot.observed_at! * 1000).toISOString()}>{t('quota.updatedAt', { time: date(snapshot.observed_at) })}</time>}
-        {snapshot.display?.version === 1 && date(snapshot.display.expires_at) && <time dateTime={new Date(snapshot.display.expires_at! * 1000).toISOString()}>{t('quota.planUntil', { time: date(snapshot.display.expires_at) })}</time>}
+      {snapshot?.display?.version === 1 && date(snapshot.display.expires_at) && <footer className={styles.footer} data-openbitfun-component="model-settings" data-openbitfun-part="quotaFooter">
+        <time dateTime={new Date(snapshot.display.expires_at! * 1000).toISOString()}>{t('quota.planUntil', { time: date(snapshot.display.expires_at) })}</time>
       </footer>}
+    </>
+  );
+  return (
+    <section className={`${styles.quota} ${compact ? styles.compact : ''}`} aria-label={t('quota.title')}
+      data-openbitfun-component="model-settings" data-openbitfun-part="subscriptionQuota"
+      aria-busy={query.loading} data-testid="subscription-quota" data-provider={provider} data-state={initialLoading ? 'loading' : snapshot?.state || 'unknown'}>
+      {compact ? content : <Card appearance="subtle" padding="sm">{content}</Card>}
     </section>
   );
 }

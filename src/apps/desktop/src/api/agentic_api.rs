@@ -1944,6 +1944,7 @@ pub async fn create_session(
     let config = request
         .config
         .map(|c| SessionConfig {
+            tool_presentation_mode: Default::default(),
             max_context_tokens: c.max_context_tokens.unwrap_or(128128),
             auto_compact: c.auto_compact.unwrap_or(true),
             enable_tools: c.enable_tools.unwrap_or(true),
@@ -1961,6 +1962,7 @@ pub async fn create_session(
             ..Default::default()
         })
         .unwrap_or(SessionConfig {
+            tool_presentation_mode: Default::default(),
             workspace_path: Some(request.workspace_path.clone()),
             project_workspace_path: Some(project_workspace_path.clone()),
             execution_target: Some(resolved_execution_target),
@@ -4782,6 +4784,7 @@ mod tests {
                 first_chunk_ms: None,
                 first_visible_output_ms: None,
                 stream_duration_ms: None,
+                ttft_ms: None,
                 attempt_count: None,
                 attempt_diagnostics: vec![],
                 failure_category: None,
@@ -4868,6 +4871,7 @@ mod tests {
                 first_chunk_ms: None,
                 first_visible_output_ms: None,
                 stream_duration_ms: None,
+                ttft_ms: None,
                 attempt_count: None,
                 attempt_diagnostics: vec![],
                 failure_category: None,
@@ -4935,6 +4939,7 @@ mod tests {
                 first_chunk_ms: None,
                 first_visible_output_ms: None,
                 stream_duration_ms: None,
+                ttft_ms: None,
                 attempt_count: None,
                 attempt_diagnostics: vec![],
                 failure_category: None,

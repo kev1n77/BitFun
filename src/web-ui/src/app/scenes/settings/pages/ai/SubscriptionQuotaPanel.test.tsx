@@ -17,11 +17,12 @@ vi.mock('@/infrastructure/i18n', () => ({
   i18nService: { formatNumber: (value: number, options?: { style?: string }) => options?.style === 'percent' ? `${Math.round(value * 1000) / 10}%` : String(value), formatDate: (value: Date) => value.toISOString() },
 }));
 vi.mock('@openbitfun/ui', () => ({
+  Card: ({ children }: React.PropsWithChildren) => <div data-openbitfun-component="card">{children}</div>,
   Button: ({ children, onClick, disabled }: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button onClick={onClick} disabled={disabled}>{children}</button>,
   IconButton: ({ icon, loading: _loading, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { icon: React.ReactNode; loading?: boolean }) => <button {...props}>{icon}</button>,
   Icon: () => <svg aria-hidden="true" />,
   Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  StatusPill: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
+  StatusPill: ({ children }: { children: React.ReactNode }) => <span data-openbitfun-component="status-pill">{children}</span>,
 }));
 let container: HTMLDivElement;
 let root: Root;
@@ -34,17 +35,64 @@ beforeEach(() => {
 afterEach(() => act(() => root.unmount()));
 
 it('shows precise remaining credits with accessible progress, plan and reset time', () => {
-  observation.value = { account_id: 'zcode', provider: 'zcode', state: 'known', plan: 'Pro', valid_until: Date.now() / 1000 + 60, windows: [],
-    display: { version: 1, meters: [{ id: 'credits', used: 125, limit: 1000, remaining: 875, unit: 'credits', used_percent: 12.5, resets_at: 1800000000 }] } };
+  observation.value = { account_id: 'zcode', provider: 'zcode', state: 'known', plan: 'Pro', observed_at: 1700000000, valid_until: Date.now() / 1000 + 60, windows: [],
+    display: { version: 1, expires_at: 1800000000, meters: [{ id: 'credits', used: 125, limit: 1000, remaining: 875, unit: 'credits', used_percent: 12.5, resets_at: 1800000000 }] } };
   render();
   expect(container.textContent).toContain('875');
   expect(container.textContent).toContain('125 used of 1000');
   expect(container.textContent).toContain('Pro');
   expect(container.textContent).toContain('Resets');
+  const card = container.querySelector('[data-openbitfun-component="card"]')!;
+  expect(container.querySelectorAll('[data-openbitfun-component="card"]')).toHaveLength(1);
+  expect(card.querySelector('[data-openbitfun-part="quotaHeader"] [data-openbitfun-component="status-pill"]')?.textContent).toBe('Pro');
+  expect(card.querySelector('[data-openbitfun-part="quotaMeter"]')).not.toBeNull();
+  expect(card.querySelector('[data-openbitfun-part="quotaFooter"] time')).not.toBeNull();
   expect(container.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('87.5');
   act(() => container.querySelector('button')!.click());
   expect(observation.refresh).toHaveBeenCalledOnce();
 });
+it('keeps the editor summary concise without losing quota meaning or refresh', () => {
+  observation.value = { account_id: 'codex', provider: 'codex', state: 'known', plan: 'Pro', windows: [], observed_at: 1700000000, valid_until: Date.now() / 1000 + 60,
+    display: { version: 1, meters: [{ id: 'weekly', duration_seconds: 604800, used_percent: 25, resets_at: 1800000000 }] } };
+  act(() => root.render(<SubscriptionQuotaPanel provider="codex" accountId="slot-a" identity="fixture" active supported compact />));
+  expect(container.querySelector('section')?.getAttribute('aria-label')).toBe(copy.quota.title);
+  expect(container.querySelector('[data-openbitfun-component="card"]')).toBeNull();
+  expect(container.querySelector('[data-openbitfun-part="quotaHeader"]')?.textContent).toBe('Pro');
+  expect(container.querySelector('[data-openbitfun-part="quotaValue"]')?.textContent).toBe('75%');
+  expect(container.querySelector('[data-openbitfun-part="quotaValue"]')?.getAttribute('aria-label')).toContain('Weekly');
+  expect(container.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('75');
+  expect(container.textContent).toContain('Resets');
+  expect(container.querySelector('[data-openbitfun-part="quotaFooter"]')).toBeNull();
+  act(() => container.querySelector('button')!.click());
+  expect(observation.refresh).toHaveBeenCalledOnce();
+  render();
+  expect(container.querySelector('[data-openbitfun-part="quotaHeader"]')?.textContent).toContain(copy.quota.title);
+  expect(container.querySelector('[data-openbitfun-part="quotaFooter"]')).toBeNull();
+  expect(container.textContent).not.toContain('Updated');
+});
+
+it('combines the account, plan badge and account-scoped refresh in one header', () => {
+  observation.value = { account_id: 'slot-a', provider: 'codex', state: 'known', plan: 'Pro', windows: [], valid_until: Date.now() / 1000 + 60,
+    display: { version: 1, meters: [{ id: 'weekly', duration_seconds: 604800, used_percent: 25 }] } };
+  act(() => root.render(<SubscriptionQuotaPanel provider="codex" accountId="slot-a" identity="fixture" active supported compact
+    accountLabel={<span>account@example.invalid</span>} headerLeading={<input type="checkbox" aria-label="Select account" />}
+    headerActions={<button>Move up</button>} />));
+  const header = container.querySelector('[data-openbitfun-part="quotaHeader"]')!;
+  expect(header.textContent).toContain('account@example.invalid');
+  expect(header.querySelector('input[type="checkbox"]')?.parentElement).toBe(header);
+  expect(header.querySelector('[data-openbitfun-part="quotaMeter"]')).toBeNull();
+  expect(header.querySelector('[data-openbitfun-component="status-pill"]')?.textContent).toBe('Pro');
+  expect(header.textContent).not.toContain(copy.quota.title);
+  expect(header.querySelectorAll('button')).toHaveLength(2);
+  act(() => (header.querySelector(`button[aria-label="${copy.quota.refresh}"]`) as HTMLButtonElement).click());
+  expect(observation.refresh).toHaveBeenCalledOnce();
+  observation.unsupportedHost = true;
+  act(() => root.render(<SubscriptionQuotaPanel provider="codex" accountId="slot-a" identity="fixture" active supported compact accountLabel="account@example.invalid" />));
+  expect(container.textContent).toContain('account@example.invalid');
+  expect(container.textContent).toContain('This host does not support');
+  expect(container.querySelector('button')).toBeNull();
+});
+
 it('keeps old values visibly stale after failure and distinguishes unknown from unlimited', () => {
   observation.failed = true;
   observation.value = { account_id: 'zcode', provider: 'zcode', state: 'query_failed', windows: [], observed_at: 1000,

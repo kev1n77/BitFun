@@ -394,6 +394,15 @@ continues to own selection, keyboard navigation, label overflow, and end-action
 anatomy. Product wrappers own document states and layout, without replacing the
 tab's control styles or creating another tablist.
 
+`TabGroupItem.endAction` reserves space inside the tab surface. On pointer devices,
+the icon, label, and non-interactive suffix are centered together at rest, then
+shift toward the leading edge as the action fades in on hover. The tab and action
+hit areas keep fixed positions and widths. Keyboard focus reveals the action and
+moves the content immediately; touch keeps the action visible and the content
+clear of it. Reduced motion disables both transitions. Tabs without an end action
+keep their ordinary centered layout. Label overflow and rolling-text replacement
+remain inside the label slot, independent of this movement.
+
 ## Mobile controls
 
 Touch-first controls use the isolated mobile entry so compact and foldable
@@ -507,10 +516,20 @@ available. Its right inset equals the top and bottom clearance at every density.
 </Capsule>
 ```
 
-The action floats over the intact label: do not clip, mask, hide, resize, or add
-action padding to its text when revealing the icon. Normal constrained-width
-`OverflowText` behavior remains available. `TabGroup.endAction` and removable
-`MultiSelect` tags share this contract, including existing native tab buttons.
+The default `actionPlacement="overlay"` floats over the intact label: do not clip,
+mask, hide, resize, or add action padding to its text when revealing the icon.
+Use `actionPlacement="reserved"` with a `Button` child for short selectable labels.
+The Button always reserves trailing padding for the action inside its pill surface,
+keeping the gaps between capsules compact. Its content is centered at rest, then
+shifts toward the leading edge as the icon fades in on pointer hover. Only the
+content transform and icon opacity change: hovering a row-end capsule cannot
+change its width or trigger wrapping. Keyboard focus reveals the action and moves
+the content immediately; touch keeps the action visible and the content clear of
+it. Reduced motion disables both transitions. Capsules without an action do not
+reserve empty space.
+Normal constrained-width `OverflowText` behavior remains available.
+`TabGroupItem.endAction` uses a reserved slot as described above; removable
+`MultiSelect` tags retain the overlay contract.
 Leading identity icons stay in their label layout; this contract governs the
 independent trailing actions. Product CSS owns placement of capsules, not their
 action offsets, backgrounds, or visibility.
@@ -870,3 +889,12 @@ The outer animated surface owns both paint and backdrop blur; its content is
 transparent and unfiltered. An opaque fallback covers unsupported filters and
 reduced-transparency preferences. Tooltip declares ownership of its entrance
 motion to avoid the product's additional popup animation.
+
+### Layout-owned field labels
+
+`FieldAccessibilityProvider` accepts `aria-labelledby` and `aria-describedby`
+references for layouts that render labels outside their controls. Input, Switch,
+Checkbox, Select, Combobox, MultiSelect, NumberInput, SearchField and Textarea
+consume those references through intervening wrappers. A control's explicit name
+or own label takes precedence; descriptions are combined. Give each child in a
+composite field its own name. Nested `Field` controls retain their own labels.

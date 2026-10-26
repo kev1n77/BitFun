@@ -8,28 +8,32 @@ const action = (props = {}) => h(IconButton, {
   "aria-label": "Remove provider", icon: h(Icon, { name: "delete" }), ...props,
 });
 
-test("a tooltip-wrapped capsule action keeps its accessible name and destructive state with shared glass presentation", () => {
-  const markup = renderToStaticMarkup(h(Capsule, {
-    size: "sm",
-    action: h(Tooltip, { content: "Remove provider" }, action({ tone: "danger", variant: "fill", loading: true })),
-  }, h(Button, { size: "sm", "aria-label": "Edit provider" }, "Long provider name")));
-  assert.match(markup, /data-openbitfun-component="capsule"/);
-  assert.match(markup, /data-openbitfun-part="action"/);
-  assert.match(markup, /data-openbitfun-variant="glass"/);
-  assert.match(markup, /data-openbitfun-shape="circle"/);
-  assert.match(markup, /data-openbitfun-tone="danger"/);
-  assert.match(markup, /aria-label="Remove provider"/);
-  assert.match(markup, /aria-busy="true"/);
-  assert.match(markup, /disabled=""/);
-  assert.match(markup, /Long provider name/);
-  assert.equal((markup.match(/<button\b/g) ?? []).length, 2);
-  assert.ok(markup.indexOf("</button>") < markup.lastIndexOf("<button"), "Primary and secondary actions must be siblings");
-});
+for (const actionPlacement of ["overlay", "reserved"]) {
+  test(`a tooltip-wrapped ${actionPlacement} capsule action keeps its accessible name and destructive state with shared glass presentation`, () => {
+    const markup = renderToStaticMarkup(h(Capsule, {
+      size: "sm",
+      actionPlacement,
+      action: h(Tooltip, { content: "Remove provider" }, action({ tone: "danger", variant: "fill", loading: true })),
+    }, h(Button, { size: "sm", "aria-label": "Edit provider" }, "Long provider name")));
+    assert.match(markup, /data-openbitfun-component="capsule"/);
+    assert.ok(markup.includes(`data-action-placement="${actionPlacement}"`));
+    assert.match(markup, /data-openbitfun-part="action"/);
+    assert.match(markup, /data-openbitfun-variant="glass"/);
+    assert.match(markup, /data-openbitfun-shape="circle"/);
+    assert.match(markup, /data-openbitfun-tone="danger"/);
+    assert.match(markup, /aria-label="Remove provider"/);
+    assert.match(markup, /aria-busy="true"/);
+    assert.match(markup, /disabled=""/);
+    assert.match(markup, /Long provider name/);
+    assert.equal((markup.match(/<button\b/g) ?? []).length, 2);
+    assert.ok(markup.indexOf("</button>") < markup.lastIndexOf("<button"), "Primary and secondary actions must be siblings");
+  });
+}
 
 test("capsules without actions preserve ordinary content and do not add a focus target", () => {
-  const markup = renderToStaticMarkup(h(Capsule, { size: "xs" }, "A tag"));
+  const markup = renderToStaticMarkup(h(Capsule, { size: "xs", actionPlacement: "reserved" }, "A tag"));
   assert.match(markup, />A tag<\/span>/);
-  assert.doesNotMatch(markup, /tabindex|role=|data-openbitfun-part="action"/);
+  assert.doesNotMatch(markup, /tabindex|role=|data-openbitfun-part="action"|data-action-placement/);
 });
 
 test("tab actions and removable MultiSelect labels adopt the same glass presentation", () => {

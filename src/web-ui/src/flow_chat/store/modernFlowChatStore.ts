@@ -13,7 +13,7 @@ import { flowChatStore } from './FlowChatStore';
 import { getTurnCompletionNotice } from '../utils/turnCompletionNotice';
 import { createAbsoluteSessionTurnIndexResolver } from '../utils/flowChatTurnOrdinal';
 import { collectCanvasArtifactToolItems } from '../utils/canvasArtifactPresentation';
-import { getTurnOutputDurationMs } from '../utils/turnUsageMetrics';
+import { getTurnOutputDurationMs, getTurnTtftMs } from '../utils/turnUsageMetrics';
 import { projectAdjacentFlowGroups } from '../grouping/groupProjection';
 import { hasModelRoundNarrative } from '../grouping/roundGroups';
 import { isSuppressedBackgroundTurn } from '../utils/backgroundDelivery';
@@ -263,6 +263,7 @@ export function sessionToVirtualItems(session: Session | null): VirtualItem[] {
     
     const isTurnComplete = turn.status === 'completed' || turn.status === 'cancelled' || turn.status === 'error';
     const turnOutputDurationMs = getTurnOutputDurationMs(turn.modelRounds);
+    const turnTtftMs = getTurnTtftMs(turn.modelRounds);
     const canvasArtifactItems = collectCanvasArtifactToolItems(turn.modelRounds);
     const canvasAttachmentHostRoundId = [...renderEntries]
       .reverse()
@@ -296,6 +297,7 @@ export function sessionToVirtualItems(session: Session | null): VirtualItem[] {
             ? Math.max(0, turn.endTime - turn.startTime)
             : undefined,
           turnOutputDurationMs,
+          turnTtftMs,
           turnTokenUsage: turn.tokenUsage,
           canvasArtifactItems: isTurnComplete && round.id === canvasAttachmentHostRoundId
             ? canvasArtifactItems

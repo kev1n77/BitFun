@@ -1,5 +1,5 @@
 import { workspaceManager } from '@/infrastructure/services/business/workspaceManager';
-import { removeBtwSessionFromAgentCanvas } from '@/app/components/panels/content-canvas/stores/canvasStore';
+import { forgetAgentCanvasSession, removeBtwSessionFromAgentCanvas } from '@/app/components/panels/content-canvas/stores/canvasStore';
 import { resolveLegacySessionWorkspace } from '@/infrastructure/api/service-api/legacyWorkspaceCompatibility';
 import { projectUserQuestionTiming } from '../utils/userQuestionTiming';
 import { externalHistoryFromMetadata } from '../utils/externalHistory';
@@ -5421,7 +5421,10 @@ export class FlowChatStore {
   public removeDeletedSession(sessionId: string, options?: RemoveSessionOptions): string[] {
     const removedIds = this.removeSession(sessionId, options);
     // A deletion event may arrive after the record was already removed.
-    new Set([sessionId, ...removedIds]).forEach(removeBtwSessionFromAgentCanvas);
+    new Set([sessionId, ...removedIds]).forEach(id => {
+      removeBtwSessionFromAgentCanvas(id);
+      forgetAgentCanvasSession(id);
+    });
     return removedIds;
   }
 
@@ -7202,6 +7205,7 @@ export class FlowChatStore {
             firstChunkMs: round.firstChunkMs,
             firstVisibleOutputMs: round.firstVisibleOutputMs,
             streamDurationMs: round.streamDurationMs,
+            ttftMs: round.ttftMs,
             attemptCount: round.attemptCount,
             attemptDiagnostics: round.attemptDiagnostics,
             failureCategory: round.failureCategory,
@@ -9270,6 +9274,7 @@ export class FlowChatStore {
           firstChunkMs: round.firstChunkMs,
           firstVisibleOutputMs: round.firstVisibleOutputMs,
           streamDurationMs: round.streamDurationMs,
+          ttftMs: round.ttftMs,
           attemptCount: round.attemptCount,
           attemptDiagnostics: round.attemptDiagnostics,
           failureCategory: round.failureCategory,

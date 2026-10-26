@@ -167,10 +167,14 @@ test("end actions are rendered beside tabs instead of nesting interactive contro
   assert.equal((markup.match(/type="button"/g) ?? []).length, 3);
 });
 
-test("end actions float over the label without reserving or clipping text", async () => {
+test("end actions reserve a fixed slot and move content without resizing hit areas", async () => {
   const styles = await readFile(new URL("../src/components/TabGroup/TabGroup.module.css", import.meta.url), "utf8");
-  assert.doesNotMatch(styles, /action-reserve|clip-path|mask-image/);
-  assert.doesNotMatch(styles, /data-has-end-action[^}]*padding-inline/s);
+  assert.match(styles, /\.item\[data-has-end-action="true"\] > \.tab\s*\{\s*padding-inline-end:/);
+  assert.doesNotMatch(styles, /clip-path|mask-image/);
+  const hoverRules = [...styles.matchAll(/([^{}]*:hover[^{}]*)\{([^{}]*)\}/g)];
+  for (const [, , declarations] of hoverRules) {
+    assert.doesNotMatch(declarations, /(?:padding|margin|(?:inline|block)-size|width|height)[\w-]*\s*:/);
+  }
 });
 
 test("TabGroup styling uses its geometry contract and Button semantic colors", async () => {

@@ -45,19 +45,40 @@ pub(crate) fn miniapp_shell_call(request: Value) -> Result<Value, String> {
 }
 
 /// Arbitrate before initializing the Agent runtime. OS locks are released on
-/// crash; the identity is the product data directory, independent of protocol/app.
-pub(crate) async fn claim_host(background: bool) -> Result<Option<std::fs::File>, String> {
-    let paths =
-        openbitfun_core::infrastructure::try_get_path_manager_arc().map_err(|e| e.to_string())?;
-    let directory = paths.user_data_dir().join("miniapp-desktop");
+/// crash. Development hosts use their own discovery channel, sharing product
+/// storage while retaining the Runtime's existing per-session writer leases.
+pub(crate) fn host_channel() -> ipc::HostChannel {
+    if cfg!(any(debug_assertions, feature = "devtools"))
+        && std::env::var("OPENBITFUN_DESKTOP_HOST_CHANNEL").as_deref() == Ok("development")
+    {
+        ipc::HostChannel::Development
+    } else {
+        ipc::HostChannel::Default
+    }
+}
+
+fn host_lock(
+    data_dir: &std::path::Path,
+    channel: ipc::HostChannel,
+) -> Result<std::fs::File, String> {
+    let directory = channel.directory(data_dir);
     std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-    let owner = std::fs::OpenOptions::new()
+    std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
         .open(directory.join("host.lock"))
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) async fn claim_host(
+    background: bool,
+    channel: ipc::HostChannel,
+) -> Result<Option<std::fs::File>, String> {
+    let paths =
+        openbitfun_core::infrastructure::try_get_path_manager_arc().map_err(|e| e.to_string())?;
+    let owner = host_lock(&paths.user_data_dir(), channel)?;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(70);
     loop {
         match owner.try_lock() {
@@ -65,7 +86,7 @@ pub(crate) async fn claim_host(background: bool) -> Result<Option<std::fs::File>
             Err(std::fs::TryLockError::Error(error)) => return Err(error.to_string()),
             Err(std::fs::TryLockError::WouldBlock) => {}
         }
-        if let Ok(bytes) = tokio::fs::read(ipc::endpoint_path(&paths.user_data_dir())).await {
+        if let Ok(bytes) = tokio::fs::read(channel.endpoint_path(&paths.user_data_dir())).await {
             if let Ok(endpoint) = serde_json::from_slice::<ipc::Endpoint>(&bytes) {
                 if endpoint.protocol_version != MINIAPP_PRESENTATION_PROTOCOL {
                     return Err("The running OpenBitFun host uses an incompatible MiniApp protocol. Restart the host before opening this version.".into());
@@ -80,6 +101,7 @@ pub(crate) async fn claim_host(background: bool) -> Result<Option<std::fs::File>
                 )
                 .await
                 {
+                    eprintln!("An existing OpenBitFun host in the {channel:?} channel accepted this launch; exiting the secondary process");
                     return Ok(None);
                 }
             }
@@ -96,6 +118,7 @@ pub(crate) async fn claim_host(background: bool) -> Result<Option<std::fs::File>
 
 #[derive(Default)]
 pub(crate) struct DesktopMiniApps {
+    pub channel: ipc::HostChannel,
     pub instances: MiniAppInstances,
     shells: Mutex<HashMap<String, ShellLease>>,
     sessions: Mutex<HashMap<String, HashSet<String>>>,
@@ -108,6 +131,13 @@ pub(crate) struct DesktopMiniApps {
 }
 
 impl DesktopMiniApps {
+    pub(crate) fn new(channel: ipc::HostChannel) -> Self {
+        Self {
+            channel,
+            ..Default::default()
+        }
+    }
+
     fn operation_gate(&self, instance_id: &str) -> Arc<tokio::sync::RwLock<()>> {
         self.operations
             .lock()
@@ -232,7 +262,8 @@ async fn record(
         .await
         .map_err(|e| e.to_string())?;
     let paths = state.miniapp_manager.path_manager();
-    let root = paths.user_data_dir().join("miniapp-desktop/launchers");
+    let channel = app.state::<DesktopMiniApps>().channel;
+    let root = channel.directory(&paths.user_data_dir()).join("launchers");
     std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
     for entry in std::fs::read_dir(&root).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -241,20 +272,28 @@ async fn record(
             continue;
         }
         let mut existing = launcher::read_record(&path)?;
-        if existing.app_id == app_id && existing.workspace_path == workspace_path {
+        if existing.app_id == app_id
+            && existing.workspace_path == workspace_path
+            && existing.host_channel == channel
+        {
             existing.host_executable = std::env::current_exe().map_err(|e| e.to_string())?;
+            if !channel.is_default() {
+                existing.product_home = Some(paths.product_home_dir());
+            }
             existing.name = miniapp.name;
             launcher::write_record(&existing)?;
             return Ok(existing);
         }
     }
     let record = launcher::LaunchRecord {
-        protocol_version: 1,
+        protocol_version: if channel.is_default() { 1 } else { 2 },
         launch_id: uuid::Uuid::new_v4().to_string(),
         app_id: app_id.into(),
         workspace_path,
         data_dir: paths.user_data_dir(),
         user_root: paths.user_root_dir().to_path_buf(),
+        host_channel: channel,
+        product_home: (!channel.is_default()).then(|| paths.product_home_dir()),
         host_executable: std::env::current_exe().map_err(|e| e.to_string())?,
         name: miniapp.name,
         extra: Default::default(),
@@ -333,10 +372,10 @@ async fn open_window(
 
 pub(crate) async fn miniapp_presentation(
     app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    webview: tauri::Webview,
     request: PresentationRequest,
 ) -> Result<Value, String> {
-    if window.label() != "main" {
+    if webview.label() != "main" {
         return Err("MiniApp presentation requires the main product surface".into());
     }
     presentation(&app, request).await
@@ -387,27 +426,32 @@ async fn presentation(
         }
         PresentationRequest::Installation { app_id } => {
             let _guard = host.launches.lock().await;
+            let channel = host.channel;
             let data_dir = app
                 .state::<AppState>()
                 .miniapp_manager
                 .path_manager()
                 .user_data_dir();
-            let paths =
-                tokio::task::spawn_blocking(move || system_install::status(&data_dir, &app_id))
-                    .await
-                    .map_err(|e| e.to_string())??;
+            let paths = tokio::task::spawn_blocking(move || {
+                system_install::status(&data_dir, &app_id, channel)
+            })
+            .await
+            .map_err(|e| e.to_string())??;
             json!({"paths": paths})
         }
         PresentationRequest::Uninstall { app_id } => {
             let _guard = host.launches.lock().await;
+            let channel = host.channel;
             let data_dir = app
                 .state::<AppState>()
                 .miniapp_manager
                 .path_manager()
                 .user_data_dir();
-            tokio::task::spawn_blocking(move || system_install::uninstall(&data_dir, &app_id))
-                .await
-                .map_err(|e| e.to_string())??;
+            tokio::task::spawn_blocking(move || {
+                system_install::uninstall(&data_dir, &app_id, channel)
+            })
+            .await
+            .map_err(|e| e.to_string())??;
             Value::Null
         }
         PresentationRequest::Ready {
@@ -518,12 +562,15 @@ async fn dispatch(app: &tauri::AppHandle, method: &str, params: Value) -> Result
         let _guard = host.launches.lock().await;
         let launch_id = string(&params, "launchId")?;
         uuid::Uuid::parse_str(&launch_id).map_err(|_| "Invalid MiniApp launch identity")?;
-        let path = app
+        let data_dir = app
             .state::<AppState>()
             .miniapp_manager
             .path_manager()
-            .user_data_dir()
-            .join("miniapp-desktop/launchers")
+            .user_data_dir();
+        let path = host
+            .channel
+            .directory(&data_dir)
+            .join("launchers")
             .join(launch_id)
             .join("launch.json");
         let record = launcher::read_record(&path)?;
@@ -732,6 +779,34 @@ async fn dispatch(app: &tauri::AppHandle, method: &str, params: Value) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn development_and_installed_hosts_share_data_with_independent_host_leases() {
+        let data = tempfile::tempdir().unwrap();
+        let installed = host_lock(data.path(), ipc::HostChannel::Default).unwrap();
+        installed.try_lock().unwrap();
+        let development = host_lock(data.path(), ipc::HostChannel::Development).unwrap();
+        development.try_lock().unwrap();
+        for channel in [ipc::HostChannel::Default, ipc::HostChannel::Development] {
+            let secondary = host_lock(data.path(), channel).unwrap();
+            assert!(matches!(
+                secondary.try_lock(),
+                Err(std::fs::TryLockError::WouldBlock)
+            ));
+        }
+        drop(development);
+        host_lock(data.path(), ipc::HostChannel::Development)
+            .unwrap()
+            .try_lock()
+            .unwrap();
+        assert!(matches!(
+            host_lock(data.path(), ipc::HostChannel::Default)
+                .unwrap()
+                .try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+    }
+
     #[test]
     fn presentation_requests_use_the_public_camel_case_envelope() {
         let request: PresentationRequest = serde_json::from_value(
@@ -887,7 +962,7 @@ pub(crate) fn install(app: &tauri::AppHandle) -> Result<(), String> {
         .miniapp_manager
         .path_manager()
         .user_data_dir();
-    ipc::private_json(&ipc::endpoint_path(&data_dir), &endpoint)?;
+    ipc::private_json(&host.channel.endpoint_path(&data_dir), &endpoint)?;
     *host.endpoint.lock().unwrap_or_else(|p| p.into_inner()) = Some(endpoint.clone());
     *host.socket_dir.lock().unwrap_or_else(|p| p.into_inner()) = Some(dir);
     let handle = app.clone();
@@ -919,7 +994,7 @@ pub(crate) fn install(app: &tauri::AppHandle) -> Result<(), String> {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             let state = handle.state::<DesktopMiniApps>();
-            if handle.get_webview_window("main").is_some() {
+            if handle.get_webview("main").is_some() {
                 state.instances.renew_committed_views(MiniAppViewKind::Tab);
             }
             {

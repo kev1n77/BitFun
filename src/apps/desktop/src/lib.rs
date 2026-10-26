@@ -238,7 +238,7 @@ async fn hide_main_window_on_macos(
 fn show_main_window_on_macos(app: &tauri::AppHandle, reason: &str) {
     cancel_main_window_close_request_on_macos(app);
 
-    let Some(main_window) = app.get_webview_window("main") else {
+    let Some(main_window) = app.get_window("main") else {
         handle_secondary_launch(app);
         return;
     };
@@ -283,7 +283,7 @@ fn show_main_window_for_secondary_launch(
     app: &tauri::AppHandle,
     attempt: &str,
 ) -> Result<(), String> {
-    if app.get_webview_window("main").is_none() {
+    if app.get_window("main").is_none() {
         #[cfg(target_os = "macos")]
         let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
         let trace = app.state::<DesktopStartupTrace>();
@@ -298,7 +298,7 @@ fn show_main_window_for_secondary_launch(
             ),
         );
     }
-    let Some(main_window) = app.get_webview_window("main") else {
+    let Some(main_window) = app.get_window("main") else {
         return Err("main window not found".to_string());
     };
 
@@ -474,14 +474,16 @@ pub async fn run() {
         Ok(None) => {}
     }
     let miniapp_background = std::env::args_os().any(|arg| arg == "--miniapp-background");
-    let _miniapp_host_owner = match miniapp_desktop::claim_host(miniapp_background).await {
-        Ok(Some(owner)) => owner,
-        Ok(None) => return,
-        Err(error) => {
-            show_fatal_startup_error(&error);
-            return;
-        }
-    };
+    let miniapp_host_channel = miniapp_desktop::host_channel();
+    let _miniapp_host_owner =
+        match miniapp_desktop::claim_host(miniapp_background, miniapp_host_channel).await {
+            Ok(Some(owner)) => owner,
+            Ok(None) => return,
+            Err(error) => {
+                show_fatal_startup_error(&error);
+                return;
+            }
+        };
     let startup_started = Instant::now();
     let startup_trace_id = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -764,6 +766,7 @@ pub async fn run() {
         // group would make the E2E child exit before WebDriver can attach.
         if !logging::is_embedded_webdriver_mode()
             && std::env::var_os("OPENBITFUN_USER_ROOT").is_none()
+            && miniapp_host_channel.is_default()
         {
             builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
                 log::info!(
@@ -798,7 +801,7 @@ pub async fn run() {
         // window-state: its exit hook can overwrite repairs with stale cached data.
         .manage(window_state_support::MainWindowState::default())
         .manage(app_state)
-        .manage(miniapp_desktop::DesktopMiniApps::default())
+        .manage(miniapp_desktop::DesktopMiniApps::new(miniapp_host_channel))
         .manage(sleep_prevention::SleepPreventionState::default())
         .manage(desktop_runtime)
         .manage(coordinator_state)
@@ -819,7 +822,7 @@ pub async fn run() {
                     tauri::webview::PageLoadEvent::Finished => "finished",
                 };
                 let url = payload.url().to_string();
-                api::browser_api::update_browser_target_url(label, &url);
+                api::browser_api::update_browser_target_page_load(label, event, &url);
                 openbitfun_core::agentic::tools::browser_control::builtin_browser::publish_builtin_browser_page_load(
                     label,
                     event,
@@ -2082,7 +2085,7 @@ pub async fn run() {
             app.run(|app_handle, event| match event {
                 tauri::RunEvent::ExitRequested { api, code, .. } => {
                     if code.is_none()
-                        && (app_handle.get_webview_window("main").is_none()
+                        && (app_handle.get_window("main").is_none()
                             || app_handle
                                 .state::<miniapp_desktop::DesktopMiniApps>()
                                 .instances

@@ -317,11 +317,11 @@
       "idPlaceholder": "Used by the model, config, and routing; cannot be changed after creation",
       "idRequired": "ID is required",
       "idFormat": "Must start with a letter and contain only letters, numbers, underscores, or hyphens",
-      "name": "Name (optional)",
+      "name": "Name",
       "namePlaceholder": "Used for display only; defaults to the Agent ID",
       "level": "Level",
       "modeUserOnly": "Custom Agents that accept tasks directly are user-level in the current release.",
-      "description": "Description",
+      "description": "Task goal",
       "descPlaceholder": "Briefly describe what this agent does",
       "descRequired": "Description is required",
       "prompt": "System Prompt",
@@ -350,7 +350,17 @@
       "createSuccess": "Created agent \"{{name}}\"",
       "createFailed": "Create failed: ",
       "review": "Review",
-      "reviewToolsHint": "Additional checks use only read-only tools."
+      "reviewToolsHint": "Additional checks use only read-only tools.",
+      "nameRequired": "Give your agent a name.",
+      "identityDetails": "Identifier (generated automatically)",
+      "idHelp": "Used in files and references. You can edit it before creation; existing identifiers stay fixed.",
+      "promptGuide": "Describe how to work, what to avoid, and what a useful result looks like. You can start with an outline based on your task goal.",
+      "usePromptTemplate": "Start from task outline",
+      "promptTemplate": "## Goal\n{{goal}}\n\n## Approach\nRead the available context, identify missing information, and work through the task. Ask when a missing decision would change the result.\n\n## Constraints\nRespect the project instructions and granted permissions. Distinguish evidence from assumptions.\n\n## Deliverable\nProvide the result, supporting evidence, and any unresolved questions.",
+      "permissionsReadonly": "Read-only access · adjust permissions",
+      "permissionsStandard": "Standard permissions · adjust access",
+      "customizeTools": "Customize selected tools",
+      "createNamePlaceholder": "For example, Research helper"
     }
   },
   "reviewTeams": {

@@ -108,6 +108,17 @@ describe('PersistenceModule', () => {
     vi.clearAllMocks();
   });
 
+  it.each([{}, { firstChunkMs: 20, firstVisibleOutputMs: 200, streamDurationMs: 1_200, ttftMs: 350 }])(
+    'preserves optional host timing through JSON persistence: %j', timing => {
+      const turn = createDialogTurn('completed');
+      Object.assign(turn.modelRounds[0], timing);
+      const saved = JSON.parse(JSON.stringify(convertDialogTurnToBackendFormat(turn)));
+      for (const key of ['firstChunkMs', 'firstVisibleOutputMs', 'streamDurationMs', 'ttftMs'] as const) {
+        expect(saved.modelRounds[0][key]).toBe(turn.modelRounds[0][key]);
+      }
+    },
+  );
+
   it('saves a visible result receipt with its retained generation and no metadata read', async () => {
     const turn = createDialogTurn('completed');
     turn.recoveryEpoch = 2;

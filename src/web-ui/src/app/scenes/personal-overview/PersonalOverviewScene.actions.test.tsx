@@ -186,6 +186,7 @@ describe('overview catalog actions', () => {
     expect(mocks.getAgentDetail).not.toHaveBeenCalled();
     expect(useAgentsStore.getState()).toBe(agentsState);
     expect(mocks.openScene).not.toHaveBeenCalled();
+    await fillAgentField('name', 'New agent');
     await fillAgentField('id', 'new-agent');
     await fillAgentField('description', 'A new agent');
     await clickDialogButton('agentsOverview.form.wizard.next');
@@ -221,7 +222,7 @@ describe('overview catalog actions', () => {
     let finish!: () => void;
     mocks.createAgent.mockReturnValue(new Promise<void>(resolve => { finish = resolve; }));
     await act(async () => { root.render(<CreateAgentPage />); });
-    for (const [field, value] of [['id', 'page-agent'], ['description', 'Page agent'], ['prompt', 'Original prompt']]) {
+    for (const [field, value] of [['name', 'Page agent'], ['id', 'page-agent'], ['description', 'Page agent'], ['prompt', 'Original prompt']]) {
       await fillAgentField(field, value, container);
     }
     const submit = container.querySelector<HTMLButtonElement>('.th-create-page__footer button[type="submit"]')!;
@@ -238,6 +239,7 @@ describe('overview catalog actions', () => {
     mocks.createAgent.mockReturnValue(new Promise<void>(resolve => { finish = resolve; }));
     await render();
     await click('personal-overview-create-agent');
+    await fillAgentField('name', 'Old agent');
     await fillAgentField('id', 'old-agent');
     await fillAgentField('description', 'Created on the original device');
     await clickDialogButton('agentsOverview.form.wizard.next');
@@ -248,7 +250,8 @@ describe('overview catalog actions', () => {
     await act(async () => { activateSurface('peer-host'); });
     await act(async () => { finish(); });
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
-    expect(document.querySelector<HTMLInputElement>('[role="dialog"] [id$="custom-agent-id"]')?.value).toBe('');
+    expect(document.querySelector<HTMLInputElement>('[role="dialog"] [id$="custom-agent-id"]')?.value).toMatch(/^agent-[a-f0-9]{8}$/);
+    expect(document.querySelector<HTMLInputElement>('[role="dialog"] [id$="custom-agent-name"]')?.value).toBe('');
     expect(mocks.refresh).not.toHaveBeenCalled();
     expect(mocks.success).not.toHaveBeenCalled();
     expect(mocks.error).not.toHaveBeenCalled();

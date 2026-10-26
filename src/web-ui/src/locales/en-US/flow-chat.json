@@ -314,7 +314,9 @@
       "errors": "No error examples",
       "errorsDescription": "No sampled tool or model errors were recorded.",
       "slowest": "No slow spans",
-      "slowestDescription": "No timed turn, model-call, or tool spans were recorded."
+      "slowestDescription": "No timed turn, model-call, or tool spans were recorded.",
+      "session": "No activity yet",
+      "sessionDescription": "Send a message in this session to start. Model usage, tools and timing will appear here after the session runs."
     },
     "help": {
       "wall": "Span from the first recorded turn start to the last recorded turn end. Idle gaps can be included.",
@@ -1735,7 +1737,10 @@
       "averageRate": "Average output",
       "speedLevel": "Speed level",
       "rateValue": "{{value}} t/s",
-      "rateBasis": "Output tokens divided by the time from the first token to end of stream, excluding tool execution, queueing and waiting; speed levels change at 15, 40 and 80 tokens/s",
+      "ttft": "Time to first token",
+      "ttftValue": "TTFT {{value}}",
+      "ttftBasis": "Request start to the first text, thinking or tool output of the first model call in this turn. For retried calls, this measures the accepted attempt.",
+      "rateBasis": "Output tokens divided by the sum of each model call’s time from first effective output to end of stream, excluding TTFT and tool execution; speed levels change at 15, 40 and 80 tokens/s",
       "slow": "Slow",
       "normal": "Normal",
       "fast": "Fast",
@@ -3297,6 +3302,7 @@
           "note": "Note",
           "progress": "Progress",
           "metrics": "Metrics",
+          "chart": "Chart",
           "cronJob": "Scheduled job",
           "custom": "Custom"
         },
