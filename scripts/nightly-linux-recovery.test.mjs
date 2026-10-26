@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { validateSource, reusableArtifacts, verifyInstaller, stagePackages } from './nightly-linux-recovery.mjs';
 
+const yaml = createRequire(new URL('../src/web-ui/package.json', import.meta.url))('yaml');
 const repository = 'test-owner/OpenBitFun';
 const sourceSha = '5f34866ad1854546866c55b310b83e4bccaf3396';
 const version = '1.0.7-nightly.20261026+5f34866ad';
@@ -101,8 +102,6 @@ test('stages exactly three installers and rejects incorrect or duplicate package
 });
 
 test('recovery builds only the original Linux source on Ubuntu 24.04 and reuses pinned Windows/Mac artifact IDs', () => {
-  const require = createRequire(import.meta.url);
-  const yaml = require('yaml');
   const read = file => yaml.parse(readFileSync(new URL('../' + file, import.meta.url), 'utf8'));
   const producer = read('.github/workflows/nightly-artifacts.yml');
   const platformsMap = JSON.parse(/fromJSON\('([^']+)'\)/.exec(producer.jobs.package['runs-on'])[1]);
@@ -125,8 +124,6 @@ test('recovery builds only the original Linux source on Ubuntu 24.04 and reuses 
 });
 
 test('publication resumes drafts, uploads before cleanup, and leaves old assets intact if upload fails', t => {
-  const require = createRequire(import.meta.url);
-  const yaml = require('yaml');
   const workflow = yaml.parse(readFileSync(new URL('../.github/workflows/nightly-recover-linux.yml', import.meta.url), 'utf8'));
   const step = workflow.jobs.publish.steps.find(step => step.name === 'Publish recovered nightly');
   const root = mkdtempSync(path.join(os.tmpdir(), 'openbitfun-recovery-publish-'));

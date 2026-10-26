@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './nightly-linux-recovery.test.mjs';
 import {
   copyFileSync,
   existsSync,
