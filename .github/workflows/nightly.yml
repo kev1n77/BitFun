@@ -36,6 +36,11 @@ on:
         required: false
         default: "deb,rpm,appimage"
         type: string
+      build_macos_cli:
+        description: "Build the macOS CLI alongside Desktop installers."
+        required: false
+        default: true
+        type: boolean
 permissions:
   contents: read
 
@@ -113,6 +118,7 @@ jobs:
       build_linux_binaries: ${{ github.event_name != 'workflow_dispatch' || inputs.build_linux_binaries }}
       build_relay_image: ${{ github.event_name != 'workflow_dispatch' || inputs.build_relay_image }}
       linux_bundles: ${{ inputs.linux_bundles || 'deb,rpm,appimage' }}
+      build_macos_cli: ${{ github.event_name != 'workflow_dispatch' || inputs.build_macos_cli }}
       upload_artifacts: true
       # Fork validation is intentionally cache-read-only. Only the upstream
       # repository may seed long-lived Nightly caches.
@@ -141,6 +147,7 @@ jobs:
           merge-multiple: true
 
       - name: Download Linux binary artifacts
+        if: github.event_name != 'workflow_dispatch' || inputs.build_linux_binaries || inputs.build_relay_image
         uses: actions/download-artifact@v7
         with:
           pattern: openbitfun-linux-nightly-*
@@ -148,6 +155,7 @@ jobs:
           merge-multiple: true
 
       - name: Verify Relay image inputs
+        if: github.event_name != 'workflow_dispatch' || inputs.build_relay_image
         shell: bash
         run: |
           set -euo pipefail
@@ -159,12 +167,15 @@ jobs:
           cp src/apps/relay-server/Dockerfile.release linux-release-assets/Dockerfile.release
 
       - name: Set up QEMU
+        if: github.event_name != 'workflow_dispatch' || inputs.build_relay_image
         uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
+        if: github.event_name != 'workflow_dispatch' || inputs.build_relay_image
         uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
+        if: github.event_name != 'workflow_dispatch' || inputs.build_relay_image
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -172,6 +183,7 @@ jobs:
           password: ${{ github.token }}
 
       - name: Resolve nightly image metadata
+        if: github.event_name != 'workflow_dispatch' || inputs.build_relay_image
         id: nightly-image-meta
         shell: bash
         env:
@@ -181,6 +193,7 @@ jobs:
           echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/openbitfun-relay-server" >>"$GITHUB_OUTPUT"
 
       - name: Build and push multi-platform Relay image
+        if: github.event_name != 'workflow_dispatch' || inputs.build_relay_image
         id: relay-image
         uses: docker/build-push-action@v7
         with:
@@ -198,6 +211,7 @@ jobs:
             ${{ steps.nightly-image-meta.outputs.image }}:${{ steps.nightly-image-meta.outputs.asset_version }}
 
       - name: Smoke-test published Relay image on both platforms
+        if: github.event_name != 'workflow_dispatch' || inputs.build_relay_image
         shell: bash
         env:
           IMAGE_DIGEST: ${{ steps.relay-image.outputs.digest }}
@@ -206,6 +220,7 @@ jobs:
             "${{ steps.nightly-image-meta.outputs.image }}@${IMAGE_DIGEST}"
 
       - name: Generate signed Relay image descriptor
+        if: github.event_name != 'workflow_dispatch' || inputs.build_relay_image
         shell: bash
         env:
           IMAGE_DIGEST: ${{ steps.relay-image.outputs.digest }}
@@ -242,6 +257,7 @@ jobs:
           test -s relay-image.json.sig
 
       - name: Verify anonymous Relay image access
+        if: github.event_name != 'workflow_dispatch' || inputs.build_relay_image
         shell: bash
         env:
           IMAGE_DIGEST: ${{ steps.relay-image.outputs.digest }}
@@ -258,7 +274,9 @@ jobs:
           echo "Nightly assets:"
           find release-assets -type f | sort
           echo "Nightly Linux CLI and Relay Server assets:"
-          find linux-release-assets -type f | sort
+          if [[ -d linux-release-assets ]]; then
+            find linux-release-assets -type f | sort
+          fi
 
       - name: Delete previous nightly release
         env:
@@ -267,6 +285,7 @@ jobs:
           gh release delete "${{ env.NIGHTLY_TAG }}" --yes --cleanup-tag 2>/dev/null || true
 
       - name: Generate Linux binaries manifest
+        if: github.event_name != 'workflow_dispatch' || inputs.build_linux_binaries || inputs.build_relay_image
         env:
           NIGHTLY_VERSION: ${{ needs.check-changes.outputs.nightly_version }}
         run: |
@@ -280,6 +299,7 @@ jobs:
             --out linux-release-assets/linux-binaries-v1.json
 
       - name: Prepare versioned Windows installer
+        if: contains(inputs.desktop_platforms || '["linux-x64","linux-arm64","macos-arm64","macos-x64","windows-x64"]', 'windows-x64')
         env:
           NIGHTLY_VERSION: ${{ needs.check-changes.outputs.nightly_version }}
         run: |
@@ -355,6 +375,7 @@ jobs:
             relay-image.json.sig
 
       - name: Verify published Linux CLI signatures
+        if: github.event_name != 'workflow_dispatch' || inputs.build_linux_binaries || inputs.build_relay_image
         shell: bash
         run: |
           set -euo pipefail
@@ -364,6 +385,7 @@ jobs:
           done < <(jq -r '.platforms[].cli.url' linux-release-assets/linux-binaries-v1.json)
 
       - name: Verify published Relay image descriptor
+        if: github.event_name != 'workflow_dispatch' || inputs.build_relay_image
         shell: bash
         env:
           NIGHTLY_VERSION: ${{ needs.check-changes.outputs.nightly_version }}
@@ -381,14 +403,21 @@ jobs:
             -o /dev/null
 
       - name: Verify published macOS CLI assets
+        if: (github.event_name != 'workflow_dispatch' || inputs.build_macos_cli) && contains(inputs.desktop_platforms || '["macos-arm64","macos-x64"]', 'macos-')
         shell: bash
         env:
           NIGHTLY_VERSION: ${{ needs.check-changes.outputs.nightly_version }}
+          DESKTOP_PLATFORMS: ${{ inputs.desktop_platforms || '["linux-x64","linux-arm64","macos-arm64","macos-x64","windows-x64"]' }}
         run: |
           set -euo pipefail
           ASSET_VERSION="${NIGHTLY_VERSION%%+*}"
           RELEASE_ROOT="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${{ env.NIGHTLY_TAG }}"
           for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            platform=macos-x64
+            if [[ "$target" == aarch64-apple-darwin ]]; then platform=macos-arm64; fi
+            if ! jq -e --arg platform "$platform" 'index($platform) != null' <<< "$DESKTOP_PLATFORMS" >/dev/null; then
+              continue
+            fi
             archive="${RELEASE_ROOT}/openbitfun-cli-${ASSET_VERSION}-${target}.tar.gz"
             curl -fsSL --retry 5 --retry-delay 3 "$archive" -o /dev/null
             curl -fsSL --retry 5 --retry-delay 3 "${archive}.sha256" -o /dev/null

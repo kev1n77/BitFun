@@ -1059,9 +1059,11 @@ test('nightly orchestrates the shared build before the separately privileged pub
       "${{ fromJSON(inputs.artifact_retention_days || '7') }}",
     build_desktop_packages: true,
     desktop_platforms:
-      '["linux-x64","linux-arm64","macos-arm64","macos-x64","windows-x64"]',
-    build_linux_binaries: true,
-    build_relay_image: true,
+      "${{ inputs.desktop_platforms || '[\"linux-x64\",\"linux-arm64\",\"macos-arm64\",\"macos-x64\",\"windows-x64\"]' }}",
+    build_linux_binaries: "${{ github.event_name != 'workflow_dispatch' || inputs.build_linux_binaries }}",
+    build_relay_image: "${{ github.event_name != 'workflow_dispatch' || inputs.build_relay_image }}",
+    linux_bundles: "${{ inputs.linux_bundles || 'deb,rpm,appimage' }}",
+    build_macos_cli: "${{ github.event_name != 'workflow_dispatch' || inputs.build_macos_cli }}",
     upload_artifacts: true,
     cache_write: "${{ github.repository_owner == 'GCWing' }}",
   });
@@ -1071,6 +1073,82 @@ test('nightly orchestrates the shared build before the separately privileged pub
     contents: 'write',
     packages: 'write',
   });
+});
+
+test('installer-only nightly selects three packages without requiring disabled CLI or Relay producers', () => {
+  const workflow = yaml.parse(readFileSync(path.join(repoRoot, '.github/workflows/nightly.yml'), 'utf8'));
+  const reusable = yaml.parse(readFileSync(path.join(repoRoot, '.github/workflows/nightly-artifacts.yml'), 'utf8'));
+  const inputs = {
+    desktop_platforms: '["windows-x64","macos-arm64","linux-x64"]',
+    linux_bundles: 'deb', build_macos_cli: false, build_linux_binaries: false,
+    build_relay_image: false, build_only: false,
+  };
+  const evaluate = (expression, event = 'workflow_dispatch') => {
+    let source = expression.replace(/^\$\{\{\s*|\s*\}\}$/g, '')
+      .replaceAll('github.event_name', JSON.stringify(event))
+      .replaceAll('runner.os', '"macOS"')
+      .replaceAll('needs.check-changes.outputs.should_build', '"true"');
+    for (const [name, value] of Object.entries(inputs)) {
+      source = source.replaceAll('inputs.' + name, JSON.stringify(value));
+    }
+    return Function('contains', 'return (' + source + ')')((value, item) => value.includes(item));
+  };
+  const build = workflow.jobs['build-artifacts'];
+  assert.deepEqual(JSON.parse(evaluate(build.with.desktop_platforms)), ['windows-x64', 'macos-arm64', 'linux-x64']);
+  assert.equal(evaluate(build.with.linux_bundles), 'deb');
+  for (const name of ['build_macos_cli', 'build_linux_binaries', 'build_relay_image']) {
+    assert.equal(evaluate(build.with[name]), false, name);
+    assert.equal(evaluate(build.with[name], 'schedule'), true, 'scheduled default keeps ' + name);
+  }
+  assert.equal(reusable.on.workflow_call.inputs.build_macos_cli.default, true);
+  const packageSteps = reusable.jobs.package.steps;
+  for (const name of ['Package macOS CLI for SSH dispatch', 'Sign macOS CLI archive and checksum']) {
+    assert.equal(evaluate(packageSteps.find(step => step.name === name).if), false, name);
+  }
+  const publish = workflow.jobs['publish-nightly'];
+  assert.equal(evaluate(publish.if), true, 'installer-only runs still publish');
+  for (const name of ['Download Linux binary artifacts', 'Verify Relay image inputs', 'Set up QEMU',
+    'Set up Docker Buildx', 'Log in to GHCR', 'Resolve nightly image metadata',
+    'Build and push multi-platform Relay image', 'Smoke-test published Relay image on both platforms',
+    'Generate signed Relay image descriptor', 'Verify anonymous Relay image access',
+    'Generate Linux binaries manifest', 'Verify published Linux CLI signatures',
+    'Verify published Relay image descriptor', 'Verify published macOS CLI assets']) {
+    const step = publish.steps.find(step => step.name === name);
+    assert.equal(evaluate(step.if), false, name);
+  }
+  assert.equal(evaluate(publish.steps.find(step => step.name === 'Prepare versioned Windows installer').if), true);
+});
+
+test('selected installer output checks accept deb-only and macOS without CLI but still reject missing requested outputs', (t) => {
+  const workflow = yaml.parse(readFileSync(path.join(repoRoot, '.github/workflows/nightly-artifacts.yml'), 'utf8'));
+  const verification = workflow.jobs.package.steps.find(step => step.name === 'Verify package outputs');
+  const root = mkdtempSync(path.join(tmpdir(), 'openbitfun-selected-packages-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const [name, platform, buildCli, haveCli, bundles, expected] of [
+    ['mac-installer', 'macos-arm64', false, false, 'deb', 0],
+    ['mac-cli-missing', 'macos-arm64', true, false, 'deb', 1],
+    ['mac-cli-present', 'macos-arm64', true, true, 'deb', 0],
+    ['deb-only', 'linux-x64', false, false, 'deb', 0],
+    ['rpm-missing', 'linux-x64', false, false, 'deb,rpm', 1],
+  ]) {
+    const cwd = path.join(root, name);
+    const bundleRoot = path.join(cwd, 'target/release/bundle');
+    mkdirSync(bundleRoot, { recursive: true });
+    mkdirSync(path.join(bundleRoot, 'OpenBitFun.app'));
+    writeFileSync(path.join(bundleRoot, 'OpenBitFun.dmg'), 'fixture');
+    writeFileSync(path.join(bundleRoot, 'OpenBitFun_amd64.deb'), 'fixture');
+    if (haveCli) {
+      const archive = path.join(cwd, 'openbitfun-cli-1.0.7-aarch64-apple-darwin.tar.gz');
+      writeFileSync(archive, 'fixture');
+      writeFileSync(archive + '.sha256', 'fixture');
+    }
+    const result = spawnSync('bash', ['-c', verification.run.replaceAll('${{ matrix.platform }}', platform)], {
+      cwd, encoding: 'utf8', windowsHide: true, env: { ...process.env,
+        PACKAGE_TARGET: platform === 'macos-arm64' ? 'aarch64-apple-darwin' : 'x86_64-unknown-linux-gnu',
+        BUILD_MACOS_CLI: String(buildCli), LINUX_BUNDLES: bundles },
+    });
+    assert.equal(result.status, expected, `${name}: ${result.stderr}`);
+  }
 });
 
 test('Linux binary packaging uses the shared locked version projection contract', () => {

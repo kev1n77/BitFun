@@ -35,6 +35,11 @@ on:
         required: false
         default: "deb,rpm,appimage"
         type: string
+      build_macos_cli:
+        description: "Whether to package the macOS CLI alongside Desktop installers."
+        required: false
+        default: true
+        type: boolean
       build_linux_binaries:
         description: "Whether to build Linux CLI and Relay archives."
         required: false
@@ -264,7 +269,7 @@ jobs:
           esac
 
       - name: Package macOS CLI for SSH dispatch
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && inputs.build_macos_cli
         id: macos-cli
         shell: bash
         env:
@@ -277,7 +282,7 @@ jobs:
           bash scripts/cli/package-unix.sh "$ASSET_VERSION" "$TARGET"
 
       - name: Sign macOS CLI archive and checksum
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && inputs.build_macos_cli
         shell: bash
         env:
           OPENBITFUN_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -299,6 +304,8 @@ jobs:
       # producer emitted the files its publishing caller will collect.
       - name: Verify package outputs
         shell: bash
+        env:
+          BUILD_MACOS_CLI: ${{ inputs.build_macos_cli }}
         run: |
           set -euo pipefail
 
@@ -354,11 +361,13 @@ jobs:
             macos-*)
               find_bundle_dir '*.app'
               find_bundle_file '*.dmg'
-              shopt -s nullglob
-              cli_archives=(openbitfun-cli-*-"${PACKAGE_TARGET}".tar.gz)
-              [[ ${#cli_archives[@]} -eq 1 ]]
-              test -s "${cli_archives[0]}"
-              test -s "${cli_archives[0]}.sha256"
+              if [[ "${BUILD_MACOS_CLI}" == 'true' ]]; then
+                shopt -s nullglob
+                cli_archives=(openbitfun-cli-*-"${PACKAGE_TARGET}".tar.gz)
+                [[ ${#cli_archives[@]} -eq 1 ]]
+                test -s "${cli_archives[0]}"
+                test -s "${cli_archives[0]}.sha256"
+              fi
               ;;
             windows-x64)
               test -s OpenBitFun-Installer/src-tauri/target/release/openbitfun-installer.exe
