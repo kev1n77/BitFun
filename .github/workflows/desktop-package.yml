@@ -3,6 +3,10 @@ name: Desktop Package
 on:
   workflow_dispatch:
     inputs:
+      smoke_artifact_run:
+        description: "Smoke-test existing Linux bundles from this run ID without rebuilding."
+        required: false
+        type: string
       tag_name:
         description: "Release tag (stable: v1.0.0-beta or v1.0.0, beta: v1.0.0-beta.1)."
         required: false
@@ -54,7 +58,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: desktop-package-pr3996-safe-directory-${{ (github.event.release.prerelease || inputs.release_channel == 'beta') && 'beta' || github.event.release.tag_name || inputs.tag_name || github.sha }}${{ (inputs.target_platform && inputs.target_platform != 'all') && format('-{0}', inputs.target_platform) || '' }}
+  group: desktop-package-pr3996-smoke-retest-${{ (github.event.release.prerelease || inputs.release_channel == 'beta') && 'beta' || github.event.release.tag_name || inputs.tag_name || github.sha }}${{ (inputs.target_platform && inputs.target_platform != 'all') && format('-{0}', inputs.target_platform) || '' }}
   cancel-in-progress: false
 
 jobs:
@@ -198,7 +202,7 @@ jobs:
     # Compile and bundle with Ubuntu 22.04's glibc on both Linux architectures.
     container: ${{ startsWith(matrix.platform.name, 'linux-') && 'ubuntu:22.04' || '' }}
     needs: prepare
-    if: needs.prepare.outputs.relay_image_only != 'true' && !inputs.artifact_run_ids && !inputs.verification_recovery_run_id
+    if: needs.prepare.outputs.relay_image_only != 'true' && !inputs.artifact_run_ids && !inputs.verification_recovery_run_id && !inputs.smoke_artifact_run
     env:
       NODE_OPTIONS: --max-old-space-size=6144
       OPENBITFUN_ENABLE_UPDATER_ARTIFACTS: ${{ needs.prepare.outputs.upload_to_release }}
@@ -1261,7 +1265,7 @@ jobs:
   smoke-linux:
     name: Install and start (${{ matrix.os }})
     needs: package
-    if: ${{ always() && !cancelled() && needs.package.result != 'skipped' }}
+    if: ${{ always() && !cancelled() && (inputs.smoke_artifact_run != '' || needs.package.result != 'skipped') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     permissions:
@@ -1286,12 +1290,16 @@ jobs:
         uses: actions/download-artifact@v7
         continue-on-error: true
         with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.smoke_artifact_run || github.run_id }}
           name: openbitfun-v1.0.11-linux-${{ matrix.arch }}-bundle
           path: smoke-artifacts
       - name: Download package retained after verification failure
         if: steps.verified_download.outcome == 'failure'
         uses: actions/download-artifact@v7
         with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.smoke_artifact_run || github.run_id }}
           name: openbitfun-v1.0.11-linux-${{ matrix.arch }}-unverified
           path: smoke-artifacts
       - name: Install virtual display and AppImage prerequisites
@@ -1303,7 +1311,7 @@ jobs:
           if [[ "$VERSION_CODENAME" == noble ]]; then fuse_package=libfuse2t64; fi
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 update
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y --no-install-recommends install \
-            "$fuse_package" fuse3 xvfb xauth x11-utils dbus-x11 fonts-dejavu-core libgl1-mesa-dri xdg-utils
+            "$fuse_package" fuse3 xvfb xauth x11-utils dbus-x11 fonts-dejavu-core libgl1-mesa-dri libgl1 libegl1 libegl-mesa0 xdg-utils
       - name: Verify DEB installation and desktop startup
         shell: bash
         run: |
