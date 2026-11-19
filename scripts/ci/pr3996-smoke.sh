@@ -60,78 +60,37 @@ test_startup() {
 }
 
 
-trace_xio() {
-  local root=$1
-  local artifact=$2
-  local script=$3
-  cat > "$root/xio.c" <<'C'
-#define _GNU_SOURCE
-#include <dlfcn.h>
-#include <errno.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-
-__attribute__((constructor))
-static void init_xlib_threads(void) {
-  if (!getenv("XIO_INIT_THREADS") || strcmp(program_invocation_short_name, "openbitfun-desktop")) return;
-  int (*initialize)(void) = dlsym(RTLD_DEFAULT, "XInitThreads");
-  dprintf(2, "XINIT DIAGNOSTIC result=%d\n", initialize ? initialize() : -1);
-}
-
-int _XIOError(void *display) {
-  int io_errno = errno;
-  int (*finish)(void *) = dlsym(RTLD_NEXT, "_XIOError");
-  void *xcb_lib = dlopen("libX11-xcb.so.1", RTLD_LAZY);
-  if (xcb_lib) {
-    void *(*connection)(void *) = dlsym(xcb_lib, "XGetXCBConnection");
-    int (*connection_error)(void *) = dlsym(RTLD_DEFAULT, "xcb_connection_has_error");
-    if (connection && connection_error) {
-      dprintf(2, "XIO DIAGNOSTIC pid=%ld errno=%d xcb_error=%d\n",
-        (long)getpid(), io_errno, connection_error(connection(display)));
-    }
-  }
-  errno = io_errno;
-  if (finish) return finish(display);
-  _Exit(1);
-}
-C
-  cc -shared -fPIC -O2 -o "$root/xio.so" "$root/xio.c" -ldl
-  export XIO_LIBRARY="$root/xio.so" XIO_APPIMAGE="$artifact"
-  cat > "$root/xio-launch" <<'SH'
-#!/usr/bin/env bash
-export LD_PRELOAD="$XIO_LIBRARY"
-export G_MESSAGES_DEBUG=Gdk
-exec "$XIO_APPIMAGE"
-SH
-  chmod +x "$root/xio-launch"
-  local attempt variant ok baseline_passed=0 initialized_passed=0
-  for attempt in 1 2 3 4 5 6; do
-    for variant in baseline initialized; do
-      ok=0
-      if [[ "$variant" == initialized ]]; then
-        export XIO_INIT_THREADS=1
-      else
-        unset XIO_INIT_THREADS
+start_weston() {
+  local dir=$1
+  local attempt
+  sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y --no-install-recommends install weston xwayland
+  mkdir -p "$dir"
+  chmod 700 "$dir"
+  XDG_RUNTIME_DIR="$dir" dbus-run-session -- weston --backend=headless-backend.so --width=1280 --height=900 --use-pixman --xwayland --socket=openbitfun-smoke --log="$dir/weston.log" &
+  weston_pid=$!
+  trap 'kill "$weston_pid" 2>/dev/null || true; wait "$weston_pid" 2>/dev/null || true' EXIT
+  local xdisplay=''
+  for attempt in $(seq 1 25); do
+    if [[ -s "$dir/weston.log" ]]; then
+      xdisplay=$(sed -nE 's/.*xserver listening on display (:[0-9]+).*/\1/p' "$dir/weston.log" | head -1)
+      if [[ -n "$xdisplay" ]] && DISPLAY="$xdisplay" xwininfo -root >/dev/null 2>&1; then
+        printf 'Testing X11 applications on Weston XWayland display %s\n' "$xdisplay"
+        export DISPLAY="$xdisplay"
+        return 0
       fi
-      echo "DIAG: $variant attempt $attempt"
-      case_dir="$root/$variant-$attempt"
-      if xvfb-run -a -e "$case_dir-xvfb.log" -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$case_dir" "$root/xio-launch"; then
-        ok=1
-        if [[ "$variant" == initialized ]]; then
-          ((initialized_passed+=1))
-        else
-          ((baseline_passed+=1))
-        fi
-      fi
-      echo "DIAG: $variant attempt $attempt result=$ok"
-      grep -Ei 'X(INIT|IO) DIAGNOSTIC|Fatal IO|X Window System error|BadRequest|BadMatch' "$case_dir/startup.log" || true
-      cat "$case_dir-xvfb.log"
-    done
+    fi
+    sleep 1
   done
-  unset XIO_INIT_THREADS
-  printf 'DIAG: baseline=%d/6, early XInitThreads=%d/6\n' "$baseline_passed" "$initialized_passed"
+  cat "$dir/weston.log" >&2
+  return 1
+}
+
+desktop_startup() {
+  if [[ "${USE_WESTON:-}" == 1 ]]; then
+    dbus-run-session -- "$@"
+  else
+    xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- "$@"
+  fi
 }
 
 case "${1:-}" in
@@ -156,15 +115,25 @@ case "${1:-}" in
     chmod +x "$artifact"
     appimage_ok=0
     deb_ok=0
-    if xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/appimage" "$artifact"; then appimage_ok=1; fi
     if [[ "$(uname -m)" == aarch64 && "$(lsb_release -rs)" == 22.04 ]]; then
-      trace_xio "$root" "$artifact" "$script" || true
+      USE_WESTON=1
+      start_weston "$root/weston"
+      for attempt in 1 2 3; do
+        if desktop_startup bash "$script" startup "$root/appimage-$attempt" "$artifact"; then
+          echo "PASS: Ubuntu 22.04 ARM64 AppImage XWayland attempt $attempt"
+          ((appimage_ok+=1))
+        fi
+      done
+      cat "$root/weston/weston.log" | tail -40
+      if [[ "$appimage_ok" == 3 ]]; then appimage_ok=1; else appimage_ok=0; fi
+    elif desktop_startup bash "$script" startup "$root/appimage" "$artifact"; then
+      appimage_ok=1
     fi
     if sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y install "$deb" > "$root/deb-install.log" 2>&1; then
       pkg=$(dpkg-deb -f "$deb" Package)
       dpkg-query -W -f='${Status} ${Package} ${Version} ${Architecture}\n' "$pkg" libayatana-appindicator3-1
       test "$(dpkg-query -W -f='${Status}' libayatana-appindicator3-1)" = 'install ok installed'
-      if xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/deb" /usr/bin/openbitfun-desktop; then deb_ok=1; fi
+      if desktop_startup bash "$script" startup "$root/deb" /usr/bin/openbitfun-desktop; then deb_ok=1; fi
     else
       tail -35 "$root/deb-install.log" >&2
     fi
