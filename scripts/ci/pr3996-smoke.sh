@@ -59,40 +59,6 @@ test_startup() {
   return 1
 }
 
-
-start_weston() {
-  local dir=$1
-  local attempt
-  sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y --no-install-recommends install weston xwayland
-  mkdir -p "$dir"
-  chmod 700 "$dir"
-  XDG_RUNTIME_DIR="$dir" dbus-run-session -- weston --backend=headless-backend.so --width=1280 --height=900 --use-pixman --xwayland --socket=openbitfun-smoke --log="$dir/weston.log" &
-  weston_pid=$!
-  trap 'kill "$weston_pid" 2>/dev/null || true; wait "$weston_pid" 2>/dev/null || true' EXIT
-  local xdisplay=''
-  for attempt in $(seq 1 25); do
-    if [[ -s "$dir/weston.log" ]]; then
-      xdisplay=$(sed -nE 's/.*xserver listening on display (:[0-9]+).*/\1/p' "$dir/weston.log" | head -1)
-      if [[ -n "$xdisplay" ]] && DISPLAY="$xdisplay" xwininfo -root >/dev/null 2>&1; then
-        printf 'Testing X11 applications on Weston XWayland display %s\n' "$xdisplay"
-        export DISPLAY="$xdisplay"
-        return 0
-      fi
-    fi
-    sleep 1
-  done
-  cat "$dir/weston.log" >&2
-  return 1
-}
-
-desktop_startup() {
-  if [[ "${USE_WESTON:-}" == 1 ]]; then
-    dbus-run-session -- "$@"
-  else
-    xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- "$@"
-  fi
-}
-
 case "${1:-}" in
   startup) test_startup "$2" "$3" ;;
   verify)
@@ -115,25 +81,26 @@ case "${1:-}" in
     chmod +x "$artifact"
     appimage_ok=0
     deb_ok=0
+    appimage_attempts=1
     if [[ "$(uname -m)" == aarch64 && "$(lsb_release -rs)" == 22.04 ]]; then
-      USE_WESTON=1
-      start_weston "$root/weston"
-      for attempt in 1 2 3; do
-        if desktop_startup bash "$script" startup "$root/appimage-$attempt" "$artifact"; then
-          echo "PASS: Ubuntu 22.04 ARM64 AppImage XWayland attempt $attempt"
-          ((appimage_ok+=1))
-        fi
-      done
-      cat "$root/weston/weston.log" | tail -40
-      if [[ "$appimage_ok" == 3 ]]; then appimage_ok=1; else appimage_ok=0; fi
-    elif desktop_startup bash "$script" startup "$root/appimage" "$artifact"; then
-      appimage_ok=1
+      appimage_attempts=3
     fi
+    for ((attempt = 1; attempt <= appimage_attempts; attempt++)); do
+      appimage_dir="$root/appimage-$attempt"
+      if xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$appimage_dir" "$artifact"; then
+        if [[ "$appimage_attempts" == 3 ]]; then
+          grep -rh -m1 'Agent companion window shown' "$appimage_dir/logs" || continue
+        fi
+        ((appimage_ok+=1))
+        printf 'PASS: AppImage startup attempt %d/%d\n' "$attempt" "$appimage_attempts"
+      fi
+    done
+    if [[ "$appimage_ok" == "$appimage_attempts" ]]; then appimage_ok=1; else appimage_ok=0; fi
     if sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y install "$deb" > "$root/deb-install.log" 2>&1; then
       pkg=$(dpkg-deb -f "$deb" Package)
       dpkg-query -W -f='${Status} ${Package} ${Version} ${Architecture}\n' "$pkg" libayatana-appindicator3-1
       test "$(dpkg-query -W -f='${Status}' libayatana-appindicator3-1)" = 'install ok installed'
-      if desktop_startup bash "$script" startup "$root/deb" /usr/bin/openbitfun-desktop; then deb_ok=1; fi
+      if xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/deb" /usr/bin/openbitfun-desktop; then deb_ok=1; fi
     else
       tail -35 "$root/deb-install.log" >&2
     fi
