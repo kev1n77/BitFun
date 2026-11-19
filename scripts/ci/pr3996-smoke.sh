@@ -6,6 +6,7 @@ print_startup_diagnostics() {
   tail -35 "$work_dir/startup.log" >&2
   find "$work_dir/logs" -type f -name '*.log' -print0 | while IFS= read -r -d '' log_file; do
     printf '\n--- %s ---\n' "$log_file" >&2
+    grep -Ei -C 4 'panic|undefined symbol|error while loading shared libraries|fatal|segmentation fault|WebKit.*terminated' "$log_file" >&2 || true
     tail -24 "$log_file" >&2
   done
   if [[ -f "$work_dir/windows.txt" ]]; then tail -20 "$work_dir/windows.txt" >&2; fi
@@ -65,15 +66,23 @@ case "${1:-}" in
     cat /etc/os-release | grep -E '^(PRETTY_NAME|VERSION_ID)='
     printf 'Architecture: %s\n' "$(uname -m)"
     printf 'glibc: %s\n' "$(getconf GNU_LIBC_VERSION)"
-    printf "DEB declared dependencies: %s\n" "$(dpkg-deb -f "$deb" Depends)"
-    sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y --no-install-recommends install libgles2 libayatana-appindicator3-1
+    deb_dependencies=$(dpkg-deb -f "$deb" Depends)
+    printf 'DEB declared dependencies: %s\n' "$deb_dependencies"
+    grep -Eq '(^|,)[[:space:]]*libayatana-appindicator3-1[[:space:]]*(,|$)' <<< "$deb_dependencies"
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y --no-install-recommends install libgles2
+    if ldconfig -p | grep 'libayatana-appindicator3\.so\.1'; then
+      echo 'AppImage verification requires a host without a tray runtime' >&2
+      exit 1
+    fi
+    printf 'AppImage host has no Ayatana tray runtime\n'
     chmod +x "$artifact"
     appimage_ok=0
     deb_ok=0
     if xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/appimage" "$artifact"; then appimage_ok=1; fi
     if sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y install "$deb" > "$root/deb-install.log" 2>&1; then
       pkg=$(dpkg-deb -f "$deb" Package)
-      dpkg-query -W -f='${Status} ${Package} ${Version} ${Architecture}\n' "$pkg"
+      dpkg-query -W -f='${Status} ${Package} ${Version} ${Architecture}\n' "$pkg" libayatana-appindicator3-1
+      test "$(dpkg-query -W -f='${Status}' libayatana-appindicator3-1)" = 'install ok installed'
       if xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/deb" /usr/bin/openbitfun-desktop; then deb_ok=1; fi
     else
       tail -35 "$root/deb-install.log" >&2
