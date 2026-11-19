@@ -32,11 +32,6 @@ test_startup() {
     if ! kill -0 "$app_pid" 2>/dev/null; then
       wait "$app_pid" || app_exit=$?
       printf "Desktop process exited with status %s\n" "$app_exit" >&2
-      if xwininfo -root >/dev/null 2>&1; then
-        echo 'DIAG: X server is still up at desktop exit'
-      else
-        echo 'DIAG: X server is unavailable at desktop exit'
-      fi
       print_startup_diagnostics "$work_dir"
       return 1
     fi
@@ -65,52 +60,53 @@ test_startup() {
 }
 
 
-compare_x11_launches() {
+trace_xio() {
   local root=$1
   local artifact=$2
   local script=$3
-  sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y --no-install-recommends install gdb
-  local mounted='' attempt
-  "$artifact" --appimage-mount > "$root/mount.log" 2>&1 &
-  local mount_pid=$!
-  for attempt in 1 2 3 4 5; do
-    mounted="$(head -1 "$root/mount.log")"
-    if [[ -d "$mounted" && -x "$mounted/AppRun" ]]; then break; fi
-    sleep 1
-  done
-  if [[ -d "$mounted" && -x "$mounted/AppRun" ]]; then
-    cat > "$root/gdb-appimage" <<'SH'
+  cat > "$root/xio.c" <<'C'
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+int _XIOError(void *display) {
+  int io_errno = errno;
+  int (*finish)(void *) = dlsym(RTLD_NEXT, "_XIOError");
+  void *xcb_lib = dlopen("libX11-xcb.so.1", RTLD_LAZY);
+  if (xcb_lib) {
+    void *(*connection)(void *) = dlsym(xcb_lib, "XGetXCBConnection");
+    int (*connection_error)(void *) = dlsym(RTLD_DEFAULT, "xcb_connection_has_error");
+    if (connection && connection_error) {
+      dprintf(2, "XIO DIAGNOSTIC pid=%ld errno=%d xcb_error=%d\n",
+        (long)getpid(), io_errno, connection_error(connection(display)));
+    }
+  }
+  errno = io_errno;
+  if (finish) return finish(display);
+  _Exit(1);
+}
+C
+  cc -shared -fPIC -O2 -o "$root/xio.so" "$root/xio.c" -ldl
+  export XIO_LIBRARY="$root/xio.so" XIO_APPIMAGE="$artifact"
+  cat > "$root/xio-launch" <<'SH'
 #!/usr/bin/env bash
-set -e
-source "$APPDIR"/apprun-hooks/linuxdeploy-plugin-gtk.sh
-cd "$APPDIR/usr"
-exec gdb --batch --quiet \
-  -ex 'set debuginfod enabled off' \
-  -ex 'set breakpoint pending on' \
-  -ex 'set environment LD_LIBRARY_PATH '"$APPDIR/usr/lib" \
-  -ex 'set environment G_MESSAGES_DEBUG all' \
-  -ex 'set environment LD_PRELOAD /usr/lib/aarch64-linux-gnu/libX11-xcb.so.1' \
-  -ex 'break _XIOError' -ex run \
-  -ex 'set $display = (void *)$x0' \
-  -ex 'set $xcb = ((void *(*)(void *))XGetXCBConnection)($display)' \
-  -ex 'p ((int (*)(void *))xcb_connection_has_error)($xcb)' \
-  -ex 'p ((int (*)(void *))xcb_get_file_descriptor)($xcb)' \
-  -ex 'info sharedlibrary .*libX(11|cb).*|.*libxcb.*' \
-  -ex 'bt 22' --args "$APPDIR/usr/bin/openbitfun-desktop"
+export LD_PRELOAD="$XIO_LIBRARY"
+export G_MESSAGES_DEBUG=Gdk
+exec "$XIO_APPIMAGE"
 SH
-    chmod +x "$root/gdb-appimage"
-    echo 'DIAG: mounted application with GDB and bundled WebKit helper paths'
-    for attempt in 1 2 3; do
-      echo "DIAG: XCB debugger attempt $attempt"
-      if APPIMAGE="$artifact" ARGV0="$artifact" APPDIR="$mounted" xvfb-run -a -e "$root/gdb-$attempt-xvfb.log" -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/gdb-$attempt" "$root/gdb-appimage"; then
-        echo 'DIAG: debugger launch passed'
-      fi
-      rg -n -i '_XIOError|Program received signal|access memory|no symbol|libX11(-xcb)?\.so|libxcb\.so|^\$[0-9]+|^#[0-9]+' "$root/gdb-$attempt/startup.log" | tail -40 || true
-      cat "$root/gdb-$attempt-xvfb.log"
-    done
-    kill "$mount_pid" 2>/dev/null || true
-    wait "$mount_pid" 2>/dev/null || true
-  fi
+  chmod +x "$root/xio-launch"
+  local attempt
+  for attempt in 1 2 3 4; do
+    echo "DIAG: direct with XIO diagnostics, attempt $attempt"
+    if xvfb-run -a -e "$root/xio-$attempt-xvfb.log" -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/xio-$attempt" "$root/xio-launch"; then
+      echo "DIAG: XIO probe $attempt passed"
+    fi
+    grep -Ei 'XIO DIAGNOSTIC|Fatal IO|X Window System error|BadRequest|BadMatch' "$root/xio-$attempt/startup.log" || true
+    cat "$root/xio-$attempt-xvfb.log"
+  done
 }
 
 case "${1:-}" in
@@ -137,7 +133,7 @@ case "${1:-}" in
     deb_ok=0
     if xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/appimage" "$artifact"; then appimage_ok=1; fi
     if [[ "$(uname -m)" == aarch64 && "$(lsb_release -rs)" == 22.04 ]]; then
-      compare_x11_launches "$root" "$artifact" "$script" || true
+      trace_xio "$root" "$artifact" "$script" || true
     fi
     if sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y install "$deb" > "$root/deb-install.log" 2>&1; then
       pkg=$(dpkg-deb -f "$deb" Package)
