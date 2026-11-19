@@ -59,6 +59,46 @@ test_startup() {
   return 1
 }
 
+
+trace_jammy_arm64() {
+  local root=$1
+  local artifact=$2
+  local script=$3
+  local case_name
+  sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y --no-install-recommends install strace
+  mkdir -p "$root/extracted"
+  (cd "$root/extracted" && "$artifact" --appimage-extract > /dev/null)
+  local extracted="$root/extracted/squashfs-root"
+  file "$artifact" "$extracted/usr/bin/openbitfun-desktop"
+  readelf -d "$extracted/usr/bin/openbitfun-desktop" | grep NEEDED
+  echo '### Normal launcher with process and exit stack tracing'
+  cat > "$root/trace-appimage" <<'SH'
+#!/usr/bin/env bash
+exec strace -ff -k -y -s 300 -e trace=execve,execveat,exit,exit_group,kill,tgkill -o "$TRACE_DIR" "$TRACE_APPIMAGE"
+SH
+  chmod +x "$root/trace-appimage"
+  if TRACE_DIR="$root/trace" TRACE_APPIMAGE="$artifact" xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/traced-run" "$root/trace-appimage"; then
+    echo 'DIAG: normal traced launcher passed'
+  fi
+  grep -l -E 'execve[^\n]+(openbitfun-desktop|AppRun)|exit_group\(1\)|killed by SIG' "$root"/trace.* | head -40 | while IFS= read -r trace; do
+    echo "--- $trace ---"
+    grep -m 2 -E '^execve\(' "$trace" || true
+    tail -35 "$trace"
+  done
+  echo '### Native launcher with unpacked AppDir'
+  if xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/extracted-run" "$extracted/AppRun"; then
+    echo 'DIAG: extraction via AppRun passed'
+  fi
+  echo '### Direct AppImage with DMABUF disabled'
+  if WEBKIT_DISABLE_DMABUF_RENDERER=1 xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/no-dmabuf" "$artifact"; then
+    echo 'DIAG: disabling DMABUF passed'
+  fi
+  echo '### Direct AppImage with accelerated compositing disabled'
+  if WEBKIT_DISABLE_COMPOSITING_MODE=1 xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/no-compositing" "$artifact"; then
+    echo 'DIAG: disabling accelerated compositing passed'
+  fi
+}
+
 case "${1:-}" in
   startup) test_startup "$2" "$3" ;;
   verify)
@@ -82,6 +122,9 @@ case "${1:-}" in
     appimage_ok=0
     deb_ok=0
     if xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/appimage" "$artifact"; then appimage_ok=1; fi
+    if [[ "$appimage_ok" == 0 && "$(uname -m)" == aarch64 && "$(lsb_release -rs)" == 22.04 ]]; then
+      trace_jammy_arm64 "$root" "$artifact" "$script" || true
+    fi
     if sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y install "$deb" > "$root/deb-install.log" 2>&1; then
       pkg=$(dpkg-deb -f "$deb" Package)
       dpkg-query -W -f='${Status} ${Package} ${Version} ${Architecture}\n' "$pkg" libayatana-appindicator3-1
