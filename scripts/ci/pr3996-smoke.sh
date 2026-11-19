@@ -32,6 +32,11 @@ test_startup() {
     if ! kill -0 "$app_pid" 2>/dev/null; then
       wait "$app_pid" || app_exit=$?
       printf "Desktop process exited with status %s\n" "$app_exit" >&2
+      if xwininfo -root >/dev/null 2>&1; then
+        echo 'DIAG: X server is still up at desktop exit'
+      else
+        echo 'DIAG: X server is unavailable at desktop exit'
+      fi
       print_startup_diagnostics "$work_dir"
       return 1
     fi
@@ -60,83 +65,67 @@ test_startup() {
 }
 
 
-trace_jammy_arm64() {
+compare_x11_launches() {
   local root=$1
   local artifact=$2
   local script=$3
-  local case_name
-  sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y --no-install-recommends install strace gdb
-  mkdir -p "$root/extracted"
-  (cd "$root/extracted" && "$artifact" --appimage-extract > /dev/null)
-  local extracted="$root/extracted/squashfs-root"
-  file "$artifact" "$extracted/usr/bin/openbitfun-desktop"
-  readelf -d "$extracted/usr/bin/openbitfun-desktop" | grep NEEDED
-  echo '### Runner and AppImage runtime'
-  uname -a
-  getconf PAGE_SIZE
-  lscpu | grep -E 'Architecture:|CPU\(s\):|Model name:|Vendor ID:' || true
-  ls -l /dev/fuse
-  cat "$extracted"/apprun-hooks/*.sh "$extracted/AppRun"
-  local mount_log="$root/mount.log"
-  "$artifact" --appimage-mount > "$mount_log" 2>&1 &
-  local mount_pid=$!
+  sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y --no-install-recommends install openbox gdb
+  cat > "$root/xsession" <<'SH'
+#!/usr/bin/env bash
+openbox > "$X11_CASE-wm.log" 2>&1 &
+wm_pid=$!
+trap 'kill "$wm_pid" 2>/dev/null || true; wait "$wm_pid" 2>/dev/null || true' EXIT
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  if xprop -root _NET_SUPPORTING_WM_CHECK | grep -q 'window id'; then break; fi
+  sleep .2
+done
+xprop -root _NET_SUPPORTING_WM_CHECK
+bash "$@"
+SH
+  chmod +x "$root/xsession"
+  local attempt ok default_passed=0 openbox_passed=0
+  for attempt in 1 2 3; do
+    ok=0
+    if xvfb-run -a -e "$root/default-$attempt-xvfb.log" -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/default-$attempt" "$artifact"; then
+      ((default_passed+=1))
+      ok=1
+    fi
+    printf 'DIAG: bare Xvfb launch %d result=%d\n' "$attempt" "$ok"
+    cat "$root/default-$attempt-xvfb.log"
+    ok=0
+    if X11_CASE="$root/openbox-$attempt" xvfb-run -a -e "$root/openbox-$attempt-xvfb.log" -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- "$root/xsession" "$script" startup "$root/openbox-$attempt" "$artifact"; then
+      ((openbox_passed+=1))
+      ok=1
+    fi
+    printf 'DIAG: Xvfb plus Openbox launch %d result=%d\n' "$attempt" "$ok"
+    cat "$root/openbox-$attempt-xvfb.log" "$root/openbox-$attempt-wm.log"
+  done
+  printf 'DIAG: bare Xvfb=%d/3, Xvfb with Openbox=%d/3\n' "$default_passed" "$openbox_passed"
   local mounted=''
+  "$artifact" --appimage-mount > "$root/mount.log" 2>&1 &
+  local mount_pid=$!
   for attempt in 1 2 3 4 5; do
-    mounted="$(head -1 "$mount_log")"
+    mounted="$(head -1 "$root/mount.log")"
     if [[ -d "$mounted" && -x "$mounted/AppRun" ]]; then break; fi
     sleep 1
   done
   if [[ -d "$mounted" && -x "$mounted/AppRun" ]]; then
-    printf '### Explicit native FUSE mount at %s\n' "$mounted"
-    findmnt -T "$mounted"
-    cat > "$root/trace-appimage" <<'SH'
-#!/usr/bin/env bash
-exec strace -ff -tt -y -s 300 -e trace=execve,execveat,exit,exit_group,kill,tgkill,write,writev -o "$TRACE_DIR" "$TRACE_APPIMAGE"
-SH
-    chmod +x "$root/trace-appimage"
-    for attempt in 1 2; do
-      echo "### Traced AppRun from native FUSE mount, attempt $attempt"
-      local trace_dir="$root/trace-$attempt"
-      mkdir -p "$trace_dir"
-      if APPIMAGE="$artifact" ARGV0="$artifact" APPDIR="$mounted" TRACE_DIR="$trace_dir/process" TRACE_APPIMAGE="$mounted/AppRun" xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/traced-run-$attempt" "$root/trace-appimage"; then
-        echo "DIAG: traced native FUSE launch passed ($attempt)"
-      else
-        local trace
-        for trace in "$trace_dir"/process.*; do
-          if grep -Eq 'execve.*openbitfun-desktop|exit_group\(1\)|killed by SIG(SEGV|ABRT|BUS|ILL)' "$trace"; then
-            echo "--- $trace ---"
-            grep -m 5 -E 'execve\(' "$trace" | cut -c1-350 || true
-            grep -E 'exit_group\(1\)|SIG(SEGV|ABRT|BUS|ILL)|write(v)?\(2' "$trace" | tail -16 | cut -c1-450 || true
-            tail -15 "$trace" | cut -c1-420
-          fi
-        done
-      fi
-    done
     cat > "$root/gdb-appimage" <<'SH'
 #!/usr/bin/env bash
 set -e
 source "$APPDIR"/apprun-hooks/linuxdeploy-plugin-gtk.sh
-export LD_LIBRARY_PATH="$APPDIR/usr/lib:${LD_LIBRARY_PATH:-}"
-exec gdb --batch --quiet -ex 'set debuginfod enabled off' -ex 'set breakpoint pending on' -ex 'break exit if $x0 == 1' -ex run -ex 'thread apply all bt 8' --args "$APPDIR/usr/bin/openbitfun-desktop"
+cd "$APPDIR/usr"
+exec gdb --batch --quiet -ex 'set debuginfod enabled off' -ex 'set breakpoint pending on' -ex 'set environment LD_LIBRARY_PATH '"$APPDIR/usr/lib" -ex 'catch syscall exit_group' -ex run -ex 'info registers x0' -ex 'bt 30' --args "$APPDIR/usr/bin/openbitfun-desktop"
 SH
     chmod +x "$root/gdb-appimage"
-    echo '### GDB on app binary using mounted bundle and bundled libraries'
-    if APPIMAGE="$artifact" ARGV0="$artifact" APPDIR="$mounted" xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/gdb-run" "$root/gdb-appimage"; then
+    echo 'DIAG: mounted application with GDB and bundled WebKit helper paths'
+    if APPIMAGE="$artifact" ARGV0="$artifact" APPDIR="$mounted" xvfb-run -a -e "$root/gdb-xvfb.log" -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/gdb-run" "$root/gdb-appimage"; then
       echo 'DIAG: debugger launch passed'
     fi
-    grep -E 'Breakpoint|Program received signal|exited|^#([0-9]|1[0-2])\s+.*(libgdk|libglib|libX11|libc\.so|libgtk|libwebkit)' "$root/gdb-run/startup.log" | cut -c1-360 | head -70 || true
+    rg -n -i 'catchpoint|Program received signal|Error|exit_group|^x0|^#[0-9]+' "$root/gdb-run/startup.log" | tail -48 || true
+    cat "$root/gdb-xvfb.log"
     kill "$mount_pid" 2>/dev/null || true
     wait "$mount_pid" 2>/dev/null || true
-  else
-    cat "$mount_log"
-  fi
-  echo '### Direct AppImage using its extraction fallback'
-  if APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/extract-and-run" "$artifact"; then
-    echo 'DIAG: runtime extraction passed'
-  fi
-  echo '### Extracted AppRun with the packaged APPIMAGE environment'
-  if APPIMAGE="$artifact" ARGV0="$artifact" xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/extracted-run" "$extracted/AppRun"; then
-    echo 'DIAG: extracted AppRun passed'
   fi
 }
 
@@ -164,7 +153,7 @@ case "${1:-}" in
     deb_ok=0
     if xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/appimage" "$artifact"; then appimage_ok=1; fi
     if [[ "$(uname -m)" == aarch64 && "$(lsb_release -rs)" == 22.04 ]]; then
-      trace_jammy_arm64 "$root" "$artifact" "$script" || true
+      compare_x11_launches "$root" "$artifact" "$script" || true
     fi
     if sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y install "$deb" > "$root/deb-install.log" 2>&1; then
       pkg=$(dpkg-deb -f "$deb" Package)
