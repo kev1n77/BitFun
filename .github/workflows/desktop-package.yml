@@ -3,10 +3,6 @@ name: Desktop Package
 on:
   workflow_dispatch:
     inputs:
-      verify_arm64_run:
-        description: "Smoke-test arm64 artifacts from this previous run ID."
-        required: false
-        type: string
       tag_name:
         description: "Release tag (stable: v1.0.0-beta or v1.0.0, beta: v1.0.0-beta.1)."
         required: false
@@ -58,7 +54,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: desktop-package-pr3996-retry-${{ (github.event.release.prerelease || inputs.release_channel == 'beta') && 'beta' || github.event.release.tag_name || inputs.tag_name || github.sha }}${{ (inputs.target_platform && inputs.target_platform != 'all') && format('-{0}', inputs.target_platform) || '' }}
+  group: desktop-package-pr3996-safe-directory-${{ (github.event.release.prerelease || inputs.release_channel == 'beta') && 'beta' || github.event.release.tag_name || inputs.tag_name || github.sha }}${{ (inputs.target_platform && inputs.target_platform != 'all') && format('-{0}', inputs.target_platform) || '' }}
   cancel-in-progress: false
 
 jobs:
@@ -202,7 +198,7 @@ jobs:
     # Compile and bundle with Ubuntu 22.04's glibc on both Linux architectures.
     container: ${{ startsWith(matrix.platform.name, 'linux-') && 'ubuntu:22.04' || '' }}
     needs: prepare
-    if: needs.prepare.outputs.relay_image_only != 'true' && !inputs.artifact_run_ids && !inputs.verification_recovery_run_id && !inputs.verify_arm64_run
+    if: needs.prepare.outputs.relay_image_only != 'true' && !inputs.artifact_run_ids && !inputs.verification_recovery_run_id
     env:
       NODE_OPTIONS: --max-old-space-size=6144
       OPENBITFUN_ENABLE_UPDATER_ARTIFACTS: ${{ needs.prepare.outputs.upload_to_release }}
@@ -473,6 +469,7 @@ jobs:
           bash "$verification_dir/scripts/ci/verify-macos-signing.sh" "${{ matrix.platform.target }}"
 
       - name: Verify Linux desktop package
+        id: verify_linux
         if: runner.os == 'Linux'
         shell: bash
         env:
@@ -483,12 +480,21 @@ jobs:
           # Apply the current packaging checks when rebuilding an older tag.
           verification_dir="$(mktemp -d)"
           trap 'rm -rf "$verification_dir"' EXIT
-          if ! git cat-file -e "$WORKFLOW_SHA^{commit}"; then
-            git fetch --no-tags --depth=1 origin "$WORKFLOW_SHA"
+          if ! git -c safe.directory="$GITHUB_WORKSPACE" cat-file -e "$WORKFLOW_SHA^{commit}"; then
+            git -c safe.directory="$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$WORKFLOW_SHA"
           fi
-          git archive "$WORKFLOW_SHA" scripts/ci/verify-linux-desktop-package.sh scripts/ci/check-glibc-floor.sh \
+          git -c safe.directory="$GITHUB_WORKSPACE" archive "$WORKFLOW_SHA" scripts/ci/verify-linux-desktop-package.sh scripts/ci/check-glibc-floor.sh \
             | tar -x -C "$verification_dir"
           bash "$verification_dir/scripts/ci/verify-linux-desktop-package.sh" "$TARGET"
+
+      - name: Preserve Linux package diagnostics if verification fails
+        if: failure() && steps.verify_linux.outcome == 'failure'
+        uses: actions/upload-artifact@v6
+        with:
+          name: openbitfun-${{ needs.prepare.outputs.release_tag }}-${{ matrix.platform.name }}-unverified
+          path: target/*/release/bundle
+          retention-days: 3
+          if-no-files-found: error
 
       - name: Preserve macOS verification recovery bundles
         if: failure() && runner.os == 'macOS' && steps.apple_verification.outcome == 'failure'
@@ -1255,20 +1261,38 @@ jobs:
   smoke-linux:
     name: Install and start (${{ matrix.os }})
     needs: package
-    if: ${{ always() && (inputs.verify_arm64_run != '' || needs.package.result == 'success') }}
+    if: ${{ always() && !cancelled() && needs.package.result != 'skipped' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
+    permissions:
+      contents: read
+      actions: read
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.verify_arm64_run != '' && '["ubuntu-22.04-arm","ubuntu-24.04-arm"]' || '["ubuntu-22.04","ubuntu-24.04"]') }}
+        include:
+          - os: ubuntu-22.04
+            arch: x64
+          - os: ubuntu-24.04
+            arch: x64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+          - os: ubuntu-24.04-arm
+            arch: arm64
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v7
+      - name: Download verified package
+        id: verified_download
+        uses: actions/download-artifact@v7
+        continue-on-error: true
         with:
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.verify_arm64_run || github.run_id }}
-          name: openbitfun-v1.0.11-linux-${{ inputs.verify_arm64_run != '' && 'arm64' || 'x64' }}-bundle
+          name: openbitfun-v1.0.11-linux-${{ matrix.arch }}-bundle
+          path: smoke-artifacts
+      - name: Download package retained after verification failure
+        if: steps.verified_download.outcome == 'failure'
+        uses: actions/download-artifact@v7
+        with:
+          name: openbitfun-v1.0.11-linux-${{ matrix.arch }}-unverified
           path: smoke-artifacts
       - name: Install virtual display and AppImage prerequisites
         shell: bash
