@@ -1,11 +1,12 @@
 name: Desktop Package
 
 on:
-  release:
-    types:
-      - published
   workflow_dispatch:
     inputs:
+      verify_arm64_run:
+        description: "Smoke-test arm64 artifacts from this previous run ID."
+        required: false
+        type: string
       tag_name:
         description: "Release tag (stable: v1.0.0-beta or v1.0.0, beta: v1.0.0-beta.1)."
         required: false
@@ -57,7 +58,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: desktop-package-${{ (github.event.release.prerelease || inputs.release_channel == 'beta') && 'beta' || github.event.release.tag_name || inputs.tag_name || github.sha }}${{ (inputs.target_platform && inputs.target_platform != 'all') && format('-{0}', inputs.target_platform) || '' }}
+  group: desktop-package-pr3996-retry-${{ (github.event.release.prerelease || inputs.release_channel == 'beta') && 'beta' || github.event.release.tag_name || inputs.tag_name || github.sha }}${{ (inputs.target_platform && inputs.target_platform != 'all') && format('-{0}', inputs.target_platform) || '' }}
   cancel-in-progress: false
 
 jobs:
@@ -201,7 +202,7 @@ jobs:
     # Compile and bundle with Ubuntu 22.04's glibc on both Linux architectures.
     container: ${{ startsWith(matrix.platform.name, 'linux-') && 'ubuntu:22.04' || '' }}
     needs: prepare
-    if: needs.prepare.outputs.relay_image_only != 'true' && !inputs.artifact_run_ids && !inputs.verification_recovery_run_id
+    if: needs.prepare.outputs.relay_image_only != 'true' && !inputs.artifact_run_ids && !inputs.verification_recovery_run_id && !inputs.verify_arm64_run
     env:
       NODE_OPTIONS: --max-old-space-size=6144
       OPENBITFUN_ENABLE_UPDATER_ARTIFACTS: ${{ needs.prepare.outputs.upload_to_release }}
@@ -228,6 +229,9 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
+          sed -i -e 's|http://archive.ubuntu.com/ubuntu/|http://mirrors.edge.kernel.org/ubuntu/|g' \
+            -e 's|http://security.ubuntu.com/ubuntu/|http://mirrors.edge.kernel.org/ubuntu/|g' /etc/apt/sources.list
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' > /etc/apt/apt.conf.d/90-pr-3996
           apt-get update
           # linuxdeploy needs the fcitx5 GTK3 module when it builds the AppImage.
           apt-get install -y --no-install-recommends \
@@ -594,10 +598,7 @@ jobs:
   linux-binaries:
     name: Linux CLI and Relay Server
     needs: prepare
-    if: >-
-      needs.prepare.outputs.relay_image_only != 'true' &&
-      needs.prepare.outputs.target_platform == 'all' &&
-      !inputs.artifact_run_ids
+    if: ${{ false }}
     uses: ./.github/workflows/linux-binaries.yml
     secrets:
       release_signing_key: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -1250,3 +1251,45 @@ jobs:
             -d "{\"tag\":\"${RELEASE_TAG}\",\"channel\":\"${RELEASE_CHANNEL}\"}" \
             "${SYNC_WEBHOOK_URL}" >/dev/null
           echo "Mirror sync requested for ${RELEASE_TAG}."
+
+  smoke-linux:
+    name: Install and start (${{ matrix.os }})
+    needs: package
+    if: ${{ always() && (inputs.verify_arm64_run != '' || needs.package.result == 'success') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.verify_arm64_run != '' && '["ubuntu-22.04-arm","ubuntu-24.04-arm"]' || '["ubuntu-22.04","ubuntu-24.04"]') }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.verify_arm64_run || github.run_id }}
+          name: openbitfun-v1.0.11-linux-${{ inputs.verify_arm64_run != '' && 'arm64' || 'x64' }}-bundle
+          path: smoke-artifacts
+      - name: Install virtual display and AppImage prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /etc/os-release
+          fuse_package=libfuse2
+          if [[ "$VERSION_CODENAME" == noble ]]; then fuse_package=libfuse2t64; fi
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y --no-install-recommends install \
+            "$fuse_package" fuse3 xvfb xauth x11-utils dbus-x11 fonts-dejavu-core libgl1-mesa-dri xdg-utils
+      - name: Verify DEB installation and desktop startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t images < <(find smoke-artifacts -type f -name '*.AppImage')
+          mapfile -t debs < <(find smoke-artifacts -type f -name '*.deb')
+          [[ ${#images[@]} == 1 && ${#debs[@]} == 1 ]]
+          if [[ ! -c /dev/fuse ]]; then sudo modprobe fuse || true; fi
+          if [[ ! -c /dev/fuse ]]; then
+            echo 'AppImage startup will use extraction because FUSE is unavailable on the runner.'
+            export APPIMAGE_EXTRACT_AND_RUN=1
+          fi
+          bash scripts/ci/pr3996-smoke.sh verify "$RUNNER_TEMP/pr3996" "${images[0]}" "${debs[0]}"
