@@ -71,19 +71,33 @@ trace_jammy_arm64() {
   local extracted="$root/extracted/squashfs-root"
   file "$artifact" "$extracted/usr/bin/openbitfun-desktop"
   readelf -d "$extracted/usr/bin/openbitfun-desktop" | grep NEEDED
-  echo '### Normal launcher with process and exit stack tracing'
+  echo '### Runner and AppImage runtime'
+  uname -a
+  getconf PAGE_SIZE
+  lscpu | grep -E 'Architecture:|CPU\(s\):|Model name:|Vendor ID:' || true
+  ls -l /dev/fuse
+  cat "$extracted"/apprun-hooks/*.sh "$extracted/AppRun"
   cat > "$root/trace-appimage" <<'SH'
 #!/usr/bin/env bash
 exec strace -ff -k -y -s 300 -e trace=execve,execveat,exit,exit_group,kill,tgkill -o "$TRACE_DIR" "$TRACE_APPIMAGE"
 SH
   chmod +x "$root/trace-appimage"
-  if TRACE_DIR="$root/trace" TRACE_APPIMAGE="$artifact" xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/traced-run" "$root/trace-appimage"; then
-    echo 'DIAG: normal traced launcher passed'
-  fi
-  grep -l -E 'execve[^\n]+(openbitfun-desktop|AppRun)|exit_group\(1\)|killed by SIG' "$root"/trace.* | head -40 | while IFS= read -r trace; do
-    echo "--- $trace ---"
-    grep -m 2 -E '^execve\(' "$trace" || true
-    tail -35 "$trace"
+  for attempt in 1 2 3 4; do
+    echo "### Native launcher with tracing, attempt $attempt"
+    local trace_dir="$root/trace-$attempt"
+    mkdir -p "$trace_dir"
+    if TRACE_DIR="$trace_dir/process" TRACE_APPIMAGE="$artifact" xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/traced-run-$attempt" "$root/trace-appimage"; then
+      echo "DIAG: normal traced launcher passed ($attempt)"
+    else
+      local trace
+      for trace in "$trace_dir"/process.*; do
+        if grep -Eq 'execve.*(openbitfun-desktop|AppRun)|exit_group\(1\)|killed by SIG(SEGV|ABRT|BUS|ILL)' "$trace"; then
+          echo "--- $trace ---"
+          grep -m 2 -E '^execve\(' "$trace" || true
+          tail -44 "$trace"
+        fi
+      done
+    fi
   done
   echo '### Native launcher with unpacked AppDir'
   if xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/extracted-run" "$extracted/AppRun"; then
@@ -122,7 +136,7 @@ case "${1:-}" in
     appimage_ok=0
     deb_ok=0
     if xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/appimage" "$artifact"; then appimage_ok=1; fi
-    if [[ "$appimage_ok" == 0 && "$(uname -m)" == aarch64 && "$(lsb_release -rs)" == 22.04 ]]; then
+    if [[ "$(uname -m)" == aarch64 && "$(lsb_release -rs)" == 22.04 ]]; then
       trace_jammy_arm64 "$root" "$artifact" "$script" || true
     fi
     if sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y install "$deb" > "$root/deb-install.log" 2>&1; then
