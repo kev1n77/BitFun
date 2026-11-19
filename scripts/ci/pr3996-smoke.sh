@@ -70,7 +70,15 @@ trace_xio() {
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
+
+__attribute__((constructor))
+static void init_xlib_threads(void) {
+  if (!getenv("XIO_INIT_THREADS") || strcmp(program_invocation_short_name, "openbitfun-desktop")) return;
+  int (*initialize)(void) = dlsym(RTLD_DEFAULT, "XInitThreads");
+  dprintf(2, "XINIT DIAGNOSTIC result=%d\n", initialize ? initialize() : -1);
+}
 
 int _XIOError(void *display) {
   int io_errno = errno;
@@ -98,15 +106,32 @@ export G_MESSAGES_DEBUG=Gdk
 exec "$XIO_APPIMAGE"
 SH
   chmod +x "$root/xio-launch"
-  local attempt
-  for attempt in 1 2 3 4; do
-    echo "DIAG: direct with XIO diagnostics, attempt $attempt"
-    if xvfb-run -a -e "$root/xio-$attempt-xvfb.log" -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/xio-$attempt" "$root/xio-launch"; then
-      echo "DIAG: XIO probe $attempt passed"
-    fi
-    grep -Ei 'XIO DIAGNOSTIC|Fatal IO|X Window System error|BadRequest|BadMatch' "$root/xio-$attempt/startup.log" || true
-    cat "$root/xio-$attempt-xvfb.log"
+  local attempt variant ok baseline_passed=0 initialized_passed=0
+  for attempt in 1 2 3 4 5 6; do
+    for variant in baseline initialized; do
+      ok=0
+      if [[ "$variant" == initialized ]]; then
+        export XIO_INIT_THREADS=1
+      else
+        unset XIO_INIT_THREADS
+      fi
+      echo "DIAG: $variant attempt $attempt"
+      case_dir="$root/$variant-$attempt"
+      if xvfb-run -a -e "$case_dir-xvfb.log" -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$case_dir" "$root/xio-launch"; then
+        ok=1
+        if [[ "$variant" == initialized ]]; then
+          ((initialized_passed+=1))
+        else
+          ((baseline_passed+=1))
+        fi
+      fi
+      echo "DIAG: $variant attempt $attempt result=$ok"
+      grep -Ei 'X(INIT|IO) DIAGNOSTIC|Fatal IO|X Window System error|BadRequest|BadMatch' "$case_dir/startup.log" || true
+      cat "$case_dir-xvfb.log"
+    done
   done
+  unset XIO_INIT_THREADS
+  printf 'DIAG: baseline=%d/6, early XInitThreads=%d/6\n' "$baseline_passed" "$initialized_passed"
 }
 
 case "${1:-}" in
