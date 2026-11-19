@@ -4,7 +4,7 @@ set -euo pipefail
 test_startup() {
   local work_dir=$1
   local program=$2
-  local app_pid app_window deadline
+  local app_pid app_window deadline window_state stable_since=-1
   mkdir -p "$work_dir"/{home,config,cache,data,runtime,app}
   chmod 700 "$work_dir/runtime"
   export HOME="$work_dir/home" XDG_CONFIG_HOME="$work_dir/config" XDG_CACHE_HOME="$work_dir/cache"
@@ -21,14 +21,22 @@ test_startup() {
       return 1
     fi
     xwininfo -root -tree > "$work_dir/windows.txt"
-    app_window=$(awk 'tolower($0) ~ /openbitfun/ && $1 ~ /^0x/ && $0 ~ /[5-9][0-9][0-9]x[3-9][0-9][0-9]|[1-9][0-9][0-9][0-9]x[3-9][0-9][0-9]/ {print $1; exit}' "$work_dir/windows.txt")
-    if [[ -n "$app_window" ]] && xwininfo -id "$app_window" | grep -q 'Map State: IsViewable'; then
-      sleep 10
-      kill -0 "$app_pid" 2>/dev/null
-      xwininfo -id "$app_window" | grep 'Map State: IsViewable'
-      awk -v id="$app_window" '$1 == id' "$work_dir/windows.txt"
-      printf 'PASS: main window stayed visible for 10 seconds (%s)\n' "$program"
-      return 0
+    app_window=""
+    while read -r candidate; do
+      if window_state=$(xwininfo -id "$candidate" 2>/dev/null) && [[ "$window_state" == *'Map State: IsViewable'* ]]; then
+        app_window=$candidate
+        break
+      fi
+    done < <(awk 'tolower($0) ~ /openbitfun/ && $1 ~ /^0x/ && $0 ~ /[5-9][0-9][0-9]x[3-9][0-9][0-9]|[1-9][0-9][0-9][0-9]x[3-9][0-9][0-9]/ {print $1}' "$work_dir/windows.txt")
+    if [[ -n "$app_window" ]]; then
+      if (( stable_since < 0 )); then stable_since=$SECONDS; fi
+      if (( SECONDS - stable_since >= 10 )); then
+        awk -v id="$app_window" '$1 == id' "$work_dir/windows.txt"
+        printf 'PASS: main window stably visible (%s)\n' "$program"
+        return 0
+      fi
+    else
+      stable_since=-1
     fi
     sleep 2
   done
@@ -51,7 +59,7 @@ case "${1:-}" in
     appimage_ok=0
     deb_ok=0
     if xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/appimage" "$artifact"; then appimage_ok=1; fi
-    if sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -y install "$deb" > "$root/deb-install.log" 2>&1; then
+    if sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y install "$deb" > "$root/deb-install.log" 2>&1; then
       pkg=$(dpkg-deb -f "$deb" Package)
       dpkg-query -W -f='${Status} ${Package} ${Version} ${Architecture}\n' "$pkg"
       if xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/deb" /usr/bin/openbitfun-desktop; then deb_ok=1; fi
