@@ -9,6 +9,9 @@ print_startup_diagnostics() {
     grep -Ei -C 4 'panic|undefined symbol|error while loading shared libraries|fatal|segmentation fault|WebKit.*terminated' "$log_file" >&2 || true
     tail -24 "$log_file" >&2
   done
+  find "$work_dir/logs" -type f -name 'crash-report.json' -print0 | while IFS= read -r -d '' crash_report; do
+    jq '{location, message, thread_name, arch}' "$crash_report" >&2
+  done
   if [[ -f "$work_dir/windows.txt" ]]; then tail -20 "$work_dir/windows.txt" >&2; fi
 }
 
