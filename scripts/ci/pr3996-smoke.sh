@@ -65,7 +65,8 @@ case "${1:-}" in
     cat /etc/os-release | grep -E '^(PRETTY_NAME|VERSION_ID)='
     printf 'Architecture: %s\n' "$(uname -m)"
     printf 'glibc: %s\n' "$(getconf GNU_LIBC_VERSION)"
-    sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y --no-install-recommends install libgles2
+    printf "DEB declared dependencies: %s\n" "$(dpkg-deb -f "$deb" Depends)"
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y --no-install-recommends install libgles2 libayatana-appindicator3-1
     chmod +x "$artifact"
     appimage_ok=0
     deb_ok=0
