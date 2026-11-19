@@ -65,7 +65,7 @@ trace_jammy_arm64() {
   local artifact=$2
   local script=$3
   local case_name
-  sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y --no-install-recommends install strace
+  sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y --no-install-recommends install strace gdb
   mkdir -p "$root/extracted"
   (cd "$root/extracted" && "$artifact" --appimage-extract > /dev/null)
   local extracted="$root/extracted/squashfs-root"
@@ -77,39 +77,66 @@ trace_jammy_arm64() {
   lscpu | grep -E 'Architecture:|CPU\(s\):|Model name:|Vendor ID:' || true
   ls -l /dev/fuse
   cat "$extracted"/apprun-hooks/*.sh "$extracted/AppRun"
-  cat > "$root/trace-appimage" <<'SH'
-#!/usr/bin/env bash
-exec strace -ff -k -y -s 300 -e trace=execve,execveat,exit,exit_group,kill,tgkill -o "$TRACE_DIR" "$TRACE_APPIMAGE"
-SH
-  chmod +x "$root/trace-appimage"
-  for attempt in 1 2 3 4; do
-    echo "### Native launcher with tracing, attempt $attempt"
-    local trace_dir="$root/trace-$attempt"
-    mkdir -p "$trace_dir"
-    if TRACE_DIR="$trace_dir/process" TRACE_APPIMAGE="$artifact" xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/traced-run-$attempt" "$root/trace-appimage"; then
-      echo "DIAG: normal traced launcher passed ($attempt)"
-    else
-      local trace
-      for trace in "$trace_dir"/process.*; do
-        if grep -Eq 'execve.*(openbitfun-desktop|AppRun)|exit_group\(1\)|killed by SIG(SEGV|ABRT|BUS|ILL)' "$trace"; then
-          echo "--- $trace ---"
-          grep -m 2 -E '^execve\(' "$trace" || true
-          tail -44 "$trace"
-        fi
-      done
-    fi
+  local mount_log="$root/mount.log"
+  "$artifact" --appimage-mount > "$mount_log" 2>&1 &
+  local mount_pid=$!
+  local mounted=''
+  for attempt in 1 2 3 4 5; do
+    mounted="$(head -1 "$mount_log")"
+    if [[ -d "$mounted" && -x "$mounted/AppRun" ]]; then break; fi
+    sleep 1
   done
-  echo '### Native launcher with unpacked AppDir'
-  if xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/extracted-run" "$extracted/AppRun"; then
-    echo 'DIAG: extraction via AppRun passed'
+  if [[ -d "$mounted" && -x "$mounted/AppRun" ]]; then
+    printf '### Explicit native FUSE mount at %s\n' "$mounted"
+    findmnt -T "$mounted"
+    cat > "$root/trace-appimage" <<'SH'
+#!/usr/bin/env bash
+exec strace -ff -tt -y -s 300 -e trace=execve,execveat,exit,exit_group,kill,tgkill,write,writev -o "$TRACE_DIR" "$TRACE_APPIMAGE"
+SH
+    chmod +x "$root/trace-appimage"
+    for attempt in 1 2; do
+      echo "### Traced AppRun from native FUSE mount, attempt $attempt"
+      local trace_dir="$root/trace-$attempt"
+      mkdir -p "$trace_dir"
+      if APPIMAGE="$artifact" ARGV0="$artifact" APPDIR="$mounted" TRACE_DIR="$trace_dir/process" TRACE_APPIMAGE="$mounted/AppRun" xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/traced-run-$attempt" "$root/trace-appimage"; then
+        echo "DIAG: traced native FUSE launch passed ($attempt)"
+      else
+        local trace
+        for trace in "$trace_dir"/process.*; do
+          if grep -Eq 'execve.*openbitfun-desktop|exit_group\(1\)|killed by SIG(SEGV|ABRT|BUS|ILL)' "$trace"; then
+            echo "--- $trace ---"
+            grep -m 5 -E 'execve\(' "$trace" | cut -c1-350 || true
+            grep -E 'exit_group\(1\)|SIG(SEGV|ABRT|BUS|ILL)|write(v)?\(2' "$trace" | tail -16 | cut -c1-450 || true
+            tail -15 "$trace" | cut -c1-420
+          fi
+        done
+      fi
+    done
+    cat > "$root/gdb-appimage" <<'SH'
+#!/usr/bin/env bash
+set -e
+source "$APPDIR"/apprun-hooks/linuxdeploy-plugin-gtk.sh
+export LD_LIBRARY_PATH="$APPDIR/usr/lib:${LD_LIBRARY_PATH:-}"
+exec gdb --batch --quiet -ex 'set debuginfod enabled off' -ex 'set breakpoint pending on' -ex 'break exit if $x0 == 1' -ex run -ex 'thread apply all bt 8' --args "$APPDIR/usr/bin/openbitfun-desktop"
+SH
+    chmod +x "$root/gdb-appimage"
+    echo '### GDB on app binary using mounted bundle and bundled libraries'
+    if APPIMAGE="$artifact" ARGV0="$artifact" APPDIR="$mounted" xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/gdb-run" "$root/gdb-appimage"; then
+      echo 'DIAG: debugger launch passed'
+    fi
+    grep -E 'Breakpoint|Program received signal|exited|^#([0-9]|1[0-2])\s+.*(libgdk|libglib|libX11|libc\.so|libgtk|libwebkit)' "$root/gdb-run/startup.log" | cut -c1-360 | head -70 || true
+    kill "$mount_pid" 2>/dev/null || true
+    wait "$mount_pid" 2>/dev/null || true
+  else
+    cat "$mount_log"
   fi
-  echo '### Direct AppImage with DMABUF disabled'
-  if WEBKIT_DISABLE_DMABUF_RENDERER=1 xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/no-dmabuf" "$artifact"; then
-    echo 'DIAG: disabling DMABUF passed'
+  echo '### Direct AppImage using its extraction fallback'
+  if APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/extract-and-run" "$artifact"; then
+    echo 'DIAG: runtime extraction passed'
   fi
-  echo '### Direct AppImage with accelerated compositing disabled'
-  if WEBKIT_DISABLE_COMPOSITING_MODE=1 xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/no-compositing" "$artifact"; then
-    echo 'DIAG: disabling accelerated compositing passed'
+  echo '### Extracted AppRun with the packaged APPIMAGE environment'
+  if APPIMAGE="$artifact" ARGV0="$artifact" xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/extracted-run" "$extracted/AppRun"; then
+    echo 'DIAG: extracted AppRun passed'
   fi
 }
 
