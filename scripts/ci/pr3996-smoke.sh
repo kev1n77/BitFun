@@ -69,39 +69,8 @@ compare_x11_launches() {
   local root=$1
   local artifact=$2
   local script=$3
-  sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y --no-install-recommends install openbox gdb
-  cat > "$root/xsession" <<'SH'
-#!/usr/bin/env bash
-openbox > "$X11_CASE-wm.log" 2>&1 &
-wm_pid=$!
-trap 'kill "$wm_pid" 2>/dev/null || true; wait "$wm_pid" 2>/dev/null || true' EXIT
-for attempt in 1 2 3 4 5 6 7 8 9 10; do
-  if xprop -root _NET_SUPPORTING_WM_CHECK | grep -q 'window id'; then break; fi
-  sleep .2
-done
-xprop -root _NET_SUPPORTING_WM_CHECK
-bash "$@"
-SH
-  chmod +x "$root/xsession"
-  local attempt ok default_passed=0 openbox_passed=0
-  for attempt in 1 2 3; do
-    ok=0
-    if xvfb-run -a -e "$root/default-$attempt-xvfb.log" -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/default-$attempt" "$artifact"; then
-      ((default_passed+=1))
-      ok=1
-    fi
-    printf 'DIAG: bare Xvfb launch %d result=%d\n' "$attempt" "$ok"
-    cat "$root/default-$attempt-xvfb.log"
-    ok=0
-    if X11_CASE="$root/openbox-$attempt" xvfb-run -a -e "$root/openbox-$attempt-xvfb.log" -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- "$root/xsession" "$script" startup "$root/openbox-$attempt" "$artifact"; then
-      ((openbox_passed+=1))
-      ok=1
-    fi
-    printf 'DIAG: Xvfb plus Openbox launch %d result=%d\n' "$attempt" "$ok"
-    cat "$root/openbox-$attempt-xvfb.log" "$root/openbox-$attempt-wm.log"
-  done
-  printf 'DIAG: bare Xvfb=%d/3, Xvfb with Openbox=%d/3\n' "$default_passed" "$openbox_passed"
-  local mounted=''
+  sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y --no-install-recommends install gdb
+  local mounted='' attempt
   "$artifact" --appimage-mount > "$root/mount.log" 2>&1 &
   local mount_pid=$!
   for attempt in 1 2 3 4 5; do
@@ -115,15 +84,30 @@ SH
 set -e
 source "$APPDIR"/apprun-hooks/linuxdeploy-plugin-gtk.sh
 cd "$APPDIR/usr"
-exec gdb --batch --quiet -ex 'set debuginfod enabled off' -ex 'set breakpoint pending on' -ex 'set environment LD_LIBRARY_PATH '"$APPDIR/usr/lib" -ex 'catch syscall exit_group' -ex run -ex 'info registers x0' -ex 'bt 30' --args "$APPDIR/usr/bin/openbitfun-desktop"
+exec gdb --batch --quiet \
+  -ex 'set debuginfod enabled off' \
+  -ex 'set breakpoint pending on' \
+  -ex 'set environment LD_LIBRARY_PATH '"$APPDIR/usr/lib" \
+  -ex 'set environment G_MESSAGES_DEBUG all' \
+  -ex 'set environment LD_PRELOAD /usr/lib/aarch64-linux-gnu/libX11-xcb.so.1' \
+  -ex 'break _XIOError' -ex run \
+  -ex 'set $display = (void *)$x0' \
+  -ex 'set $xcb = ((void *(*)(void *))XGetXCBConnection)($display)' \
+  -ex 'p ((int (*)(void *))xcb_connection_has_error)($xcb)' \
+  -ex 'p ((int (*)(void *))xcb_get_file_descriptor)($xcb)' \
+  -ex 'info sharedlibrary .*libX(11|cb).*|.*libxcb.*' \
+  -ex 'bt 22' --args "$APPDIR/usr/bin/openbitfun-desktop"
 SH
     chmod +x "$root/gdb-appimage"
     echo 'DIAG: mounted application with GDB and bundled WebKit helper paths'
-    if APPIMAGE="$artifact" ARGV0="$artifact" APPDIR="$mounted" xvfb-run -a -e "$root/gdb-xvfb.log" -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/gdb-run" "$root/gdb-appimage"; then
-      echo 'DIAG: debugger launch passed'
-    fi
-    rg -n -i 'catchpoint|Program received signal|Error|exit_group|^x0|^#[0-9]+' "$root/gdb-run/startup.log" | tail -48 || true
-    cat "$root/gdb-xvfb.log"
+    for attempt in 1 2 3; do
+      echo "DIAG: XCB debugger attempt $attempt"
+      if APPIMAGE="$artifact" ARGV0="$artifact" APPDIR="$mounted" xvfb-run -a -e "$root/gdb-$attempt-xvfb.log" -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/gdb-$attempt" "$root/gdb-appimage"; then
+        echo 'DIAG: debugger launch passed'
+      fi
+      rg -n -i '_XIOError|Program received signal|access memory|no symbol|libX11(-xcb)?\.so|libxcb\.so|^\$[0-9]+|^#[0-9]+' "$root/gdb-$attempt/startup.log" | tail -40 || true
+      cat "$root/gdb-$attempt-xvfb.log"
+    done
     kill "$mount_pid" 2>/dev/null || true
     wait "$mount_pid" 2>/dev/null || true
   fi
