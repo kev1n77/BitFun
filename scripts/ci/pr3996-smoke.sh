@@ -72,9 +72,11 @@ trace_xio() {
 #include <stdlib.h>
 #include <unistd.h>
 
-int _XIOError(void *display) {
+typedef int (*ErrorHandler)(void *);
+static ErrorHandler gtk_handler;
+
+static int trace_xio_error(void *display) {
   int io_errno = errno;
-  int (*finish)(void *) = dlsym(RTLD_NEXT, "_XIOError");
   void *xcb_lib = dlopen("libX11-xcb.so.1", RTLD_LAZY);
   if (xcb_lib) {
     void *(*connection)(void *) = dlsym(xcb_lib, "XGetXCBConnection");
@@ -85,8 +87,18 @@ int _XIOError(void *display) {
     }
   }
   errno = io_errno;
-  if (finish) return finish(display);
+  if (gtk_handler) return gtk_handler(display);
   _Exit(1);
+}
+
+ErrorHandler XSetIOErrorHandler(ErrorHandler handler) {
+  ErrorHandler (*set_handler)(ErrorHandler) = dlsym(RTLD_NEXT, "XSetIOErrorHandler");
+  if (!set_handler) return NULL;
+  if (!handler) return set_handler(handler);
+  ErrorHandler previous = set_handler(trace_xio_error);
+  if (previous == trace_xio_error) previous = gtk_handler;
+  gtk_handler = handler;
+  return previous;
 }
 C
   cc -shared -fPIC -O2 -o "$root/xio.so" "$root/xio.c" -ldl
@@ -99,7 +111,7 @@ exec "$XIO_APPIMAGE"
 SH
   chmod +x "$root/xio-launch"
   local attempt
-  for attempt in 1 2 3 4; do
+  for attempt in 1 2 3 4 5 6; do
     echo "DIAG: direct with XIO diagnostics, attempt $attempt"
     if xvfb-run -a -e "$root/xio-$attempt-xvfb.log" -s '-screen 0 1280x900x24 -nolisten tcp' dbus-run-session -- bash "$script" startup "$root/xio-$attempt" "$root/xio-launch"; then
       echo "DIAG: XIO probe $attempt passed"
