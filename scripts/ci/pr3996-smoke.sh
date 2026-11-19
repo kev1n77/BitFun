@@ -1,23 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+print_startup_diagnostics() {
+  local work_dir=$1
+  tail -35 "$work_dir/startup.log" >&2
+  find "$work_dir/logs" -type f -name '*.log' -print0 | while IFS= read -r -d '' log_file; do
+    printf '\n--- %s ---\n' "$log_file" >&2
+    tail -24 "$log_file" >&2
+  done
+  if [[ -f "$work_dir/windows.txt" ]]; then tail -20 "$work_dir/windows.txt" >&2; fi
+}
+
 test_startup() {
   local work_dir=$1
   local program=$2
-  local app_pid app_window deadline window_state stable_since=-1
-  mkdir -p "$work_dir"/{home,config,cache,data,runtime,app}
+  local app_pid app_window deadline window_state stable_since=-1 app_exit=0
+  mkdir -p "$work_dir"/{home,config,cache,data,runtime,app,logs}
   chmod 700 "$work_dir/runtime"
   export HOME="$work_dir/home" XDG_CONFIG_HOME="$work_dir/config" XDG_CACHE_HOME="$work_dir/cache"
   export XDG_DATA_HOME="$work_dir/data" XDG_RUNTIME_DIR="$work_dir/runtime" OPENBITFUN_HOME="$work_dir/app"
-  export GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1
+  export GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 OPENBITFUN_LOG_DIR="$work_dir/logs"
   "$program" > "$work_dir/startup.log" 2>&1 &
   app_pid=$!
   trap "kill $app_pid 2>/dev/null || true; wait $app_pid 2>/dev/null || true" EXIT
   deadline=$((SECONDS + 180))
   while (( SECONDS < deadline )); do
     if ! kill -0 "$app_pid" 2>/dev/null; then
-      wait "$app_pid" || true
-      tail -35 "$work_dir/startup.log" >&2
+      wait "$app_pid" || app_exit=$?
+      printf "Desktop process exited with status %s\n" "$app_exit" >&2
+      print_startup_diagnostics "$work_dir"
       return 1
     fi
     xwininfo -root -tree > "$work_dir/windows.txt"
@@ -40,8 +51,7 @@ test_startup() {
     fi
     sleep 2
   done
-  tail -35 "$work_dir/startup.log" >&2
-  cat "$work_dir/windows.txt" >&2
+  print_startup_diagnostics "$work_dir"
   return 1
 }
 
@@ -55,6 +65,7 @@ case "${1:-}" in
     cat /etc/os-release | grep -E '^(PRETTY_NAME|VERSION_ID)='
     printf 'Architecture: %s\n' "$(uname -m)"
     printf 'glibc: %s\n' "$(getconf GNU_LIBC_VERSION)"
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -y --no-install-recommends install libgles2
     chmod +x "$artifact"
     appimage_ok=0
     deb_ok=0
